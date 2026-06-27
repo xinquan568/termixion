@@ -1,11 +1,5 @@
-# Architecture rules (filled in by task A-4)
+# Architecture rules
 
-A-1 skeleton placeholder. **A-4** encodes the load-bearing invariants here (modeled on ClauDepot's
-`.claude/rules/`, authority §7.4):
-
-- **pure-core / thin-shell boundaries**; `termixion-core` stays platform-agnostic.
-- **no `cfg(target_os=…)` / platform crates in `termixion-core`** (enforced by
-  `scripts/check-core-seam.sh`, D-1).
-- **no `unwrap()`/`expect()` in `termixion-core`** non-test code.
-- **ISC license header on every new source file.**
-- secret-scanning expectations; design-token discipline once theming lands (Beta).
+See **[`architecture.md`](architecture.md)** for the load-bearing invariants (R1–R7) and which are
+machine-enforced. The git hooks in [`../hooks/`](../hooks/) (install: `scripts/install-hooks.sh`) run
+the fast checks locally; CI (E-1) mirrors every load-bearing check.

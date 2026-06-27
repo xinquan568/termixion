@@ -32,9 +32,25 @@ cd crates/termixion-tauri && cargo tauri build            # release
 (Frontend wiring lives in `tauri.conf.json`: `frontendDist: ../../app/dist`,
 `beforeBuildCommand: pnpm --filter app build`.)
 
+## Git hooks (A-4)
+
+Install once after cloning:
+
+```sh
+bash scripts/install-hooks.sh   # sets core.hooksPath = .claude/hooks; makes the hooks executable
+```
+
+The hooks enforce the §2.2 guardrails locally (see `.claude/rules/architecture.md`):
+
+- **pre-commit** → `scripts/secret-scan.sh` + `scripts/check-core-seam.sh` + `scripts/check-isc-headers.sh`.
+- **commit-msg** → Conventional Commits (`<type>(<scope>): <subject>`).
+- **pre-push** → `cargo test --workspace`.
+
+They are the fast local copy; **CI (E-1) mirrors every load-bearing check**, so a `--no-verify` bypass
+still fails the gate.
+
 ## Workflow
 
-- **Hooks (A-4):** install with `git config core.hooksPath .claude/hooks`.
 - **One PR per task**, conventional-commits messages.
 - **`A-1` and `P0-5` are done directly; `A-2` through `E` are driven through the `issue2pr` skill**
   (manifest mode + the `termixion` profile, `--reviewer-backend codex`). *(A-2 itself was done directly

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: ISC
+# Termixion commit-msg hook (A-4). Enforce Conventional Commits on the subject line.
+set -euo pipefail
+msg_file="$1"
+header="$(head -1 "$msg_file")"
+
+# Allow git-generated headers.
+case "$header" in
+  "Merge "*|"Revert "*|"fixup! "*|"squash! "*) exit 0;;
+esac
+
+# <type>(<scope>)?!?: <subject>  — type from the allowed set; scope optional.
+if ! printf '%s' "$header" | grep -qE '^(feat|fix|chore|docs|test|refactor|perf|build|ci|style)(\([a-z0-9._/-]+\))?!?: .+'; then
+  echo "commit-msg: not a Conventional Commit."
+  echo "  expected: <type>(<scope>): <subject>   (type ∈ feat|fix|chore|docs|test|refactor|perf|build|ci|style)"
+  echo "  got:      $header"
+  exit 1
+fi

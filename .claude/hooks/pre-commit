@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: ISC
+# Termixion pre-commit hook (A-4). Fast staged-content guardrails (§2.2).
+# Install: scripts/install-hooks.sh  (sets core.hooksPath = .claude/hooks).
+# CI (E-1) mirrors these so a `--no-verify` bypass still fails the gate.
+set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+bash scripts/secret-scan.sh
+bash scripts/check-core-seam.sh
+bash scripts/check-isc-headers.sh

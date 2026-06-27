@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: ISC
+# Termixion pre-push hook (A-4). The heavier gate — run the test suite before sharing.
+set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+cargo test --workspace --quiet
