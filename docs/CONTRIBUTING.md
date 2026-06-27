@@ -76,6 +76,18 @@ This is why the `commit-msg` hook (R6) is load-bearing — well-formed commits p
   // Copyright (c) 2026 Eric Y. Liu
   ```
 
+## Test-driven development (R8 — fundamental)
+
+**Write tests first.** Every behavioral change follows **RED → GREEN → REFACTOR**:
+
+1. **RED** — write a failing test for the new behavior; confirm it fails for the right reason.
+2. **GREEN** — implement the minimum to pass.
+3. **REFACTOR** — tidy up with tests green.
+
+No behavioral change merges without a covering test (Rust unit/integration; **golden tests** for
+cross-platform/seam behavior; Vitest for the frontend). The pre-push `cargo test` hook + CI gate test
+*passage*; the `issue2pr` review verifies the diff is covered. See `.claude/rules/architecture.md` R8.
+
 ## Workflow
 
 - **One PR per task**, conventional-commits messages.

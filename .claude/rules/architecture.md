@@ -35,5 +35,23 @@ secrets live only as GitHub Actions secrets (P0-2).
 ## R7 — One PR per task
 Short-lived branch per Execution-Plan task; merge only on green gates + review (the `issue2pr` loop).
 
+## R8 — Test-driven development (fundamental)
+We **write tests first**. For every behavioral change follow **RED → GREEN → REFACTOR**:
+
+1. **RED** — write a failing test that specifies the new/changed behavior; run it and confirm it fails
+   for the right reason.
+2. **GREEN** — implement the minimum to make it pass.
+3. **REFACTOR** — clean up with the tests green.
+
+- **No behavioral change merges without a test** that exercises it. Rust: unit `#[cfg(test)]` +
+  integration tests; **cross-platform / seam behavior gets golden tests** (e.g. the `termixion-platform`
+  real-PTY tests). Frontend: Vitest. Pure data/UI tweaks with no behavior change are exempt; doc/config
+  changes are exempt.
+- **Enforcement** (modeled on ClauDepot's `tdd-guardian` + rules-flagged-at-review): the **pre-push
+  `cargo test`** hook + **CI** (`lint + test + build` must be green) gate test *passage*; the **`issue2pr`
+  review loop** verifies a behavioral diff ships with a covering test and flags one that does not.
+  "The test was written first" can't be proven from a diff, so the worker's **test-first discipline** is
+  the load-bearing part, backed by test-presence + review.
+
 > Enforcement is two-layer: the hooks are the fast local copy; **every load-bearing check is also a
 > required CI step (E-1)** so a `--no-verify` bypass still fails the gate.
