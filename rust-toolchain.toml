@@ -1,4 +1,6 @@
-# A-1 skeleton pin (A-2 finalizes the exact version + the `cargo install tauri-cli --locked` bootstrap).
+# Pinned toolchain (A-2). The `cargo tauri` subcommand is a SEPARATELY installed binary —
+# bootstrap it with `cargo install tauri-cli --version 2.11.3 --locked` (see docs/CONTRIBUTING.md);
+# a workspace/toolchain pin alone does NOT provide `cargo tauri`.
 [toolchain]
-channel = "stable"
+channel = "1.94.1"
 components = ["rustfmt", "clippy"]
