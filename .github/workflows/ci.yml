@@ -1,0 +1,15 @@
+# A-1 skeleton placeholder. E-1 fills this in (macos-14 job: bootstrap cargo tauri ->
+# build -> fmt/clippy/lint -> cargo test -> pnpm test -> check-core-seam.sh -> --smoke;
+# Linux job: termixion-core build + cargo test + check-core-seam.sh). See plan §8 E-1.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  placeholder:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "CI shell — implemented in task E-1 (and the Linux-core seam job in D-1)."

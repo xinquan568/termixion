@@ -1,0 +1,12 @@
+# termixion-platform — platform traits + macOS impls now; Linux impls added at the Linux build.
+# This is the only crate allowed to use cfg(target_os) / platform crates (the P1-8 seam).
+[package]
+name = "termixion-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+termixion-core = { path = "../termixion-core" }
+# (B-2 adds portable-pty behind cfg(target_os = "macos") + a clipboard impl.)
