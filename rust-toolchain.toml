@@ -1,0 +1,4 @@
+# A-1 skeleton pin (A-2 finalizes the exact version + the `cargo install tauri-cli --locked` bootstrap).
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

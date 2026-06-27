@@ -1,0 +1,20 @@
+# Termixion — Cargo workspace (A-1 skeleton).
+# Crate layout per the authority plan §6: pure-core / thin-shells.
+[workspace]
+resolver = "2"
+members = [
+  "crates/termixion-core",
+  "crates/termixion-platform",
+  "crates/termixion-tauri",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "ISC"
+authors = ["Eric Y. Liu"]
+repository = "https://github.com/xinquan568/termixion"
+
+# E-3 will tune this (thin-LTO, codegen-units=1, panic="abort", strip).
+[profile.release]
+opt-level = 3

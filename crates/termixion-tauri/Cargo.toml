@@ -1,0 +1,20 @@
+# termixion-tauri — thin Tauri shell (authority §6).
+# A-1 skeleton: a minimal binary that depends only on the workspace crates, so `cargo metadata`
+# resolves offline. B-3 turns this into a real Tauri 2 app (adds `tauri` + `tauri-build`,
+# a build.rs calling tauri_build::build(), commands/channels, window/menu) and wires it to the
+# `app/` frontend via tauri.conf.json.
+[package]
+name = "termixion-tauri"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "termixion"
+path = "src/main.rs"
+
+[dependencies]
+termixion-core = { path = "../termixion-core" }
+termixion-platform = { path = "../termixion-platform" }
+# (B-3 adds: tauri = { version = "2", features = [...] }; and [build-dependencies] tauri-build = "2".)

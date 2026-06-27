@@ -1,0 +1,11 @@
+# termixion-core — pure Rust, PLATFORM-AGNOSTIC (authority §6).
+# No platform crates, no cfg(target_os) — enforced by scripts/check-core-seam.sh (D-1).
+[package]
+name = "termixion-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+# (B-1 adds the domain model; no platform deps here.)
