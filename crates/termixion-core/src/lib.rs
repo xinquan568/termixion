@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: ISC
 // Copyright (c) 2026 Eric Y. Liu
-//
-// termixion-core — platform-agnostic core (authority §6).
-// A-1 skeleton only. B-1 adds the `PtyBackend` session/PTY seam (a trait, declaration-only,
-// no platform code) and the single-session domain model.
-//
-// Invariants enforced by scripts/check-core-seam.sh (D-1):
-//   - no platform crates (tauri, portable-pty, cocoa, libc, nix, windows*) in this crate;
-//   - no cfg(target_os|target_family|target_env|target_arch|target_vendor|target_pointer_width),
-//     and no bare cfg(unix)/cfg(windows);
-//   - no std::os:: usage in non-test code.
+//! `termixion-core` — the platform-agnostic core (authority §6).
+//!
+//! Defines the PTY/session **seam** ([`PtyBackend`], [`PtyFactory`]) that `termixion-platform`
+//! implements (macOS via portable-pty in B-2), the single-session domain model ([`Session`]), and
+//! an in-memory [`fake`] backend so the whole core is testable headless on Linux CI.
+//!
+//! Invariants enforced by `scripts/check-core-seam.sh` (D-1): no platform crates, no
+//! `cfg(target_os | …)` / bare `cfg(unix)` / `cfg(windows)`, and no `std::os::` in this crate.
+
+pub mod fake;
+pub mod pty;
+pub mod session;
+
+pub use pty::{PtyBackend, PtyError, PtyFactory, PtySize, SessionSpec};
+pub use session::{Session, SessionId};
 
 /// Crate version, surfaced for the shell/CLI to report.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
