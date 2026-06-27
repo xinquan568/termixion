@@ -111,6 +111,19 @@ mod tests {
     }
 
     #[test]
+    fn read_into_empty_buf_reads_nothing() {
+        // A zero-length buf must read nothing and leave queued bytes untouched.
+        let mut backend = FakePtyBackend::new(PtySize::default());
+        backend.write(b"x").expect("write");
+        let mut empty: [u8; 0] = [];
+        assert_eq!(backend.read(&mut empty).expect("read empty"), 0);
+        // The byte is still queued.
+        let mut buf = [0u8; 1];
+        assert_eq!(backend.read(&mut buf).expect("read"), 1);
+        assert_eq!(buf[0], b'x');
+    }
+
+    #[test]
     fn factory_spawns_at_size() {
         let factory = FakePtyFactory;
         let spec = SessionSpec::shell("/bin/sh");

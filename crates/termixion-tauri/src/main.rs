@@ -25,3 +25,17 @@ fn main() -> ExitCode {
     }
     ExitCode::SUCCESS
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn core_version_reports_the_core_crate_version() {
+        // The placeholder IPC command must report a non-empty version equal to the core crate's,
+        // so the frontend↔backend channel has a real, asserted contract to exercise.
+        let v = core_version();
+        assert!(!v.is_empty(), "core version must not be empty");
+        assert_eq!(v, termixion_platform::CORE_VERSION);
+    }
+}

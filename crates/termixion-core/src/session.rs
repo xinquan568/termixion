@@ -149,4 +149,44 @@ mod tests {
         assert_eq!(session.read(&mut buf).expect("read after kill"), 0);
         session.kill().expect("kill is idempotent");
     }
+
+    #[test]
+    fn read_eof_marks_session_not_alive() {
+        // The other end of the is_alive() contract: a backend that reports EOF (Ok(0)) on read —
+        // because the child exited — transitions the session to not-alive, distinct from kill().
+        let factory = FakePtyFactory;
+        let spec = SessionSpec::shell("/bin/sh");
+        let mut session = Session::spawn(1, &factory, &spec, PtySize::default()).expect("spawn");
+        assert!(session.is_alive());
+
+        // Nothing was written, so the loopback is already drained -> read returns EOF.
+        let mut buf = [0u8; 16];
+        assert_eq!(session.read(&mut buf).expect("read at eof"), 0);
+        assert!(!session.is_alive(), "EOF must mark the session not-alive");
+
+        // Once not-alive, write/resize error and a further read short-circuits to 0.
+        assert!(matches!(session.write(b"x"), Err(PtyError::NotRunning)));
+        assert_eq!(session.read(&mut buf).expect("read after eof"), 0);
+    }
+
+    #[test]
+    fn read_into_empty_buf_is_noop_and_keeps_session_alive() {
+        // A zero-length buf reads nothing and returns Ok(0) WITHOUT meaning EOF — it must not end
+        // the session, and the buffered output must remain readable.
+        let factory = FakePtyFactory;
+        let spec = SessionSpec::shell("/bin/sh");
+        let mut session = Session::spawn(2, &factory, &spec, PtySize::default()).expect("spawn");
+        session.write(b"data").expect("write");
+
+        let mut empty: [u8; 0] = [];
+        assert_eq!(session.read(&mut empty).expect("empty read"), 0);
+        assert!(
+            session.is_alive(),
+            "empty-buf read must not end the session"
+        );
+
+        let mut buf = [0u8; 8];
+        let n = session.read(&mut buf).expect("read");
+        assert_eq!(&buf[..n], b"data");
+    }
 }
