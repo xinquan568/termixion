@@ -1,9 +1,9 @@
 packages:
   - "app"
 
-# Allow esbuild's install build script (vite/eslint toolchain) so `pnpm install`
-# does not block the lint gate on a build-script-approval prompt (A-3).
-onlyBuiltDependencies:
-  - esbuild
+# Approve esbuild's install build script. esbuild ships a prebuilt binary via its @esbuild/<platform>
+# optional dependency, so the script is effectively a no-op — but pnpm 11 blocks `pnpm run` (its
+# deps-status check) on any un-approved build script. Approving it here unblocks the frontend
+# build/lint gates (A-3) and Tauri's `beforeBuildCommand` (B-3), in dev and CI alike.
 allowBuilds:
-  esbuild: set this to true or false
+  esbuild: true
