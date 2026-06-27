@@ -49,6 +49,33 @@ The hooks enforce the §2.2 guardrails locally (see `.claude/rules/architecture.
 They are the fast local copy; **CI (E-1) mirrors every load-bearing check**, so a `--no-verify` bypass
 still fails the gate.
 
+## Changelog (A-5)
+
+`CHANGELOG.md` is generated from Conventional Commits by [git-cliff](https://git-cliff.org)
+(config: `cliff.toml`). Install + regenerate:
+
+```sh
+cargo install git-cliff --version 2.13.1 --locked   # once
+bash scripts/gen-changelog.sh                        # regenerate from the commit history
+bash scripts/gen-changelog.sh --tag v0.0.1           # at release: stamp the version
+```
+
+(`gen-changelog.sh` runs `git cliff` and trims the trailing blank line so the EOF stays clean.)
+
+This is why the `commit-msg` hook (R6) is load-bearing — well-formed commits produce a clean changelog.
+
+## License & headers (A-5)
+
+- The repo is **ISC** (`LICENSE`, © Eric Y. Liu). Any incorporated third-party code/asset is recorded
+  in `THIRD_PARTY.md` per the authority §7.5 format (none copied yet).
+- **ISC header snippet** — every new `.rs` / `.ts` / `.tsx` source file starts with (enforced by
+  `scripts/check-isc-headers.sh`, R4):
+
+  ```text
+  // SPDX-License-Identifier: ISC
+  // Copyright (c) 2026 Eric Y. Liu
+  ```
+
 ## Workflow
 
 - **One PR per task**, conventional-commits messages.
