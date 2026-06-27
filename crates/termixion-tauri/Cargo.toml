@@ -17,4 +17,7 @@ path = "src/main.rs"
 [dependencies]
 termixion-core = { path = "../termixion-core" }
 termixion-platform = { path = "../termixion-platform" }
-# (B-3 adds: tauri = { version = "2", features = [...] }; and [build-dependencies] tauri-build = "2".)
+tauri = { version = "2", features = [] }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
