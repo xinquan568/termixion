@@ -9,4 +9,8 @@ authors.workspace = true
 
 [dependencies]
 termixion-core = { path = "../termixion-core" }
-# (B-2 adds portable-pty behind cfg(target_os = "macos") + a clipboard impl.)
+
+# Platform deps live here (the seam), gated per OS so the Linux build of this crate stays free of
+# them. B-2 adds the macOS PTY backend via portable-pty.
+[target.'cfg(target_os = "macos")'.dependencies]
+portable-pty = "0.9"

@@ -1,0 +1,265 @@
+// SPDX-License-Identifier: ISC
+// Copyright (c) 2026 Eric Y. Liu
+//! macOS implementations of the `termixion-core` seam — the PTY backend (via `portable-pty`) and a
+//! clipboard stub. This whole module is `cfg(target_os = "macos")`; platform code lives here, never
+//! in `termixion-core` (R1/R2).
+
+use std::io::{Read, Write};
+
+use portable_pty::{Child, CommandBuilder, MasterPty, native_pty_system};
+use termixion_core::{PtyBackend, PtyError, PtyFactory, PtySize, SessionSpec};
+
+/// Map the core's terminal size onto `portable-pty`'s (pixel dimensions are unused for v0.0.1).
+fn to_pp_size(size: PtySize) -> portable_pty::PtySize {
+    portable_pty::PtySize {
+        rows: size.rows,
+        cols: size.cols,
+        pixel_width: 0,
+        pixel_height: 0,
+    }
+}
+
+/// A live macOS PTY session: the master end (for resize), its reader/writer, and the child process.
+struct MacosPtyBackend {
+    master: Box<dyn MasterPty + Send>,
+    reader: Box<dyn Read + Send>,
+    writer: Box<dyn Write + Send>,
+    child: Box<dyn Child + Send + Sync>,
+}
+
+impl PtyBackend for MacosPtyBackend {
+    fn write(&mut self, data: &[u8]) -> Result<usize, PtyError> {
+        let written = self
+            .writer
+            .write(data)
+            .map_err(|e| PtyError::Io(e.to_string()))?;
+        // Flush so keystrokes reach the child immediately (no buffering latency).
+        self.writer
+            .flush()
+            .map_err(|e| PtyError::Io(e.to_string()))?;
+        Ok(written)
+    }
+
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, PtyError> {
+        // Blocking read; `Ok(0)` is EOF (the slave end has closed and the child exited), per the
+        // `PtyBackend::read` contract.
+        let read = self
+            .reader
+            .read(buf)
+            .map_err(|e| PtyError::Io(e.to_string()))?;
+        if read == 0 {
+            // EOF — the child has exited; reap it so it does not linger as a zombie.
+            let _ = self.child.wait();
+        }
+        Ok(read)
+    }
+
+    fn resize(&mut self, size: PtySize) -> Result<(), PtyError> {
+        self.master
+            .resize(to_pp_size(size))
+            .map_err(|e| PtyError::Io(e.to_string()))
+    }
+
+    fn kill(&mut self) -> Result<(), PtyError> {
+        // Idempotent: if the child has already exited, reap and return.
+        match self.child.try_wait() {
+            Ok(Some(_status)) => return Ok(()),
+            Ok(None) => {}
+            Err(e) => return Err(PtyError::Io(e.to_string())),
+        }
+        self.child.kill().map_err(|e| PtyError::Io(e.to_string()))?;
+        // Reap so the killed child does not become a zombie.
+        self.child.wait().map_err(|e| PtyError::Io(e.to_string()))?;
+        Ok(())
+    }
+}
+
+impl Drop for MacosPtyBackend {
+    fn drop(&mut self) {
+        // Best-effort reaping so a dropped session never leaves a zombie: if the child already
+        // exited, reap it; otherwise kill and reap.
+        if let Ok(Some(_status)) = self.child.try_wait() {
+            return;
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Spawns PTY-backed sessions on macOS via `portable-pty`.
+#[derive(Debug, Default)]
+pub struct MacosPtyFactory;
+
+impl PtyFactory for MacosPtyFactory {
+    fn spawn(&self, spec: &SessionSpec, size: PtySize) -> Result<Box<dyn PtyBackend>, PtyError> {
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(to_pp_size(size))
+            .map_err(|e| PtyError::Spawn(e.to_string()))?;
+
+        // Build the command from the spec — OsString/PathBuf map straight onto CommandBuilder.
+        let mut cmd = CommandBuilder::new(spec.program.clone());
+        cmd.args(&spec.args);
+        // Honor the core contract: `cwd == None` inherits the *parent's* working directory.
+        // portable-pty otherwise defaults an unset cwd to $HOME, so set it explicitly; and validate
+        // an explicit cwd is a real directory (portable-pty would silently fall back to $HOME).
+        match &spec.cwd {
+            Some(cwd) => {
+                if !cwd.is_dir() {
+                    return Err(PtyError::Spawn(format!(
+                        "cwd is not a directory: {}",
+                        cwd.display()
+                    )));
+                }
+                cmd.cwd(cwd.as_os_str());
+            }
+            None => {
+                let inherited =
+                    std::env::current_dir().map_err(|e| PtyError::Spawn(e.to_string()))?;
+                cmd.cwd(inherited.as_os_str());
+            }
+        }
+        for (key, val) in &spec.env {
+            cmd.env(key, val);
+        }
+
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| PtyError::Spawn(e.to_string()))?;
+
+        // Drop our handle to the slave so the master `read` reports EOF once the child exits.
+        drop(pair.slave);
+
+        let reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| PtyError::Spawn(e.to_string()))?;
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| PtyError::Spawn(e.to_string()))?;
+
+        Ok(Box::new(MacosPtyBackend {
+            master: pair.master,
+            reader,
+            writer,
+            child,
+        }))
+    }
+}
+
+/// Read/write the system clipboard. The seam for auto-copy-on-select (FR-8) and paste.
+pub trait Clipboard {
+    /// The current clipboard text.
+    fn get_text(&self) -> std::io::Result<String>;
+    /// Replace the clipboard text.
+    fn set_text(&self, text: &str) -> std::io::Result<()>;
+}
+
+/// macOS clipboard — a **stub** for v0.0.1. The real implementation (NSPasteboard) lands with the
+/// clipboard / auto-copy work (P1-7 / Beta); until then it reports `Unsupported`.
+#[derive(Debug, Default)]
+pub struct MacosClipboard;
+
+impl Clipboard for MacosClipboard {
+    fn get_text(&self) -> std::io::Result<String> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "macOS clipboard not yet implemented (P1-7)",
+        ))
+    }
+
+    fn set_text(&self, _text: &str) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "macOS clipboard not yet implemented (P1-7)",
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use termixion_core::{PtyFactory, PtySize, SessionSpec};
+
+    /// Golden test: spawn a real `/bin/echo` through a real PTY and read its output back.
+    #[test]
+    fn echo_roundtrips_through_real_pty() {
+        let factory = MacosPtyFactory;
+        let mut spec = SessionSpec::shell("/bin/echo");
+        spec.args.push("termixion-pty-ok".into());
+
+        let mut backend = factory
+            .spawn(&spec, PtySize::new(24, 80))
+            .expect("spawn should succeed");
+
+        let mut out = Vec::new();
+        let mut buf = [0u8; 256];
+        loop {
+            match backend.read(&mut buf).expect("read should succeed") {
+                0 => break, // EOF
+                n => out.extend_from_slice(&buf[..n]),
+            }
+        }
+
+        let text = String::from_utf8_lossy(&out);
+        assert!(
+            text.contains("termixion-pty-ok"),
+            "expected the marker in the pty output, got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn write_reaches_child_and_reads_back() {
+        // A shell reads one line and prints it with a "GOT:" prefix, then exits. The prefix can only
+        // come from the *child* (terminal ECHO would only ever show the raw lowercase input), and the
+        // child exiting yields EOF so the read loop terminates — proving the full
+        // write -> child -> read round-trip rather than line-discipline echo.
+        let factory = MacosPtyFactory;
+        let mut spec = SessionSpec::shell("/bin/sh");
+        spec.args.push("-c".into());
+        spec.args
+            .push("read line; printf 'GOT:%s\\n' \"$line\"".into());
+        let mut backend = factory
+            .spawn(&spec, PtySize::new(24, 80))
+            .expect("spawn sh");
+
+        backend.write(b"hello-termixion\n").expect("write");
+
+        let mut acc = String::new();
+        let mut buf = [0u8; 256];
+        loop {
+            match backend.read(&mut buf).expect("read") {
+                0 => break, // child exited
+                n => acc.push_str(&String::from_utf8_lossy(&buf[..n])),
+            }
+        }
+        assert!(
+            acc.contains("GOT:hello-termixion"),
+            "child did not process the input; got: {acc:?}"
+        );
+    }
+
+    #[test]
+    fn resize_and_kill_are_well_behaved() {
+        // `cat` blocks reading stdin, so it stays alive — exercising kill() on a *live* child (and
+        // its reap), then idempotent kill. No read (which would just see terminal echo).
+        let factory = MacosPtyFactory;
+        let spec = SessionSpec::shell("/bin/cat");
+        let mut backend = factory
+            .spawn(&spec, PtySize::new(24, 80))
+            .expect("spawn cat");
+
+        backend.resize(PtySize::new(40, 120)).expect("resize");
+        backend.kill().expect("kill (live child)");
+        backend.kill().expect("kill is idempotent");
+    }
+
+    #[test]
+    fn clipboard_stub_is_unsupported() {
+        let clip = MacosClipboard;
+        assert!(clip.get_text().is_err());
+        assert!(clip.set_text("x").is_err());
+    }
+}
