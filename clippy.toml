@@ -1,0 +1,2 @@
+# Clippy configuration (A-3). Pin the MSRV so lints match the pinned toolchain (rust-toolchain.toml).
+msrv = "1.94.1"

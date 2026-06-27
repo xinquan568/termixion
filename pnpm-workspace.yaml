@@ -1,2 +1,9 @@
 packages:
   - "app"
+
+# Allow esbuild's install build script (vite/eslint toolchain) so `pnpm install`
+# does not block the lint gate on a build-script-approval prompt (A-3).
+onlyBuiltDependencies:
+  - esbuild
+allowBuilds:
+  esbuild: set this to true or false

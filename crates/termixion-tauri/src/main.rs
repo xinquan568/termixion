@@ -8,5 +8,9 @@
 
 fn main() {
     // A-1 placeholder. Real Tauri bootstrap arrives in B-3.
-    println!("termixion {} (core {})", env!("CARGO_PKG_VERSION"), termixion_platform::CORE_VERSION);
+    println!(
+        "termixion {} (core {})",
+        env!("CARGO_PKG_VERSION"),
+        termixion_platform::CORE_VERSION
+    );
 }
