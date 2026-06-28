@@ -90,9 +90,11 @@ cross-platform/seam behavior; Vitest for the frontend). The pre-push `cargo test
 
 ## Workflow
 
-- **Every change traces to a GitHub issue (R9).** Reference it as **`trmx-<N>`** (`<N>` = the issue
-  number) in the branch (`xinquan568/ai/trmx-<N>-<slug>`), the run folder (`runs/trmx-<N>-<slug>/`), and
-  the PR title (`… (trmx-<N>)`); link it in the PR body with `Closes #<N>`. See
+- **Every change traces to a GitHub issue (R9).** The **maintainer creates the issue up-front** and
+  hands you the number. Reference it as **`trmx-<N>`** (`<N>` = the issue number) in the branch
+  (`xinquan568/ai/trmx-<N>-<slug>`), the run folder (`runs/trmx-<N>-<slug>/`), and the PR title
+  (`… (trmx-<N>)`); link it in the PR body with `Closes #<N>`. **Machine-enforced** by the
+  `r9-issue-link` CI check (the `commit-msg` hook gives fast local feedback). See
   `.claude/rules/architecture.md` R9.
 - **One PR per task**, conventional-commits messages.
 - **`A-1` and `P0-5` are done directly; `A-2` through `E` are driven through the `issue2pr` skill**

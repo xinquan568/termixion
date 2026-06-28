@@ -70,5 +70,17 @@ GitHub issue number (e.g. issue #1 → `trmx-1`). Use `trmx-<N>` consistently wh
 
 One issue per task — pairs with R7 (one PR per task). GitHub shares a single number space for issues and
 PRs, so `<N>` accounts for existing PRs too (e.g. after PRs through #24, the next issue is #25 =
-`trmx-25`). Enforcement is review-time: the review loop verifies the branch / PR title / run folder carry
-the `trmx-<N>` and that the PR links its issue.
+`trmx-25`).
+
+**Ownership.** The **maintainer creates the issue up-front** and hands the `<N>` to the implementer; the
+implementer works against that number (does not invent issues mid-change).
+
+**Enforcement (machine-checked: `scripts/check-issue-link.sh`).** The `r9-issue-link` CI check
+(`.github/workflows/r9-issue-link.yml`) is the authoritative gate — it fails unless the **head branch**,
+**PR title**, and **PR body** carry a consistent `trmx-<N>` that links a real issue (`#<N>` must exist and
+be an issue, not a PR). It runs on `pull_request_target` from the **protected base branch**, so a PR can't
+weaken the gate by editing the script/workflow on its own branch (it never executes PR code — only reads
+PR title/body/branch as data). Mark **`R9 trmx-N issue link (required)`** as a required status check in
+branch protection for it to gate merges. The `commit-msg` hook runs the same branch check locally for fast
+feedback; like every R8/E-1 hook it can be `--no-verify`'d, which is exactly why the CI gate — not the
+hook — is the real enforcement.
