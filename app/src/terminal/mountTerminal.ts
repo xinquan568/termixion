@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: ISC
+// Copyright (c) 2026 Eric Y. Liu
+//
+// B-4: the renderer-selection strategy for an xterm.js terminal.
+//
+// Rendering tiers (the "Canvas/DOM fallback" of the build plan): xterm.js v5 ships a built-in **DOM
+// renderer** (always available, the universal fallback) and an accelerated **WebGL renderer** via
+// `@xterm/addon-webgl`. We try WebGL first; if WebGL2 is unavailable or the addon fails to activate,
+// or the GPU context is later lost, we drop the addon and xterm transparently reverts to the DOM
+// renderer — so the terminal always renders. (The deprecated canvas addon is intentionally not used;
+// DOM is the safe fallback.)
+//
+// This module is pure logic over small interfaces (no runtime xterm/React import), so the decision
+// is unit-testable headless with fakes. `TerminalView` injects the real xterm-backed deps.
+
+/** The slice of an xterm `Terminal` this strategy drives. */
+export interface TerminalLike {
+  open(container: HTMLElement): void;
+  loadAddon(addon: AddonLike): void;
+  dispose(): void;
+}
+
+/** The slice of the `@xterm/addon-webgl` `WebglAddon` this strategy drives. */
+export interface AddonLike {
+  /** Fires when the GPU drops the WebGL context (e.g. driver reset, tab backgrounding). */
+  onContextLoss(handler: () => void): void;
+  dispose(): void;
+}
+
+/** Factories for the terminal and its WebGL addon — real ones in the app, fakes in tests. */
+export interface MountDeps {
+  createTerminal(): TerminalLike;
+  createWebglAddon(): AddonLike;
+}
+
+/** Which renderer is currently active. */
+export type RendererKind = "webgl" | "dom";
+
+/** A mounted terminal plus the active renderer and a teardown. */
+export interface TerminalHandle {
+  terminal: TerminalLike;
+  /** `"webgl"` while the addon is active; flips to `"dom"` on fallback / context loss. */
+  renderer: RendererKind;
+  dispose(): void;
+}
+
+/**
+ * Mount a terminal into `container`, preferring the WebGL renderer and falling back to the DOM
+ * renderer on any failure. Never throws for a missing/failed WebGL path — the terminal still opens.
+ */
+export function mountTerminal(
+  container: HTMLElement,
+  deps: MountDeps,
+): TerminalHandle {
+  const terminal = deps.createTerminal();
+  terminal.open(container);
+
+  // Default to the DOM renderer; upgrade to WebGL only if the addon actually activates.
+  const handle: TerminalHandle = {
+    terminal,
+    renderer: "dom",
+    dispose: () => terminal.dispose(),
+  };
+
+  // Declared outside the try so the catch can tear down an addon that was created (and possibly
+  // already registered with the terminal by loadAddon) before activation threw.
+  let webgl: AddonLike | undefined;
+  try {
+    webgl = deps.createWebglAddon();
+    terminal.loadAddon(webgl); // throws if WebGL2 is unavailable / activation fails
+    webgl.onContextLoss(() => {
+      // Disposing the addon reverts xterm to its DOM renderer — the terminal keeps rendering.
+      webgl?.dispose();
+      handle.renderer = "dom";
+    });
+    handle.renderer = "webgl";
+    handle.dispose = () => {
+      webgl?.dispose();
+      terminal.dispose();
+    };
+  } catch {
+    // WebGL unavailable / activation failed — dispose the half-registered addon (idempotent) so it
+    // doesn't linger attached, then stay on the DOM renderer (already the default above).
+    webgl?.dispose();
+    handle.renderer = "dom";
+  }
+
+  return handle;
+}

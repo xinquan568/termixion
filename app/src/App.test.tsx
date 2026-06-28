@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: ISC
 // Copyright (c) 2026 Eric Y. Liu
 //
-// First frontend test (D-2). The current App is the B-3 walking-skeleton placeholder, so this
-// asserts that surface renders. When B-4 mounts the xterm.js terminal (and its Canvas/DOM
-// fallback), that behavior is added here test-first per R8 — this file is the harness it grows in.
-import { describe, it, expect } from "vitest";
+// App composition (D-2 + B-4). App's unit is what it composes: the title and the terminal surface.
+// The terminal's own behavior is covered by TerminalView/mountTerminal tests, so TerminalView is
+// stubbed here — that keeps this a pure composition test and avoids loading real xterm/WebGL in jsdom.
+import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
+
+vi.mock("./terminal/TerminalView", () => ({
+  TerminalView: () => <div data-testid="terminal-view" />,
+}));
+
 import { App } from "./App";
 
 describe("App", () => {
@@ -16,8 +21,8 @@ describe("App", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows the walking-skeleton placeholder until the terminal lands (B-4)", () => {
+  it("mounts the terminal surface", () => {
     render(<App />);
-    expect(screen.getByText(/walking skeleton \(v0\.0\.1\)/i)).toBeInTheDocument();
+    expect(screen.getByTestId("terminal-view")).toBeInTheDocument();
   });
 });
