@@ -82,11 +82,11 @@ release build):
 |---|---|---|
 | Version | `0.0.1` | `Cargo.toml` `[workspace.package]` (source of truth), `app/package.json`, `tauri.conf.json` |
 | Product name | `Termixion` | `tauri.conf.json` `productName` |
-| Bundle identifier | `dev.termixion.app` | `tauri.conf.json` `identifier` |
+| Bundle identifier | `dev.termixion.terminal` | `tauri.conf.json` `identifier` |
 | Release asset | **`Termixion_0.0.1_aarch64.dmg`** | the only artifact for v0.0.1 (Apple-silicon only; Q-g M1 Pro) |
 
 The script asserts the three version fields are equal and that `identifier` / `productName` exactly match
-`dev.termixion.app` / `Termixion` (so a rename can't slip through), then prints the expected asset name.
+`dev.termixion.terminal` / `Termixion` (so a rename can't slip through), then prints the expected asset name.
 Any drift fails the check (and, once wired, the release job).
 
 > **Bundle target.** Normal/local `cargo tauri build` produces the `.app` only (`bundle.targets: ["app"]`
