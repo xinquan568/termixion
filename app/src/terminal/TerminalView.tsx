@@ -12,6 +12,7 @@ import {
   mountTerminal,
   type AddonLike,
   type MountDeps,
+  type TerminalHandle,
   type TerminalLike,
 } from "./mountTerminal";
 
@@ -44,6 +45,8 @@ const realDeps: MountDeps = {
 };
 
 export interface TerminalViewProps {
+  /** Called once the terminal is mounted, so the parent can attach it to a PTY session (C-2). */
+  onReady?: (handle: TerminalHandle) => void;
   /** Injection seam for tests; defaults to the real WebGL→DOM strategy. */
   mount?: typeof mountTerminal;
   /** Injection seam for tests; defaults to the real xterm-backed factories. */
@@ -51,6 +54,7 @@ export interface TerminalViewProps {
 }
 
 export function TerminalView({
+  onReady,
   mount = mountTerminal,
   deps = realDeps,
 }: TerminalViewProps) {
@@ -60,8 +64,9 @@ export function TerminalView({
     const host = hostRef.current;
     if (!host) return;
     const handle = mount(host, deps);
+    onReady?.(handle);
     return () => handle.dispose();
-  }, [mount, deps]);
+  }, [mount, deps, onReady]);
 
   return <div ref={hostRef} data-testid="terminal" className="terminal-host" />;
 }

@@ -40,19 +40,43 @@ export function wirePtyChannel(
   channel.onmessage = (frame) => onBytes(decodePtyFrame(frame));
 }
 
+/** Encode xterm keystroke input (a string from `onData`) to the byte array `pty_write` expects. */
+export function encodePtyInput(data: string): number[] {
+  return Array.from(new TextEncoder().encode(data));
+}
+
 /** The real Tauri `invoke`. In a plain browser (`pnpm dev`) there is no backend, so it rejects. */
 export const realInvoke: InvokeFn = tauriInvoke as InvokeFn;
 
 /**
- * Open the PTY-bytes channel against the backend (real edge). Constructs a Tauri `Channel`, wires it
- * to `onBytes`, and asks the backend to stream into it. B-5's `open_pty_channel` emits a single
- * readiness frame so the round-trip is observable; C-2 streams live PTY output.
+ * Open the live PTY session against the backend (real edge, ADR-0001). Constructs a Tauri `Channel`,
+ * wires its frames to `onBytes` (PTY output → the terminal), and asks the backend to spawn the shell
+ * at `rows`x`cols` and stream into the channel.
  */
-export async function openPtyChannel(
+export async function openPty(
   onBytes: PtyBytesHandler,
+  rows: number,
+  cols: number,
   invoke: InvokeFn = realInvoke,
 ): Promise<void> {
   const channel = new Channel<number[]>();
   wirePtyChannel(channel, onBytes);
-  await invoke("open_pty_channel", { channel });
+  await invoke("open_pty", { channel, rows, cols });
+}
+
+/** Send keystrokes (an xterm `onData` string) to the PTY. */
+export function sendPtyInput(
+  data: string,
+  invoke: InvokeFn = realInvoke,
+): Promise<void> {
+  return invoke("pty_write", { data: encodePtyInput(data) }).then(() => {});
+}
+
+/** Tell the backend the PTY's character grid resized (from xterm `onResize`). */
+export function sendPtyResize(
+  rows: number,
+  cols: number,
+  invoke: InvokeFn = realInvoke,
+): Promise<void> {
+  return invoke("pty_resize", { rows, cols }).then(() => {});
 }

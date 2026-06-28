@@ -110,6 +110,12 @@ impl Session {
     pub fn process_id(&self) -> Option<u32> {
         self.backend.process_id()
     }
+
+    /// Take the session's blocking output reader for a dedicated read thread (ADR-0001 streaming).
+    /// See [`PtyBackend::take_reader`]; `None` if the backend has no separable reader.
+    pub fn take_reader(&mut self) -> Option<Box<dyn crate::pty::PtyReader>> {
+        self.backend.take_reader()
+    }
 }
 
 #[cfg(test)]
@@ -203,5 +209,15 @@ mod tests {
         let spec = SessionSpec::shell("/bin/sh");
         let session = Session::spawn(3, &factory, &spec, PtySize::default()).expect("spawn");
         assert_eq!(session.process_id(), None);
+    }
+
+    #[test]
+    fn take_reader_is_none_for_a_backend_without_a_separable_reader() {
+        // The in-memory fake has no separable blocking reader (its read is the loopback), so it
+        // reports None; the real macOS backend hands back its portable-pty reader (tested in platform).
+        let factory = FakePtyFactory;
+        let spec = SessionSpec::shell("/bin/sh");
+        let mut session = Session::spawn(4, &factory, &spec, PtySize::default()).expect("spawn");
+        assert!(session.take_reader().is_none());
     }
 }

@@ -7,7 +7,7 @@
 use std::io::{Read, Write};
 
 use portable_pty::{Child, CommandBuilder, MasterPty, native_pty_system};
-use termixion_core::{PtyBackend, PtyError, PtyFactory, PtySize, SessionSpec};
+use termixion_core::{PtyBackend, PtyError, PtyFactory, PtyReader, PtySize, SessionSpec};
 
 /// Map the core's terminal size onto `portable-pty`'s (pixel dimensions are unused for v0.0.1).
 fn to_pp_size(size: PtySize) -> portable_pty::PtySize {
@@ -20,33 +20,51 @@ fn to_pp_size(size: PtySize) -> portable_pty::PtySize {
 }
 
 /// A live macOS PTY session: the master end (for resize), its reader/writer, and the child process.
+/// `reader` is an `Option` because [`PtyBackend::take_reader`] can move it onto a dedicated read
+/// thread (ADR-0001); once taken, the backend reads no output (the [`MacosPtyReader`] does).
 struct MacosPtyBackend {
     master: Box<dyn MasterPty + Send>,
-    reader: Box<dyn Read + Send>,
+    reader: Option<Box<dyn Read + Send>>,
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
 }
 
+/// The blocking output half of a macOS PTY, moved onto its own thread for streaming. It holds only the
+/// reader, so EOF here cannot reap the child — the control side (`kill`/`Drop` on the backend) does.
+struct MacosPtyReader {
+    reader: Box<dyn Read + Send>,
+}
+
+impl PtyReader for MacosPtyReader {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, PtyError> {
+        self.reader
+            .read(buf)
+            .map_err(|e| PtyError::Io(e.to_string()))
+    }
+}
+
 impl PtyBackend for MacosPtyBackend {
     fn write(&mut self, data: &[u8]) -> Result<usize, PtyError> {
-        let written = self
-            .writer
-            .write(data)
+        // write_all (not a single write) so a partial write never silently drops keystrokes — the
+        // whole buffer is delivered or it errors.
+        self.writer
+            .write_all(data)
             .map_err(|e| PtyError::Io(e.to_string()))?;
         // Flush so keystrokes reach the child immediately (no buffering latency).
         self.writer
             .flush()
             .map_err(|e| PtyError::Io(e.to_string()))?;
-        Ok(written)
+        Ok(data.len())
     }
 
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, PtyError> {
         // Blocking read; `Ok(0)` is EOF (the slave end has closed and the child exited), per the
-        // `PtyBackend::read` contract.
-        let read = self
-            .reader
-            .read(buf)
-            .map_err(|e| PtyError::Io(e.to_string()))?;
+        // `PtyBackend::read` contract. Once the reader has been taken (streaming thread owns it), the
+        // backend yields no output.
+        let Some(reader) = self.reader.as_mut() else {
+            return Ok(0);
+        };
+        let read = reader.read(buf).map_err(|e| PtyError::Io(e.to_string()))?;
         if read == 0 {
             // EOF — the child has exited; reap it so it does not linger as a zombie.
             let _ = self.child.wait();
@@ -75,6 +93,12 @@ impl PtyBackend for MacosPtyBackend {
 
     fn process_id(&self) -> Option<u32> {
         self.child.process_id()
+    }
+
+    fn take_reader(&mut self) -> Option<Box<dyn PtyReader>> {
+        self.reader
+            .take()
+            .map(|reader| Box::new(MacosPtyReader { reader }) as Box<dyn PtyReader>)
     }
 }
 
@@ -146,7 +170,7 @@ impl PtyFactory for MacosPtyFactory {
 
         Ok(Box::new(MacosPtyBackend {
             master: pair.master,
-            reader,
+            reader: Some(reader),
             writer,
             child,
         }))
@@ -347,5 +371,39 @@ mod tests {
             out.contains("PATH:present"),
             "inherited PATH must survive env layering; got: {out:?}"
         );
+    }
+
+    /// The split output reader (ADR-0001 streaming) reads real PTY output on its own, can only be
+    /// taken once, and leaves the control side (kill) working.
+    #[test]
+    fn taken_reader_streams_output_and_is_taken_once() {
+        let factory = MacosPtyFactory;
+        let mut spec = SessionSpec::shell("/bin/echo");
+        spec.args.push("termixion-reader-ok".into());
+        let mut backend = factory.spawn(&spec, PtySize::new(24, 80)).expect("spawn");
+
+        let mut reader = backend
+            .take_reader()
+            .expect("a real backend yields a reader");
+        assert!(
+            backend.take_reader().is_none(),
+            "the reader can only be taken once"
+        );
+
+        let mut out = Vec::new();
+        let mut buf = [0u8; 256];
+        loop {
+            match reader.read(&mut buf).expect("read via the split reader") {
+                0 => break, // EOF
+                n => out.extend_from_slice(&buf[..n]),
+            }
+        }
+        assert!(
+            String::from_utf8_lossy(&out).contains("termixion-reader-ok"),
+            "the split reader should stream the child's output; got: {out:?}"
+        );
+
+        // Control side still works without the reader.
+        backend.kill().expect("kill after taking the reader");
     }
 }

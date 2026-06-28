@@ -126,6 +126,23 @@ pub trait PtyBackend: Send {
     fn process_id(&self) -> Option<u32> {
         None
     }
+
+    /// Take the blocking **output reader** so it can be moved to a dedicated thread, leaving
+    /// `write`/`resize`/`kill` usable concurrently on the backend (the transport in ADR-0001 needs to
+    /// read on its own thread while keystrokes are written from command handlers). Returns `None` if
+    /// the backend has no separable reader (the in-memory fake) or it was already taken. After a
+    /// successful take, [`PtyBackend::read`] no longer yields output — the [`PtyReader`] does.
+    fn take_reader(&mut self) -> Option<Box<dyn PtyReader>> {
+        None
+    }
+}
+
+/// The blocking **output half** of a PTY-backed session, split off via [`PtyBackend::take_reader`] so
+/// it can be read on its own thread. Same contract as [`PtyBackend::read`]: blocks until data or EOF,
+/// and `Ok(0)` means EOF.
+pub trait PtyReader: Send {
+    /// Read output into `buf` (blocking). Returns the byte count; `Ok(0)` means **EOF**.
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, PtyError>;
 }
 
 /// Spawns PTY-backed sessions. `termixion-platform` provides the real factory (macOS); tests and

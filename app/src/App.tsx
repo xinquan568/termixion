@@ -8,14 +8,14 @@ import { TerminalView } from "./terminal/TerminalView";
 import { useBackend } from "./ipc/useBackend";
 
 export function App() {
-  const { coreVersion } = useBackend();
+  const { coreVersion, attachTerminal } = useBackend();
   return (
     <main>
       <h1>Termixion</h1>
       <p className="status" data-testid="core-version">
         {coreVersion ? `core v${coreVersion}` : "connecting…"}
       </p>
-      <TerminalView />
+      <TerminalView onReady={attachTerminal} />
     </main>
   );
 }

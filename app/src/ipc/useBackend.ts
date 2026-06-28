@@ -1,41 +1,47 @@
 // SPDX-License-Identifier: ISC
 // Copyright (c) 2026 Eric Y. Liu
 //
-// B-5: the handshake hook. On mount it performs the command round-trip (core_version) and sets up the
-// PTY-bytes channel. Both the `invoke` and the channel opener are injectable so the hook is testable
-// without the Tauri runtime; the defaults are the real edge used by the app.
-import { useEffect, useState } from "react";
+// B-5 + C-2: the backend hook. On mount it does the core_version handshake (status line). It also
+// returns `attachTerminal`, which the TerminalView calls once its terminal is mounted to wire the live
+// PTY (ADR-0001): PTY output → terminal, keystrokes/resizes → the backend. `invoke`/`openPty` are
+// injectable so the wiring is testable without the Tauri runtime; the real edge is `cargo tauri dev`.
+import { useCallback, useEffect, useState } from "react";
 import {
   getCoreVersion,
-  openPtyChannel,
+  openPty as realOpenPty,
   realInvoke,
+  sendPtyInput,
+  sendPtyResize,
   type InvokeFn,
   type PtyBytesHandler,
 } from "./backend";
+import type { TerminalHandle } from "../terminal/mountTerminal";
 
 export interface UseBackendOptions {
   invoke?: InvokeFn;
-  openChannel?: (onBytes: PtyBytesHandler, invoke: InvokeFn) => Promise<void>;
-  /** Where PTY output bytes go; defaults to logging the readiness frame (B-5). C-2 feeds the terminal. */
-  onPtyBytes?: PtyBytesHandler;
+  openPty?: (
+    onBytes: PtyBytesHandler,
+    rows: number,
+    cols: number,
+    invoke: InvokeFn,
+  ) => Promise<void>;
 }
 
-export interface BackendState {
+export interface BackendApi {
   /** The backend's core version once the handshake resolves, else `null` (connecting / no backend). */
   coreVersion: string | null;
+  /** Wire a mounted terminal to a live PTY session: output → terminal, keystrokes/resizes → backend. */
+  attachTerminal: (handle: TerminalHandle) => void;
 }
 
 export function useBackend({
   invoke = realInvoke,
-  openChannel = openPtyChannel,
-  onPtyBytes,
-}: UseBackendOptions = {}): BackendState {
+  openPty = realOpenPty,
+}: UseBackendOptions = {}): BackendApi {
   const [coreVersion, setCoreVersion] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
-
-    // 1) Command round-trip — report the core version (the B-5 acceptance handshake).
     getCoreVersion(invoke)
       .then((version) => {
         if (!active) return;
@@ -46,22 +52,34 @@ export function useBackend({
         // Browser dev (`pnpm dev`) has no backend, so this rejects — log, don't crash.
         console.error("[termixion] core handshake failed", err);
       });
-
-    // 2) Set up the PTY-bytes channel. B-5's backend emits one readiness frame; C-2 streams output.
-    const handler: PtyBytesHandler =
-      onPtyBytes ??
-      ((bytes) =>
-        console.info(
-          `[termixion] pty channel: ${new TextDecoder().decode(bytes)}`,
-        ));
-    openChannel(handler, invoke).catch((err: unknown) => {
-      console.error("[termixion] pty channel setup failed", err);
-    });
-
     return () => {
       active = false;
     };
-  }, [invoke, openChannel, onPtyBytes]);
+  }, [invoke]);
 
-  return { coreVersion };
+  const attachTerminal = useCallback(
+    (handle: TerminalHandle) => {
+      const term = handle.terminal;
+      // Keystrokes → the PTY.
+      term.onData((data) => {
+        sendPtyInput(data, invoke).catch((err: unknown) =>
+          console.error("[termixion] pty write failed", err),
+        );
+      });
+      // Resizes → the PTY's grid.
+      term.onResize(({ rows, cols }) => {
+        sendPtyResize(rows, cols, invoke).catch((err: unknown) =>
+          console.error("[termixion] pty resize failed", err),
+        );
+      });
+      // Open the session and stream output → the terminal. v0.0.1 uses the default 24x80 grid (no fit
+      // addon yet); onResize keeps the PTY in sync if that changes.
+      openPty((bytes) => term.write(bytes), 24, 80, invoke).catch((err: unknown) =>
+        console.error("[termixion] open pty failed", err),
+      );
+    },
+    [invoke, openPty],
+  );
+
+  return { coreVersion, attachTerminal };
 }

@@ -31,4 +31,21 @@ describe("TerminalView", () => {
     unmount();
     expect(dispose).toHaveBeenCalledTimes(1);
   });
+
+  it("calls onReady with the mounted handle so the parent can attach a PTY (C-2)", () => {
+    const handle: TerminalHandle = {
+      terminal: {} as never,
+      renderer: "dom",
+      dispose: vi.fn(),
+    };
+    const mount = vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(
+      () => handle,
+    );
+    const onReady = vi.fn();
+
+    render(<TerminalView mount={mount} onReady={onReady} />);
+
+    expect(onReady).toHaveBeenCalledTimes(1);
+    expect(onReady).toHaveBeenCalledWith(handle);
+  });
 });

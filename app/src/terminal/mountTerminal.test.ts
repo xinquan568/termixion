@@ -28,6 +28,9 @@ function fakeTerminal(): FakeTerminal {
     loadAddon(addon) {
       this.addons.push(addon);
     },
+    write() {},
+    onData() {},
+    onResize() {},
     dispose() {
       this.disposed = true;
     },
