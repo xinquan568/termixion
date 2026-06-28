@@ -1,7 +1,7 @@
-# CI (D-1 + D-3): the platform-agnostic core builds + tests on BOTH Linux and macOS with a required
-# seam gate (D-1); the E2E smoke (D-3) builds the packaged app and runs its `--smoke` plus a Playwright
-# webview test on macos-14. E-1 extends this with the full macOS app job (fmt/clippy/lint/pnpm test).
-# See plan §8.
+# CI (E-1): the full gate. Linux proves the platform-agnostic core builds + tests headless and runs the
+# required seam guard; the macOS job runs the complete gate (fmt/clippy/lint, full workspace tests,
+# frontend tests, the packaged-app `--smoke`, the Playwright webview test, and an advisory footprint).
+# Mirrors the §2.2 guardrails so a `--no-verify` local bypass still fails here. See plan §8.
 name: ci
 
 on:
@@ -15,9 +15,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # The REQUIRED seam gate (F5/F10). Platform-independent (it scans source + the resolved dep graph),
-  # so it is one standalone job — mark it required in branch protection. It needs the toolchain for the
-  # cargo-tree forbidden-dependency scan.
+  # REQUIRED seam gate (F5/F10) — platform-independent, so one standalone job (mark it required in
+  # branch protection). Needs the toolchain for the cargo-tree forbidden-dependency scan.
   seam-guard:
     name: core seam guard (required)
     runs-on: ubuntu-latest
@@ -29,7 +28,7 @@ jobs:
       - name: core seam guard (forbidden-dep + no platform cfg / std::os)
         run: bash scripts/check-core-seam.sh
 
-  # The platform-agnostic core must build + test on BOTH Linux and macOS.
+  # REQUIRED — the platform-agnostic core must build + test headless on Linux (no platform deps).
   core-linux:
     name: core tests (linux)
     runs-on: ubuntu-latest
@@ -41,22 +40,11 @@ jobs:
       - name: cargo test (termixion-core)
         run: cargo test -p termixion-core --locked
 
-  core-macos:
-    name: core tests (macos)
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install the pinned toolchain (rust-toolchain.toml)
-        run: rustup toolchain install "$(sed -nE 's/^channel = "([^"]+)".*/\1/p' rust-toolchain.toml)"
-      - uses: Swatinem/rust-cache@v2
-      - name: cargo test (termixion-core)
-        run: cargo test -p termixion-core --locked
-
-  # E2E smoke (D-3). The AUTHORITATIVE end-to-end check is the packaged app's `--smoke` (drives the real
-  # channel -> webview path; Tauri has no macOS WebDriver, Risk R-3). Plus a Playwright test against the
-  # Vite dev-server webview for component coverage (NOT the packaged app). Apple-silicon (Q1).
-  e2e-smoke:
-    name: e2e smoke (packaged --smoke + playwright)
+  # The full macOS gate (Apple-silicon, Q1): every §2.2 guardrail plus the packaged-app end-to-end
+  # `--smoke` (the authoritative E2E — Tauri has no macOS WebDriver, Risk R-3) and the Playwright webview
+  # test. Cheap checks run before the heavy build so failures surface fast.
+  macos:
+    name: full gate (macos)
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -74,14 +62,30 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Bootstrap cargo-tauri (§2.4)
         run: cargo install tauri-cli --version 2.11.3 --locked
+
+      # --- fast gates first ---
+      - name: cargo fmt
+        run: cargo fmt --check
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: pnpm lint
+        run: pnpm --filter app lint
+      - name: cargo test (workspace — incl. macOS PTY + integration)
+        run: cargo test --workspace --locked
+      - name: pnpm test (vitest)
+        run: pnpm --filter app test
+
+      # --- build + end-to-end ---
       - name: Build the packaged app (debug)
         run: cargo tauri build --debug
         working-directory: crates/termixion-tauri
-      # Authoritative E2E: smoke.sh creates the $DIR/SMOKE_OK sentinel, runs the built app's --smoke
-      # (asserts cwd became $DIR and ls listed SMOKE_OK in the webview), and cleans up. Exits 0 only on pass.
-      - name: Packaged app --smoke (authoritative)
+      - name: Packaged app --smoke (authoritative E2E)
         run: bash scripts/smoke.sh
       - name: Install Playwright Chromium
         run: pnpm --filter app exec playwright install chromium
       - name: Playwright webview component test (dev server)
         run: pnpm --filter app test:e2e
+
+      # --- advisory only (not a gate): NFR-2 footprint smoke ---
+      - name: Footprint (advisory)
+        run: du -sh target/debug/bundle/macos/Termixion.app | awk '{ print "termixion.app (debug) size:", $1 }'
