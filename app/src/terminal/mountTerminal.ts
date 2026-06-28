@@ -13,10 +13,16 @@
 // This module is pure logic over small interfaces (no runtime xterm/React import), so the decision
 // is unit-testable headless with fakes. `TerminalView` injects the real xterm-backed deps.
 
-/** The slice of an xterm `Terminal` this strategy drives. */
+/** The slice of an xterm `Terminal` this strategy drives (incl. the C-2 PTY I/O surface). */
 export interface TerminalLike {
   open(container: HTMLElement): void;
   loadAddon(addon: AddonLike): void;
+  /** Write PTY output bytes into the terminal. */
+  write(data: Uint8Array): void;
+  /** Subscribe to user keystrokes (xterm delivers them as a string). */
+  onData(handler: (data: string) => void): void;
+  /** Subscribe to terminal resizes (cell grid). */
+  onResize(handler: (size: { rows: number; cols: number }) => void): void;
   dispose(): void;
 }
 

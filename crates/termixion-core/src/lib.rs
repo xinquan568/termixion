@@ -13,7 +13,7 @@ pub mod fake;
 pub mod pty;
 pub mod session;
 
-pub use pty::{PtyBackend, PtyError, PtyFactory, PtySize, SessionSpec};
+pub use pty::{PtyBackend, PtyError, PtyFactory, PtyReader, PtySize, SessionSpec};
 pub use session::{Session, SessionId};
 
 /// Crate version, surfaced for the shell/CLI to report.

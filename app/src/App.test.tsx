@@ -11,7 +11,7 @@ vi.mock("./terminal/TerminalView", () => ({
   TerminalView: () => <div data-testid="terminal-view" />,
 }));
 vi.mock("./ipc/useBackend", () => ({
-  useBackend: () => ({ coreVersion: "0.0.1" }),
+  useBackend: () => ({ coreVersion: "0.0.1", attachTerminal: () => {} }),
 }));
 
 import { App } from "./App";

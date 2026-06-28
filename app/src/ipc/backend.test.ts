@@ -6,7 +6,10 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   decodePtyFrame,
+  encodePtyInput,
   getCoreVersion,
+  sendPtyInput,
+  sendPtyResize,
   wirePtyChannel,
   type InvokeFn,
   type MessageChannel,
@@ -59,5 +62,27 @@ describe("wirePtyChannel", () => {
 
     expect(received).toHaveLength(1);
     expect(new TextDecoder().decode(received[0])).toBe("channel-ready");
+  });
+});
+
+describe("pty input/resize", () => {
+  it("encodePtyInput UTF-8 encodes keystrokes to a byte array", () => {
+    expect(encodePtyInput("a")).toEqual([97]);
+    expect(encodePtyInput("hi")).toEqual([104, 105]);
+    expect(encodePtyInput("")).toEqual([]);
+  });
+
+  it("sendPtyInput invokes pty_write with the encoded bytes", async () => {
+    const invoke = vi.fn<InvokeFn>();
+    invoke.mockResolvedValue(undefined);
+    await sendPtyInput("hi", invoke);
+    expect(invoke).toHaveBeenCalledWith("pty_write", { data: [104, 105] });
+  });
+
+  it("sendPtyResize invokes pty_resize with rows and cols", async () => {
+    const invoke = vi.fn<InvokeFn>();
+    invoke.mockResolvedValue(undefined);
+    await sendPtyResize(40, 120, invoke);
+    expect(invoke).toHaveBeenCalledWith("pty_resize", { rows: 40, cols: 120 });
   });
 });
