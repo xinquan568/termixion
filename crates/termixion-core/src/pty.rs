@@ -111,3 +111,52 @@ pub trait PtyFactory {
     /// Spawn the session described by `spec` at the given initial `size`.
     fn spawn(&self, spec: &SessionSpec, size: PtySize) -> Result<Box<dyn PtyBackend>, PtyError>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pty_size_new_and_default() {
+        assert_eq!(
+            PtySize::new(40, 120),
+            PtySize {
+                rows: 40,
+                cols: 120
+            }
+        );
+        // The documented conventional default is 80x24.
+        assert_eq!(PtySize::default(), PtySize::new(24, 80));
+    }
+
+    #[test]
+    fn pty_error_display_is_human_readable() {
+        // Each variant renders a distinct, descriptive message (the Display impl is the only place
+        // these strings live, and the shell surfaces them to the user).
+        assert_eq!(
+            PtyError::NotRunning.to_string(),
+            "pty session is not running"
+        );
+        assert_eq!(
+            PtyError::Spawn("boom".into()).to_string(),
+            "failed to spawn pty session: boom"
+        );
+        assert_eq!(
+            PtyError::Io("disk full".into()).to_string(),
+            "pty I/O error: disk full"
+        );
+
+        // It is a std::error::Error with no deeper source (we carry messages, not nested errors).
+        let err: &dyn std::error::Error = &PtyError::NotRunning;
+        assert!(err.source().is_none());
+    }
+
+    #[test]
+    fn session_spec_shell_inherits_cwd_and_env() {
+        let spec = SessionSpec::shell("/bin/zsh");
+        assert_eq!(spec.program, std::ffi::OsString::from("/bin/zsh"));
+        assert!(spec.args.is_empty());
+        assert!(spec.cwd.is_none(), "shell() inherits the parent cwd");
+        assert!(spec.env.is_empty());
+    }
+}

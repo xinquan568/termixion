@@ -181,7 +181,20 @@ impl Clipboard for MacosClipboard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use termixion_core::{PtyFactory, PtySize, SessionSpec};
+    use termixion_core::{PtyBackend, PtyFactory, PtySize, SessionSpec};
+
+    /// Read a real backend to EOF and return its output as a lossy String.
+    fn drain(backend: &mut dyn PtyBackend) -> String {
+        let mut out = Vec::new();
+        let mut buf = [0u8; 256];
+        loop {
+            match backend.read(&mut buf).expect("read should succeed") {
+                0 => break, // EOF — the child exited
+                n => out.extend_from_slice(&buf[..n]),
+            }
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
 
     /// Golden test: spawn a real `/bin/echo` through a real PTY and read its output back.
     #[test]
@@ -194,16 +207,7 @@ mod tests {
             .spawn(&spec, PtySize::new(24, 80))
             .expect("spawn should succeed");
 
-        let mut out = Vec::new();
-        let mut buf = [0u8; 256];
-        loop {
-            match backend.read(&mut buf).expect("read should succeed") {
-                0 => break, // EOF
-                n => out.extend_from_slice(&buf[..n]),
-            }
-        }
-
-        let text = String::from_utf8_lossy(&out);
+        let text = drain(&mut *backend);
         assert!(
             text.contains("termixion-pty-ok"),
             "expected the marker in the pty output, got: {text:?}"
@@ -227,14 +231,7 @@ mod tests {
 
         backend.write(b"hello-termixion\n").expect("write");
 
-        let mut acc = String::new();
-        let mut buf = [0u8; 256];
-        loop {
-            match backend.read(&mut buf).expect("read") {
-                0 => break, // child exited
-                n => acc.push_str(&String::from_utf8_lossy(&buf[..n])),
-            }
-        }
+        let acc = drain(&mut *backend);
         assert!(
             acc.contains("GOT:hello-termixion"),
             "child did not process the input; got: {acc:?}"
@@ -261,5 +258,90 @@ mod tests {
         let clip = MacosClipboard;
         assert!(clip.get_text().is_err());
         assert!(clip.set_text("x").is_err());
+    }
+
+    /// An explicit cwd that is not a real directory is rejected with `Spawn` — we validate it
+    /// ourselves because portable-pty would otherwise silently fall back to $HOME.
+    #[test]
+    fn invalid_cwd_is_rejected() {
+        // A unique path under temp_dir that we ensure does not exist — don't depend on any
+        // particular absolute path being absent on the host.
+        let missing =
+            std::env::temp_dir().join(format!("termixion-missing-{}", std::process::id()));
+        std::fs::remove_dir_all(&missing).ok();
+        assert!(!missing.exists(), "test cwd must not exist");
+
+        let factory = MacosPtyFactory;
+        let mut spec = SessionSpec::shell("/bin/echo");
+        spec.cwd = Some(missing);
+
+        // Box<dyn PtyBackend> isn't Debug, so let-else out the error rather than `expect_err`.
+        let Err(err) = factory.spawn(&spec, PtySize::new(24, 80)) else {
+            panic!("a non-directory cwd must fail, but spawn succeeded");
+        };
+        assert!(
+            matches!(&err, PtyError::Spawn(msg) if msg.contains("not a directory")),
+            "expected a Spawn 'not a directory' error, got: {err:?}"
+        );
+    }
+
+    /// A valid explicit cwd is honored: the child actually runs there. We assert on the *final path
+    /// component* of `pwd`'s output (not the full path), so macOS symlink resolution
+    /// (/var -> /private/var) can't break the match while still proving pwd ended in our directory.
+    #[test]
+    fn explicit_cwd_is_honored_by_child() {
+        let leaf = format!("termixion-cwd-{}", std::process::id());
+        let dir = std::env::temp_dir().join(&leaf);
+        std::fs::create_dir_all(&dir).expect("mkdir test cwd");
+
+        let factory = MacosPtyFactory;
+        let mut spec = SessionSpec::shell("/bin/pwd");
+        spec.cwd = Some(dir.clone());
+        let mut backend = factory
+            .spawn(&spec, PtySize::new(24, 80))
+            .expect("spawn pwd");
+
+        let out = drain(&mut *backend);
+        std::fs::remove_dir_all(&dir).ok();
+        // pwd prints one absolute path (the PTY adds a trailing \r\n); its last component is the cwd.
+        let reported = out.trim().rsplit('/').next().unwrap_or("");
+        assert_eq!(
+            reported, leaf,
+            "pwd should end in the spawn cwd ({leaf}); got: {out:?}"
+        );
+    }
+
+    /// Extra environment from the spec is *layered onto* (not replacing) the inherited environment:
+    /// the spec's variable reaches the child AND an inherited variable (`PATH`) is still visible.
+    #[test]
+    fn spec_env_is_layered_onto_child() {
+        // A process-unique var name, asserted absent from the parent env, so the value the child
+        // prints can ONLY have come from spec.env (not an inherited variable).
+        let var = format!("TERMIXION_TEST_VAR_{}", std::process::id());
+        assert!(
+            std::env::var_os(&var).is_none(),
+            "parent env must not already define {var}"
+        );
+
+        let factory = MacosPtyFactory;
+        let mut spec = SessionSpec::shell("/bin/sh");
+        spec.args.push("-c".into());
+        // ENV: proves the spec var arrived; PATH: present proves inherited env survived the layering.
+        spec.args
+            .push(format!("printf 'ENV:%s PATH:%s' \"${var}\" \"${{PATH:+present}}\"").into());
+        spec.env.push((var.into(), "marker-42".into()));
+
+        let mut backend = factory
+            .spawn(&spec, PtySize::new(24, 80))
+            .expect("spawn sh");
+        let out = drain(&mut *backend);
+        assert!(
+            out.contains("ENV:marker-42"),
+            "child did not see the spec env; got: {out:?}"
+        );
+        assert!(
+            out.contains("PATH:present"),
+            "inherited PATH must survive env layering; got: {out:?}"
+        );
     }
 }
