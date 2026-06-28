@@ -7,6 +7,12 @@ node_modules
 /app/dist
 /app/node_modules
 
+# Playwright (D-3) — generated outputs
+/app/test-results
+/app/playwright-report
+/app/blob-report
+/app/.cache
+
 # Tauri build output
 /crates/termixion-tauri/target
 

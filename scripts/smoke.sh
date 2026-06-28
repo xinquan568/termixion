@@ -6,14 +6,19 @@
 # (b) `ls` listed `SMOKE_OK`, then exits 0/1. This script exits 0 only if that app run exited 0.
 #
 # Usage: scripts/smoke.sh [path-to-Termixion-binary]
-#   default: target/debug/bundle/macos/Termixion.app/Contents/MacOS/Termixion (workspace target dir)
+#   default: target/debug/bundle/macos/Termixion.app (workspace target; a .app or a direct binary)
 #   build it first with:  (cd crates/termixion-tauri && cargo tauri build --debug)
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
-APP="${1:-target/debug/bundle/macos/Termixion.app/Contents/MacOS/Termixion}"
+APP="${1:-target/debug/bundle/macos/Termixion.app}"
+# Accept a .app bundle (resolve its single executable, whatever Tauri named/cased it) or a direct binary.
+if [ -d "$APP" ]; then
+  bin="$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -perm -111 2>/dev/null | head -1)"
+  [ -n "$bin" ] && APP="$bin"
+fi
 if [ ! -x "$APP" ]; then
-  echo "smoke: binary not found/executable: $APP" >&2
+  echo "smoke: app/binary not found: $APP" >&2
   echo "smoke: build it with  (cd crates/termixion-tauri && cargo tauri build --debug)" >&2
   exit 2
 fi

@@ -1,6 +1,7 @@
-# CI (D-1): the platform-agnostic core must build + test on BOTH Linux and macOS, and the seam guard
-# is a required gate. E-1 extends this file with the full macOS app job (build -> fmt/clippy/lint ->
-# pnpm test -> packaged --smoke). See plan §8.
+# CI (D-1 + D-3): the platform-agnostic core builds + tests on BOTH Linux and macOS with a required
+# seam gate (D-1); the E2E smoke (D-3) builds the packaged app and runs its `--smoke` plus a Playwright
+# webview test on macos-14. E-1 extends this with the full macOS app job (fmt/clippy/lint/pnpm test).
+# See plan §8.
 name: ci
 
 on:
@@ -50,3 +51,37 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo test (termixion-core)
         run: cargo test -p termixion-core --locked
+
+  # E2E smoke (D-3). The AUTHORITATIVE end-to-end check is the packaged app's `--smoke` (drives the real
+  # channel -> webview path; Tauri has no macOS WebDriver, Risk R-3). Plus a Playwright test against the
+  # Vite dev-server webview for component coverage (NOT the packaged app). Apple-silicon (Q1).
+  e2e-smoke:
+    name: e2e smoke (packaged --smoke + playwright)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install "$(sed -nE 's/^channel = "([^"]+)".*/\1/p' rust-toolchain.toml)"
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.6.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+      - name: Bootstrap cargo-tauri (§2.4)
+        run: cargo install tauri-cli --version 2.11.3 --locked
+      - name: Build the packaged app (debug)
+        run: cargo tauri build --debug
+        working-directory: crates/termixion-tauri
+      # Authoritative E2E: smoke.sh creates the $DIR/SMOKE_OK sentinel, runs the built app's --smoke
+      # (asserts cwd became $DIR and ls listed SMOKE_OK in the webview), and cleans up. Exits 0 only on pass.
+      - name: Packaged app --smoke (authoritative)
+        run: bash scripts/smoke.sh
+      - name: Install Playwright Chromium
+        run: pnpm --filter app exec playwright install chromium
+      - name: Playwright webview component test (dev server)
+        run: pnpm --filter app test:e2e
