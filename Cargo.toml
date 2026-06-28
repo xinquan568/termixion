@@ -15,6 +15,11 @@ license = "ISC"
 authors = ["Eric Y. Liu"]
 repository = "https://github.com/xinquan568/termixion"
 
-# E-3 will tune this (thin-LTO, codegen-units=1, panic="abort", strip).
+# E-3 — release profile tuned for a small, fast desktop binary (NFR-2 footprint smoke is advisory).
+# panic="abort" is auto-overridden to unwind for test/bench targets, so `cargo test` is unaffected.
 [profile.release]
 opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
