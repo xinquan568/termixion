@@ -104,6 +104,12 @@ impl Session {
         self.alive = false;
         Ok(())
     }
+
+    /// The OS process id of the underlying child, if the backend exposes one (a real PTY does; the
+    /// in-memory fake does not).
+    pub fn process_id(&self) -> Option<u32> {
+        self.backend.process_id()
+    }
 }
 
 #[cfg(test)]
@@ -188,5 +194,14 @@ mod tests {
         let mut buf = [0u8; 8];
         let n = session.read(&mut buf).expect("read");
         assert_eq!(&buf[..n], b"data");
+    }
+
+    #[test]
+    fn process_id_passes_through_the_backend() {
+        // The fake has no real child, so it reports None; a real platform backend reports Some(pid).
+        let factory = FakePtyFactory;
+        let spec = SessionSpec::shell("/bin/sh");
+        let session = Session::spawn(3, &factory, &spec, PtySize::default()).expect("spawn");
+        assert_eq!(session.process_id(), None);
     }
 }
