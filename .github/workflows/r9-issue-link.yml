@@ -1,0 +1,44 @@
+# R9 enforcement (trmx-27): every PR must trace to a GitHub issue via a consistent trmx-<N> across the
+# head branch, the PR title, and the PR body, linking a real issue.
+#
+# TAMPER-PROOF by design: uses `pull_request_target`, so the workflow AND scripts/check-issue-link.sh are
+# taken from the PROTECTED BASE branch — a PR can't weaken the gate by editing the script/workflow on its
+# own branch. We never check out or execute the PR's head code; the checkout is the trusted base, and the
+# only PR-controlled values (title / body / head branch) are untrusted DATA read via env and matched with
+# bash/grep (never eval'd or interpolated into a command). The token is restricted to read-only below, so
+# `pull_request_target`'s default write token / secret exposure does not apply.
+#
+# Note: because the gate runs from base, it activates for PRs opened AFTER this lands on the default
+# branch (it cannot self-validate on this PR — the logic was validated locally across good + 6 failure
+# cases instead). Mark `R9 trmx-N issue link (required)` as a REQUIRED status check in branch protection
+# for it to actually gate merges. See .claude/rules/architecture.md R9.
+name: r9-issue-link
+
+on:
+  pull_request_target:
+    # `edited` re-checks when the title/body change; `synchronize` on new pushes; plus open/reopen.
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read # checkout the base ref (trusted)
+  issues: read # gh api repos/.../issues/<N>
+
+concurrency:
+  group: r9-issue-link-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  trmx-link:
+    name: R9 trmx-N issue link (required)
+    runs-on: ubuntu-latest
+    steps:
+      # Default ref under pull_request_target = the base branch → the TRUSTED script, not the PR's copy.
+      - uses: actions/checkout@v4
+      - name: Validate trmx-N + linked issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: bash scripts/check-issue-link.sh

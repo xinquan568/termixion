@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: ISC
-# Termixion commit-msg hook (A-4). Enforce Conventional Commits on the subject line.
+# Termixion commit-msg hook (A-4). Enforce Conventional Commits on the subject line (R6) and that work
+# branches carry a trmx-<N> (R9 — fast local feedback; the r9-issue-link CI check is the real gate).
 set -euo pipefail
 msg_file="$1"
 header="$(head -1 "$msg_file")"
@@ -8,6 +9,22 @@ header="$(head -1 "$msg_file")"
 # Allow git-generated headers.
 case "$header" in
   "Merge "*|"Revert "*|"fixup! "*|"squash! "*) exit 0;;
+esac
+
+# R9 — a work branch must carry trmx-<N> (the GitHub issue number). Base/detached HEAD is exempt; the
+# authoritative enforcement is the r9-issue-link CI gate, so `--no-verify` is a deliberate escape hatch
+# for throwaway local work.
+branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
+case "$branch" in
+  main|master|HEAD) ;;
+  *)
+    if ! printf '%s' "$branch" | grep -qE 'trmx-[0-9]+'; then
+      echo "commit-msg: branch '$branch' has no trmx-<N> (R9 — every change traces to a GitHub issue)."
+      echo "  rename to xinquan568/ai/trmx-<N>-<slug> (N = the issue number), or use --no-verify for throwaway work."
+      echo "  the r9-issue-link CI check enforces this on the PR regardless."
+      exit 1
+    fi
+    ;;
 esac
 
 # <type>(<scope>)?!?: <subject>  — type from the allowed set; scope optional.
