@@ -55,3 +55,20 @@ We **write tests first**. For every behavioral change follow **RED → GREEN →
 
 > Enforcement is two-layer: the hooks are the fast local copy; **every load-bearing check is also a
 > required CI step (E-1)** so a `--no-verify` bypass still fails the gate.
+
+## R9 — Every change traces to a GitHub issue (`trmx-N`)
+Every change ships against a **GitHub issue**, so the what / why / how of each modification is always
+recoverable from the issue. Reference an issue by the repo-local id **`trmx-<N>`**, where `<N>` is the
+GitHub issue number (e.g. issue #1 → `trmx-1`). Use `trmx-<N>` consistently wherever a change is tracked:
+
+- **branch:** `xinquan568/ai/trmx-<N>-<slug>`
+- **run folder:** `runs/trmx-<N>-<slug>/`
+- **PR title:** ends with `(trmx-<N>)`
+- **PR body:** links the issue with `Closes #<N>` (the real `#N` form is what actually closes the issue;
+  `trmx-<N>` is the human-facing label)
+- **SUMMARY / docs** for the change reference `trmx-<N>`
+
+One issue per task — pairs with R7 (one PR per task). GitHub shares a single number space for issues and
+PRs, so `<N>` accounts for existing PRs too (e.g. after PRs through #24, the next issue is #25 =
+`trmx-25`). Enforcement is review-time: the review loop verifies the branch / PR title / run folder carry
+the `trmx-<N>` and that the PR links its issue.
