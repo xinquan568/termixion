@@ -72,6 +72,10 @@ impl PtyBackend for MacosPtyBackend {
         self.child.wait().map_err(|e| PtyError::Io(e.to_string()))?;
         Ok(())
     }
+
+    fn process_id(&self) -> Option<u32> {
+        self.child.process_id()
+    }
 }
 
 impl Drop for MacosPtyBackend {

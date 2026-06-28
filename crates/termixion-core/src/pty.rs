@@ -79,6 +79,23 @@ impl SessionSpec {
             env: Vec::new(),
         }
     }
+
+    /// A spec for the user's login shell (resolved from `$SHELL`, falling back to `/bin/zsh`).
+    ///
+    /// v0.0.1 spawns it interactively; true login semantics (argv0 `-`, `-l`, rc-file nuances) are a
+    /// later concern. Reads `$SHELL` here and delegates the (pure) choice to [`login_shell_program`].
+    pub fn login_shell() -> Self {
+        Self::shell(login_shell_program(std::env::var_os("SHELL")))
+    }
+}
+
+/// Pick the login-shell program: a non-empty `$SHELL`, else the macOS default `/bin/zsh`. Pure (takes
+/// the env value as an argument) so it is testable without mutating the process-global environment.
+fn login_shell_program(shell_env: Option<OsString>) -> OsString {
+    match shell_env {
+        Some(shell) if !shell.is_empty() => shell,
+        _ => OsString::from("/bin/zsh"),
+    }
 }
 
 /// The live I/O + control surface of one PTY-backed session.
@@ -103,6 +120,12 @@ pub trait PtyBackend: Send {
 
     /// Terminate the child process. Idempotent — killing an already-dead session is `Ok(())`.
     fn kill(&mut self) -> Result<(), PtyError>;
+
+    /// The OS process id of the child, if known. Used for diagnostics and lifecycle assertions (e.g.
+    /// confirming teardown left no process behind). Backends without a real child return `None`.
+    fn process_id(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// Spawns PTY-backed sessions. `termixion-platform` provides the real factory (macOS); tests and
@@ -158,5 +181,29 @@ mod tests {
         assert!(spec.args.is_empty());
         assert!(spec.cwd.is_none(), "shell() inherits the parent cwd");
         assert!(spec.env.is_empty());
+    }
+
+    #[test]
+    fn login_shell_program_prefers_shell_env_then_falls_back() {
+        // The resolver is pure (takes the env value as an argument) so it tests without mutating the
+        // process-global environment.
+        assert_eq!(
+            login_shell_program(Some(OsString::from("/opt/homebrew/bin/fish"))),
+            OsString::from("/opt/homebrew/bin/fish")
+        );
+        // Unset or empty $SHELL falls back to the macOS default login shell.
+        assert_eq!(login_shell_program(None), OsString::from("/bin/zsh"));
+        assert_eq!(
+            login_shell_program(Some(OsString::new())),
+            OsString::from("/bin/zsh")
+        );
+    }
+
+    #[test]
+    fn session_spec_login_shell_builds_a_bare_spec() {
+        let spec = SessionSpec::login_shell();
+        assert!(!spec.program.is_empty(), "a login shell must be resolved");
+        assert!(spec.args.is_empty());
+        assert!(spec.cwd.is_none());
     }
 }
