@@ -1,0 +1,122 @@
+# Release (E-2): on a pushed `v*` tag, build the SIGNED + NOTARIZED Apple-silicon app on macos-14 and
+# publish a (draft) GitHub Release with the `.dmg`.
+#
+# SCAFFOLD — the Apple Developer signing secrets are deliberately NOT in the repo (P0-2). A maintainer
+# adds them as GitHub Actions secrets (see docs/RELEASE.md) before the first release. Until they exist the
+# "Require signing secrets" guard FAILS the job, so an unsigned / un-notarized release can never be
+# published by accident.
+#
+# tauri-action drives Tauri's bundler, which — from the APPLE_* env below — imports the cert into an
+# ephemeral keychain, codesigns with the Developer ID identity (hardened runtime), builds the `.dmg`,
+# notarizes via `notarytool`, and staples the ticket. The final step independently verifies the staple.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+# Never run two release builds for the same tag at once; let an in-flight release finish.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write # create the GitHub Release + upload the .dmg
+
+jobs:
+  release:
+    name: build + sign + notarize + publish (macos)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      # Fail fast BEFORE building if any signing secret is missing — refuse to ship an unsigned release.
+      - name: Require signing secrets (no unsigned releases)
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+                   APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!v:-}" ]; then missing+=("$v"); fi
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing required signing secrets: ${missing[*]}. See docs/RELEASE.md (Required GitHub Actions secrets). Refusing to build an unsigned / un-notarized release."
+            exit 1
+          fi
+          echo "All required signing secrets are present."
+
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install "$(sed -nE 's/^channel = "([^"]+)".*/\1/p' rust-toolchain.toml)"
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.6.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+      - name: Bootstrap cargo-tauri (§2.4)
+        run: cargo install tauri-cli --version 2.11.3 --locked
+
+      # Identity + tag gate (E-2a): assert the pinned version / product name / bundle id AND that the
+      # pushed tag is v<workspace_version> — so the published asset name (Termixion_<version>_aarch64.dmg,
+      # derived from the crate version) can't disagree with a mismatched tag.
+      - name: Release metadata + tag gate
+        env:
+          EXPECTED_TAG: ${{ github.ref_name }}
+        run: bash scripts/check-release-metadata.sh
+
+      # Build only (NO release inputs): tauri-action runs Tauri's bundler, which — from the APPLE_* env —
+      # imports the cert into an ephemeral keychain, codesigns Developer ID (hardened runtime), builds the
+      # .dmg, notarizes via notarytool, and staples. `--bundles dmg` overrides tauri.conf.json's local-only
+      # `["app"]` target. We deliberately do NOT pass tagName here, so this step does NOT create a Release
+      # or upload anything — we publish ONLY the verified .dmg below (a build also leaves a .app under
+      # bundle/macos/, which must NOT be uploaded).
+      - name: Build, sign + notarize (tauri-action — build only)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: crates/termixion-tauri
+          args: --bundles dmg
+
+      # Independently prove the artifact is notarized + stapled BEFORE publishing — catches a silent
+      # signing/notarization gap that would otherwise ship a Gatekeeper-blocked dmg. Exposes the verified
+      # .dmg path so the publish step uploads exactly that one file.
+      - name: Verify notarization (stapler + Gatekeeper)
+        id: verify
+        run: |
+          set -euo pipefail
+          dmg=$(find target -name 'Termixion_*_aarch64.dmg' -print -quit)
+          if [ -z "$dmg" ]; then echo "::error::no .dmg was produced under target/"; exit 1; fi
+          echo "verifying: $dmg"
+          xcrun stapler validate "$dmg"
+          spctl --assess --type open --context context:primary-signature -vvv "$dmg"
+          echo "dmg=$dmg" >> "$GITHUB_OUTPUT"
+
+      # Publish a DRAFT pre-release with ONLY the verified .dmg (single-artifact release contract). Draft
+      # so a human signs off on the first signed build; flip to a direct publish once you trust the flow.
+      # Re-running an existing tag: delete the prior draft Release first (gh release create won't clobber).
+      - name: Publish draft release (verified .dmg only)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "${{ github.ref_name }}" "${{ steps.verify.outputs.dmg }}" \
+            --draft --prerelease \
+            --title "Termixion ${{ github.ref_name }}" \
+            --notes "Signed + notarized Apple-silicon build. Download the .dmg below. (Alpha — see CHANGELOG.md.)"

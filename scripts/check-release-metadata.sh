@@ -53,6 +53,16 @@ product="$(json_str "$conf" productName)"
 # `dmg` bundle target. v0.0.1 ships only the Apple-silicon build (Q-g reference Mac = M1 Pro).
 asset="${product}_${workspace_version}_aarch64.dmg"
 
+# E-2: when the release job runs this gate it sets EXPECTED_TAG to the pushed tag. The tag MUST be
+# v<workspace_version>, so a `v0.0.2` tag pushed over a 0.0.1 workspace can't publish a release named
+# "Termixion v0.0.2" that ships the 0.0.1-named artifact (the .dmg name derives from the crate version,
+# the release name from the tag). When EXPECTED_TAG is unset (dev / non-release CI) this is skipped.
+if [ -n "${EXPECTED_TAG:-}" ]; then
+  [ "$EXPECTED_TAG" = "v$workspace_version" ] ||
+    fail "release tag ($EXPECTED_TAG) != v$workspace_version — bump [workspace.package] version to match the tag, or push the right tag"
+fi
+
 echo "release-metadata: OK — version $workspace_version aligned (Cargo / app / tauri.conf);" \
   "identifier=$identifier productName=$product"
+[ -n "${EXPECTED_TAG:-}" ] && echo "release-metadata: OK — tag $EXPECTED_TAG matches v$workspace_version"
 echo "release-metadata: E-2 release artifact name = $asset (built with the dmg bundle target in E-2)"
