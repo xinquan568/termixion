@@ -9,9 +9,10 @@
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use tauri::State;
 use tauri::ipc::Channel;
+use tauri::{Manager, State, WindowEvent};
 use termixion_core::{PtySize, Session, SessionSpec};
 use termixion_platform::MacosPtyFactory;
 
@@ -45,15 +46,21 @@ fn open_pty(
     rows: u16,
     cols: u16,
     state: State<'_, PtyState>,
+    smoke: State<'_, SmokeDir>,
 ) -> Result<(), String> {
     let factory = MacosPtyFactory;
-    let mut session = Session::spawn(
-        1,
-        &factory,
-        &SessionSpec::login_shell(),
-        PtySize::new(rows, cols),
-    )
-    .map_err(|e| e.to_string())?;
+    // Production opens the user's login shell; the `--smoke` run opens a deterministic rc-free shell
+    // (`zsh -f`) so the automated sentinel sequence isn't garbled by the user's prompt / line editor —
+    // the transport (channel, pty_write, streaming) is still the production path.
+    let spec = if smoke.0.is_some() {
+        let mut s = SessionSpec::shell("/bin/zsh");
+        s.args.push("-f".into());
+        s
+    } else {
+        SessionSpec::login_shell()
+    };
+    let mut session =
+        Session::spawn(1, &factory, &spec, PtySize::new(rows, cols)).map_err(|e| e.to_string())?;
 
     let mut reader = session
         .take_reader()
@@ -133,15 +140,104 @@ fn pty_resize(rows: u16, cols: u16, state: State<'_, PtyState>) -> Result<(), St
         .map_err(|e| e.to_string())
 }
 
+/// The end-to-end `--smoke` target dir, exposed to the webview so it drives the production path (C-3).
+struct SmokeDir(Option<String>);
+
+/// Whether/how the packaged smoke runs. `MissingDir` (smoke requested but no `DIR`) must FAIL the gate,
+/// not silently launch the app — otherwise the packaged `--smoke` would hang CI instead of exiting 1.
+enum SmokeMode {
+    Off,
+    MissingDir,
+    On(String),
+}
+
+/// Resolve smoke mode: `--smoke` arg OR truthy `TERMIXION_SMOKE` enables it; the sentinel dir is the
+/// `DIR` env var (the pre-created `mktemp -d` holding `SMOKE_OK`). Pure, for testing.
+fn smoke_mode<I: IntoIterator<Item = String>>(
+    args: I,
+    smoke_env: Option<String>,
+    dir_env: Option<String>,
+) -> SmokeMode {
+    let enabled = args.into_iter().any(|a| a == "--smoke")
+        || smoke_env.is_some_and(|v| v == "1" || v == "true");
+    if !enabled {
+        return SmokeMode::Off;
+    }
+    match dir_env.filter(|d| !d.is_empty()) {
+        Some(dir) => SmokeMode::On(dir),
+        None => SmokeMode::MissingDir,
+    }
+}
+
+/// The webview asks whether to run the end-to-end smoke, and against which dir (`None` = normal launch).
+#[tauri::command]
+fn smoke_config(smoke: State<'_, SmokeDir>) -> Option<String> {
+    smoke.0.clone()
+}
+
+/// The webview reports the smoke result; exit the process `0`/`1` so the packaged `--smoke` is a gate.
+#[tauri::command]
+fn smoke_done(success: bool, reason: String) {
+    if success {
+        println!("termixion-smoke: OK — {reason}");
+        std::process::exit(0);
+    }
+    eprintln!("termixion-smoke: FAIL — {reason}");
+    std::process::exit(1);
+}
+
+/// Dispose the active session (no zombie) — used on window close.
+fn dispose_session(state: &PtyState) {
+    if let Ok(mut slot) = state.slot.lock()
+        && let Some(mut active) = slot.take()
+    {
+        let _ = active.session.kill();
+    }
+}
+
 fn main() -> ExitCode {
+    let smoke = match smoke_mode(
+        std::env::args(),
+        std::env::var("TERMIXION_SMOKE").ok(),
+        std::env::var("DIR").ok(),
+    ) {
+        SmokeMode::Off => None,
+        SmokeMode::On(dir) => Some(dir),
+        SmokeMode::MissingDir => {
+            eprintln!("termixion-smoke: FAIL — smoke requested but DIR is missing/empty");
+            return ExitCode::FAILURE;
+        }
+    };
+    if smoke.is_some() {
+        // Watchdog: fail the smoke (exit 1) rather than hang if the webview never reports back.
+        std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_secs(30));
+            eprintln!(
+                "termixion-smoke: FAIL — timed out waiting for the webview sentinel sequence"
+            );
+            std::process::exit(1);
+        });
+    }
+
     let result = tauri::Builder::default()
         .manage(PtyState::default())
+        .manage(SmokeDir(smoke))
         .invoke_handler(tauri::generate_handler![
             core_version,
             open_pty,
             pty_write,
-            pty_resize
+            pty_resize,
+            smoke_config,
+            smoke_done
         ])
+        .on_window_event(|window, event| {
+            // Closing the window disposes the PTY (the app then exits, dropping state too).
+            if let WindowEvent::CloseRequested { .. } = event
+                && let Some(state) = window.try_state::<PtyState>()
+            {
+                dispose_session(&state);
+            }
+        })
         .run(tauri::generate_context!());
 
     if let Err(err) = result {
@@ -162,5 +258,39 @@ mod tests {
         let v = core_version();
         assert!(!v.is_empty(), "core version must not be empty");
         assert_eq!(v, termixion_platform::CORE_VERSION);
+    }
+
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn mode(args_v: &[&str], smoke_env: Option<&str>, dir_env: Option<&str>) -> SmokeMode {
+        smoke_mode(
+            args(args_v),
+            smoke_env.map(str::to_string),
+            dir_env.map(str::to_string),
+        )
+    }
+
+    #[test]
+    fn smoke_mode_resolves_off_on_and_missing_dir() {
+        let on = "/tmp/termixion-smoke";
+
+        // Enabled (arg or env) WITH DIR → On(dir).
+        assert!(matches!(mode(&["app", "--smoke"], None, Some(on)), SmokeMode::On(d) if d == on));
+        assert!(matches!(mode(&["app"], Some("1"), Some(on)), SmokeMode::On(d) if d == on));
+
+        // Not enabled → Off, even with DIR set.
+        assert!(matches!(mode(&["app"], None, Some(on)), SmokeMode::Off));
+
+        // Enabled but DIR missing/empty → MissingDir (the gate fails fast, never launches normally).
+        assert!(matches!(
+            mode(&["app", "--smoke"], None, None),
+            SmokeMode::MissingDir
+        ));
+        assert!(matches!(
+            mode(&["app", "--smoke"], None, Some("")),
+            SmokeMode::MissingDir
+        ));
     }
 }
