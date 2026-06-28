@@ -8,7 +8,7 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 # Pinned bundle identity — must match crates/termixion-tauri/tauri.conf.json.
-EXPECTED_IDENTIFIER="dev.termixion.app"
+EXPECTED_IDENTIFIER="dev.termixion.terminal"
 EXPECTED_PRODUCT="Termixion"
 
 fail() {
