@@ -1,6 +1,6 @@
-# A-1 skeleton placeholder. E-1 fills this in (macos-14 job: bootstrap cargo tauri ->
-# build -> fmt/clippy/lint -> cargo test -> pnpm test -> check-core-seam.sh -> --smoke;
-# Linux job: termixion-core build + cargo test + check-core-seam.sh). See plan §8 E-1.
+# CI (D-1): the platform-agnostic core must build + test on BOTH Linux and macOS, and the seam guard
+# is a required gate. E-1 extends this file with the full macOS app job (build -> fmt/clippy/lint ->
+# pnpm test -> packaged --smoke). See plan §8.
 name: ci
 
 on:
@@ -8,8 +8,45 @@ on:
     branches: [main]
   pull_request:
 
+# Cancel superseded runs on the same ref to save runner minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  placeholder:
+  # The REQUIRED seam gate (F5/F10). Platform-independent (it scans source + the resolved dep graph),
+  # so it is one standalone job — mark it required in branch protection. It needs the toolchain for the
+  # cargo-tree forbidden-dependency scan.
+  seam-guard:
+    name: core seam guard (required)
     runs-on: ubuntu-latest
     steps:
-      - run: echo "CI shell — implemented in task E-1 (and the Linux-core seam job in D-1)."
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install "$(sed -nE 's/^channel = "([^"]+)".*/\1/p' rust-toolchain.toml)"
+      - uses: Swatinem/rust-cache@v2
+      - name: core seam guard (forbidden-dep + no platform cfg / std::os)
+        run: bash scripts/check-core-seam.sh
+
+  # The platform-agnostic core must build + test on BOTH Linux and macOS.
+  core-linux:
+    name: core tests (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install "$(sed -nE 's/^channel = "([^"]+)".*/\1/p' rust-toolchain.toml)"
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test (termixion-core)
+        run: cargo test -p termixion-core --locked
+
+  core-macos:
+    name: core tests (macos)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install "$(sed -nE 's/^channel = "([^"]+)".*/\1/p' rust-toolchain.toml)"
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test (termixion-core)
+        run: cargo test -p termixion-core --locked
