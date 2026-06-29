@@ -48,13 +48,31 @@ function makeFakeTerminal() {
   };
 }
 
-// jsdom has no layout, so give the host a non-zero measured size for the geometry math.
+// jsdom has no layout, so give the host a non-zero measured size + a known rect for the geometry +
+// hover hit-test math (rect.left = 0, so clientX runs 0..width across the host).
 function makeHost(width = 800, height = 480) {
   const host = document.createElement("div");
   Object.defineProperty(host, "clientWidth", { value: width, configurable: true });
   Object.defineProperty(host, "clientHeight", { value: height, configurable: true });
+  host.getBoundingClientRect = () =>
+    ({
+      left: 0,
+      top: 0,
+      right: width,
+      bottom: height,
+      width,
+      height,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    }) as DOMRect;
   document.body.appendChild(host);
   return host;
+}
+
+// Dispatch a mousemove at an absolute x within the host (rect.left = 0, so clientX is the host-local x).
+function moveTo(host: HTMLElement, clientX: number) {
+  host.dispatchEvent(new MouseEvent("mousemove", { clientX, clientY: 200, bubbles: true }));
 }
 
 describe("attachScrollbar", () => {
@@ -107,6 +125,54 @@ describe("attachScrollbar", () => {
     expect(container.style.display).toBe("none");
 
     sb.dispose();
+  });
+
+  it("widens the handle and fades in the track inside the right-edge hover zone, reverting on leave", () => {
+    const host = makeHost(800, 480); // cellWidth = 800 / 80 cols = 10px
+    const fake = makeFakeTerminal();
+    const sb = attachScrollbar(host, fake.terminal);
+    const thumb = host.querySelector(".termixion-scrollbar__thumb") as HTMLElement;
+    const track = host.querySelector(".termixion-scrollbar__track") as HTMLElement;
+
+    // Scroll back so the bar is shown; at rest the handle is 0.5 cell wide and the track is invisible.
+    fake.active.viewportY = 40;
+    fake.fireScroll();
+    expect(thumb.style.width).toBe("5px");
+    expect(track.style.opacity).toBe("0");
+
+    // Pointer within (hoverWidth 1.0 + gap 0.1) × 10px = 11px of the right edge → hover.
+    moveTo(host, 795);
+    expect(thumb.style.width).toBe("10px"); // widened to 1.0 cell
+    expect(track.style.opacity).toBe("0.1"); // faint track fades in
+
+    // Pointer far from the right edge → not hovering.
+    moveTo(host, 400);
+    expect(thumb.style.width).toBe("5px");
+    expect(track.style.opacity).toBe("0");
+
+    // Re-enter, then leave the host entirely → reverts.
+    moveTo(host, 795);
+    expect(thumb.style.width).toBe("10px");
+    host.dispatchEvent(new MouseEvent("mouseleave", { bubbles: true }));
+    expect(thumb.style.width).toBe("5px");
+    expect(track.style.opacity).toBe("0");
+
+    sb.dispose();
+  });
+
+  it("stops responding to host mouse events after dispose", () => {
+    const host = makeHost();
+    const fake = makeFakeTerminal();
+    const sb = attachScrollbar(host, fake.terminal);
+    fake.active.viewportY = 40;
+    fake.fireScroll();
+
+    sb.dispose();
+    expect(host.querySelector(".termixion-scrollbar")).toBeNull();
+
+    // A post-dispose mousemove must neither throw nor resurrect the overlay.
+    expect(() => moveTo(host, 795)).not.toThrow();
+    expect(host.querySelector(".termixion-scrollbar")).toBeNull();
   });
 
   it("dispose() unsubscribes both listeners and removes the overlay", () => {
