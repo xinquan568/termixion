@@ -1,23 +1,24 @@
 # Changelog
 
-All notable changes to Termixion are documented here. The format follows
+The user-facing changes to Termixion are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com), and the project adheres to
-[Semantic Versioning](https://semver.org). Generated from Conventional Commits by git-cliff.
+[Semantic Versioning](https://semver.org). Auto-generated from Conventional Commits by git-cliff;
+internal changes (build / CI / tests / refactors / docs) live in the git history and the linked issues.
 
 ## [Unreleased]
 
-### Chores
-- Pin toolchain + bootstrap cargo tauri (A-2) (#3)
-- Use Rust edition 2024 for the workspace (#4)
-- [A-3] add format/lint config (rustfmt, clippy, eslint, prettier) (#5)
-
-### Documentation
-- [A-5] add CHANGELOG + git-cliff config; license/notice scaffold
-
-### Features
+### Added
 - Scaffold A-1 repo skeleton (crates, app shell, configs)
 - [A-4] install .claude rules + git hooks (guardrails) (#6)
+- [B-1] termixion-core PTY/session seam + in-memory fake (#8)
+- [B-2] termixion-platform macOS PTY backend via portable-pty (#9)
+- [B-3] termixion-tauri real Tauri 2 shell (one window, app menu) (#10)
+- Mount xterm.js with a WebGL→DOM fallback strategy (B-4) (#14)
+- Wire Tauri ↔ React — core_version handshake + PTY channel seam (B-5) (#15)
+- PTY session lifecycle through the trait + login shell (C-1) (#16)
+- Stream PTY <-> webview + keystrokes over the Tauri channel (C-2) (#19)
+- Single-window dispose + packaged --smoke end-to-end gate (C-3) (#20)
 
-### Other
-- Initial commit
-- Add license
+### Fixed
+- Rename bundle identifier to dev.termixion.terminal (#24)
+

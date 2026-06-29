@@ -102,6 +102,11 @@ cross-platform/seam behavior; Vitest for the frontend). The pre-push `cargo test
   then mark it required. (Doubly so for `r9-issue-link`: it runs on `pull_request_target`, so it only
   fires for PRs opened *after* it's on the default branch.)
 - **One PR per task**, conventional-commits messages.
+- **Changelog (R10) is auto-generated, curated, user-facing.** `CHANGELOG.md` comes from git-cliff
+  (`git cliff -o CHANGELOG.md`) — never hand-edited. Only `feat`/`fix`/`perf` and `(security)`-scoped
+  fixes reach it (a breaking one is flagged **(breaking)**); internal types (incl. `docs`) are omitted. So
+  your **commit `type` is the in/out decision** — pick it deliberately. See
+  `.claude/rules/architecture.md` R10.
 - **`A-1` and `P0-5` are done directly; `A-2` through `E` are driven through the `issue2pr` skill**
   (manifest mode + the `termixion` profile, `--reviewer-backend codex`). *(A-2 itself was done directly
   because P0-5 — the issue2pr adaptation — was not yet validated; R-6 fallback.)*
