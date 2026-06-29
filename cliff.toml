@@ -5,9 +5,10 @@
 header = """
 # Changelog
 
-All notable changes to Termixion are documented here. The format follows
+The user-facing changes to Termixion are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com), and the project adheres to
-[Semantic Versioning](https://semver.org). Generated from Conventional Commits by git-cliff.
+[Semantic Versioning](https://semver.org). Auto-generated from Conventional Commits by git-cliff;
+internal changes (build / CI / tests / refactors / docs) live in the git history and the linked issues.
 """
 body = """
 
@@ -17,9 +18,9 @@ body = """
 ## [Unreleased]
 {% endif %}\
 {% for group, commits in commits | group_by(attribute="group") %}
-### {{ group | upper_first }}
+### {{ group | striptags | trim | upper_first }}
 {% for commit in commits %}\
-- {{ commit.message | split(pat="\n") | first | upper_first }}
+- {% if commit.breaking %}**(breaking)** {% endif %}{{ commit.message | split(pat="\n") | first | upper_first }}
 {% endfor %}\
 {% endfor %}
 """
@@ -34,19 +35,21 @@ protect_breaking_commits = false
 filter_commits = false
 topo_order = false
 sort_commits = "oldest"
+# R10 — CURATED, user-facing changelog. Only feat/fix/perf/security + breaking changes appear, mapped to
+# Keep a Changelog sections (the `<!-- N -->` prefix orders the sections; the template strips it). Every
+# other type (docs/chore/ci/build/test/style/refactor) and non-conventional commits are skipped — their
+# full record lives in git history + the linked trmx-N issues. First matching parser wins, so the skip
+# catch-all must come last.
 commit_parsers = [
   { field = "merge_commit", pattern = "true", skip = true },
-  { message = "^feat", group = "Features" },
-  { message = "^fix", group = "Bug Fixes" },
-  { message = "^doc", group = "Documentation" },
-  { message = "^perf", group = "Performance" },
-  { message = "^refactor", group = "Refactor" },
-  { message = "^test", group = "Tests" },
-  { message = "^ci", group = "CI/CD" },
-  { message = "^build", group = "Build" },
-  { message = "^chore", group = "Chores" },
-  { message = "^style", group = "Styling" },
-  { body = ".*security", group = "Security" },
-  { message = ".*", group = "Other" },
+  # Security fixes opt in with a `(security)` scope, e.g. `fix(security): …` (checked before plain fix).
+  { message = '^(feat|fix|perf)\(security\)!?:', group = "<!-- 3 -->Security" },
+  # User-facing types, anchored to the Conventional-Commit shape so bare "fix …" (no colon) is NOT matched.
+  { message = '^feat(\([^)]+\))?!?:', group = "<!-- 0 -->Added" },
+  { message = '^perf(\([^)]+\))?!?:', group = "<!-- 1 -->Changed" },
+  { message = '^fix(\([^)]+\))?!?:', group = "<!-- 2 -->Fixed" },
+  # Everything else — chore/ci/build/test/style/refactor/docs + non-conventional — is internal: skipped.
+  # (Type is the in/out decision: a breaking change that must appear is typed feat!/fix!, not refactor!.)
+  { message = '.*', skip = true },
 ]
 tag_pattern = "v[0-9].*"
