@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: ISC
 // Copyright (c) 2026 Eric Y. Liu
 //
-// App composition (D-2 + B-4 + B-5). App's unit is what it composes: the title, the backend handshake
-// status, and the terminal surface. Their behaviors are covered by their own tests, so TerminalView
-// and useBackend are stubbed here — keeping this a pure composition test with no real xterm/Tauri.
+// App composition (D-2 + B-4 + B-5). App's unit is what it composes: just the terminal surface, which
+// now owns the whole window (trmx-35 — no in-page chrome). TerminalView and useBackend behaviors are
+// covered by their own tests, so they're stubbed here — keeping this a pure composition test.
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 
@@ -17,20 +17,15 @@ vi.mock("./ipc/useBackend", () => ({
 import { App } from "./App";
 
 describe("App", () => {
-  it("renders the Termixion heading", () => {
-    render(<App />);
-    expect(
-      screen.getByRole("heading", { level: 1, name: "Termixion" }),
-    ).toBeInTheDocument();
-  });
-
-  it("shows the connected core version from the handshake", () => {
-    render(<App />);
-    expect(screen.getByTestId("core-version")).toHaveTextContent("core v0.0.1");
-  });
-
   it("mounts the terminal surface", () => {
     render(<App />);
     expect(screen.getByTestId("terminal-view")).toBeInTheDocument();
+  });
+
+  it("renders no in-page chrome — the terminal owns the whole window (issue 1)", () => {
+    render(<App />);
+    // No program-name heading and no core-version status line.
+    expect(screen.queryByRole("heading")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("core-version")).not.toBeInTheDocument();
   });
 });

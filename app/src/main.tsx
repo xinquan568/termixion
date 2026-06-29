@@ -5,6 +5,7 @@ import ReactDOM from "react-dom/client";
 import { App } from "./App";
 import { realInvoke } from "./ipc/backend";
 import { runSmoke, realSmokeDeps } from "./smoke/runSmoke";
+import "./index.css";
 
 // On boot, ask the backend whether this is a `--smoke` launch (C-3). If so, drive the deterministic
 // sentinel sequence over the production channel and let the backend exit 0/1 — no UI. Otherwise render

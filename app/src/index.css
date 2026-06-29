@@ -1,0 +1,37 @@
+/* SPDX-License-Identifier: ISC */
+/* Copyright (c) 2026 Eric Y. Liu */
+/*
+ * trmx-35 — the terminal owns the whole window. No body chrome, no padding/margins: the xterm
+ * surface is flush to all four edges, like iTerm2 / Kitty. The host fills the viewport so the fit
+ * addon (TerminalView) can size the cell grid to it and keep it filled as the window resizes.
+ */
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+}
+
+body {
+  /* Match xterm's default theme background so the sub-cell remainder reads as the terminal, not a gap. */
+  background: #000;
+  /* The terminal manages its own scrollback; never let the page itself scroll. */
+  overflow: hidden;
+}
+
+.app,
+.terminal-host {
+  width: 100%;
+  height: 100%;
+}
+
+/*
+ * The fit addon sizes xterm's grid to fill `.terminal-host`; xterm sets `.xterm`'s own pixel size to
+ * match the grid. We only nudge it flush to the top-left so any sub-cell remainder falls at the
+ * bottom-right (shown as the black body background), rather than xterm centering or insetting it.
+ */
+.terminal-host .xterm {
+  padding: 0;
+}
