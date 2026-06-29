@@ -69,6 +69,11 @@ pub struct SessionSpec {
     pub env: Vec<(OsString, OsString)>,
 }
 
+/// The terminal type Termixion advertises to the child shell via `TERM`. Termixion renders through
+/// xterm.js, so `xterm-256color` is the terminfo entry whose capabilities the emulator actually
+/// implements — the same value VS Code, Hyper, and other xterm.js front-ends export.
+pub const DEFAULT_TERM: &str = "xterm-256color";
+
 impl SessionSpec {
     /// A spec that runs `program` with no args, inheriting cwd and environment.
     pub fn shell(program: impl Into<OsString>) -> Self {
@@ -84,8 +89,19 @@ impl SessionSpec {
     ///
     /// v0.0.1 spawns it interactively; true login semantics (argv0 `-`, `-l`, rc-file nuances) are a
     /// later concern. Reads `$SHELL` here and delegates the (pure) choice to [`login_shell_program`].
+    ///
+    /// Sets `TERM` to [`DEFAULT_TERM`] so the child always knows the terminal type Termixion presents,
+    /// regardless of how Termixion itself was launched. A GUI launch (Finder / the `.app` bundle under
+    /// `launchd`) inherits no `$TERM`, which left the child shell with no terminal type — breaking
+    /// `clear` (*"TERM environment variable not set."*) and the zsh line editor's backspace/delete key
+    /// bindings (trmx-37). This forced value also overrides any inherited `$TERM` (the platform backend
+    /// layers `spec.env` over the inherited environment): the inherited value describes whatever
+    /// terminal Termixion runs *in*, not the xterm.js surface Termixion presents to its child.
     pub fn login_shell() -> Self {
-        Self::shell(login_shell_program(std::env::var_os("SHELL")))
+        let mut spec = Self::shell(login_shell_program(std::env::var_os("SHELL")));
+        spec.env
+            .push((OsString::from("TERM"), OsString::from(DEFAULT_TERM)));
+        spec
     }
 }
 
@@ -222,5 +238,24 @@ mod tests {
         assert!(!spec.program.is_empty(), "a login shell must be resolved");
         assert!(spec.args.is_empty());
         assert!(spec.cwd.is_none());
+    }
+
+    #[test]
+    fn login_shell_advertises_xterm_term() {
+        // Termixion renders through xterm.js, so the login shell must be told `TERM=xterm-256color`
+        // explicitly — otherwise a GUI launch (Finder/launchd inherits no `$TERM`) leaves the child
+        // shell with no terminal type, breaking `clear` and ZLE backspace/delete (trmx-37).
+        let spec = SessionSpec::login_shell();
+        let term = spec
+            .env
+            .iter()
+            .find(|(k, _)| k == "TERM")
+            .map(|(_, v)| v.as_os_str());
+        assert_eq!(
+            term,
+            Some(OsString::from("xterm-256color").as_os_str()),
+            "login_shell() must advertise TERM=xterm-256color; got env {:?}",
+            spec.env
+        );
     }
 }

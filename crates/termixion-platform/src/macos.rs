@@ -373,6 +373,33 @@ mod tests {
         );
     }
 
+    /// A login-shell spec carries `TERM` all the way to the child through a real PTY. This is the
+    /// regression guard for trmx-37: a GUI launch inherits no `$TERM`, so without the spec forcing it
+    /// the child shell would see an empty `TERM` (breaking `clear` and ZLE backspace/delete). We reuse
+    /// `login_shell()`'s env but run a non-interactive `/bin/sh` that prints `$TERM` and exits, so the
+    /// reader reaches EOF. The spec's `TERM` overrides any inherited value (portable-pty layers
+    /// `cmd.env` over the inherited environment), so the assertion holds regardless of the parent's
+    /// `$TERM` — including CI/GUI parents that have none.
+    #[test]
+    fn login_shell_term_reaches_child_through_real_pty() {
+        let login = SessionSpec::login_shell();
+        // Same env as the production login shell, but a child that prints $TERM and exits.
+        let mut spec = SessionSpec::shell("/bin/sh");
+        spec.args.push("-c".into());
+        spec.args.push("printf 'TERM=[%s]' \"$TERM\"".into());
+        spec.env = login.env;
+
+        let factory = MacosPtyFactory;
+        let mut backend = factory
+            .spawn(&spec, PtySize::new(24, 80))
+            .expect("spawn sh");
+        let out = drain(&mut *backend);
+        assert!(
+            out.contains("TERM=[xterm-256color]"),
+            "the login shell must export TERM=xterm-256color to the child; got: {out:?}"
+        );
+    }
+
     /// The split output reader (ADR-0001 streaming) reads real PTY output on its own, can only be
     /// taken once, and leaves the control side (kill) working.
     #[test]
