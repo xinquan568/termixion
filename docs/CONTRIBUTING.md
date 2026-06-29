@@ -96,6 +96,11 @@ cross-platform/seam behavior; Vitest for the frontend). The pre-push `cargo test
   (`… (trmx-<N>)`); link it in the PR body with `Closes #<N>`. **Machine-enforced** by the
   `r9-issue-link` CI check (the `commit-msg` hook gives fast local feedback). See
   `.claude/rules/architecture.md` R9.
+- **Adding a *new* required check?** A status check must **run once on a PR** before GitHub will let you
+  add it to branch protection — neither the Settings search box nor the API accepts a check name it has
+  never seen report. So: land the workflow on the default branch, **open a PR to trigger the check once**,
+  then mark it required. (Doubly so for `r9-issue-link`: it runs on `pull_request_target`, so it only
+  fires for PRs opened *after* it's on the default branch.)
 - **One PR per task**, conventional-commits messages.
 - **`A-1` and `P0-5` are done directly; `A-2` through `E` are driven through the `issue2pr` skill**
   (manifest mode + the `termixion` profile, `--reviewer-backend codex`). *(A-2 itself was done directly
