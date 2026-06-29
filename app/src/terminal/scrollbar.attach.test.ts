@@ -160,18 +160,25 @@ describe("attachScrollbar", () => {
     sb.dispose();
   });
 
-  it("stops responding to host mouse events after dispose", () => {
-    const host = makeHost();
+  it("removes the host mouse listener on dispose (no leaked listener mutates the detached overlay)", () => {
+    const host = makeHost(800, 480); // cellWidth = 10px
     const fake = makeFakeTerminal();
     const sb = attachScrollbar(host, fake.terminal);
+    const thumb = host.querySelector(".termixion-scrollbar__thumb") as HTMLElement;
+
+    // Show the bar; at rest (not hovering) the handle is 0.5 cell = 5px wide.
     fake.active.viewportY = 40;
     fake.fireScroll();
+    expect(thumb.style.width).toBe("5px");
 
     sb.dispose();
     expect(host.querySelector(".termixion-scrollbar")).toBeNull();
 
-    // A post-dispose mousemove must neither throw nor resurrect the overlay.
+    // A post-dispose mousemove inside the hover zone must NOT run a recompute: if the listener leaked it
+    // would widen the (still-referenced, now-detached) thumb to 10px. Asserting it stays 5px proves the
+    // listener was actually removed, not merely that the container was detached.
     expect(() => moveTo(host, 795)).not.toThrow();
+    expect(thumb.style.width).toBe("5px");
     expect(host.querySelector(".termixion-scrollbar")).toBeNull();
   });
 
