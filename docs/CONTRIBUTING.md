@@ -29,6 +29,15 @@ cd crates/termixion-tauri && cargo tauri build --debug   # debug
 cd crates/termixion-tauri && cargo tauri build            # release
 ```
 
+Or use the helper **`scripts/rebuild.sh`** (`[--release] [--no-launch] [--dev]`) — it builds from the
+right directory and, by default, quits any running instance and relaunches the fresh `.app`:
+
+```sh
+scripts/rebuild.sh             # debug build + relaunch
+scripts/rebuild.sh --release   # release build + relaunch
+scripts/rebuild.sh --dev       # cargo tauri dev (hot reload)
+```
+
 (Frontend wiring lives in `tauri.conf.json`: `frontendDist: ../../app/dist`,
 `beforeBuildCommand: pnpm --filter app build`.)
 
