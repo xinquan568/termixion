@@ -28,6 +28,49 @@ body {
 }
 
 /*
+ * trmx-41 — the terminal hosts the Kitty-style scrollbar overlay, so it is the positioning context for
+ * the absolutely-positioned bar appended into it (TerminalView → attachScrollbar).
+ */
+.terminal-host {
+  position: relative;
+}
+
+/*
+ * trmx-41 — suppress xterm's own viewport scrollbar; the Kitty-style overlay below is the only bar. The
+ * viewport stays scrollable (wheel / keyboard), it just draws no native track. Tauri on macOS is a
+ * WKWebView, so `::-webkit-scrollbar` is the effective rule; `scrollbar-width` covers other engines.
+ */
+.terminal-host .xterm-viewport {
+  scrollbar-width: none;
+}
+.terminal-host .xterm-viewport::-webkit-scrollbar {
+  display: none;
+}
+
+/*
+ * trmx-41 — the Kitty-style scrollbar overlay. It only appears while the view is scrolled back (the
+ * `display` is toggled from JS, see scrollbar.ts). The container never intercepts terminal input
+ * (pointer-events: none); hover is detected on the host. The handle is a thin, semi-transparent, rounded
+ * bar on the right edge that widens on hover; track + thumb geometry/colour/opacity are written inline by
+ * applyScrollbar(). The width/opacity transition gives Kitty's smooth hover expand.
+ */
+.termixion-scrollbar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 10;
+}
+.termixion-scrollbar__track,
+.termixion-scrollbar__thumb {
+  position: absolute;
+  transition:
+    width 80ms ease,
+    opacity 80ms ease;
+}
+
+/*
  * The fit addon sizes xterm's grid to fill `.terminal-host`; xterm sets `.xterm`'s own pixel size to
  * match the grid. We only nudge it flush to the top-left so any sub-cell remainder falls at the
  * bottom-right (shown as the black body background), rather than xterm centering or insetting it.

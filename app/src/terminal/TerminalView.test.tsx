@@ -6,11 +6,23 @@
 // real-DOM-but-no-xterm unit test (jsdom has no ResizeObserver).
 import { describe, it, expect, vi } from "vitest";
 import { render } from "@testing-library/react";
-import { TerminalView, type ResizeObservation } from "./TerminalView";
+import {
+  TerminalView,
+  type ResizeObservation,
+  type AttachScrollbar,
+} from "./TerminalView";
 import type { MountDeps, TerminalHandle } from "./mountTerminal";
+import type { AttachScrollbarHandle } from "./scrollbar";
 
 // A no-op resize seam for tests that don't care about the resize path.
 const noopObserve: ResizeObservation = () => () => {};
+
+// A no-op scrollbar seam (trmx-41) for tests that don't exercise it; returns a disposable handle.
+const noopScrollbarHandle: AttachScrollbarHandle = {
+  recompute: () => {},
+  dispose: () => {},
+};
+const noopAttachScrollbar: AttachScrollbar = () => noopScrollbarHandle;
 
 describe("TerminalView", () => {
   it("mounts into its container element and disposes on unmount", () => {
@@ -26,7 +38,11 @@ describe("TerminalView", () => {
     );
 
     const { container, unmount } = render(
-      <TerminalView mount={mount} observeResize={noopObserve} />,
+      <TerminalView
+        mount={mount}
+        observeResize={noopObserve}
+        attachScrollbar={noopAttachScrollbar}
+      />,
     );
 
     expect(mount).toHaveBeenCalledTimes(1);
@@ -52,7 +68,12 @@ describe("TerminalView", () => {
     const onReady = vi.fn();
 
     render(
-      <TerminalView mount={mount} onReady={onReady} observeResize={noopObserve} />,
+      <TerminalView
+        mount={mount}
+        onReady={onReady}
+        observeResize={noopObserve}
+        attachScrollbar={noopAttachScrollbar}
+      />,
     );
 
     expect(onReady).toHaveBeenCalledTimes(1);
@@ -80,7 +101,11 @@ describe("TerminalView", () => {
     });
 
     const { unmount } = render(
-      <TerminalView mount={mount} observeResize={observeResize} />,
+      <TerminalView
+        mount={mount}
+        observeResize={observeResize}
+        attachScrollbar={noopAttachScrollbar}
+      />,
     );
 
     // The component observes the very element it mounted the terminal into.
@@ -95,5 +120,77 @@ describe("TerminalView", () => {
     // Teardown stops observing.
     unmount();
     expect(disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("attaches the scrollbar to the host + terminal and disposes it on unmount (trmx-41)", () => {
+    const dispose = vi.fn();
+    const handle: TerminalHandle = {
+      terminal: { id: "real-terminal" } as never,
+      renderer: "webgl",
+      fit: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const mount = vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(
+      () => handle,
+    );
+    const attachScrollbar = vi.fn<AttachScrollbar>(() => ({
+      recompute: vi.fn(),
+      dispose,
+    }));
+
+    const { unmount } = render(
+      <TerminalView
+        mount={mount}
+        observeResize={noopObserve}
+        attachScrollbar={attachScrollbar}
+      />,
+    );
+
+    // It attaches to the same host it mounted into, with the mounted terminal.
+    expect(attachScrollbar).toHaveBeenCalledTimes(1);
+    expect(attachScrollbar.mock.calls[0][0]).toBe(mount.mock.calls[0][0]);
+    expect(attachScrollbar.mock.calls[0][1]).toBe(handle.terminal);
+
+    unmount();
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("recomputes the scrollbar AFTER re-fitting on resize, so it reads fresh rows/cols (trmx-41)", () => {
+    const calls: string[] = [];
+    const fit = vi.fn(() => calls.push("fit"));
+    const handle: TerminalHandle = {
+      terminal: {} as never,
+      renderer: "webgl",
+      fit,
+      dispose: vi.fn(),
+    };
+    const mount = vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(
+      () => handle,
+    );
+
+    let fireResize: (() => void) | undefined;
+    const observeResize = vi.fn<ResizeObservation>((_target, onResize) => {
+      fireResize = onResize;
+      return () => {};
+    });
+
+    const recompute = vi.fn(() => calls.push("recompute"));
+    const attachScrollbar = vi.fn<AttachScrollbar>(() => ({
+      recompute,
+      dispose: vi.fn(),
+    }));
+
+    render(
+      <TerminalView
+        mount={mount}
+        observeResize={observeResize}
+        attachScrollbar={attachScrollbar}
+      />,
+    );
+
+    fireResize?.();
+
+    // fit must run before recompute, otherwise the scrollbar would read stale rows/cols.
+    expect(calls).toEqual(["fit", "recompute"]);
   });
 });
