@@ -17,6 +17,11 @@ import {
   type TerminalHandle,
   type TerminalLike,
 } from "./mountTerminal";
+import {
+  attachScrollbar as realAttachScrollbar,
+  type AttachScrollbarHandle,
+  type ScrollbarTerminalLike,
+} from "./scrollbar";
 
 // Is a WebGL2 context actually obtainable? Preflighting here means we throw *before* constructing
 // `WebglAddon` on unsupported hardware — `WebglAddon.activate()` registers some renderer listeners
@@ -63,6 +68,16 @@ const realObserveResize: ResizeObservation = (target, onResize) => {
   return () => observer.disconnect();
 };
 
+/**
+ * Mount the Kitty-style scrollbar (trmx-41) — injectable so the React wiring stays unit-testable with a
+ * fake (jsdom has no layout). Defaults to the real overlay.
+ */
+export type AttachScrollbar = (
+  host: HTMLElement,
+  terminal: ScrollbarTerminalLike,
+  opts?: { document?: Document },
+) => AttachScrollbarHandle;
+
 export interface TerminalViewProps {
   /** Called once the terminal is mounted, so the parent can attach it to a PTY session (C-2). */
   onReady?: (handle: TerminalHandle) => void;
@@ -72,6 +87,8 @@ export interface TerminalViewProps {
   deps?: MountDeps;
   /** Injection seam for tests; defaults to a real `ResizeObserver` on the host element. */
   observeResize?: ResizeObservation;
+  /** Injection seam for tests; defaults to the real Kitty-style scrollbar (trmx-41). */
+  attachScrollbar?: AttachScrollbar;
 }
 
 export function TerminalView({
@@ -79,6 +96,7 @@ export function TerminalView({
   mount = mountTerminal,
   deps = realDeps,
   observeResize = realObserveResize,
+  attachScrollbar = realAttachScrollbar,
 }: TerminalViewProps) {
   const hostRef = useRef<HTMLDivElement>(null);
 
@@ -87,14 +105,27 @@ export function TerminalView({
     if (!host) return;
     const handle = mount(host, deps);
     onReady?.(handle);
+    // trmx-41: the Kitty-style scrollbar overlays the same host. The real xterm `Terminal` carries the
+    // members `ScrollbarTerminalLike` needs; this is the localized adapter cast (cf. the `as unknown as
+    // TerminalLike` casts in `realDeps`), the one place our narrow interface meets xterm's wider type.
+    const scrollbar = attachScrollbar(
+      host,
+      handle.terminal as unknown as ScrollbarTerminalLike,
+      { document: host.ownerDocument },
+    );
     // Keep the grid filling the host as the window resizes (issue 2): every size change re-fits, which
-    // makes xterm fire onResize → the PTY grid is resized to match (wired in useBackend).
-    const stopObserving = observeResize(host, () => handle.fit());
+    // makes xterm fire onResize → the PTY grid is resized to match (wired in useBackend). Recompute the
+    // scrollbar AFTER the fit so it reads the freshly-resized rows/cols (trmx-41).
+    const stopObserving = observeResize(host, () => {
+      handle.fit();
+      scrollbar.recompute();
+    });
     return () => {
       stopObserving();
+      scrollbar.dispose();
       handle.dispose();
     };
-  }, [mount, deps, onReady, observeResize]);
+  }, [mount, deps, onReady, observeResize, attachScrollbar]);
 
   return <div ref={hostRef} data-testid="terminal" className="terminal-host" />;
 }
