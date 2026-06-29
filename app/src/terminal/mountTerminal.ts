@@ -16,7 +16,7 @@
 /** The slice of an xterm `Terminal` this strategy drives (incl. the C-2 PTY I/O surface). */
 export interface TerminalLike {
   open(container: HTMLElement): void;
-  loadAddon(addon: AddonLike): void;
+  loadAddon(addon: AddonLike | FitLike): void;
   /** Write PTY output bytes into the terminal. */
   write(data: Uint8Array): void;
   /** Subscribe to user keystrokes (xterm delivers them as a string). */
@@ -33,20 +33,33 @@ export interface AddonLike {
   dispose(): void;
 }
 
-/** Factories for the terminal and its WebGL addon — real ones in the app, fakes in tests. */
+/**
+ * The slice of the `@xterm/addon-fit` `FitAddon` this strategy drives. `fit()` resizes xterm's cell
+ * grid to fill the host element's current size — the renderer-agnostic engine behind issues 1 & 2
+ * (the terminal owns the whole window and its content scales as the window resizes).
+ */
+export interface FitLike {
+  fit(): void;
+  dispose(): void;
+}
+
+/** Factories for the terminal and its WebGL + fit addons — real ones in the app, fakes in tests. */
 export interface MountDeps {
   createTerminal(): TerminalLike;
   createWebglAddon(): AddonLike;
+  createFitAddon(): FitLike;
 }
 
 /** Which renderer is currently active. */
 export type RendererKind = "webgl" | "dom";
 
-/** A mounted terminal plus the active renderer and a teardown. */
+/** A mounted terminal plus the active renderer, a re-fit hook, and a teardown. */
 export interface TerminalHandle {
   terminal: TerminalLike;
   /** `"webgl"` while the addon is active; flips to `"dom"` on fallback / context loss. */
   renderer: RendererKind;
+  /** Re-fit the cell grid to the host element's current size — called on container/window resize. */
+  fit(): void;
   dispose(): void;
 }
 
@@ -61,16 +74,29 @@ export function mountTerminal(
   const terminal = deps.createTerminal();
   terminal.open(container);
 
-  // Default to the DOM renderer; upgrade to WebGL only if the addon actually activates.
+  // The fit addon is renderer-agnostic and always available, so it is loaded unconditionally (unlike
+  // WebGL, which may be missing). It sizes xterm's grid to the host element so the terminal fills the
+  // whole window and its content re-flows as the window resizes.
+  const fit = deps.createFitAddon();
+  terminal.loadAddon(fit);
+
+  // Declared outside the try so dispose/catch can tear down a WebGL addon that was created (and
+  // possibly already registered with the terminal by loadAddon) before activation threw.
+  let webgl: AddonLike | undefined;
+
+  // Default to the DOM renderer; upgrade to WebGL only if the addon actually activates. dispose()
+  // always tears down the fit addon + terminal, plus the WebGL addon if one was created.
   const handle: TerminalHandle = {
     terminal,
     renderer: "dom",
-    dispose: () => terminal.dispose(),
+    fit: () => fit.fit(),
+    dispose: () => {
+      webgl?.dispose();
+      fit.dispose();
+      terminal.dispose();
+    },
   };
 
-  // Declared outside the try so the catch can tear down an addon that was created (and possibly
-  // already registered with the terminal by loadAddon) before activation threw.
-  let webgl: AddonLike | undefined;
   try {
     webgl = deps.createWebglAddon();
     terminal.loadAddon(webgl); // throws if WebGL2 is unavailable / activation fails
@@ -80,16 +106,16 @@ export function mountTerminal(
       handle.renderer = "dom";
     });
     handle.renderer = "webgl";
-    handle.dispose = () => {
-      webgl?.dispose();
-      terminal.dispose();
-    };
   } catch {
     // WebGL unavailable / activation failed — dispose the half-registered addon (idempotent) so it
     // doesn't linger attached, then stay on the DOM renderer (already the default above).
     webgl?.dispose();
     handle.renderer = "dom";
   }
+
+  // Initial fit: size the grid to the host now that the terminal is open and its addons are loaded,
+  // so it fills the window from the first frame regardless of which renderer won above.
+  fit.fit();
 
   return handle;
 }

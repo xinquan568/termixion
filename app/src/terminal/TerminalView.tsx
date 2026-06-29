@@ -7,10 +7,12 @@
 import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import {
   mountTerminal,
   type AddonLike,
+  type FitLike,
   type MountDeps,
   type TerminalHandle,
   type TerminalLike,
@@ -42,6 +44,23 @@ const realDeps: MountDeps = {
     }
     return new WebglAddon() as unknown as AddonLike;
   },
+  createFitAddon: () => new FitAddon() as unknown as FitLike,
+};
+
+/**
+ * Observe `target` for size changes and invoke `onResize`; returns a teardown. Defaults to a
+ * `ResizeObserver` (fires once immediately, then on every layout change), but is injectable because
+ * jsdom has no `ResizeObserver` — so the resize path is unit-testable without a real layout engine.
+ */
+export type ResizeObservation = (
+  target: HTMLElement,
+  onResize: () => void,
+) => () => void;
+
+const realObserveResize: ResizeObservation = (target, onResize) => {
+  const observer = new ResizeObserver(() => onResize());
+  observer.observe(target);
+  return () => observer.disconnect();
 };
 
 export interface TerminalViewProps {
@@ -51,12 +70,15 @@ export interface TerminalViewProps {
   mount?: typeof mountTerminal;
   /** Injection seam for tests; defaults to the real xterm-backed factories. */
   deps?: MountDeps;
+  /** Injection seam for tests; defaults to a real `ResizeObserver` on the host element. */
+  observeResize?: ResizeObservation;
 }
 
 export function TerminalView({
   onReady,
   mount = mountTerminal,
   deps = realDeps,
+  observeResize = realObserveResize,
 }: TerminalViewProps) {
   const hostRef = useRef<HTMLDivElement>(null);
 
@@ -65,8 +87,14 @@ export function TerminalView({
     if (!host) return;
     const handle = mount(host, deps);
     onReady?.(handle);
-    return () => handle.dispose();
-  }, [mount, deps, onReady]);
+    // Keep the grid filling the host as the window resizes (issue 2): every size change re-fits, which
+    // makes xterm fire onResize → the PTY grid is resized to match (wired in useBackend).
+    const stopObserving = observeResize(host, () => handle.fit());
+    return () => {
+      stopObserving();
+      handle.dispose();
+    };
+  }, [mount, deps, onReady, observeResize]);
 
   return <div ref={hostRef} data-testid="terminal" className="terminal-host" />;
 }

@@ -8,13 +8,14 @@ import { describe, it, expect } from "vitest";
 import {
   mountTerminal,
   type AddonLike,
+  type FitLike,
   type MountDeps,
   type TerminalLike,
 } from "./mountTerminal";
 
 interface FakeTerminal extends TerminalLike {
   opened: HTMLElement | null;
-  addons: AddonLike[];
+  addons: Array<AddonLike | FitLike>;
   disposed: boolean;
 }
 function fakeTerminal(): FakeTerminal {
@@ -54,6 +55,23 @@ function fakeWebgl(): FakeWebgl {
   };
 }
 
+interface FakeFit extends FitLike {
+  fitCount: number;
+  disposed: boolean;
+}
+function fakeFit(): FakeFit {
+  return {
+    fitCount: 0,
+    disposed: false,
+    fit() {
+      this.fitCount += 1;
+    },
+    dispose() {
+      this.disposed = true;
+    },
+  };
+}
+
 // mountTerminal only forwards the container to terminal.open(); the fake stores it, so a bare
 // object stands in for a real DOM node and keeps this a pure unit test.
 const container = {} as HTMLElement;
@@ -65,6 +83,7 @@ describe("mountTerminal", () => {
     const deps: MountDeps = {
       createTerminal: () => term,
       createWebglAddon: () => webgl,
+      createFitAddon: () => fakeFit(),
     };
 
     const handle = mountTerminal(container, deps);
@@ -74,6 +93,57 @@ describe("mountTerminal", () => {
     expect(handle.renderer).toBe("webgl");
   });
 
+  it("loads the fit addon and fits the grid to the host on mount", () => {
+    const term = fakeTerminal();
+    const fit = fakeFit();
+    const deps: MountDeps = {
+      createTerminal: () => term,
+      createWebglAddon: () => fakeWebgl(),
+      createFitAddon: () => fit,
+    };
+
+    const handle = mountTerminal(container, deps);
+
+    // The fit addon is loaded so xterm's grid can track the host element's size...
+    expect(term.addons).toContain(fit);
+    // ...and the grid is fitted once on mount so the terminal fills its host from the start.
+    expect(fit.fitCount).toBe(1);
+    expect(handle.fit).toBeTypeOf("function");
+  });
+
+  it("re-fits the grid when handle.fit() is called (resize path)", () => {
+    const fit = fakeFit();
+    const deps: MountDeps = {
+      createTerminal: () => fakeTerminal(),
+      createWebglAddon: () => fakeWebgl(),
+      createFitAddon: () => fit,
+    };
+
+    const handle = mountTerminal(container, deps);
+    expect(fit.fitCount).toBe(1); // the initial mount fit
+
+    handle.fit();
+    handle.fit();
+
+    expect(fit.fitCount).toBe(3); // initial + two explicit re-fits
+  });
+
+  it("fits the grid even when WebGL is unavailable (DOM renderer)", () => {
+    const fit = fakeFit();
+    const deps: MountDeps = {
+      createTerminal: () => fakeTerminal(),
+      createWebglAddon: () => {
+        throw new Error("WebGL2 unavailable");
+      },
+      createFitAddon: () => fit,
+    };
+
+    const handle = mountTerminal(container, deps);
+
+    expect(handle.renderer).toBe("dom");
+    expect(fit.fitCount).toBe(1); // the fit addon is renderer-agnostic, so it still sizes the grid
+  });
+
   it("falls back to the DOM renderer when the WebGL addon cannot be created", () => {
     const term = fakeTerminal();
     const deps: MountDeps = {
@@ -81,6 +151,7 @@ describe("mountTerminal", () => {
       createWebglAddon: () => {
         throw new Error("WebGL2 unavailable");
       },
+      createFitAddon: () => fakeFit(),
     };
 
     const handle = mountTerminal(container, deps);
@@ -91,13 +162,17 @@ describe("mountTerminal", () => {
 
   it("falls back to DOM and disposes the half-registered addon when activation fails", () => {
     const term = fakeTerminal();
-    term.loadAddon = () => {
-      throw new Error("addon activation failed");
+    term.loadAddon = (addon) => {
+      // Only the WebGL addon's activation fails; the fit addon must still load.
+      if ((addon as AddonLike).onContextLoss) {
+        throw new Error("addon activation failed");
+      }
     };
     const webgl = fakeWebgl();
     const deps: MountDeps = {
       createTerminal: () => term,
       createWebglAddon: () => webgl,
+      createFitAddon: () => fakeFit(),
     };
 
     const handle = mountTerminal(container, deps);
@@ -114,6 +189,7 @@ describe("mountTerminal", () => {
     const deps: MountDeps = {
       createTerminal: () => term,
       createWebglAddon: () => webgl,
+      createFitAddon: () => fakeFit(),
     };
 
     const handle = mountTerminal(container, deps);
@@ -127,16 +203,19 @@ describe("mountTerminal", () => {
     expect(handle.renderer).toBe("dom");
   });
 
-  it("dispose() tears down both the addon and the terminal", () => {
+  it("dispose() tears down the fit addon, the WebGL addon, and the terminal", () => {
     const term = fakeTerminal();
     const webgl = fakeWebgl();
+    const fit = fakeFit();
 
     const handle = mountTerminal(container, {
       createTerminal: () => term,
       createWebglAddon: () => webgl,
+      createFitAddon: () => fit,
     });
     handle.dispose();
 
+    expect(fit.disposed).toBe(true);
     expect(webgl.disposed).toBe(true);
     expect(term.disposed).toBe(true);
   });

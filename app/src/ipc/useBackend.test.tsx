@@ -39,7 +39,12 @@ function fakeHandle() {
     },
     dispose() {},
   };
-  const handle: TerminalHandle = { terminal, renderer: "dom", dispose() {} };
+  const handle: TerminalHandle = {
+    terminal,
+    renderer: "dom",
+    fit() {},
+    dispose() {},
+  };
   return {
     handle,
     writes,
