@@ -109,6 +109,59 @@ describe("attachScrollbar", () => {
     sb.dispose();
   });
 
+  it("recomputes on a native viewport scroll (the wheel path that does NOT fire terminal.onScroll)", () => {
+    // Reproduces trmx-41: xterm SUPPRESSES its public `onScroll` for user-initiated viewport scrolling —
+    // the Viewport requests its scrollLines with suppressScrollEvent=true, so a wheel / trackpad /
+    // keyboard scroll-back never fires `onScroll`. The overlay must therefore also react to the
+    // `.xterm-viewport` element's native `scroll` event, or it stays hidden the whole time the user
+    // scrolls back through the scrollback.
+    const host = makeHost();
+    const viewport = document.createElement("div");
+    viewport.className = "xterm-viewport";
+    host.appendChild(viewport);
+
+    const fake = makeFakeTerminal();
+    const sb = attachScrollbar(host, fake.terminal);
+    const container = host.querySelector(".termixion-scrollbar") as HTMLElement;
+    const thumb = host.querySelector(".termixion-scrollbar__thumb") as HTMLElement;
+
+    // The user wheels back: xterm has updated the buffer's viewportY but fires NO onScroll. We
+    // deliberately do NOT call fake.fireScroll() — only the native viewport scroll event is dispatched.
+    fake.active.viewportY = 40;
+    viewport.dispatchEvent(new Event("scroll"));
+
+    expect(container.style.display).toBe("");
+    expect(thumb.style.height).not.toBe("");
+
+    // Back to the live bottom, again via the native scroll event only → hidden.
+    fake.active.viewportY = 100;
+    viewport.dispatchEvent(new Event("scroll"));
+    expect(container.style.display).toBe("none");
+
+    sb.dispose();
+  });
+
+  it("removes the viewport scroll listener on dispose (no leaked recompute on the detached overlay)", () => {
+    const host = makeHost();
+    const viewport = document.createElement("div");
+    viewport.className = "xterm-viewport";
+    host.appendChild(viewport);
+
+    const fake = makeFakeTerminal();
+    const sb = attachScrollbar(host, fake.terminal);
+    const container = host.querySelector(".termixion-scrollbar") as HTMLElement;
+
+    sb.dispose();
+    expect(host.querySelector(".termixion-scrollbar")).toBeNull();
+
+    // A post-dispose viewport scroll inside the scroll-back range must NOT run a recompute: if the
+    // listener leaked, recompute would un-hide the (now-detached) container. Asserting it stays "none"
+    // proves the listener was removed.
+    fake.active.viewportY = 40;
+    expect(() => viewport.dispatchEvent(new Event("scroll"))).not.toThrow();
+    expect(container.style.display).toBe("none");
+  });
+
   it("recomputes on a buffer change (alt-screen hides the bar even without a scroll event)", () => {
     const host = makeHost();
     const fake = makeFakeTerminal();
