@@ -10,9 +10,11 @@ import {
   TerminalView,
   type ResizeObservation,
   type AttachScrollbar,
+  type AppearanceObservation,
 } from "./TerminalView";
 import type { MountDeps, TerminalHandle } from "./mountTerminal";
 import type { AttachScrollbarHandle } from "./scrollbar";
+import { iterm2Theme } from "./iterm2Theme";
 
 // A no-op resize seam for tests that don't care about the resize path.
 const noopObserve: ResizeObservation = () => () => {};
@@ -192,5 +194,74 @@ describe("TerminalView", () => {
 
     // fit must run before recompute, otherwise the scrollbar would read stale rows/cols.
     expect(calls).toEqual(["fit", "recompute"]);
+  });
+
+  it("switches the live terminal theme when the system appearance changes (trmx-44)", () => {
+    // A terminal whose options.theme can be reassigned at runtime (xterm repaints on assignment).
+    const terminal = { options: {} as { theme?: unknown } };
+    const handle: TerminalHandle = {
+      terminal: terminal as never,
+      renderer: "webgl",
+      fit: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const mount = vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(
+      () => handle,
+    );
+
+    // Capture the appearance callback so the test can drive an OS light/dark switch.
+    let fireAppearance: ((prefersDark: boolean) => void) | undefined;
+    const observeAppearance = vi.fn<AppearanceObservation>((onChange) => {
+      fireAppearance = onChange;
+      return () => {};
+    });
+
+    render(
+      <TerminalView
+        mount={mount}
+        observeResize={noopObserve}
+        attachScrollbar={noopAttachScrollbar}
+        observeAppearance={observeAppearance}
+      />,
+    );
+
+    expect(observeAppearance).toHaveBeenCalledTimes(1);
+
+    // System switches to light → the terminal adopts iTerm2's light palette, without a remount.
+    fireAppearance?.(false);
+    expect(terminal.options.theme).toEqual(iterm2Theme("light"));
+    expect(mount).toHaveBeenCalledTimes(1);
+
+    // …and back to dark.
+    fireAppearance?.(true);
+    expect(terminal.options.theme).toEqual(iterm2Theme("dark"));
+  });
+
+  it("stops observing the system appearance on unmount (trmx-44: no leaked listener)", () => {
+    const handle: TerminalHandle = {
+      terminal: { options: {} } as never,
+      renderer: "webgl",
+      fit: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const mount = vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(
+      () => handle,
+    );
+
+    const stopAppearance = vi.fn();
+    const observeAppearance = vi.fn<AppearanceObservation>(() => stopAppearance);
+
+    const { unmount } = render(
+      <TerminalView
+        mount={mount}
+        observeResize={noopObserve}
+        attachScrollbar={noopAttachScrollbar}
+        observeAppearance={observeAppearance}
+      />,
+    );
+
+    expect(stopAppearance).not.toHaveBeenCalled();
+    unmount();
+    expect(stopAppearance).toHaveBeenCalledTimes(1);
   });
 });
