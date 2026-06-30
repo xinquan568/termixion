@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: ISC */
 /* Copyright (c) 2026 Eric Y. Liu */
 /*
- * trmx-35 — the terminal owns the whole window. No body chrome, no padding/margins: the xterm
- * surface is flush to all four edges, like iTerm2 / Kitty. The host fills the viewport so the fit
- * addon (TerminalView) can size the cell grid to it and keep it filled as the window resizes.
+ * trmx-35 — the terminal owns the whole window. No body chrome: the host fills the viewport so the fit
+ * addon (TerminalView) can size the cell grid to it and keep it filled as the window resizes. (trmx-44
+ * then insets the grid by iTerm2's small default margins on `.xterm` — the window itself stays full-bleed.)
  */
 html,
 body,
@@ -15,10 +15,21 @@ body,
 }
 
 body {
-  /* Match xterm's default theme background so the sub-cell remainder reads as the terminal, not a gap. */
-  background: #000;
+  /*
+   * trmx-44 — match iTerm2's default background so the grid inset + sub-cell remainder read as the
+   * terminal, not a gap. iTerm2's default profile is adaptive: dark #15191F / light #FAFAFA, following the
+   * system appearance. JS keeps this in sync on live appearance changes (TerminalView); this CSS is the
+   * no-flash initial paint.
+   */
+  background: #15191f;
   /* The terminal manages its own scrollback; never let the page itself scroll. */
   overflow: hidden;
+}
+
+@media (prefers-color-scheme: light) {
+  body {
+    background: #fafafa;
+  }
 }
 
 .app,
@@ -71,10 +82,14 @@ body {
 }
 
 /*
- * The fit addon sizes xterm's grid to fill `.terminal-host`; xterm sets `.xterm`'s own pixel size to
- * match the grid. We only nudge it flush to the top-left so any sub-cell remainder falls at the
- * bottom-right (shown as the black body background), rather than xterm centering or insetting it.
+ * trmx-44 — iTerm2's default grid insets (TerminalMargin 5pt / TerminalVMargin 2pt). The fit addon
+ * subtracts the `.xterm` element's OWN padding when sizing the grid (see addon-fit proposeDimensions), so
+ * the window stays full-bleed (trmx-35) while the grid is inset by these margins; the inset area shows the
+ * theme background. `-webkit-font-smoothing` matches iTerm2's default anti-aliasing — best-effort: the
+ * WebGL renderer rasterizes glyphs itself, so this mainly affects the DOM-renderer fallback.
  */
 .terminal-host .xterm {
-  padding: 0;
+  padding: 2px 5px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }

@@ -22,6 +22,12 @@ import {
   type AttachScrollbarHandle,
   type ScrollbarTerminalLike,
 } from "./scrollbar";
+import {
+  initialAppearanceFromWindow,
+  iterm2Theme,
+  iterm2TerminalOptions,
+  prefersDarkToMode,
+} from "./iterm2Theme";
 
 // Is a WebGL2 context actually obtainable? Preflighting here means we throw *before* constructing
 // `WebglAddon` on unsupported hardware — `WebglAddon.activate()` registers some renderer listeners
@@ -35,14 +41,15 @@ function supportsWebgl2(): boolean {
 }
 
 // Adapter seam: bridge the real xterm classes to the strategy's small interfaces. The casts are
-// localized here — the one place our pure logic meets the external library's wider types.
-const realDeps: MountDeps = {
+// localized here — the one place our pure logic meets the external library's wider types. Exported so the
+// display chokepoint is unit-testable (realDeps.test.ts asserts the iTerm2 option set is what reaches
+// `new Terminal`). trmx-44: the options come from iterm2TerminalOptions, and the initial palette is chosen
+// from the system appearance (live light/dark switching is wired in TerminalView's effect below).
+export const realDeps: MountDeps = {
   createTerminal: () =>
-    new Terminal({
-      convertEol: true,
-      fontFamily: "monospace",
-      cursorBlink: true,
-    }) as unknown as TerminalLike,
+    new Terminal(
+      iterm2TerminalOptions(initialAppearanceFromWindow()),
+    ) as unknown as TerminalLike,
   createWebglAddon: () => {
     if (!supportsWebgl2()) {
       throw new Error("WebGL2 is not available; using the DOM renderer");
@@ -69,6 +76,26 @@ const realObserveResize: ResizeObservation = (target, onResize) => {
 };
 
 /**
+ * trmx-44: observe the system light/dark appearance and invoke `onChange(prefersDark)` on every switch;
+ * returns a teardown. iTerm2's default profile is adaptive (separate light/dark colors that follow the OS),
+ * so the live terminal must repaint when the appearance changes. Injectable for tests; the default uses
+ * `prefers-color-scheme` and is a no-op where `matchMedia` is unavailable (jsdom / headless contexts).
+ */
+export type AppearanceObservation = (
+  onChange: (prefersDark: boolean) => void,
+) => () => void;
+
+const realObserveAppearance: AppearanceObservation = (onChange) => {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return () => {};
+  }
+  const mql = window.matchMedia("(prefers-color-scheme: dark)");
+  const handler = (event: MediaQueryListEvent) => onChange(event.matches);
+  mql.addEventListener("change", handler);
+  return () => mql.removeEventListener("change", handler);
+};
+
+/**
  * Mount the Kitty-style scrollbar (trmx-41) — injectable so the React wiring stays unit-testable with a
  * fake (jsdom has no layout). Defaults to the real overlay.
  */
@@ -89,6 +116,8 @@ export interface TerminalViewProps {
   observeResize?: ResizeObservation;
   /** Injection seam for tests; defaults to the real Kitty-style scrollbar (trmx-41). */
   attachScrollbar?: AttachScrollbar;
+  /** Injection seam for tests; defaults to a real `prefers-color-scheme` listener (trmx-44). */
+  observeAppearance?: AppearanceObservation;
 }
 
 export function TerminalView({
@@ -97,6 +126,7 @@ export function TerminalView({
   deps = realDeps,
   observeResize = realObserveResize,
   attachScrollbar = realAttachScrollbar,
+  observeAppearance = realObserveAppearance,
 }: TerminalViewProps) {
   const hostRef = useRef<HTMLDivElement>(null);
 
@@ -120,12 +150,27 @@ export function TerminalView({
       handle.fit();
       scrollbar.recompute();
     });
+    // trmx-44: iTerm2's default theme is adaptive — repaint the live terminal when the system appearance
+    // flips. Reassigning `terminal.options.theme` makes xterm repaint without a remount; we also keep the
+    // host/body background (the inset + sub-cell remainder) in sync, then recompute the scrollbar (its
+    // handle colour derives from the theme foreground).
+    const stopObservingAppearance = observeAppearance((prefersDark) => {
+      const theme = iterm2Theme(prefersDarkToMode(prefersDark));
+      (handle.terminal as unknown as { options: { theme?: typeof theme } }).options.theme = theme;
+      if (theme.background) {
+        host.style.background = theme.background;
+        const body = host.ownerDocument?.body;
+        if (body) body.style.background = theme.background;
+      }
+      scrollbar.recompute();
+    });
     return () => {
       stopObserving();
+      stopObservingAppearance();
       scrollbar.dispose();
       handle.dispose();
     };
-  }, [mount, deps, onReady, observeResize, attachScrollbar]);
+  }, [mount, deps, onReady, observeResize, attachScrollbar, observeAppearance]);
 
   return <div ref={hostRef} data-testid="terminal" className="terminal-host" />;
 }
