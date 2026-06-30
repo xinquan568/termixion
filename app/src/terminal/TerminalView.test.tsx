@@ -196,7 +196,7 @@ describe("TerminalView", () => {
     expect(calls).toEqual(["fit", "recompute"]);
   });
 
-  it("switches the live terminal theme when the system appearance changes (trmx-44)", () => {
+  it("switches the live terminal theme, syncs the background, and recomputes the scrollbar on appearance change (trmx-44)", () => {
     // A terminal whose options.theme can be reassigned at runtime (xterm repaints on assignment).
     const terminal = { options: {} as { theme?: unknown } };
     const handle: TerminalHandle = {
@@ -216,25 +216,47 @@ describe("TerminalView", () => {
       return () => {};
     });
 
+    // Spy the scrollbar so we can assert the appearance switch recomputes it (its handle colour derives
+    // from the theme foreground).
+    const recompute = vi.fn();
+    const attachScrollbar = vi.fn<AttachScrollbar>(() => ({
+      recompute,
+      dispose: vi.fn(),
+    }));
+
     render(
       <TerminalView
         mount={mount}
         observeResize={noopObserve}
-        attachScrollbar={noopAttachScrollbar}
+        attachScrollbar={attachScrollbar}
         observeAppearance={observeAppearance}
       />,
     );
 
     expect(observeAppearance).toHaveBeenCalledTimes(1);
+    const host = mount.mock.calls[0][0];
+    const body = host.ownerDocument.body;
 
     // System switches to light → the terminal adopts iTerm2's light palette, without a remount.
     fireAppearance?.(false);
     expect(terminal.options.theme).toEqual(iterm2Theme("light"));
     expect(mount).toHaveBeenCalledTimes(1);
+    // The host AND body background are synced to the active theme (no black flash in the inset margin),
+    // and the scrollbar is recomputed. (Compare host===body + light≠dark rather than a color string, to
+    // stay robust to jsdom's hex/rgb serialization.)
+    const lightBg = host.style.background;
+    expect(lightBg).not.toBe("");
+    expect(body.style.background).toBe(lightBg);
+    expect(recompute).toHaveBeenCalledTimes(1);
 
-    // …and back to dark.
+    // …and back to dark: theme + backgrounds update again, scrollbar recomputed again.
     fireAppearance?.(true);
     expect(terminal.options.theme).toEqual(iterm2Theme("dark"));
+    const darkBg = host.style.background;
+    expect(darkBg).not.toBe("");
+    expect(darkBg).not.toBe(lightBg);
+    expect(body.style.background).toBe(darkBg);
+    expect(recompute).toHaveBeenCalledTimes(2);
   });
 
   it("stops observing the system appearance on unmount (trmx-44: no leaked listener)", () => {
