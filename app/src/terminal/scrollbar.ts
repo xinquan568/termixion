@@ -277,6 +277,19 @@ export function attachScrollbar(
   const scrollSub = terminal.onScroll(recompute);
   const bufferSub = terminal.buffer.onBufferChange(recompute);
 
+  // trmx-41: xterm's public `onScroll` is SUPPRESSED for user-initiated viewport scrolling. A wheel /
+  // trackpad / keyboard scroll-back goes through the Viewport, which requests its `scrollLines` with
+  // `suppressScrollEvent: true`; `BufferService.scrollLines` then fires `onScroll` only when that flag is
+  // false (`t || this._onScroll.fire(...)`). So the bar above would never appear *while the user scrolls*
+  // — only for content-driven / programmatic scrolls. The `.xterm-viewport` element's native DOM `scroll`
+  // event, by contrast, fires for every viewport move, so we listen there too. xterm registers its own
+  // viewport scroll handler during `terminal.open()` (before this attach), so by the time ours runs the
+  // buffer's `viewportY` has already been updated. The element is absent under fakes (headless tests with
+  // no real xterm DOM); we simply skip it then.
+  const viewport = host.querySelector<HTMLElement>(".xterm-viewport");
+  const onViewportScroll = () => recompute();
+  viewport?.addEventListener("scroll", onViewportScroll, { passive: true });
+
   // Hover detection: the pointer is "over the scrollbar" when it is within (hover-width + gap) cell
   // widths of the host's right edge. The overlay stays pointer-events:none, so we read pointer x off the
   // host's own mousemove instead of putting an interactive element over the terminal.
@@ -307,6 +320,7 @@ export function attachScrollbar(
     dispose() {
       scrollSub.dispose();
       bufferSub.dispose();
+      viewport?.removeEventListener("scroll", onViewportScroll);
       host.removeEventListener("mousemove", onMouseMove);
       host.removeEventListener("mouseleave", onMouseLeave);
       overlay.container.remove();
