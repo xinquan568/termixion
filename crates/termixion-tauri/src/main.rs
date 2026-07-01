@@ -12,9 +12,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tauri::ipc::Channel;
-use tauri::{Manager, State, WindowEvent};
+use tauri::{Emitter, Manager, State, WindowEvent};
 use termixion_core::{PtySize, Session, SessionSpec};
 use termixion_platform::MacosPtyFactory;
+
+mod menu;
 
 /// The single active terminal session (one window / one tab for v0.0.1). Command handlers `write`/
 /// `resize` the session while the reader thread streams its output concurrently. `generation` tags
@@ -220,8 +222,24 @@ fn main() -> ExitCode {
     }
 
     let result = tauri::Builder::default()
+        // trmx-48: auto-update (updater + relaunch) and opening external links from the About page.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(PtyState::default())
         .manage(SmokeDir(smoke))
+        // trmx-48: install the app menu; "About Termixion" / "Settings…" emit `open-settings` so the
+        // webview opens the Settings → About overlay.
+        .setup(|app| {
+            let menu = menu::build_menu(app.handle())?;
+            app.set_menu(menu)?;
+            Ok(())
+        })
+        .on_menu_event(|app, event| {
+            if let Some(signal) = menu::menu_event_signal(event.id().0.as_str()) {
+                let _ = app.emit(signal, ());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             core_version,
             open_pty,

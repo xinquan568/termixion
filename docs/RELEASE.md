@@ -94,6 +94,46 @@ Any drift fails the check (and, once wired, the release job).
 > which must build with the `dmg` bundle target (via `tauri-action` / a release-only bundle target). E-2
 > owns producing and verifying that `.dmg`; E-2a only fixes its name + identity.
 
+## Auto-update (trmx-48) — the updater signing key + manifest
+
+The app self-updates (Settings → About → "Check for updates"). The in-app updater reads a signed
+manifest from a fixed endpoint and verifies the downloaded artifact against a **public** key baked into
+the app; the matching **private** key signs the artifact at release time.
+
+**What is committed (safe):** the release-only overlay
+[`crates/termixion-tauri/tauri.updater.conf.json`](../crates/termixion-tauri/tauri.updater.conf.json)
+carries the **public** key (`plugins.updater.pubkey`), the endpoint
+(`https://github.com/xinquan568/termixion/releases/latest/download/latest.json`), and
+`bundle.createUpdaterArtifacts: true`. It is applied **only** by the release job (`--config
+tauri.updater.conf.json`), so the default `cargo tauri build --debug` in CI never needs the signing key.
+
+**What is a secret (never committed, R5):**
+
+| Secret | What it is | How to get it |
+|---|---|---|
+| `TAURI_SIGNING_PRIVATE_KEY` | The updater **private** key (minisign) — signs the update artifact | `cargo tauri signer generate -w ~/.tauri/termixion-updater.key`, then paste the **private** key file's contents. **Required** — the release job's guard fails without it. |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | The password for that key (if you set one) | Chosen at `signer generate` time. Optional — omit if the key has no password. |
+
+**Rotating / issuing the keypair (one-time):**
+
+1. `cargo tauri signer generate -w ~/.tauri/termixion-updater.key` → prints a **public** key and writes
+   the **private** key file. Keep the private key out of the repo (`.gitignore` blocks `*.key`).
+2. Put the **public** key into `tauri.updater.conf.json` (`plugins.updater.pubkey`) if you rotated it.
+3. Add `TAURI_SIGNING_PRIVATE_KEY` (the private key file's contents) as a GitHub Actions secret; add
+   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if the key has one.
+
+**What the release job does (trmx-48 additions):** with the overlay applied and the key present,
+tauri-action produces a **signed** updater artifact (`*.app.tar.gz` + `.sig`) alongside the notarized
+`.dmg`; the "Assemble updater manifest" step writes `latest.json` (version, pub_date, the `.sig`
+contents, and the artifact URL for `darwin-aarch64`) and the publish step attaches the `.dmg`, the
+`.app.tar.gz`, and `latest.json` to the Release.
+
+**End-to-end verification (at REL-1 / after a real release):** build and install version *A*, publish a
+higher version *B* through this pipeline, then in *A* open Settings → About → "Check now": it should
+detect *B*, download, verify the signature, and offer "Restart to update". A tampered artifact (wrong
+signature) must be **rejected**. This live check needs two real signed releases and is done at release
+time — it is out of scope for the PR's CI.
+
 ## Release profile (E-3)
 
 `[profile.release]` in the workspace `Cargo.toml` is tuned for a small, fast desktop binary: `opt-level=3`,

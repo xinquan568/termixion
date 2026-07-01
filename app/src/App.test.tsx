@@ -13,6 +13,11 @@ vi.mock("./terminal/TerminalView", () => ({
 vi.mock("./ipc/useBackend", () => ({
   useBackend: () => ({ coreVersion: "0.0.1", attachTerminal: () => {} }),
 }));
+// trmx-48: SettingsHost wires the real Tauri edges (menu event, updater); stub it so this stays a pure
+// composition test (its behavior is covered by SettingsView / useUpdate / useSettingsMenu specs).
+vi.mock("./settings/SettingsHost", () => ({
+  SettingsHost: () => <div data-testid="settings-host" />,
+}));
 
 import { App } from "./App";
 

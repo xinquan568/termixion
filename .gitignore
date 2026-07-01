@@ -19,11 +19,13 @@ node_modules
 # macOS
 .DS_Store
 
-# Secrets / signing (never commit — P0-2)
+# Secrets / signing (never commit — P0-2, trmx-48 updater key)
 *.p12
 *.p8
 *.cer
 *.mobileprovision
+*.pem
+*.key
 
 # Editor
 .idea
