@@ -3,12 +3,15 @@
 //
 // trmx-44: Termixion's terminal should look like a fresh iTerm2 install. iTerm2's out-of-box appearance is
 // its shipped default profile (codes/iTerm2/plists/DefaultBookmark.plist, loaded over the profile by
-// ITAddressBookMgr.m): Monaco 12 pt, vertical/horizontal cell spacing 1.0, a solid non-blinking block
-// cursor, anti-aliasing on, and an ADAPTIVE light/dark color theme (it ships "Use Separate Colors for Light
-// and Dark Mode" and follows the system appearance). The 16 ANSI colors are identical across modes; only the
-// primaries flip. This module is the pure source of those values — no xterm/React/DOM runtime import — so it
-// is unit-testable headless and is the single place the palette is defined. TerminalView consumes it at the
-// `realDeps.createTerminal` chokepoint and on live appearance changes.
+// ITAddressBookMgr.m): 12 pt, vertical/horizontal cell spacing 1.0, a solid non-blinking block cursor,
+// anti-aliasing on, and an ADAPTIVE light/dark color theme (it ships "Use Separate Colors for Light and Dark
+// Mode" and follows the system appearance). The 16 ANSI colors are identical across modes; only the
+// primaries flip. trmx-46: the font intentionally diverges from that profile — Termixion uses the current
+// macOS system monospaced font (SF Mono) instead of iTerm2's Monaco (see ITERM2_FONT_FAMILY below); size,
+// spacing, cursor, and colors still mirror the iTerm2 default. This module is the pure source of those
+// values — no xterm/React/DOM runtime import — so it is unit-testable headless and is the single place the
+// palette is defined. TerminalView consumes it at the `realDeps.createTerminal` chokepoint and on live
+// appearance changes.
 import type { ITheme, ITerminalOptions } from "@xterm/xterm";
 
 /** Which iTerm2 color mode to render — selected from the system appearance. */
@@ -76,9 +79,12 @@ export function initialAppearanceFromWindow(
   return prefersDarkToMode(win.matchMedia("(prefers-color-scheme: dark)").matches);
 }
 
-// iTerm2's default font is Monaco 12 (DefaultBookmark.plist "Normal Font" = "Monaco 12"). Monaco is a macOS
-// system font available in WKWebView; Menlo/monospace are safe fallbacks.
-export const ITERM2_FONT_FAMILY = "Monaco, Menlo, monospace";
+// trmx-46: the default font is the current macOS system monospaced font (SF Mono) at 12 pt, rather than
+// iTerm2's own default of Monaco 12 (DefaultBookmark.plist "Normal Font" = "Monaco 12"). `ui-monospace` is
+// the CSS generic that resolves to the platform's system monospaced font — SF Mono on macOS in WKWebView —
+// so it tracks whatever the OS ships; "SF Mono", Menlo, and monospace are explicit fallbacks. Only the font
+// diverges from the iTerm2 default; the size, spacing, cursor, and colors below still mirror that profile.
+export const ITERM2_FONT_FAMILY = 'ui-monospace, "SF Mono", Menlo, monospace';
 export const ITERM2_FONT_SIZE = 12;
 
 /**
