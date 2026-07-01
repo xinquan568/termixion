@@ -142,10 +142,15 @@ jobs:
           echo "manifest=latest.json" >> "$GITHUB_OUTPUT"
           echo "wrote latest.json for $version"
 
-      # Publish a DRAFT pre-release with the verified .dmg PLUS the signed updater artifact + latest.json.
+      # Publish a DRAFT release with the verified .dmg PLUS the signed updater artifact + latest.json.
       # Draft so a human signs off on the first signed build; flip to a direct publish once you trust the
       # flow. Re-running an existing tag: delete the prior draft Release first (gh release create won't
-      # clobber). latest.json must be an asset so the fixed endpoint URL resolves.
+      # clobber). latest.json must be an asset so the fixed endpoint resolves.
+      #
+      # trmx-48: NOT a prerelease. The in-app updater endpoint is `releases/latest/download/latest.json`,
+      # and GitHub's `/releases/latest` resolves only to the newest *full* (non-prerelease) published
+      # release — a prerelease would never be found. So update-bearing alpha builds ship as full releases
+      # (the `--draft` gate still holds them for human sign-off until published). See docs/RELEASE.md.
       - name: Publish draft release (verified .dmg + updater artifact + latest.json)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -155,6 +160,6 @@ jobs:
             "${{ steps.verify.outputs.dmg }}" \
             "${{ steps.updater.outputs.artifact }}" \
             "${{ steps.updater.outputs.manifest }}" \
-            --draft --prerelease \
+            --draft \
             --title "Termixion ${{ github.ref_name }}" \
             --notes "Signed + notarized Apple-silicon build. Download the .dmg below. Auto-update artifacts (latest.json) are attached. (Alpha — see CHANGELOG.md.)"

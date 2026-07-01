@@ -6,8 +6,10 @@
   "permissions": [
     "core:default",
     "core:event:default",
-    "updater:default",
-    "process:default",
-    "opener:default"
+    "updater:allow-check",
+    "updater:allow-download-and-install",
+    "process:allow-restart",
+    "opener:allow-open-url",
+    "opener:allow-default-urls"
   ]
 }

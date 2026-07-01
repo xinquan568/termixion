@@ -3,7 +3,7 @@
 //
 // trmx-48: the Settings overlay spec — renders only when open, hosts the About page, and closes on
 // Escape / backdrop click.
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { SettingsView } from "./SettingsView";
 import { makeFakeAppInfo } from "../update/appInfo";
@@ -65,6 +65,25 @@ describe("SettingsView", () => {
       />,
     );
     fireEvent.keyDown(window, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("closes on a backdrop click but not on a click inside the panel", () => {
+    const onClose = vi.fn();
+    const { container } = render(
+      <SettingsView
+        open
+        onClose={onClose}
+        update={fakeUpdate()}
+        appInfo={makeFakeAppInfo()}
+        opener={makeFakeOpener()}
+      />,
+    );
+    // Clicking inside the dialog panel must NOT close.
+    within(screen.getByRole("dialog")).getByText("Termixion").click();
+    expect(onClose).not.toHaveBeenCalled();
+    // Clicking the backdrop (the overlay outside the panel) closes.
+    container.querySelector<HTMLElement>(".tx-settings-overlay")!.click();
     expect(onClose).toHaveBeenCalledOnce();
   });
 });
