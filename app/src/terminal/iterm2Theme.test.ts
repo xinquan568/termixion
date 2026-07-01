@@ -2,9 +2,11 @@
 // Copyright (c) 2026 Eric Y. Liu
 //
 // trmx-44 (test-first): the pure iTerm2 default-appearance values. These mirror iTerm2's shipped default
-// profile (codes/iTerm2/plists/DefaultBookmark.plist): Monaco 12, 1.0 line spacing, a solid non-blinking
-// block cursor, and the adaptive light/dark palette (the 16 ANSI colors are identical across modes; only
-// the primaries flip). Asserting exact values here keeps the "match iTerm2" promise checkable.
+// profile (codes/iTerm2/plists/DefaultBookmark.plist): 1.0 line spacing, a solid non-blinking block cursor,
+// and the adaptive light/dark palette (the 16 ANSI colors are identical across modes; only the primaries
+// flip). trmx-46: the font intentionally diverges from that profile — it is the macOS system monospaced
+// font (SF Mono via the `ui-monospace` CSS generic), 12 pt, rather than iTerm2's Monaco. Asserting exact
+// values here keeps both promises checkable.
 import { describe, it, expect } from "vitest";
 import {
   ITERM2_ANSI,
@@ -71,9 +73,9 @@ describe("iterm2Theme", () => {
 });
 
 describe("iterm2TerminalOptions", () => {
-  it("uses Monaco 12 with iTerm2's spacing and a solid non-blinking block cursor", () => {
+  it("uses the macOS system monospaced font (SF Mono) at 12 with iTerm2's spacing and a solid non-blinking block cursor", () => {
     const opts = iterm2TerminalOptions("dark");
-    expect(ITERM2_FONT_FAMILY).toContain("Monaco");
+    expect(ITERM2_FONT_FAMILY).toBe('ui-monospace, "SF Mono", Menlo, monospace');
     expect(ITERM2_FONT_SIZE).toBe(12);
     expect(opts.fontFamily).toBe(ITERM2_FONT_FAMILY);
     expect(opts.fontSize).toBe(12);
