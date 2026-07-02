@@ -5,7 +5,7 @@
 // window) or the settings window — from the window's URL query. Pure, so it behaves identically
 // under Tauri, `pnpm dev` in a plain browser, and jsdom.
 import { describe, it, expect } from "vitest";
-import { resolveSurface } from "./surface";
+import { isSection, resolveSurface } from "./surface";
 
 describe("resolveSurface", () => {
   it("defaults to the terminal surface", () => {
@@ -26,6 +26,19 @@ describe("resolveSurface", () => {
       kind: "settings",
       section: "terminal",
     });
+    // trmx-53: the Appearance page's deep link.
+    expect(resolveSurface("?window=settings&section=appearance")).toEqual({
+      kind: "settings",
+      section: "appearance",
+    });
+  });
+
+  it("exposes the section guard for other consumers (the settings:navigate path, trmx-53)", () => {
+    expect(isSection("appearance")).toBe(true);
+    expect(isSection("terminal")).toBe(true);
+    expect(isSection("about")).toBe(true);
+    expect(isSection("nope")).toBe(false);
+    expect(isSection(null)).toBe(false);
   });
 
   it("drops an unknown section rather than crashing", () => {

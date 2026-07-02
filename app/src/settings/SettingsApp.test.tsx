@@ -68,6 +68,58 @@ function renderApp(props: Partial<Parameters<typeof SettingsApp>[0]> = {}) {
 }
 
 describe("SettingsApp shell", () => {
+  it("puts Appearance FIRST in the nav, applies the persisted theme's vars on mount, and re-themes on a swatch click (trmx-53)", () => {
+    renderApp();
+    const nav = screen.getAllByRole("button", { name: /Appearance|Terminal|About/ });
+    expect(nav.map((b) => b.textContent)).toEqual(["Appearance", "Terminal", "About"]);
+    // Mount applied the persisted theme (jsdom derivation → Night) to documentElement.
+    expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#23262b");
+
+    // Open the Appearance page and pick Sepia: the window re-derives its vars immediately
+    // (local onThemeChange path — no bus required in plain dev).
+    fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Sepia" }));
+    expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#F9F0DB");
+  });
+
+  it("re-applies the theme on a settings:changed broadcast (About-page reset / cross-window), ignoring junk", async () => {
+    const bus = fakeListen();
+    renderApp({ listen: bus.listen });
+    await waitFor(() =>
+      expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#23262b"),
+    );
+
+    bus.deliver("settings:changed", { key: "appearance.theme", value: "mint", source: "settings" });
+    await waitFor(() =>
+      expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#CCE6D0"),
+    );
+
+    // Junk payloads and other keys are inert (untrusted input).
+    bus.deliver("settings:changed", { key: "appearance.theme", value: "neon" });
+    bus.deliver("settings:changed", "garbage");
+    bus.deliver("settings:changed", { key: "terminal.cursorBlink", value: true });
+    await waitFor(() =>
+      expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#CCE6D0"),
+    );
+  });
+
+  it("moves the swatch selection when a broadcast lands while the Appearance page is open (step-9 F1)", async () => {
+    const bus = fakeListen();
+    renderApp({ listen: bus.listen, initialSection: "appearance" });
+    // jsdom derivation → Night is selected initially.
+    await waitFor(() =>
+      expect(screen.getByRole("radio", { name: "Night" })).toHaveAttribute("aria-checked", "true"),
+    );
+
+    // An About-page reset / cross-window write re-selects the broadcast theme, ring included.
+    bus.deliver("settings:changed", { key: "appearance.theme", value: "paper", source: "main" });
+    await waitFor(() => {
+      expect(screen.getByRole("radio", { name: "Paper" })).toHaveAttribute("aria-checked", "true");
+      expect(screen.getByRole("radio", { name: "Night" })).toHaveAttribute("aria-checked", "false");
+    });
+    expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#EEEDED");
+  });
+
   it("renders the sidebar with the search field and the Terminal + About entries", () => {
     renderApp();
     expect(screen.getByPlaceholderText("Search settings…")).toBeInTheDocument();
@@ -106,6 +158,28 @@ describe("SettingsApp shell", () => {
     });
     expect(screen.queryByRole("button", { name: "Terminal" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "About" })).toBeInTheDocument();
+  });
+
+  it("navigates to Appearance on a settings:navigate event and rejects junk payloads (trmx-53)", async () => {
+    const bus = fakeListen();
+    renderApp({ listen: bus.listen });
+    await waitFor(() => expect(bus.deliver).toBeDefined());
+
+    bus.deliver(SETTINGS_NAVIGATE_EVENT, "appearance");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Appearance" }).className).toContain(
+        "tx-nav-item--active",
+      ),
+    );
+
+    // Junk payloads leave the section unchanged.
+    bus.deliver(SETTINGS_NAVIGATE_EVENT, "nope");
+    bus.deliver(SETTINGS_NAVIGATE_EVENT, 42);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Appearance" }).className).toContain(
+        "tx-nav-item--active",
+      ),
+    );
   });
 
   it("navigates on a settings:navigate event (the About menu item path)", async () => {

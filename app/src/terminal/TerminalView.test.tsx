@@ -10,11 +10,10 @@ import {
   TerminalView,
   type ResizeObservation,
   type AttachScrollbar,
-  type AppearanceObservation,
 } from "./TerminalView";
 import type { MountDeps, TerminalHandle } from "./mountTerminal";
 import type { AttachScrollbarHandle } from "./scrollbar";
-import { iterm2Theme } from "./iterm2Theme";
+import { buildXtermTheme } from "../theme/buildXtermTheme";
 
 // A no-op resize seam for tests that don't care about the resize path.
 const noopObserve: ResizeObservation = () => () => {};
@@ -196,7 +195,7 @@ describe("TerminalView", () => {
     expect(calls).toEqual(["fit", "recompute"]);
   });
 
-  it("switches the live terminal theme, syncs the background, and recomputes the scrollbar on appearance change (trmx-44)", () => {
+  it("re-themes the live terminal, syncs the backgrounds, and recomputes the scrollbar on a theme broadcast (trmx-53)", () => {
     // A terminal whose options.theme can be reassigned at runtime (xterm repaints on assignment).
     const terminal = { options: {} as { theme?: unknown } };
     const handle: TerminalHandle = {
@@ -209,15 +208,16 @@ describe("TerminalView", () => {
       () => handle,
     );
 
-    // Capture the appearance callback so the test can drive an OS light/dark switch.
-    let fireAppearance: ((prefersDark: boolean) => void) | undefined;
-    const observeAppearance = vi.fn<AppearanceObservation>((onChange) => {
-      fireAppearance = onChange;
+    // Capture the settings callback so the test can drive a cross-window theme change (the
+    // settings window writing appearance.theme, or a reset broadcast).
+    let fireSettings: ((payload: unknown) => void) | undefined;
+    const observeSettings = vi.fn((onChange: (payload: unknown) => void) => {
+      fireSettings = onChange;
       return () => {};
     });
 
-    // Spy the scrollbar so we can assert the appearance switch recomputes it (its handle colour derives
-    // from the theme foreground).
+    // Spy the scrollbar so we can assert the theme switch recomputes it (its colors derive from
+    // the theme's scrollbarSlider* tokens since trmx-53).
     const recompute = vi.fn();
     const attachScrollbar = vi.fn<AttachScrollbar>(() => ({
       recompute,
@@ -229,33 +229,38 @@ describe("TerminalView", () => {
         mount={mount}
         observeResize={noopObserve}
         attachScrollbar={attachScrollbar}
-        observeAppearance={observeAppearance}
+        observeSettings={observeSettings}
       />,
     );
 
-    expect(observeAppearance).toHaveBeenCalledTimes(1);
+    expect(observeSettings).toHaveBeenCalledTimes(1);
     const host = mount.mock.calls[0][0];
     const body = host.ownerDocument.body;
 
-    // System switches to light → the terminal adopts iTerm2's light palette, without a remount.
-    fireAppearance?.(false);
-    expect(terminal.options.theme).toEqual(iterm2Theme("light"));
+    // The settings window picks Sepia → the terminal adopts it wholesale, without a remount.
+    fireSettings?.({ key: "appearance.theme", value: "sepia", source: "settings" });
+    expect(terminal.options.theme).toEqual(buildXtermTheme("sepia"));
     expect(mount).toHaveBeenCalledTimes(1);
-    // The host AND body background are synced to the active theme (no black flash in the inset margin),
-    // and the scrollbar is recomputed. (Compare host===body + light≠dark rather than a color string, to
-    // stay robust to jsdom's hex/rgb serialization.)
-    const lightBg = host.style.background;
-    expect(lightBg).not.toBe("");
-    expect(body.style.background).toBe(lightBg);
+    // The host AND body background are synced to the theme (no wrong-color inset margin), and
+    // the scrollbar is recomputed. (Compare host===body + theme≠theme rather than a color
+    // string, to stay robust to jsdom's hex/rgb serialization.)
+    const sepiaBg = host.style.background;
+    expect(sepiaBg).not.toBe("");
+    expect(body.style.background).toBe(sepiaBg);
     expect(recompute).toHaveBeenCalledTimes(1);
 
-    // …and back to dark: theme + backgrounds update again, scrollbar recomputed again.
-    fireAppearance?.(true);
-    expect(terminal.options.theme).toEqual(iterm2Theme("dark"));
-    const darkBg = host.style.background;
-    expect(darkBg).not.toBe("");
-    expect(darkBg).not.toBe(lightBg);
-    expect(body.style.background).toBe(darkBg);
+    // …and to Night: theme + backgrounds update again, scrollbar recomputed again.
+    fireSettings?.({ key: "appearance.theme", value: "night", source: "settings" });
+    expect(terminal.options.theme).toEqual(buildXtermTheme("night"));
+    const nightBg = host.style.background;
+    expect(nightBg).not.toBe("");
+    expect(nightBg).not.toBe(sepiaBg);
+    expect(body.style.background).toBe(nightBg);
+    expect(recompute).toHaveBeenCalledTimes(2);
+
+    // Junk theme payloads are inert: no repaint, no recompute.
+    fireSettings?.({ key: "appearance.theme", value: "neon", source: "settings" });
+    expect(terminal.options.theme).toEqual(buildXtermTheme("night"));
     expect(recompute).toHaveBeenCalledTimes(2);
   });
 
@@ -312,7 +317,7 @@ describe("TerminalView", () => {
     expect(terminal.options).toEqual({ cursorStyle: "underline", cursorBlink: false });
   });
 
-  it("stops observing the system appearance on unmount (trmx-44: no leaked listener)", () => {
+  it("stops observing settings broadcasts on unmount (trmx-51/53: no leaked listener)", () => {
     const handle: TerminalHandle = {
       terminal: { options: {} } as never,
       renderer: "webgl",
@@ -323,20 +328,20 @@ describe("TerminalView", () => {
       () => handle,
     );
 
-    const stopAppearance = vi.fn();
-    const observeAppearance = vi.fn<AppearanceObservation>(() => stopAppearance);
+    const stopSettings = vi.fn();
+    const observeSettings = vi.fn(() => stopSettings);
 
     const { unmount } = render(
       <TerminalView
         mount={mount}
         observeResize={noopObserve}
         attachScrollbar={noopAttachScrollbar}
-        observeAppearance={observeAppearance}
+        observeSettings={observeSettings}
       />,
     );
 
-    expect(stopAppearance).not.toHaveBeenCalled();
+    expect(stopSettings).not.toHaveBeenCalled();
     unmount();
-    expect(stopAppearance).toHaveBeenCalledTimes(1);
+    expect(stopSettings).toHaveBeenCalledTimes(1);
   });
 });

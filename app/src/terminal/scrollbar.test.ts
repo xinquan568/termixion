@@ -10,6 +10,7 @@ import {
   computeScrollbar,
   createScrollbarOverlay,
   applyScrollbar,
+  resolveScrollbarPaint,
   KITTY_SCROLLBAR,
   type ScrollbarInput,
 } from "./scrollbar";
@@ -144,7 +145,7 @@ describe("computeScrollbar — degenerate inputs never produce NaN", () => {
 describe("applyScrollbar — DOM writes", () => {
   it("hides the overlay container when not visible", () => {
     const overlay = createScrollbarOverlay(document);
-    applyScrollbar(overlay, { visible: false }, "#ffffff");
+    applyScrollbar(overlay, { visible: false }, { color: "#ffffff", thumbOpacity: 1 });
     expect(overlay.container.style.display).toBe("none");
   });
 
@@ -152,7 +153,7 @@ describe("applyScrollbar — DOM writes", () => {
     const overlay = createScrollbarOverlay(document);
     const g = computeScrollbar(base);
     if (!g.visible) throw new Error("expected visible");
-    applyScrollbar(overlay, g, "#abcdef");
+    applyScrollbar(overlay, g, { color: "#abcdef", thumbOpacity: 0.5 });
 
     expect(overlay.container.style.display).toBe("");
     // The Kitty horizontal gap is applied as a right offset on both track and thumb.
@@ -162,8 +163,48 @@ describe("applyScrollbar — DOM writes", () => {
     expect(overlay.thumb.style.top).toBe(`${g.thumbTopPx}px`);
     expect(overlay.thumb.style.height).toBe(`${g.thumbHeightPx}px`);
     expect(overlay.thumb.style.width).toBe(`${g.widthPx}px`);
-    expect(overlay.thumb.style.opacity).toBe(String(g.handleOpacity));
-    // Color is the supplied foreground.
+    expect(overlay.thumb.style.opacity).toBe("0.5");
+    // Color is the resolved paint color (track shares it; its opacity stays geometry-driven).
     expect(overlay.thumb.style.background).toBe("rgb(171, 205, 239)"); // #abcdef normalized by jsdom
+    expect(overlay.track.style.background).toBe("rgb(171, 205, 239)");
+    expect(overlay.track.style.opacity).toBe(String(g.trackOpacity));
+  });
+});
+
+// trmx-53: the bar's colors come from the theme's terminal scrollbar tokens, riding the xterm
+// ITheme scrollbarSlider* fields buildXtermTheme emits. The token's own alpha is authoritative
+// (painted opacity 1 — no double-fade); themes without the fields keep the trmx-41 look
+// (foreground + Kitty handle opacity).
+describe("resolveScrollbarPaint — theme scrollbar tokens (trmx-53)", () => {
+  const tokenTheme = {
+    foreground: "#d6d9de",
+    scrollbarSliderBackground: "rgba(255, 255, 255, 0.12)",
+    scrollbarSliderHoverBackground: "rgba(255, 255, 255, 0.20)",
+    scrollbarSliderActiveBackground: "rgba(255, 255, 255, 0.30)",
+  };
+
+  it("paints the idle token at rest, with the token's own alpha (opacity 1)", () => {
+    expect(resolveScrollbarPaint(tokenTheme, false)).toEqual({
+      color: "rgba(255, 255, 255, 0.12)",
+      thumbOpacity: 1,
+    });
+  });
+
+  it("paints the hover token while hovering", () => {
+    expect(resolveScrollbarPaint(tokenTheme, true)).toEqual({
+      color: "rgba(255, 255, 255, 0.20)",
+      thumbOpacity: 1,
+    });
+  });
+
+  it("falls back to the trmx-41 foreground + Kitty opacity when the token fields are absent", () => {
+    expect(resolveScrollbarPaint({ foreground: "#abcdef" }, false)).toEqual({
+      color: "#abcdef",
+      thumbOpacity: KITTY_SCROLLBAR.handleOpacity,
+    });
+    expect(resolveScrollbarPaint(undefined, true)).toEqual({
+      color: "#ffffff",
+      thumbOpacity: KITTY_SCROLLBAR.handleOpacity,
+    });
   });
 });

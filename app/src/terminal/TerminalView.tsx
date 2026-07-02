@@ -22,17 +22,17 @@ import {
   type AttachScrollbarHandle,
   type ScrollbarTerminalLike,
 } from "./scrollbar";
-import {
-  initialAppearanceFromWindow,
-  iterm2Theme,
-  iterm2TerminalOptions,
-  prefersDarkToMode,
-} from "./iterm2Theme";
+import { initialAppearanceFromWindow, iterm2TerminalOptions } from "./iterm2Theme";
 import {
   applyCursorSettingsChange,
   cursorTerminalOptions,
   type CursorOptionsSink,
 } from "./cursorSettings";
+import {
+  applyThemeSettingsChange,
+  themeTerminalOptions,
+  type ThemeOptionsSink,
+} from "./themeSettings";
 import { makeSettingsStore, SETTINGS_CHANGED_EVENT } from "../settings/settingsStore";
 import { realEventBus } from "../ipc/eventBus";
 
@@ -49,17 +49,21 @@ function supportsWebgl2(): boolean {
 
 // Adapter seam: bridge the real xterm classes to the strategy's small interfaces. The casts are
 // localized here — the one place our pure logic meets the external library's wider types. Exported so the
-// display chokepoint is unit-testable (realDeps.test.ts asserts the iTerm2 option set is what reaches
-// `new Terminal`). trmx-44: the options come from iterm2TerminalOptions, and the initial palette is chosen
-// from the system appearance (live light/dark switching is wired in TerminalView's effect below).
-// trmx-51: the persisted cursor settings (default underline + no blink since trmx-55 — only the style
-// still supersedes the iTerm2 block cursor) overlay the profile at this same chokepoint.
+// display chokepoint is unit-testable (realDeps.test.ts asserts the full option set is what reaches
+// `new Terminal`). trmx-44/46: the non-color profile facts (font, spacing, anti-aliasing) come from
+// iterm2TerminalOptions. trmx-53: the COLORS come from the theme catalog — the persisted
+// appearance.theme (first-run-derived from the OS: dark → Night, light → White) overrides the iTerm2
+// palette at this chokepoint; live theme switching arrives over settings:changed in the effect below.
+// trmx-51: the persisted cursor settings (default underline + no blink since trmx-55) overlay last.
 export const realDeps: MountDeps = {
-  createTerminal: () =>
-    new Terminal({
+  createTerminal: () => {
+    const settings = makeSettingsStore();
+    return new Terminal({
       ...iterm2TerminalOptions(initialAppearanceFromWindow()),
-      ...cursorTerminalOptions(makeSettingsStore()),
-    }) as unknown as TerminalLike,
+      ...themeTerminalOptions(settings),
+      ...cursorTerminalOptions(settings),
+    }) as unknown as TerminalLike;
+  },
   createWebglAddon: () => {
     if (!supportsWebgl2()) {
       throw new Error("WebGL2 is not available; using the DOM renderer");
@@ -83,26 +87,6 @@ const realObserveResize: ResizeObservation = (target, onResize) => {
   const observer = new ResizeObserver(() => onResize());
   observer.observe(target);
   return () => observer.disconnect();
-};
-
-/**
- * trmx-44: observe the system light/dark appearance and invoke `onChange(prefersDark)` on every switch;
- * returns a teardown. iTerm2's default profile is adaptive (separate light/dark colors that follow the OS),
- * so the live terminal must repaint when the appearance changes. Injectable for tests; the default uses
- * `prefers-color-scheme` and is a no-op where `matchMedia` is unavailable (jsdom / headless contexts).
- */
-export type AppearanceObservation = (
-  onChange: (prefersDark: boolean) => void,
-) => () => void;
-
-const realObserveAppearance: AppearanceObservation = (onChange) => {
-  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
-    return () => {};
-  }
-  const mql = window.matchMedia("(prefers-color-scheme: dark)");
-  const handler = (event: MediaQueryListEvent) => onChange(event.matches);
-  mql.addEventListener("change", handler);
-  return () => mql.removeEventListener("change", handler);
 };
 
 /**
@@ -152,8 +136,6 @@ export interface TerminalViewProps {
   observeResize?: ResizeObservation;
   /** Injection seam for tests; defaults to the real Kitty-style scrollbar (trmx-41). */
   attachScrollbar?: AttachScrollbar;
-  /** Injection seam for tests; defaults to a real `prefers-color-scheme` listener (trmx-44). */
-  observeAppearance?: AppearanceObservation;
   /** Injection seam for tests; defaults to a real settings:changed listener (trmx-51). */
   observeSettings?: SettingsObservation;
 }
@@ -164,7 +146,6 @@ export function TerminalView({
   deps = realDeps,
   observeResize = realObserveResize,
   attachScrollbar = realAttachScrollbar,
-  observeAppearance = realObserveAppearance,
   observeSettings = realObserveSettings,
 }: TerminalViewProps) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -189,33 +170,34 @@ export function TerminalView({
       handle.fit();
       scrollbar.recompute();
     });
-    // trmx-44: iTerm2's default theme is adaptive — repaint the live terminal when the system appearance
-    // flips. Reassigning `terminal.options.theme` makes xterm repaint without a remount; we also keep the
-    // host/body background (the inset + sub-cell remainder) in sync, then recompute the scrollbar (its
-    // handle colour derives from the theme foreground).
-    const stopObservingAppearance = observeAppearance((prefersDark) => {
-      const theme = iterm2Theme(prefersDarkToMode(prefersDark));
-      (handle.terminal as unknown as { options: { theme?: typeof theme } }).options.theme = theme;
-      if (theme.background) {
-        host.style.background = theme.background;
-        const body = host.ownerDocument?.body;
-        if (body) body.style.background = theme.background;
-      }
-      scrollbar.recompute();
-    });
-    // trmx-51: cursor style/blink edited in the settings window (or reverted by Reset) applies to
-    // the live terminal by option assignment — same no-remount mechanism as the theme above.
+    // trmx-51/53: settings edited in the settings window (or reverted by Reset) apply to the live
+    // terminal by option assignment — no remount. Cursor style/blink reassign their options;
+    // a theme change (trmx-53, superseding trmx-44's live OS-following) reassigns options.theme
+    // wholesale, then syncs the host/body background (the inset + sub-cell remainder) and
+    // recomputes the scrollbar (its colors derive from the theme's scrollbarSlider* tokens).
     const stopObservingSettings = observeSettings((payload) => {
       applyCursorSettingsChange(handle.terminal as unknown as CursorOptionsSink, payload);
+      const appliedTheme = applyThemeSettingsChange(
+        handle.terminal as unknown as ThemeOptionsSink,
+        payload,
+      );
+      if (appliedTheme) {
+        const theme = (handle.terminal as unknown as ThemeOptionsSink).options.theme;
+        if (theme?.background) {
+          host.style.background = theme.background;
+          const body = host.ownerDocument?.body;
+          if (body) body.style.background = theme.background;
+        }
+        scrollbar.recompute();
+      }
     });
     return () => {
       stopObserving();
-      stopObservingAppearance();
       stopObservingSettings();
       scrollbar.dispose();
       handle.dispose();
     };
-  }, [mount, deps, onReady, observeResize, attachScrollbar, observeAppearance, observeSettings]);
+  }, [mount, deps, onReady, observeResize, attachScrollbar, observeSettings]);
 
   return <div ref={hostRef} data-testid="terminal" className="terminal-host" />;
 }

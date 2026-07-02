@@ -171,13 +171,52 @@ export function createScrollbarOverlay(doc: Document = document): ScrollbarOverl
 }
 
 /**
- * Write a resolved geometry onto the overlay. Pure DOM writes (no reads, no events), so it is testable
- * with plain jsdom divs. When hidden, the container is collapsed via `display: none`.
+ * The theme slice the bar paints from — the xterm `ITheme` fields `buildXtermTheme` emits.
+ * trmx-53: per-theme scrollbar tokens ride the standard `scrollbarSlider*` fields; themes (or
+ * fakes) without them fall back to the trmx-41 foreground-derived look.
+ */
+export interface ScrollbarThemeSlice {
+  foreground?: string;
+  scrollbarSliderBackground?: string;
+  scrollbarSliderHoverBackground?: string;
+  scrollbarSliderActiveBackground?: string;
+}
+
+/** The resolved colors/opacity the overlay is painted with. */
+export interface ScrollbarPaint {
+  color: string;
+  thumbOpacity: number;
+}
+
+/**
+ * Resolve the bar's paint from the terminal theme. With scrollbar tokens (trmx-53) the token's
+ * own alpha is authoritative — the thumb paints at opacity 1 (no double-fade) and hover swaps
+ * idle → hover color. Without them, trmx-41's look: the theme foreground at Kitty's fixed handle
+ * opacity. (The `active` token is carried for schema parity; this display-only bar has no drag
+ * state to consume it.)
+ */
+export function resolveScrollbarPaint(
+  theme: ScrollbarThemeSlice | undefined,
+  hovering: boolean,
+): ScrollbarPaint {
+  const idle = theme?.scrollbarSliderBackground;
+  if (idle) {
+    const hover = theme?.scrollbarSliderHoverBackground;
+    return { color: hovering && hover ? hover : idle, thumbOpacity: 1 };
+  }
+  return { color: theme?.foreground ?? "#ffffff", thumbOpacity: KITTY_SCROLLBAR.handleOpacity };
+}
+
+/**
+ * Write a resolved geometry + paint onto the overlay. Pure DOM writes (no reads, no events), so it
+ * is testable with plain jsdom divs. When hidden, the container is collapsed via `display: none`.
+ * The track shares the paint color but keeps its geometry-driven opacity (invisible at rest, faint
+ * on hover — Kitty's track policy).
  */
 export function applyScrollbar(
   overlay: ScrollbarOverlay,
   geometry: ScrollbarGeometry,
-  foreground: string,
+  paint: ScrollbarPaint,
 ): void {
   const { container, track, thumb } = overlay;
   if (!geometry.visible) {
@@ -194,7 +233,7 @@ export function applyScrollbar(
   track.style.height = px(geometry.trackHeightPx);
   track.style.width = px(geometry.widthPx);
   track.style.borderRadius = px(geometry.radiusPx);
-  track.style.background = foreground;
+  track.style.background = paint.color;
   track.style.opacity = String(geometry.trackOpacity);
 
   // Thumb (the visible handle).
@@ -203,8 +242,8 @@ export function applyScrollbar(
   thumb.style.height = px(geometry.thumbHeightPx);
   thumb.style.width = px(geometry.widthPx);
   thumb.style.borderRadius = px(geometry.radiusPx);
-  thumb.style.background = foreground;
-  thumb.style.opacity = String(geometry.handleOpacity);
+  thumb.style.background = paint.color;
+  thumb.style.opacity = String(paint.thumbOpacity);
 }
 
 /** A minimal disposable, matching xterm's `IDisposable`. */
@@ -216,7 +255,7 @@ export interface ScrollbarDisposable {
 export interface ScrollbarTerminalLike {
   readonly rows: number;
   readonly cols: number;
-  readonly options: { theme?: { foreground?: string } };
+  options: { theme?: ScrollbarThemeSlice };
   /** Fires whenever the viewport scrolls. */
   onScroll(handler: () => void): ScrollbarDisposable;
   buffer: {
@@ -270,8 +309,9 @@ export function attachScrollbar(
       hostHeightPx: host.clientHeight,
       hovering,
     });
-    const foreground = terminal.options.theme?.foreground ?? "#ffffff";
-    applyScrollbar(overlay, geometry, foreground);
+    // trmx-53: colors resolve from the theme's scrollbar tokens (or the trmx-41 foreground
+    // fallback); a live theme reassignment is picked up on the next recompute.
+    applyScrollbar(overlay, geometry, resolveScrollbarPaint(terminal.options.theme, hovering));
   };
 
   const scrollSub = terminal.onScroll(recompute);

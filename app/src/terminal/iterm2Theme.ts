@@ -8,10 +8,14 @@
 // Mode" and follows the system appearance). The 16 ANSI colors are identical across modes; only the
 // primaries flip. trmx-46: the font intentionally diverges from that profile — Termixion uses the current
 // macOS system monospaced font (SF Mono) instead of iTerm2's Monaco (see ITERM2_FONT_FAMILY below); size,
-// spacing, cursor, and colors still mirror the iTerm2 default. This module is the pure source of those
-// values — no xterm/React/DOM runtime import — so it is unit-testable headless and is the single place the
-// palette is defined. TerminalView consumes it at the `realDeps.createTerminal` chokepoint and on live
-// appearance changes.
+// spacing, cursor, and colors still mirror the iTerm2 default. This module is the pure RECORD of those
+// profile facts — no xterm/React/DOM runtime import, unit-testable headless.
+// trmx-53: runtime COLORS no longer come from here — the theme catalog (src/theme/) is the single color
+// source, and live OS-appearance following is superseded by an explicit persisted theme (the OS is
+// consulted once, via initialAppearanceFromWindow below, to derive the first-run default: dark → Night,
+// light → White; see src/theme/defaultTheme.ts). TerminalView still takes the NON-COLOR option set
+// (font/spacing/cursor shape) from here at the `realDeps.createTerminal` chokepoint; the theme slice is
+// overridden there by the catalog's xterm theme.
 import type { ITheme, ITerminalOptions } from "@xterm/xterm";
 
 /** Which iTerm2 color mode to render — selected from the system appearance. */
