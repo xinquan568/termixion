@@ -93,4 +93,11 @@ describe("settings.css cascade guard (plan D4 layer i)", () => {
     expect(css).toContain(":root");
     expect(css).not.toContain("prefers-color-scheme");
   });
+
+  it("embeds no hardcoded colors in data-URI SVGs — control glyphs must theme via --tx-* (step-9 F2)", () => {
+    // e.g. the select chevron: a stroke='%23999' baked into a background-image can't recolor
+    // with the theme; glyphs are masked and tinted with background-color: var(--tx-*) instead.
+    expect(css).not.toMatch(/stroke='%23[0-9a-fA-F]/);
+    expect(css).not.toMatch(/fill='%23[0-9a-fA-F]/);
+  });
 });

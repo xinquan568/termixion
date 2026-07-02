@@ -131,7 +131,7 @@ export function SettingsApp({
         <div className="tx-settings__drag" data-tauri-drag-region />
         <div className="tx-settings__page">
           {section === "appearance" ? (
-            <AppearanceSettings settings={settings} onThemeChange={setTheme} />
+            <AppearanceSettings settings={settings} selected={theme} onThemeChange={setTheme} />
           ) : section === "terminal" ? (
             <TerminalSettings settings={settings} />
           ) : (

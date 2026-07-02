@@ -90,7 +90,9 @@ export function Toggle({
 }
 
 /** A styled native <select> (vmark's Select shape): the popup stays OS-rendered, the closed
- * control matches the settings look; the chevron is an inline background SVG. */
+ * control matches the settings look. trmx-53: the chevron is a masked ::after on the wrapper,
+ * tinted var(--tx-text-3) so it recolors with the theme (a stroke color baked into a data-URI
+ * background could not — see the txCssVars source guard). */
 export function Select<T extends string>({
   value,
   options,
@@ -105,19 +107,21 @@ export function Select<T extends string>({
   label?: string;
 }) {
   return (
-    <select
-      className="tx-select"
-      value={value}
-      disabled={disabled}
-      aria-label={label}
-      onChange={(e) => onChange(e.target.value as T)}
-    >
-      {options.map((opt) => (
-        <option key={opt.value} value={opt.value} label={opt.label}>
-          {opt.label}
-        </option>
-      ))}
-    </select>
+    <span className="tx-select-wrap">
+      <select
+        className="tx-select"
+        value={value}
+        disabled={disabled}
+        aria-label={label}
+        onChange={(e) => onChange(e.target.value as T)}
+      >
+        {options.map((opt) => (
+          <option key={opt.value} value={opt.value} label={opt.label}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+    </span>
   );
 }
 

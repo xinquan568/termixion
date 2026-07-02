@@ -3,24 +3,24 @@
 //
 // trmx-53: the Appearance page — exactly the one row the issue boxes out of vmark's Appearance
 // page (issues/trmx-53/theme-*.png): a "Theme" group with six labeled color swatches, the
-// selected one ring-highlighted. A click persists through the registry (which broadcasts
-// settings:changed so the live terminal re-themes) and notifies the shell via onThemeChange so
-// the settings window itself restyles immediately even without a bus (plain dev/jsdom).
-// Presentational + injected store: unit-tested headless (R8).
-import { useState } from "react";
+// selected one ring-highlighted. CONTROLLED by the shell: `selected` is SettingsApp's theme
+// state, so cross-window broadcasts and About-page resets move the ring too (step-9 F1). A click
+// persists through the registry (which broadcasts settings:changed so the live terminal
+// re-themes) and notifies the shell via onThemeChange so the settings window restyles
+// immediately even without a bus (plain dev/jsdom). Presentational + injected store (R8).
 import { SettingsGroup } from "./components";
 import type { SettingsStore } from "./settingsStore";
 import { THEME_IDS, themeLabel, themes, type ThemeId } from "../theme/themes";
 
 export interface AppearanceSettingsProps {
   settings: SettingsStore;
+  /** The active theme (SettingsApp's state) — the single selection source. */
+  selected: ThemeId;
   /** Shell hook: re-derive the window's CSS vars for the new theme (SettingsApp). */
   onThemeChange?: (id: ThemeId) => void;
 }
 
-export function AppearanceSettings({ settings, onThemeChange }: AppearanceSettingsProps) {
-  const [selected, setSelected] = useState<ThemeId>(() => settings.get("appearance.theme"));
-
+export function AppearanceSettings({ settings, selected, onThemeChange }: AppearanceSettingsProps) {
   return (
     <div className="tx-appearance-settings">
       <SettingsGroup title="Theme">
@@ -33,7 +33,6 @@ export function AppearanceSettings({ settings, onThemeChange }: AppearanceSettin
               aria-checked={selected === id}
               className={`tx-swatch${selected === id ? " tx-swatch--active" : ""}`}
               onClick={() => {
-                setSelected(id);
                 settings.set("appearance.theme", id);
                 onThemeChange?.(id);
               }}
