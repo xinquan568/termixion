@@ -4,22 +4,30 @@
  * trmx-48/trmx-51 — the Settings surface styling. Since trmx-51 Settings is a standalone window
  * (vmark's layout): a full-height sidebar (search + page list) beside the page content, with a
  * centered title overlay. The window uses the macOS Overlay titlebar, so the top strips are
- * drag regions and the sidebar reserves headroom under the floating traffic lights. Self-contained
- * design tokens scoped to `.tx-*`; light/dark follow the OS appearance, matching the app's palette
- * (index.css: dark #15191F / light #FAFAFA).
+ * drag regions and the sidebar reserves headroom under the floating traffic lights.
+ *
+ * trmx-53 — the `--tx-*` values are driven by the selected theme at runtime: applyTxTheme
+ * (src/theme/txCssVars.ts) writes them as inline style on documentElement, which beats this
+ * `:root` stylesheet fallback. The declarations below are the pre-JS static fallback ONLY (the
+ * Night theme's mapping — the dark first-run default) and MUST stay under `:root`: a `--tx-*`
+ * declaration on any deeper selector (e.g. `.tx-settings`) would beat the inherited runtime
+ * value and freeze the window on the fallback palette (guarded by txCssVars.test.ts). The old
+ * prefers-color-scheme block is gone — the explicit persisted theme supersedes OS-following.
  */
-.tx-settings {
-  --tx-bg: #1c2027;
-  --tx-bg-elev: #242a33;
-  --tx-bg-sunken: #171b21;
-  --tx-text: #e6e9ef;
-  --tx-text-2: #a7b0be;
-  --tx-text-3: #6f7a89;
-  --tx-border: #333b46;
-  --tx-primary: #4c8dff;
-  --tx-success: #37c07a;
-  --tx-error: #ff5d5d;
+:root {
+  --tx-bg: #23262b;
+  --tx-bg-elev: #32363d;
+  --tx-bg-sunken: #2a2e34;
+  --tx-text: #d6d9de;
+  --tx-text-2: #9aa0a6;
+  --tx-text-3: #6b7078;
+  --tx-border: #3a3f46;
+  --tx-primary: #58a6ff;
+  --tx-success: #4ade80;
+  --tx-error: #f85149;
+}
 
+.tx-settings {
   position: relative;
   display: flex;
   height: 100vh;
@@ -29,19 +37,24 @@
   color: var(--tx-text);
 }
 
-@media (prefers-color-scheme: light) {
-  .tx-settings {
-    --tx-bg: #ffffff;
-    --tx-bg-elev: #ffffff;
-    --tx-bg-sunken: #f2f3f5;
-    --tx-text: #1b1f24;
-    --tx-text-2: #55606e;
-    --tx-text-3: #8b95a3;
-    --tx-border: #e2e5ea;
-    --tx-primary: #2f6fe0;
-    --tx-success: #1c9d5b;
-    --tx-error: #d64545;
-  }
+/*
+ * trmx-53 — vmark-style thin scrollbars for the settings window's own scrollable areas (the
+ * issue's spec: 1px-wide vertical / 4px-high horizontal, transparent track, border-colored thumb
+ * with the accent on hover). The terminal's Kitty-style bar is separate (scrollbar.ts) and takes
+ * its colors from the theme's terminal scrollbar tokens.
+ */
+.tx-settings ::-webkit-scrollbar {
+  width: 1px;
+  height: 4px;
+}
+.tx-settings ::-webkit-scrollbar-track {
+  background: transparent;
+}
+.tx-settings ::-webkit-scrollbar-thumb {
+  background: var(--tx-border);
+}
+.tx-settings ::-webkit-scrollbar-thumb:hover {
+  background: var(--tx-primary);
 }
 
 /* The window chrome: top strips are draggable (Overlay titlebar has no native bar). */
@@ -403,4 +416,47 @@
 .tx-about__reset-question {
   color: var(--tx-text-2);
   font-size: 12px;
+}
+
+/*
+ * trmx-53 — the Appearance page's Theme row: six labeled color swatches (vmark's Appearance
+ * page look, per issues/trmx-53/theme-*.png). Each swatch is a circle filled with that theme's
+ * background; the selected one gets a ring (an offset box-shadow so it reads on any background)
+ * and its label darkens. Buttons form a radiogroup for keyboard/AT access.
+ */
+.tx-theme-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+  padding: 14px;
+}
+.tx-swatch {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+}
+.tx-swatch__circle {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--tx-border);
+  box-sizing: border-box;
+}
+.tx-swatch--active .tx-swatch__circle {
+  box-shadow:
+    0 0 0 2px var(--tx-bg),
+    0 0 0 4px var(--tx-primary);
+}
+.tx-swatch__label {
+  color: var(--tx-text-3);
+  font-size: 12px;
+}
+.tx-swatch--active .tx-swatch__label {
+  color: var(--tx-text);
 }

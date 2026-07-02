@@ -161,7 +161,9 @@ describe("resetAllSettings", () => {
         value: unknown;
         source: string;
       };
-      expect(value).toEqual(SETTING_DEFAULTS[key]);
+      // trmx-53: appearance.theme is the one DYNAMIC default — its reset broadcast carries the
+      // OS-derived value (jsdom: no matchMedia → night), not the static placeholder.
+      expect(value).toEqual(key === "appearance.theme" ? "night" : SETTING_DEFAULTS[key]);
       expect(source).toBe("settings-window");
     }
     // The cursor settings the live terminal consumes are among them.
@@ -180,7 +182,7 @@ describe("lastCheckAt bookkeeping", () => {
 });
 
 describe("registry shape", () => {
-  it("exposes the enumerable user-visible key set trmx-51 ships", () => {
+  it("exposes the enumerable user-visible key set trmx-51 ships (+ appearance.theme since trmx-53)", () => {
     expect([...SETTING_KEYS].sort()).toEqual(
       [
         "update.autoCheck",
@@ -188,6 +190,7 @@ describe("registry shape", () => {
         "update.autoDownload",
         "terminal.cursorStyle",
         "terminal.cursorBlink",
+        "appearance.theme",
       ].sort(),
     );
   });
@@ -195,5 +198,66 @@ describe("registry shape", () => {
   it("never uses vi timers or real Tauri — pure seams only", () => {
     // (documentation-by-test: makeSettingsStore takes only injected seams)
     expect(vi.isFakeTimers()).toBe(false);
+  });
+});
+
+// trmx-53: appearance.theme — the registry's one DYNAMIC default. With no persisted value the
+// first-run theme derives from the OS appearance (dark → night, light → white; jsdom has no
+// matchMedia → night) and MATERIALIZES: the derived value is written back so the OS is consulted
+// only once ("derive once, then persist"). Reset removes the key, so a post-reset read behaves
+// like a fresh first run (plan D1), and the reset broadcast carries the derived value.
+describe("appearance.theme (trmx-53)", () => {
+  const THEME_STORAGE_KEY = "termixion.appearance.theme";
+
+  it("derives the first-run default (jsdom: no matchMedia → night) and materializes it", () => {
+    const storage = fakeStorage();
+    const store = makeSettingsStore(storage);
+    expect(store.get("appearance.theme")).toBe("night");
+    expect(storage.data.get(THEME_STORAGE_KEY)).toBe("night");
+  });
+
+  it("round-trips an explicit choice", () => {
+    const store = makeSettingsStore(fakeStorage());
+    store.set("appearance.theme", "sepia");
+    expect(store.get("appearance.theme")).toBe("sepia");
+  });
+
+  it("treats a garbage persisted value as the derived default (and does not overwrite it)", () => {
+    const storage = fakeStorage({ [THEME_STORAGE_KEY]: "hotdog-stand" });
+    const store = makeSettingsStore(storage);
+    expect(store.get("appearance.theme")).toBe("night");
+    // Parsing junk is a read-time fallback, not a repair: the raw value stays until a set().
+    expect(storage.data.get(THEME_STORAGE_KEY)).toBe("hotdog-stand");
+  });
+
+  it("degrades to the derived default when storage is absent or throwing", () => {
+    expect(makeSettingsStore(undefined).get("appearance.theme")).toBe("night");
+    const throwing: KeyValueStore = {
+      getItem: () => {
+        throw new Error("denied");
+      },
+      setItem: () => {
+        throw new Error("denied");
+      },
+      removeItem: () => {
+        throw new Error("denied");
+      },
+    };
+    expect(makeSettingsStore(throwing).get("appearance.theme")).toBe("night");
+  });
+
+  it("resetAll removes the key and broadcasts the derived default", () => {
+    const storage = fakeStorage();
+    const bus = fakeBus();
+    const store = makeSettingsStore(storage, bus, "test");
+    store.set("appearance.theme", "mint");
+    expect(storage.data.get(THEME_STORAGE_KEY)).toBe("mint");
+    store.resetAll();
+    expect(storage.data.has(THEME_STORAGE_KEY)).toBe(false);
+    const themeEvents = bus.events.filter(
+      (e) => (e.payload as { key?: string }).key === "appearance.theme",
+    );
+    // set() + resetAll() each broadcast; the reset broadcast carries the derived default.
+    expect(themeEvents.at(-1)?.payload).toMatchObject({ key: "appearance.theme", value: "night" });
   });
 });

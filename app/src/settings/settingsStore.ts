@@ -7,6 +7,13 @@
 // write/reset broadcasts `settings:changed` over an injected bus so other windows (the live
 // terminal in the main window) apply changes immediately. Storage and bus are injected seams —
 // unit-testable headless, defensive against absent/throwing backends, exactly like trmx-48.
+//
+// trmx-53 adds appearance.theme — the registry's ONE dynamic default: with no persisted value it
+// derives from the OS appearance (defaultThemeId: dark → night, light → white) and materializes
+// (writes back) so the OS is consulted only once; Reset all removes the key, so a post-reset read
+// re-derives like a fresh first run, and the reset broadcast carries the derived value.
+import { defaultThemeId } from "../theme/defaultTheme";
+import { isThemeId, type ThemeId } from "../theme/themes";
 
 /** The minimal Web-Storage slice we depend on (injectable; adds removeItem for reset). */
 export interface KeyValueStore {
@@ -39,6 +46,7 @@ export interface SettingsValues {
   "update.autoDownload": boolean;
   "terminal.cursorStyle": CursorStyle;
   "terminal.cursorBlink": boolean;
+  "appearance.theme": ThemeId;
 }
 
 export type SettingKey = keyof SettingsValues;
@@ -54,7 +62,19 @@ export const SETTING_DEFAULTS: SettingsValues = {
   "update.autoDownload": true,
   "terminal.cursorStyle": "underline",
   "terminal.cursorBlink": false,
+  // trmx-53: static placeholder only — appearance.theme is the registry's one DYNAMIC default;
+  // every real read goes through defaultFor(), which derives from the OS appearance instead.
+  "appearance.theme": "white",
 };
+
+/**
+ * The effective default for a key. Static from SETTING_DEFAULTS for every key except
+ * appearance.theme, whose first-run value derives from the OS appearance (trmx-53).
+ */
+function defaultFor<K extends SettingKey>(key: K): SettingsValues[K] {
+  if (key === "appearance.theme") return defaultThemeId() as SettingsValues[K];
+  return SETTING_DEFAULTS[key];
+}
 
 // Storage keys: the trmx-48 auto-check key is kept verbatim so existing installs keep their choice.
 const STORAGE_KEYS: Record<SettingKey, string> = {
@@ -63,6 +83,7 @@ const STORAGE_KEYS: Record<SettingKey, string> = {
   "update.autoDownload": "termixion.update.autoDownload",
   "terminal.cursorStyle": "termixion.terminal.cursorStyle",
   "terminal.cursorBlink": "termixion.terminal.cursorBlink",
+  "appearance.theme": "termixion.appearance.theme",
 };
 
 /** Internal bookkeeping (not a user-visible setting; still cleared by reset). */
@@ -81,12 +102,16 @@ function parse<K extends SettingKey>(key: K, raw: string): SettingsValues[K] {
   if (typeof fallback === "boolean") {
     if (raw === "true") return true as SettingsValues[K];
     if (raw === "false") return false as SettingsValues[K];
-    return fallback;
+    return fallback as SettingsValues[K];
   }
   if (key === "update.checkFrequency") {
     return (FREQUENCIES.includes(raw as CheckFrequency)
       ? raw
       : fallback) as SettingsValues[K];
+  }
+  if (key === "appearance.theme") {
+    // trmx-53: junk falls back to the DERIVED default (read-time fallback, not a repair).
+    return (isThemeId(raw) ? raw : defaultFor(key)) as SettingsValues[K];
   }
   return (CURSOR_STYLES.includes(raw as CursorStyle) ? raw : fallback) as SettingsValues[K];
 }
@@ -133,13 +158,25 @@ export function makeSettingsStore(
 
   return {
     get(key) {
-      if (!storage) return SETTING_DEFAULTS[key];
+      if (!storage) return defaultFor(key);
       try {
         const raw = storage.getItem(STORAGE_KEYS[key]);
-        if (raw === null) return SETTING_DEFAULTS[key];
+        if (raw === null) {
+          const value = defaultFor(key);
+          // trmx-53: appearance.theme materializes its first-run derivation ("derive once,
+          // then persist") so the OS appearance is never consulted again until a reset.
+          if (key === "appearance.theme") {
+            try {
+              storage.setItem(STORAGE_KEYS[key], serialize(value));
+            } catch {
+              // Best-effort: an unwritable storage just re-derives on the next read.
+            }
+          }
+          return value;
+        }
         return parse(key, raw);
       } catch {
-        return SETTING_DEFAULTS[key];
+        return defaultFor(key);
       }
     },
     set(key, value) {
@@ -179,7 +216,9 @@ export function makeSettingsStore(
         // Best-effort.
       }
       for (const key of SETTING_KEYS) {
-        broadcast(key, SETTING_DEFAULTS[key]);
+        // trmx-53: defaultFor, not SETTING_DEFAULTS — appearance.theme's reset broadcast
+        // carries the value derived at reset time (a reset behaves like a fresh first run).
+        broadcast(key, defaultFor(key));
       }
     },
   };

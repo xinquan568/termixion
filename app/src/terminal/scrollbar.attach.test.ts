@@ -109,6 +109,33 @@ describe("attachScrollbar", () => {
     sb.dispose();
   });
 
+  it("paints the thumb from the theme's scrollbar tokens when present (trmx-53), foreground otherwise", () => {
+    const host = makeHost();
+    const fake = makeFakeTerminal();
+    // A themed terminal (buildXtermTheme output shape): the slider tokens carry their own alpha.
+    fake.terminal.options.theme = {
+      foreground: "#d6d9de",
+      scrollbarSliderBackground: "rgba(255, 255, 255, 0.12)",
+      scrollbarSliderHoverBackground: "rgba(255, 255, 255, 0.20)",
+      scrollbarSliderActiveBackground: "rgba(255, 255, 255, 0.30)",
+    };
+    const sb = attachScrollbar(host, fake.terminal);
+    const thumb = host.querySelector(".termixion-scrollbar__thumb") as HTMLElement;
+
+    fake.active.viewportY = 40;
+    fake.fireScroll();
+    expect(thumb.style.background).toBe("rgba(255, 255, 255, 0.12)");
+    expect(thumb.style.opacity).toBe("1");
+
+    // A live theme swap is picked up on the next recompute (TerminalView calls recompute()).
+    fake.terminal.options.theme = { foreground: "#abcdef" };
+    sb.recompute();
+    expect(thumb.style.background).toBe("rgb(171, 205, 239)");
+    expect(thumb.style.opacity).toBe("0.5"); // trmx-41 Kitty handle opacity fallback
+
+    sb.dispose();
+  });
+
   it("recomputes on a native viewport scroll (the wheel path that does NOT fire terminal.onScroll)", () => {
     // Reproduces trmx-41: xterm SUPPRESSES its public `onScroll` for user-initiated viewport scrolling —
     // the Viewport requests its scrollLines with suppressScrollEvent=true, so a wheel / trackpad /
