@@ -28,6 +28,13 @@ import {
   iterm2TerminalOptions,
   prefersDarkToMode,
 } from "./iterm2Theme";
+import {
+  applyCursorSettingsChange,
+  cursorTerminalOptions,
+  type CursorOptionsSink,
+} from "./cursorSettings";
+import { makeSettingsStore, SETTINGS_CHANGED_EVENT } from "../settings/settingsStore";
+import { realEventBus } from "../ipc/eventBus";
 
 // Is a WebGL2 context actually obtainable? Preflighting here means we throw *before* constructing
 // `WebglAddon` on unsupported hardware — `WebglAddon.activate()` registers some renderer listeners
@@ -45,11 +52,14 @@ function supportsWebgl2(): boolean {
 // display chokepoint is unit-testable (realDeps.test.ts asserts the iTerm2 option set is what reaches
 // `new Terminal`). trmx-44: the options come from iterm2TerminalOptions, and the initial palette is chosen
 // from the system appearance (live light/dark switching is wired in TerminalView's effect below).
+// trmx-51: the persisted cursor settings (default underline + blink on — superseding the iTerm2 cursor)
+// overlay the profile at this same chokepoint.
 export const realDeps: MountDeps = {
   createTerminal: () =>
-    new Terminal(
-      iterm2TerminalOptions(initialAppearanceFromWindow()),
-    ) as unknown as TerminalLike,
+    new Terminal({
+      ...iterm2TerminalOptions(initialAppearanceFromWindow()),
+      ...cursorTerminalOptions(makeSettingsStore()),
+    }) as unknown as TerminalLike,
   createWebglAddon: () => {
     if (!supportsWebgl2()) {
       throw new Error("WebGL2 is not available; using the DOM renderer");
@@ -105,6 +115,32 @@ export type AttachScrollbar = (
   opts?: { document?: Document },
 ) => AttachScrollbarHandle;
 
+/**
+ * trmx-51: observe cross-window `settings:changed` broadcasts (the settings window editing cursor
+ * style/blink, or a reset's default-value broadcast) and invoke `onChange(payload)`; returns a
+ * teardown. Injectable for tests; the default listens over the Tauri event bus and is a no-op in a
+ * plain browser/jsdom (no runtime — the listen rejects and is swallowed).
+ */
+export type SettingsObservation = (onChange: (payload: unknown) => void) => () => void;
+
+const realObserveSettings: SettingsObservation = (onChange) => {
+  let live = true;
+  let unlisten: (() => void) | undefined;
+  realEventBus
+    .listen(SETTINGS_CHANGED_EVENT, onChange)
+    .then((u) => {
+      if (live) unlisten = u;
+      else u();
+    })
+    .catch(() => {
+      // No Tauri runtime — cursor settings still apply at the next launch via persisted state.
+    });
+  return () => {
+    live = false;
+    unlisten?.();
+  };
+};
+
 export interface TerminalViewProps {
   /** Called once the terminal is mounted, so the parent can attach it to a PTY session (C-2). */
   onReady?: (handle: TerminalHandle) => void;
@@ -118,6 +154,8 @@ export interface TerminalViewProps {
   attachScrollbar?: AttachScrollbar;
   /** Injection seam for tests; defaults to a real `prefers-color-scheme` listener (trmx-44). */
   observeAppearance?: AppearanceObservation;
+  /** Injection seam for tests; defaults to a real settings:changed listener (trmx-51). */
+  observeSettings?: SettingsObservation;
 }
 
 export function TerminalView({
@@ -127,6 +165,7 @@ export function TerminalView({
   observeResize = realObserveResize,
   attachScrollbar = realAttachScrollbar,
   observeAppearance = realObserveAppearance,
+  observeSettings = realObserveSettings,
 }: TerminalViewProps) {
   const hostRef = useRef<HTMLDivElement>(null);
 
@@ -164,13 +203,19 @@ export function TerminalView({
       }
       scrollbar.recompute();
     });
+    // trmx-51: cursor style/blink edited in the settings window (or reverted by Reset) applies to
+    // the live terminal by option assignment — same no-remount mechanism as the theme above.
+    const stopObservingSettings = observeSettings((payload) => {
+      applyCursorSettingsChange(handle.terminal as unknown as CursorOptionsSink, payload);
+    });
     return () => {
       stopObserving();
       stopObservingAppearance();
+      stopObservingSettings();
       scrollbar.dispose();
       handle.dispose();
     };
-  }, [mount, deps, onReady, observeResize, attachScrollbar, observeAppearance]);
+  }, [mount, deps, onReady, observeResize, attachScrollbar, observeAppearance, observeSettings]);
 
   return <div ref={hostRef} data-testid="terminal" className="terminal-host" />;
 }

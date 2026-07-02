@@ -259,6 +259,58 @@ describe("TerminalView", () => {
     expect(recompute).toHaveBeenCalledTimes(2);
   });
 
+  it("applies settings:changed cursor broadcasts to the live terminal (trmx-51)", () => {
+    const terminal = { options: {} as { cursorStyle?: string; cursorBlink?: boolean } };
+    const handle: TerminalHandle = {
+      terminal: terminal as never,
+      renderer: "webgl",
+      fit: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const mount = vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(
+      () => handle,
+    );
+
+    // Capture the settings callback so the test can play the settings window's broadcasts.
+    let fireSettings: ((payload: unknown) => void) | undefined;
+    const observeSettings = vi.fn((onChange: (payload: unknown) => void) => {
+      fireSettings = onChange;
+      return () => {};
+    });
+
+    const attachScrollbar = vi.fn<AttachScrollbar>(() => ({
+      recompute: vi.fn(),
+      dispose: vi.fn(),
+    }));
+    render(
+      <TerminalView
+        mount={mount}
+        observeResize={noopObserve}
+        attachScrollbar={attachScrollbar}
+        observeSettings={observeSettings}
+      />,
+    );
+    expect(observeSettings).toHaveBeenCalledTimes(1);
+
+    // The settings window changes the cursor — the live terminal follows without a remount.
+    fireSettings?.({ key: "terminal.cursorStyle", value: "bar", source: "settings" });
+    fireSettings?.({ key: "terminal.cursorBlink", value: false, source: "settings" });
+    expect(terminal.options.cursorStyle).toBe("bar");
+    expect(terminal.options.cursorBlink).toBe(false);
+    expect(mount).toHaveBeenCalledTimes(1);
+
+    // Reset broadcasts the defaults — the live terminal reverts to underline + blink-on.
+    fireSettings?.({ key: "terminal.cursorStyle", value: "underline", source: "settings" });
+    fireSettings?.({ key: "terminal.cursorBlink", value: true, source: "settings" });
+    expect(terminal.options.cursorStyle).toBe("underline");
+    expect(terminal.options.cursorBlink).toBe(true);
+
+    // Junk and non-cursor payloads are inert.
+    fireSettings?.({ key: "update.autoCheck", value: false });
+    fireSettings?.("garbage");
+    expect(terminal.options).toEqual({ cursorStyle: "underline", cursorBlink: true });
+  });
+
   it("stops observing the system appearance on unmount (trmx-44: no leaked listener)", () => {
     const handle: TerminalHandle = {
       terminal: { options: {} } as never,

@@ -12,11 +12,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tauri::ipc::Channel;
-use tauri::{Emitter, Manager, State, WindowEvent};
+use tauri::{Manager, State, WindowEvent};
 use termixion_core::{PtySize, Session, SessionSpec};
 use termixion_platform::MacosPtyFactory;
 
 mod menu;
+mod window_manager;
 
 /// The single active terminal session (one window / one tab for v0.0.1). Command handlers `write`/
 /// `resize` the session while the reader thread streams its output concurrently. `generation` tags
@@ -228,16 +229,21 @@ fn main() -> ExitCode {
         .plugin(tauri_plugin_opener::init())
         .manage(PtyState::default())
         .manage(SmokeDir(smoke))
-        // trmx-48: install the app menu; "About Termixion" / "Settings…" emit `open-settings` so the
-        // webview opens the Settings → About overlay.
+        // trmx-48/trmx-51: install the app menu; "About Termixion" / "Settings…" open the
+        // standalone Settings window (About lands on the About page).
         .setup(|app| {
             let menu = menu::build_menu(app.handle())?;
             app.set_menu(menu)?;
             Ok(())
         })
         .on_menu_event(|app, event| {
-            if let Some(signal) = menu::menu_event_signal(event.id().0.as_str()) {
-                let _ = app.emit(signal, ());
+            if let Some(menu::MenuAction::ShowSettings { section }) =
+                menu::menu_action(event.id().0.as_str())
+                && let Err(err) = window_manager::show_settings_window(app, section)
+            {
+                // No unwrap/expect: report and carry on rather than panic (a broken menu item
+                // must not take the terminal down).
+                eprintln!("termixion: failed to open the settings window: {err}");
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -249,11 +255,22 @@ fn main() -> ExitCode {
             smoke_done
         ])
         .on_window_event(|window, event| {
-            // Closing the window disposes the PTY (the app then exits, dropping state too).
-            if let WindowEvent::CloseRequested { .. } = event
-                && let Some(state) = window.try_state::<PtyState>()
-            {
-                dispose_session(&state);
+            // trmx-51: only the MAIN window owns the PTY — closing the settings window must leave
+            // the terminal session alone. Closing main disposes the PTY and takes the settings
+            // window with it, so the app exits exactly as it did when main was the only window.
+            if let WindowEvent::CloseRequested { .. } = event {
+                if !window_manager::disposes_pty_for(window.label()) {
+                    return;
+                }
+                if let Some(state) = window.try_state::<PtyState>() {
+                    dispose_session(&state);
+                }
+                if let Some(settings) = window
+                    .app_handle()
+                    .get_webview_window(window_manager::SETTINGS_WINDOW_LABEL)
+                {
+                    let _ = settings.close();
+                }
             }
         })
         .run(tauri::generate_context!());

@@ -1,12 +1,14 @@
 /* SPDX-License-Identifier: ISC */
 /* Copyright (c) 2026 Eric Y. Liu */
 /*
- * trmx-48 — the Settings surface styling. Self-contained design tokens scoped to `.tx-settings-*` so the
- * panel reads as a clean, consistent settings sheet without pulling in a UI framework or the (later)
- * FR-6 theming system. Light/dark follow the OS appearance, matching the app's existing palette
+ * trmx-48/trmx-51 — the Settings surface styling. Since trmx-51 Settings is a standalone window
+ * (vmark's layout): a full-height sidebar (search + page list) beside the page content, with a
+ * centered title overlay. The window uses the macOS Overlay titlebar, so the top strips are
+ * drag regions and the sidebar reserves headroom under the floating traffic lights. Self-contained
+ * design tokens scoped to `.tx-*`; light/dark follow the OS appearance, matching the app's palette
  * (index.css: dark #15191F / light #FAFAFA).
  */
-.tx-settings-overlay {
+.tx-settings {
   --tx-bg: #1c2027;
   --tx-bg-elev: #242a33;
   --tx-bg-sunken: #171b21;
@@ -18,19 +20,17 @@
   --tx-success: #37c07a;
   --tx-error: #ff5d5d;
 
-  position: absolute;
-  inset: 0;
+  position: relative;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.45);
-  z-index: 1000;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--tx-bg);
   font: 13px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
   color: var(--tx-text);
 }
 
 @media (prefers-color-scheme: light) {
-  .tx-settings-overlay {
+  .tx-settings {
     --tx-bg: #ffffff;
     --tx-bg-elev: #ffffff;
     --tx-bg-sunken: #f2f3f5;
@@ -44,61 +44,124 @@
   }
 }
 
-.tx-settings-panel {
-  width: 520px;
-  max-width: calc(100% - 48px);
-  max-height: calc(100% - 64px);
-  overflow: auto;
-  background: var(--tx-bg);
-  border: 1px solid var(--tx-border);
-  border-radius: 12px;
-  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.4);
+/* The window chrome: top strips are draggable (Overlay titlebar has no native bar). */
+.tx-settings__drag {
+  height: 48px;
+  flex-shrink: 0;
 }
 
-.tx-settings-panel__header {
+.tx-settings__sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 208px;
+  flex-shrink: 0;
+  background: var(--tx-bg-sunken);
+  border-right: 1px solid var(--tx-border);
+}
+
+.tx-settings__search {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 14px 18px;
+  gap: 6px;
+  margin: 0 12px 10px;
+  padding: 0 8px;
   border-bottom: 1px solid var(--tx-border);
+  color: var(--tx-text-3);
 }
-
-.tx-settings-panel__title {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.tx-settings-panel__close {
+.tx-settings__search input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 0 6px;
   border: none;
   background: transparent;
-  color: var(--tx-text-2);
-  font-size: 20px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 6px;
+  color: var(--tx-text);
+  font: inherit;
+  outline: none;
 }
-.tx-settings-panel__close:hover {
-  background: var(--tx-bg-sunken);
+.tx-settings__search input::placeholder {
+  color: var(--tx-text-3);
+}
+
+.tx-settings__nav {
+  flex: 1;
+  overflow: auto;
+  padding: 0 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tx-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--tx-text-2);
+  font: inherit;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+.tx-nav-item:hover {
+  background: var(--tx-bg-elev);
+  color: var(--tx-text);
+}
+.tx-nav-item--active,
+.tx-nav-item--active:hover {
+  background: var(--tx-bg-elev);
   color: var(--tx-text);
 }
 
-.tx-settings-panel__body {
-  padding: 8px 18px 18px;
+.tx-settings__content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.tx-settings__page {
+  flex: 1;
+  overflow: auto;
+  padding: 0 28px 28px;
+}
+.tx-settings__page > * {
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+/* Centered "Settings" title over the content pane (the native title is hidden). */
+.tx-settings__title {
+  position: absolute;
+  top: 0;
+  left: 208px;
+  right: 0;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.tx-icon {
+  flex-shrink: 0;
 }
 
 /* Groups + rows */
 .tx-settings-group {
   margin-top: 18px;
 }
+.tx-settings-group:first-child {
+  margin-top: 0;
+}
 .tx-settings-group__title {
   margin: 0 0 8px;
-  font-size: 11px;
+  font-size: 15px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--tx-text-3);
+  color: var(--tx-text);
 }
 .tx-settings-group__body {
   background: var(--tx-bg-elev);
@@ -155,6 +218,39 @@
   background: var(--tx-success);
   border-color: var(--tx-success);
   color: #fff;
+}
+/* The Reset section's destructive action: red outline at rest (vmark's Reset to Defaults). */
+.tx-btn--danger {
+  background: transparent;
+  border-color: var(--tx-error);
+  color: var(--tx-error);
+}
+.tx-btn--danger:hover {
+  background: var(--tx-error);
+  border-color: var(--tx-error);
+  color: #fff;
+}
+
+/* Select (styled native control; the chevron is an inline SVG background) */
+.tx-select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 4px 26px 4px 10px;
+  border: 1px solid var(--tx-border);
+  border-radius: 7px;
+  background-color: var(--tx-bg-sunken);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 6px center;
+  background-size: 14px 14px;
+  color: var(--tx-text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.tx-select:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* Toggle */
@@ -222,35 +318,41 @@
   padding: 14px;
 }
 .tx-about__icon {
-  width: 48px;
-  height: 48px;
-  border-radius: 10px;
+  width: 56px;
+  height: 56px;
+  border-radius: 12px;
 }
 .tx-about__name {
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 18px;
+  font-weight: 700;
 }
 .tx-about__version {
   color: var(--tx-text-2);
   font-size: 12px;
 }
+/* trmx-51: the links stack vertically, each led by its icon (vmark parity). */
 .tx-about__links {
   list-style: none;
   margin: 0 0 0 auto;
   padding: 0;
   display: flex;
-  gap: 14px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
 }
 .tx-about__link {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   border: none;
   background: transparent;
-  color: var(--tx-primary);
+  color: var(--tx-text);
   cursor: pointer;
   font-size: 13px;
   padding: 0;
 }
 .tx-about__link:hover {
-  text-decoration: underline;
+  color: var(--tx-primary);
 }
 .tx-about__card {
   padding: 14px;
@@ -292,4 +394,13 @@
   display: flex;
   align-items: center;
   gap: 12px;
+}
+.tx-about__reset-confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.tx-about__reset-question {
+  color: var(--tx-text-2);
+  font-size: 12px;
 }

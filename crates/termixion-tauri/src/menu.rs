@@ -1,22 +1,31 @@
 // SPDX-License-Identifier: ISC
 // Copyright (c) 2026 Eric Y. Liu
-//! trmx-48: the application menu. It carries the standard macOS app / Edit / Window submenus plus two
-//! custom items — **About Termixion** and **Settings… (⌘,)** — that both emit the `open-settings`
-//! webview event so the frontend opens the Settings → About overlay. The menu construction is runtime
-//! glue (exercised by `cargo tauri dev` / the packaged app); the pure id→event mapping is unit-tested.
+//! trmx-48/trmx-51: the application menu. It carries the standard macOS app / Edit / Window
+//! submenus plus two custom items — **About Termixion** and **Settings… (⌘,)**. Since trmx-51 both
+//! open the standalone Settings window (About lands on the About page) via
+//! `window_manager::show_settings_window` — there is no in-app overlay any more. The menu
+//! construction is runtime glue (exercised by `cargo tauri dev` / the packaged app); the pure
+//! id→action mapping is unit-tested.
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Runtime};
 
-/// The webview event emitted when a settings-opening menu item is chosen (matches the frontend's
-/// `useSettingsMenu` subscription).
-pub const OPEN_SETTINGS_EVENT: &str = "open-settings";
+/// What a chosen menu item should do. Pure so it is unit-testable without a running app; the
+/// runtime handler in `main.rs` performs the action.
+#[derive(Debug, PartialEq, Eq)]
+pub enum MenuAction {
+    /// Open (or focus) the singleton Settings window, optionally landing on a section.
+    ShowSettings { section: Option<&'static str> },
+}
 
-/// Map a chosen menu item id to the webview signal it should emit. Pure so it is unit-testable without a
-/// running app: both "About Termixion" and "Settings…" open the single Settings → About page.
-pub fn menu_event_signal(id: &str) -> Option<&'static str> {
+/// Map a chosen menu item id to its action: "About Termixion" opens Settings on the About page;
+/// "Settings…" opens it on its default (first) page.
+pub fn menu_action(id: &str) -> Option<MenuAction> {
     match id {
-        "about" | "settings" => Some(OPEN_SETTINGS_EVENT),
+        "about" => Some(MenuAction::ShowSettings {
+            section: Some("about"),
+        }),
+        "settings" => Some(MenuAction::ShowSettings { section: None }),
         _ => None,
     }
 }
@@ -76,15 +85,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn about_and_settings_open_the_settings_overlay() {
-        assert_eq!(menu_event_signal("about"), Some(OPEN_SETTINGS_EVENT));
-        assert_eq!(menu_event_signal("settings"), Some(OPEN_SETTINGS_EVENT));
+    fn about_opens_settings_on_the_about_page() {
+        assert_eq!(
+            menu_action("about"),
+            Some(MenuAction::ShowSettings {
+                section: Some("about")
+            })
+        );
     }
 
     #[test]
-    fn other_items_emit_nothing() {
-        assert_eq!(menu_event_signal("quit"), None);
-        assert_eq!(menu_event_signal(""), None);
-        assert_eq!(menu_event_signal("copy"), None);
+    fn settings_opens_the_settings_window_default_page() {
+        assert_eq!(
+            menu_action("settings"),
+            Some(MenuAction::ShowSettings { section: None })
+        );
+    }
+
+    #[test]
+    fn other_items_map_to_no_action() {
+        assert_eq!(menu_action("quit"), None);
+        assert_eq!(menu_action(""), None);
+        assert_eq!(menu_action("copy"), None);
     }
 }

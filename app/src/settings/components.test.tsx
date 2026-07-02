@@ -2,9 +2,9 @@
 // Copyright (c) 2026 Eric Y. Liu
 //
 // trmx-48: the settings building-blocks spec — toggle/button interactions + progress width.
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { Button, ProgressBar, SettingRow, Toggle } from "./components";
+import { Button, ProgressBar, Select, SettingRow, Toggle } from "./components";
 
 describe("Toggle", () => {
   it("reflects checked state and calls onChange with the negation", () => {
@@ -33,6 +33,37 @@ describe("Button", () => {
     );
     screen.getByRole("button", { name: "Go" }).click();
     expect(onClick).toHaveBeenCalledOnce(); // still once — disabled swallows the click
+  });
+});
+
+describe("Select", () => {
+  it("renders the options, reflects the value, and reports changes (trmx-51)", () => {
+    const onChange = vi.fn();
+    render(
+      <Select
+        value="underline"
+        label="Cursor Style"
+        options={[
+          { value: "bar", label: "Bar │" },
+          { value: "block", label: "Block █" },
+          { value: "underline", label: "Underline ▁" },
+        ]}
+        onChange={onChange}
+      />,
+    );
+    const select = screen.getByRole("combobox", { name: "Cursor Style" }) as HTMLSelectElement;
+    expect(select.value).toBe("underline");
+    fireEvent.change(select, { target: { value: "bar" } });
+    expect(onChange).toHaveBeenCalledWith("bar");
+  });
+});
+
+describe("Button danger variant", () => {
+  it("carries the danger class for the Reset styling (trmx-51)", () => {
+    render(<Button variant="danger">Reset to Defaults</Button>);
+    expect(screen.getByRole("button", { name: "Reset to Defaults" }).className).toContain(
+      "tx-btn--danger",
+    );
   });
 });
 
