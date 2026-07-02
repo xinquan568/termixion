@@ -2,12 +2,12 @@
 // Copyright (c) 2026 Eric Y. Liu
 //
 // trmx-51: the cursor slice of the terminal's effective options. iterm2Theme stays the untouched
-// record of iTerm2-profile facts (block, non-blinking); the ISSUE's defaults — Underline, blink on
-// — live in the settings registry and are overlaid at the display chokepoint
-// (realDeps.createTerminal), a conscious supersession of the trmx-44 cursor defaults. The same
-// module applies `settings:changed` broadcasts to a live terminal, so a change made in the
-// settings window (or a reset's default-value broadcast) takes effect immediately. Pure + payload-
-// guarded: events are untrusted input, junk must be inert.
+// record of iTerm2-profile facts (block, non-blinking); the registry defaults — Underline, blink
+// off since trmx-55 (iTerm2-default parity; only the style still supersedes trmx-44's cursor) —
+// live in the settings registry and are overlaid at the display chokepoint
+// (realDeps.createTerminal). The same module applies `settings:changed` broadcasts to a live
+// terminal, so a change made in the settings window (or a reset's default-value broadcast) takes
+// effect immediately. Pure + payload-guarded: events are untrusted input, junk must be inert.
 import type { CursorStyle, SettingsStore } from "../settings/settingsStore";
 
 export interface CursorTerminalOptions {
@@ -15,7 +15,7 @@ export interface CursorTerminalOptions {
   cursorBlink: boolean;
 }
 
-/** The persisted (or default: underline, blink on) cursor options for terminal construction. */
+/** The persisted (or default: underline, no blink — trmx-55) cursor options for construction. */
 export function cursorTerminalOptions(settings: SettingsStore): CursorTerminalOptions {
   return {
     cursorStyle: settings.get("terminal.cursorStyle"),

@@ -16,10 +16,10 @@ function fakeStorage(initial: Record<string, string> = {}): KeyValueStore {
 }
 
 describe("cursorTerminalOptions", () => {
-  it("defaults to the trmx-51 cursor: underline, blinking", () => {
+  it("defaults to the registry cursor: underline, no blink (trmx-55)", () => {
     expect(cursorTerminalOptions(makeSettingsStore(fakeStorage()))).toEqual({
       cursorStyle: "underline",
-      cursorBlink: true,
+      cursorBlink: false,
     });
   });
 
@@ -27,10 +27,10 @@ describe("cursorTerminalOptions", () => {
     const store = makeSettingsStore(
       fakeStorage({
         "termixion.terminal.cursorStyle": "block",
-        "termixion.terminal.cursorBlink": "false",
+        "termixion.terminal.cursorBlink": "true",
       }),
     );
-    expect(cursorTerminalOptions(store)).toEqual({ cursorStyle: "block", cursorBlink: false });
+    expect(cursorTerminalOptions(store)).toEqual({ cursorStyle: "block", cursorBlink: true });
   });
 });
 
@@ -47,9 +47,9 @@ describe("applyCursorSettingsChange", () => {
     expect(terminal.options.cursorBlink).toBe(false);
   });
 
-  it("a reset broadcast (default values) restores underline + blink-on live", () => {
+  it("a reset broadcast (default values) restores underline + no blink live (trmx-55)", () => {
     const terminal: CursorOptionsSink = {
-      options: { cursorStyle: "bar", cursorBlink: false },
+      options: { cursorStyle: "bar", cursorBlink: true },
     };
     applyCursorSettingsChange(terminal, {
       key: "terminal.cursorStyle",
@@ -58,10 +58,10 @@ describe("applyCursorSettingsChange", () => {
     });
     applyCursorSettingsChange(terminal, {
       key: "terminal.cursorBlink",
-      value: true,
+      value: false,
       source: "settings",
     });
-    expect(terminal.options).toEqual({ cursorStyle: "underline", cursorBlink: true });
+    expect(terminal.options).toEqual({ cursorStyle: "underline", cursorBlink: false });
   });
 
   it("ignores other keys and malformed payloads without touching the terminal", () => {

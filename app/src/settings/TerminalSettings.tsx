@@ -3,7 +3,7 @@
 //
 // trmx-51: the Terminal settings page — exactly the two rows the issue boxes out of vmark's
 // screenshot: Cursor Style (Bar │ / Block █ / Underline ▁ — vmark's glyphed labels, Underline by
-// default) and Cursor Blink (on by default). Writes go through the settings registry, which
+// default) and Cursor Blink (off by default since trmx-55). Writes go through the settings registry, which
 // persists and broadcasts `settings:changed` so the live terminal in the main window applies the
 // change immediately. Presentational + injected store: unit-tested headless (R8).
 import { useState } from "react";
