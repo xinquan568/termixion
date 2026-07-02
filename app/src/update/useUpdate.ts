@@ -2,18 +2,31 @@
 // Copyright (c) 2026 Eric Y. Liu
 //
 // trmx-48: the React hook binding the pure state machine (updateState) to an injected UpdateClient +
-// AutoCheckStore. All Tauri contact is inside `client`, so the hook is unit-tested with a fake client and
-// a fake store (R8). The About page consumes what this returns.
-import { useCallback, useEffect, useReducer, useRef } from "react";
+// auto-check source. All Tauri contact is inside `client`, so the hook is unit-tested with a fake client
+// and a fake store (R8). trmx-51: scheduling moved out — useUpdate never checks on its own; the MAIN
+// window's useUpdateAuthority owns startup/scheduled checks (shouldAutoCheck) and wraps this hook.
+import { useCallback, useReducer, useRef } from "react";
 import type { PendingUpdate, UpdateClient } from "./updateClient";
-import type { AutoCheckStore } from "./autoCheckStore";
+import type { SettingsStore } from "../settings/settingsStore";
 import { initialUpdateState, updateReducer, type UpdateState } from "./updateState";
+
+/** Where the persisted auto-check flag lives (the trmx-48 store shape, now registry-backed). */
+export interface AutoCheckSource {
+  load(): boolean;
+  save(enabled: boolean): void;
+}
+
+/** Adapt the trmx-51 settings registry to the auto-check slice this hook needs. */
+export function autoCheckSourceFrom(settings: SettingsStore): AutoCheckSource {
+  return {
+    load: () => settings.get("update.autoCheck"),
+    save: (enabled) => settings.set("update.autoCheck", enabled),
+  };
+}
 
 export interface UseUpdateDeps {
   client: UpdateClient;
-  store: AutoCheckStore;
-  /** When true, run a check once on mount if auto-check is enabled (default true). */
-  autoCheckOnMount?: boolean;
+  store: AutoCheckSource;
 }
 
 export interface UseUpdate {
@@ -34,7 +47,7 @@ function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-export function useUpdate({ client, store, autoCheckOnMount = true }: UseUpdateDeps): UseUpdate {
+export function useUpdate({ client, store }: UseUpdateDeps): UseUpdate {
   const [state, dispatch] = useReducer(updateReducer, undefined, () =>
     initialUpdateState(store.load()),
   );
@@ -85,14 +98,6 @@ export function useUpdate({ client, store, autoCheckOnMount = true }: UseUpdateD
     },
     [store],
   );
-
-  // Optional check-on-mount, guarded so it fires at most once.
-  const didAutoCheck = useRef(false);
-  useEffect(() => {
-    if (!autoCheckOnMount || didAutoCheck.current) return;
-    didAutoCheck.current = true;
-    if (store.load()) void checkNow();
-  }, [autoCheckOnMount, store, checkNow]);
 
   return { state, checkNow, download, restart, skip, setAutoCheck };
 }

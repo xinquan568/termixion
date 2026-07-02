@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: ISC
 // Copyright (c) 2026 Eric Y. Liu
 //
-// trmx-48: the useUpdate hook spec — drives a fake UpdateClient + fake AutoCheckStore through the flow.
-import { act, renderHook, waitFor } from "@testing-library/react";
+// trmx-48: the useUpdate hook spec — drives a fake UpdateClient + fake auto-check source through the
+// flow. trmx-51: mount-time scheduling moved to useUpdateAuthority; this hook never checks by itself.
+import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { makeFakeUpdateClient } from "./updateClient";
-import type { AutoCheckStore } from "./autoCheckStore";
+import type { AutoCheckSource } from "./useUpdate";
 import { useUpdate } from "./useUpdate";
 import type { UpdateInfo } from "./updateState";
 
 const INFO: UpdateInfo = { version: "0.0.2", currentVersion: "0.0.1", notes: "notes" };
 
-function fakeStore(initial = true): AutoCheckStore & { saved: boolean[] } {
+function fakeStore(initial = true): AutoCheckSource & { saved: boolean[] } {
   let value = initial;
   const saved: boolean[] = [];
   return { saved, load: () => value, save: (v) => { value = v; saved.push(v); } };
@@ -20,7 +21,7 @@ function fakeStore(initial = true): AutoCheckStore & { saved: boolean[] } {
 describe("useUpdate", () => {
   it("checkNow surfaces an available update", async () => {
     const client = makeFakeUpdateClient({ update: INFO });
-    const { result } = renderHook(() => useUpdate({ client, store: fakeStore(), autoCheckOnMount: false }));
+    const { result } = renderHook(() => useUpdate({ client, store: fakeStore() }));
 
     await act(async () => {
       await result.current.checkNow();
@@ -32,7 +33,7 @@ describe("useUpdate", () => {
 
   it("checkNow reports up-to-date when there is no update", async () => {
     const client = makeFakeUpdateClient({ update: null });
-    const { result } = renderHook(() => useUpdate({ client, store: fakeStore(), autoCheckOnMount: false }));
+    const { result } = renderHook(() => useUpdate({ client, store: fakeStore() }));
     await act(async () => {
       await result.current.checkNow();
     });
@@ -41,7 +42,7 @@ describe("useUpdate", () => {
 
   it("checkNow surfaces a check error", async () => {
     const client = makeFakeUpdateClient({ checkError: "offline" });
-    const { result } = renderHook(() => useUpdate({ client, store: fakeStore(), autoCheckOnMount: false }));
+    const { result } = renderHook(() => useUpdate({ client, store: fakeStore() }));
     await act(async () => {
       await result.current.checkNow();
     });
@@ -57,7 +58,7 @@ describe("useUpdate", () => {
         { downloaded: 100, total: 100 },
       ],
     });
-    const { result } = renderHook(() => useUpdate({ client, store: fakeStore(), autoCheckOnMount: false }));
+    const { result } = renderHook(() => useUpdate({ client, store: fakeStore() }));
     await act(async () => {
       await result.current.checkNow();
     });
@@ -69,7 +70,7 @@ describe("useUpdate", () => {
 
   it("download surfaces a download error", async () => {
     const client = makeFakeUpdateClient({ update: INFO, downloadError: "disk full" });
-    const { result } = renderHook(() => useUpdate({ client, store: fakeStore(), autoCheckOnMount: false }));
+    const { result } = renderHook(() => useUpdate({ client, store: fakeStore() }));
     await act(async () => {
       await result.current.checkNow();
     });
@@ -83,7 +84,7 @@ describe("useUpdate", () => {
   it("restart calls the client's relaunch", async () => {
     const onRelaunch = vi.fn();
     const client = makeFakeUpdateClient({ update: INFO, onRelaunch });
-    const { result } = renderHook(() => useUpdate({ client, store: fakeStore(), autoCheckOnMount: false }));
+    const { result } = renderHook(() => useUpdate({ client, store: fakeStore() }));
     await act(async () => {
       await result.current.restart();
     });
@@ -92,7 +93,7 @@ describe("useUpdate", () => {
 
   it("skip dismisses the offered version", async () => {
     const client = makeFakeUpdateClient({ update: INFO });
-    const { result } = renderHook(() => useUpdate({ client, store: fakeStore(), autoCheckOnMount: false }));
+    const { result } = renderHook(() => useUpdate({ client, store: fakeStore() }));
     await act(async () => {
       await result.current.checkNow();
     });
@@ -106,7 +107,7 @@ describe("useUpdate", () => {
   it("setAutoCheck persists to the store and updates state", () => {
     const store = fakeStore(true);
     const client = makeFakeUpdateClient({ update: null });
-    const { result } = renderHook(() => useUpdate({ client, store, autoCheckOnMount: false }));
+    const { result } = renderHook(() => useUpdate({ client, store }));
     act(() => {
       result.current.setAutoCheck(false);
     });
@@ -114,15 +115,10 @@ describe("useUpdate", () => {
     expect(result.current.state.autoCheckEnabled).toBe(false);
   });
 
-  it("auto-checks on mount only when enabled", async () => {
-    const enabled = makeFakeUpdateClient({ update: INFO });
-    const r1 = renderHook(() => useUpdate({ client: enabled, store: fakeStore(true) }));
-    await waitFor(() => expect(r1.result.current.state.status).toBe("available"));
-
-    const disabled = makeFakeUpdateClient({ update: INFO });
-    const r2 = renderHook(() => useUpdate({ client: disabled, store: fakeStore(false) }));
-    // Give any (unexpected) auto-check a chance to run, then assert we stayed idle.
+  it("never checks on its own — mounting stays idle (scheduling lives in useUpdateAuthority)", async () => {
+    const client = makeFakeUpdateClient({ update: INFO });
+    const { result } = renderHook(() => useUpdate({ client, store: fakeStore(true) }));
     await new Promise((r) => setTimeout(r, 10));
-    expect(r2.result.current.state.status).toBe("idle");
+    expect(result.current.state.status).toBe("idle");
   });
 });
