@@ -1,22 +1,30 @@
 // SPDX-License-Identifier: ISC
 // Copyright (c) 2026 Eric Y. Liu
 //
-// trmx-53: compose an xterm.js `ITheme` from a catalog theme — the one place that knows how the
+// trmx-53: compose an xterm.js theme from a catalog theme — the one place that knows how the
 // token schema maps onto xterm's flat shape (vmark's buildXtermTheme, origin/main @ d7e70e3f).
 // background/foreground come from the UI tiers (bg.primary/text.primary); the terminal slice
-// supplies the cursor tints, selection, the 16 ANSI colors, and the scrollbar triple — the
-// latter rides the standard `scrollbarSlider*` fields so the Kitty-style overlay (trmx-41) can
-// read its colors straight off `terminal.options.theme` (plan D3). Pure module: type-only xterm
-// import, no runtime dependency.
+// supplies the cursor tints, selection, the 16 ANSI colors, and the scrollbar triple. The
+// scrollbar fields are a Termixion EXTENSION of xterm 5.5's `ITheme` (`TerminalTheme` below —
+// the VS Code-style `scrollbarSlider*` names; xterm itself ignores unknown theme keys): they
+// ride `terminal.options.theme` purely so the Kitty-style overlay (trmx-41) can read its colors
+// off the live terminal with no extra plumbing (plan D3). Pure module: type-only xterm import.
 import type { ITheme } from "@xterm/xterm";
 import { themes, type ThemeId } from "./themes";
+
+/** xterm's `ITheme` plus Termixion's scrollbar-token transport (consumed by scrollbar.ts). */
+export interface TerminalTheme extends ITheme {
+  scrollbarSliderBackground: string;
+  scrollbarSliderHoverBackground: string;
+  scrollbarSliderActiveBackground: string;
+}
 
 /**
  * Build the complete xterm theme for a catalog id. Junk ids (corrupted storage reaching past the
  * registry's parse, `"__proto__"`, …) fall back to White — `hasOwnProperty`, not `themes[id] ??`,
  * so prototype keys cannot skip the guard (vmark's defense).
  */
-export function buildXtermTheme(id: ThemeId): ITheme {
+export function buildXtermTheme(id: ThemeId): TerminalTheme {
   const theme = Object.prototype.hasOwnProperty.call(themes, id) ? themes[id] : themes.white;
   const { color, terminal } = theme;
   const { ansi } = terminal;

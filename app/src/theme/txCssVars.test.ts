@@ -68,7 +68,9 @@ describe("applyTxTheme — runtime delivery (plan D4)", () => {
 });
 
 describe("settings.css cascade guard (plan D4 layer i)", () => {
-  // Comments stripped: the guard is about DECLARATIONS, not prose.
+  // Comments stripped: the guard is about DECLARATIONS, not prose. Read via node:fs (typed by
+  // the @types/node devDep): vitest stubs CSS module imports (css: false), so a `?raw` import of
+  // a .css file arrives empty — the raw-text route only works for non-CSS files (main.order.test).
   const css = readFileSync(
     resolve(dirname(fileURLToPath(import.meta.url)), "../settings/settings.css"),
     "utf8",

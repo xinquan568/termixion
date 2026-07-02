@@ -6,15 +6,10 @@
 // static CSS fallback would show. main.tsx cannot be imported under jsdom (it boots the real
 // app), so this is a source-order guard over the raw text: the behavioral coverage lives in
 // applyStartupTheme.test.ts, and the real-browser proof in the Playwright e2e suite.
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-
-const source = readFileSync(
-  resolve(dirname(fileURLToPath(import.meta.url)), "./main.tsx"),
-  "utf8",
-);
+// Vite ?raw import (typed by vite/client): the file's TEXT, not its module — main.tsx is never
+// executed here (it boots the real app), and no node:fs types are needed under the app tsconfig.
+import source from "./main.tsx?raw";
 
 describe("main.tsx startup ordering (trmx-53 D7)", () => {
   it("invokes applyStartupTheme at module level, outside boot()", () => {
