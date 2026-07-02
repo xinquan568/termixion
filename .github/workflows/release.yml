@@ -31,6 +31,9 @@ jobs:
       - uses: actions/checkout@v4
 
       # Fail fast BEFORE building if any signing secret is missing — refuse to ship an unsigned release.
+      # trmx-48: TAURI_SIGNING_PRIVATE_KEY is also required so every release carries a signed updater
+      # artifact (the auto-updater can't verify unsigned updates). Its password is optional (a key may
+      # have none), so it is NOT in the required list.
       - name: Require signing secrets (no unsigned releases)
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -39,11 +42,12 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
           set -euo pipefail
           missing=()
           for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
-                   APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+                   APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID TAURI_SIGNING_PRIVATE_KEY; do
             if [ -z "${!v:-}" ]; then missing+=("$v"); fi
           done
           if [ ${#missing[@]} -gt 0 ]; then
@@ -81,6 +85,10 @@ jobs:
       # `["app"]` target. We deliberately do NOT pass tagName here, so this step does NOT create a Release
       # or upload anything — we publish ONLY the verified .dmg below (a build also leaves a .app under
       # bundle/macos/, which must NOT be uploaded).
+      # trmx-48: `--config tauri.updater.conf.json` is a RELEASE-ONLY overlay that turns on
+      # `createUpdaterArtifacts` and supplies the updater endpoint + pubkey. It is applied ONLY here, so the
+      # default `cargo tauri build --debug` that ci.yml runs needs no signing key and stays green. The
+      # TAURI_SIGNING_PRIVATE_KEY(+password) env signs the produced updater artifact.
       - name: Build, sign + notarize (tauri-action — build only)
         uses: tauri-apps/tauri-action@v0
         env:
@@ -90,9 +98,11 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: crates/termixion-tauri
-          args: --bundles dmg
+          args: --bundles dmg --config tauri.updater.conf.json
 
       # Independently prove the artifact is notarized + stapled BEFORE publishing — catches a silent
       # signing/notarization gap that would otherwise ship a Gatekeeper-blocked dmg. Exposes the verified
@@ -108,15 +118,48 @@ jobs:
           spctl --assess --type open --context context:primary-signature -vvv "$dmg"
           echo "dmg=$dmg" >> "$GITHUB_OUTPUT"
 
-      # Publish a DRAFT pre-release with ONLY the verified .dmg (single-artifact release contract). Draft
-      # so a human signs off on the first signed build; flip to a direct publish once you trust the flow.
-      # Re-running an existing tag: delete the prior draft Release first (gh release create won't clobber).
-      - name: Publish draft release (verified .dmg only)
+      # trmx-48: assemble the updater manifest (latest.json) from the signed updater artifact so the
+      # in-app auto-updater (endpoint = releases/latest/download/latest.json) can find and verify updates.
+      # The .app.tar.gz + its .sig are produced by createUpdaterArtifacts (the release-only overlay above).
+      - name: Assemble updater manifest (latest.json)
+        id: updater
+        run: |
+          set -euo pipefail
+          artifact=$(find target -name '*.app.tar.gz' -print -quit)
+          sig=$(find target -name '*.app.tar.gz.sig' -print -quit)
+          if [ -z "$artifact" ] || [ -z "$sig" ]; then
+            echo "::error::updater artifact/signature not found under target/ (createUpdaterArtifacts must be on)."
+            exit 1
+          fi
+          version="${GITHUB_REF_NAME#v}"
+          url="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/$(basename "$artifact")"
+          pub_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          jq -n --arg version "$version" --arg pub_date "$pub_date" \
+                --arg sig "$(cat "$sig")" --arg url "$url" \
+            '{version: $version, pub_date: $pub_date,
+              platforms: {"darwin-aarch64": {signature: $sig, url: $url}}}' > latest.json
+          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+          echo "manifest=latest.json" >> "$GITHUB_OUTPUT"
+          echo "wrote latest.json for $version"
+
+      # Publish a DRAFT release with the verified .dmg PLUS the signed updater artifact + latest.json.
+      # Draft so a human signs off on the first signed build; flip to a direct publish once you trust the
+      # flow. Re-running an existing tag: delete the prior draft Release first (gh release create won't
+      # clobber). latest.json must be an asset so the fixed endpoint resolves.
+      #
+      # trmx-48: NOT a prerelease. The in-app updater endpoint is `releases/latest/download/latest.json`,
+      # and GitHub's `/releases/latest` resolves only to the newest *full* (non-prerelease) published
+      # release — a prerelease would never be found. So update-bearing alpha builds ship as full releases
+      # (the `--draft` gate still holds them for human sign-off until published). See docs/RELEASE.md.
+      - name: Publish draft release (verified .dmg + updater artifact + latest.json)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh release create "${{ github.ref_name }}" "${{ steps.verify.outputs.dmg }}" \
-            --draft --prerelease \
+          gh release create "${{ github.ref_name }}" \
+            "${{ steps.verify.outputs.dmg }}" \
+            "${{ steps.updater.outputs.artifact }}" \
+            "${{ steps.updater.outputs.manifest }}" \
+            --draft \
             --title "Termixion ${{ github.ref_name }}" \
-            --notes "Signed + notarized Apple-silicon build. Download the .dmg below. (Alpha — see CHANGELOG.md.)"
+            --notes "Signed + notarized Apple-silicon build. Download the .dmg below. Auto-update artifacts (latest.json) are attached. (Alpha — see CHANGELOG.md.)"
