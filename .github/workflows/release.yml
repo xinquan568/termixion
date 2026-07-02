@@ -1,14 +1,18 @@
-# Release (E-2): on a pushed `v*` tag, build the SIGNED + NOTARIZED Apple-silicon app on macos-14 and
-# publish a (draft) GitHub Release with the `.dmg`.
+# Release (E-2): on a pushed `v*` tag, build the Apple-silicon app on macos-14 and publish a (draft)
+# GitHub Release with the `.dmg` + the signed updater artifacts.
 #
-# SCAFFOLD — the Apple Developer signing secrets are deliberately NOT in the repo (P0-2). A maintainer
-# adds them as GitHub Actions secrets (see docs/RELEASE.md) before the first release. Until they exist the
-# "Require signing secrets" guard FAILS the job, so an unsigned / un-notarized release can never be
-# published by accident.
+# SIGNING IS DUAL-MODE (trmx-49), decided by the "Signing mode" gate from the Apple secrets alone:
+#   - ALL six APPLE_* secrets → signed + notarized + stapled (independently verified by stapler/spctl).
+#   - NONE                    → DELIBERATE unsigned personal-alpha build (0.0.x, audience = the
+#                               maintainer); Gatekeeper blocks the download until approved by hand.
+#   - a PARTIAL set           → fail fast — a half-configured release is never shipped.
+# TAURI_SIGNING_PRIVATE_KEY is ALWAYS required so the auto-updater can verify every update artifact.
+# Adding the six Apple secrets later upgrades the next tag to the signed path with no workflow edit
+# (see docs/RELEASE.md, "Unsigned mode").
 #
-# tauri-action drives Tauri's bundler, which — from the APPLE_* env below — imports the cert into an
-# ephemeral keychain, codesigns with the Developer ID identity (hardened runtime), builds the `.dmg`,
-# notarizes via `notarytool`, and staples the ticket. The final step independently verifies the staple.
+# In signed mode tauri-action drives Tauri's bundler, which — from the APPLE_* env — imports the cert
+# into an ephemeral keychain, codesigns with the Developer ID identity (hardened runtime), builds the
+# `.dmg`, notarizes via `notarytool`, and staples the ticket; the verify step then proves the staple.
 name: release
 
 on:
@@ -25,16 +29,19 @@ permissions:
 
 jobs:
   release:
-    name: build + sign + notarize + publish (macos)
+    name: build + package + publish (macos; signs + notarizes when configured)
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
-      # Fail fast BEFORE building if any signing secret is missing — refuse to ship an unsigned release.
-      # trmx-48: TAURI_SIGNING_PRIVATE_KEY is also required so every release carries a signed updater
-      # artifact (the auto-updater can't verify unsigned updates). Its password is optional (a key may
-      # have none), so it is NOT in the required list.
-      - name: Require signing secrets (no unsigned releases)
+      # Decide the signing mode BEFORE building (fail fast on a bad config). trmx-49: unsigned is a
+      # DELIBERATE state (zero Apple secrets) for the 0.0.x personal alpha — the original guarantee
+      # ("never ship unsigned by ACCIDENT") survives as the all-or-nothing check: any partial Apple
+      # config fails. trmx-48: TAURI_SIGNING_PRIVATE_KEY is required in BOTH modes so every release
+      # carries a signed updater artifact (the auto-updater can't verify unsigned updates). Its
+      # password is optional (a key may have none), so it is NOT in the required list.
+      - name: Signing mode (all six Apple secrets = signed; none = unsigned alpha; partial = fail)
+        id: mode
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -45,16 +52,25 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
           set -euo pipefail
-          missing=()
-          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
-                   APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID TAURI_SIGNING_PRIVATE_KEY; do
-            if [ -z "${!v:-}" ]; then missing+=("$v"); fi
-          done
-          if [ ${#missing[@]} -gt 0 ]; then
-            echo "::error::Missing required signing secrets: ${missing[*]}. See docs/RELEASE.md (Required GitHub Actions secrets). Refusing to build an unsigned / un-notarized release."
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is missing — every release must ship a verifiable (signed) updater artifact. See docs/RELEASE.md (Auto-update)."
             exit 1
           fi
-          echo "All required signing secrets are present."
+          missing=(); n_present=0
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+                   APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -n "${!v:-}" ]; then n_present=$((n_present + 1)); else missing+=("$v"); fi
+          done
+          if [ ${#missing[@]} -eq 0 ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            echo "All six Apple signing secrets present — SIGNED + notarized release."
+          elif [ "$n_present" -eq 0 ]; then
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No Apple signing secrets — deliberate UNSIGNED personal-alpha build (trmx-49). Gatekeeper will block the download until approved by hand; see docs/RELEASE.md (Unsigned mode)."
+          else
+            echo "::error::Partial Apple signing config — missing: ${missing[*]}. Set ALL six Apple secrets or NONE (see docs/RELEASE.md). Refusing a half-configured release."
+            exit 1
+          fi
 
       - name: Install the pinned toolchain (rust-toolchain.toml)
         run: rustup toolchain install "$(sed -nE 's/^channel = "([^"]+)".*/\1/p' rust-toolchain.toml)"
@@ -79,17 +95,19 @@ jobs:
           EXPECTED_TAG: ${{ github.ref_name }}
         run: bash scripts/check-release-metadata.sh
 
-      # Build only (NO release inputs): tauri-action runs Tauri's bundler, which — from the APPLE_* env —
-      # imports the cert into an ephemeral keychain, codesigns Developer ID (hardened runtime), builds the
-      # .dmg, notarizes via notarytool, and staples. `--bundles dmg` overrides tauri.conf.json's local-only
-      # `["app"]` target. We deliberately do NOT pass tagName here, so this step does NOT create a Release
-      # or upload anything — we publish ONLY the verified .dmg below (a build also leaves a .app under
-      # bundle/macos/, which must NOT be uploaded).
+      # Build only (NO release inputs): tauri-action runs Tauri's bundler. `--bundles dmg` overrides
+      # tauri.conf.json's local-only `["app"]` target. We deliberately do NOT pass tagName here, so this
+      # step does NOT create a Release or upload anything — we publish ONLY the verified .dmg below (a
+      # build also leaves a .app under bundle/macos/, which must NOT be uploaded).
       # trmx-48: `--config tauri.updater.conf.json` is a RELEASE-ONLY overlay that turns on
       # `createUpdaterArtifacts` and supplies the updater endpoint + pubkey. It is applied ONLY here, so the
       # default `cargo tauri build --debug` that ci.yml runs needs no signing key and stays green. The
       # TAURI_SIGNING_PRIVATE_KEY(+password) env signs the produced updater artifact.
-      - name: Build, sign + notarize (tauri-action — build only)
+      # trmx-49: TWO mode-gated copies of the step, because the unsigned build must not export the APPLE_*
+      # env AT ALL — the bundler keys off variable PRESENCE, and an empty-but-set APPLE_CERTIFICATE would
+      # make it attempt (and fail) the keychain import instead of skipping signing.
+      - name: Build, sign + notarize (tauri-action — signed mode)
+        if: steps.mode.outputs.signed == 'true'
         uses: tauri-apps/tauri-action@v0
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -104,18 +122,36 @@ jobs:
           projectPath: crates/termixion-tauri
           args: --bundles dmg --config tauri.updater.conf.json
 
-      # Independently prove the artifact is notarized + stapled BEFORE publishing — catches a silent
-      # signing/notarization gap that would otherwise ship a Gatekeeper-blocked dmg. Exposes the verified
-      # .dmg path so the publish step uploads exactly that one file.
-      - name: Verify notarization (stapler + Gatekeeper)
+      - name: Build (tauri-action — unsigned personal-alpha mode, trmx-49)
+        if: steps.mode.outputs.signed == 'false'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: crates/termixion-tauri
+          args: --bundles dmg --config tauri.updater.conf.json
+
+      # Signed mode: independently prove the artifact is notarized + stapled BEFORE publishing — catches a
+      # silent signing/notarization gap that would otherwise ship a Gatekeeper-blocked dmg. Unsigned mode
+      # (trmx-49): stapler/spctl would rightly fail, so only assert the .dmg exists and log its (ad-hoc)
+      # signature state. Either way, exposes the .dmg path so the publish step uploads exactly that file.
+      - name: Verify artifact (stapler + Gatekeeper when signed; existence when unsigned)
         id: verify
+        env:
+          SIGNED: ${{ steps.mode.outputs.signed }}
         run: |
           set -euo pipefail
           dmg=$(find target -name 'Termixion_*_aarch64.dmg' -print -quit)
           if [ -z "$dmg" ]; then echo "::error::no .dmg was produced under target/"; exit 1; fi
           echo "verifying: $dmg"
-          xcrun stapler validate "$dmg"
-          spctl --assess --type open --context context:primary-signature -vvv "$dmg"
+          if [ "$SIGNED" = "true" ]; then
+            xcrun stapler validate "$dmg"
+            spctl --assess --type open --context context:primary-signature -vvv "$dmg"
+          else
+            echo "::notice::UNSIGNED personal-alpha build — skipping stapler/spctl (they require notarization). Gatekeeper will block this dmg until approved by hand (docs/RELEASE.md, Unsigned mode)."
+            codesign -dvv "$dmg" 2>&1 || true
+          fi
           echo "dmg=$dmg" >> "$GITHUB_OUTPUT"
 
       # trmx-48: assemble the updater manifest (latest.json) from the signed updater artifact so the
@@ -154,12 +190,18 @@ jobs:
       - name: Publish draft release (verified .dmg + updater artifact + latest.json)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SIGNED: ${{ steps.mode.outputs.signed }}
         run: |
           set -euo pipefail
+          if [ "$SIGNED" = "true" ]; then
+            notes="Signed + notarized Apple-silicon build. Download the .dmg below. Auto-update artifacts (latest.json) are attached. (Alpha — see CHANGELOG.md.)"
+          else
+            notes="UNSIGNED Apple-silicon build (personal alpha, trmx-49) — macOS Gatekeeper will block it: after copying Termixion.app to /Applications, approve it under System Settings → Privacy & Security → \"Open Anyway\", or run \`xattr -d com.apple.quarantine /Applications/Termixion.app\`. Auto-updates remain signature-verified by the updater key (latest.json attached). (Alpha — see CHANGELOG.md.)"
+          fi
           gh release create "${{ github.ref_name }}" \
             "${{ steps.verify.outputs.dmg }}" \
             "${{ steps.updater.outputs.artifact }}" \
             "${{ steps.updater.outputs.manifest }}" \
             --draft \
             --title "Termixion ${{ github.ref_name }}" \
-            --notes "Signed + notarized Apple-silicon build. Download the .dmg below. Auto-update artifacts (latest.json) are attached. (Alpha — see CHANGELOG.md.)"
+            --notes "$notes"
