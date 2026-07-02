@@ -5,7 +5,7 @@ The user-facing changes to Termixion are documented here. The format follows
 [Semantic Versioning](https://semver.org). Auto-generated from Conventional Commits by git-cliff;
 internal changes (build / CI / tests / refactors / docs) live in the git history and the linked issues.
 
-## [Unreleased]
+## [0.0.1] - 2026-07-02
 
 ### Added
 - Scaffold A-1 repo skeleton (crates, app shell, configs)
@@ -18,7 +18,18 @@ internal changes (build / CI / tests / refactors / docs) live in the git history
 - PTY session lifecycle through the trait + login shell (C-1) (#16)
 - Stream PTY <-> webview + keystrokes over the Tauri channel (C-2) (#19)
 - Single-window dispose + packaged --smoke end-to-end gate (C-3) (#20)
+- Set the Termixion app icon (trmx-33) (#34)
+- Fill the window, chrome-free and responsive (trmx-35) (#36)
+- Kitty-style scrollbar shown only while scrolled back (trmx-41) (#42)
+- Match iTerm2's default display style (trmx-44) (#45)
+- Use the macOS system default font (SF Mono) as the terminal default (trmx-46) (#47)
+- Automatic updates via a Settings → About page (trmx-48) (#50)
+- Settings as a standalone window with vmark-parity About and Terminal pages (trmx-51) (#52)
+- Default Cursor Blink to off (trmx-55) (#59)
+- App-wide six vmark themes via Settings → Appearance (trmx-53) (#60)
 
 ### Fixed
 - Rename bundle identifier to dev.termixion.terminal (#24)
-
+- Always set TERM=xterm-256color for the login shell (trmx-37) (#38)
+- Show scrollbar on user wheel/viewport scroll (trmx-41) (#43)
+- Grant start_dragging so the Settings window can be dragged (trmx-54) (#58)
