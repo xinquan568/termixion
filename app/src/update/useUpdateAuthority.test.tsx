@@ -237,11 +237,20 @@ describe("useUpdateAuthority bus protocol", () => {
     await new Promise((r) => setTimeout(r, 5));
     expect(result.current.state.status).toBe("available");
 
-    // A malformed payload is ignored, never throws.
+    // Malformed payloads are ignored, never throw.
     act(() => {
       bus.emit(UPDATE_COMMAND_EVENT, { nonsense: true });
     });
     expect(result.current.state.status).toBe("available");
+
+    // Value-strict guard: a truthy-string enabled must NOT be executed (step-9 review fix).
+    act(() => {
+      bus.emit(UPDATE_COMMAND_EVENT, {
+        cmd: { type: "setAutoCheck", enabled: "false" },
+        source: "settings",
+      });
+    });
+    expect(result.current.state.autoCheckEnabled).toBe(true);
   });
 
   it("setAutoCheck via command persists through the settings store", async () => {

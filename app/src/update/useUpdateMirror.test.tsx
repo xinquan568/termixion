@@ -98,6 +98,20 @@ describe("useUpdateMirror", () => {
     act(() => {
       bus.emit(UPDATE_STATE_EVENT, { state: snapshotOf("ready"), source: "settings" });
       bus.emit(UPDATE_STATE_EVENT, { garbage: true });
+      // Value-strict guard (step-9 review fix): bogus status / non-boolean autoCheckEnabled /
+      // malformed nested fields never reach the projection.
+      bus.emit(UPDATE_STATE_EVENT, {
+        state: { status: "pwned", autoCheckEnabled: true },
+        source: "main",
+      });
+      bus.emit(UPDATE_STATE_EVENT, {
+        state: { status: "ready", autoCheckEnabled: "true" },
+        source: "main",
+      });
+      bus.emit(UPDATE_STATE_EVENT, {
+        state: { status: "available", autoCheckEnabled: true, updateInfo: { version: 2 } },
+        source: "main",
+      });
     });
     expect(result.current.update.state.status).toBe("idle");
   });
