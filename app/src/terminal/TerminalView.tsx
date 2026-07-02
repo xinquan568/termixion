@@ -52,8 +52,8 @@ function supportsWebgl2(): boolean {
 // display chokepoint is unit-testable (realDeps.test.ts asserts the iTerm2 option set is what reaches
 // `new Terminal`). trmx-44: the options come from iterm2TerminalOptions, and the initial palette is chosen
 // from the system appearance (live light/dark switching is wired in TerminalView's effect below).
-// trmx-51: the persisted cursor settings (default underline + blink on — superseding the iTerm2 cursor)
-// overlay the profile at this same chokepoint.
+// trmx-51: the persisted cursor settings (default underline + no blink since trmx-55 — only the style
+// still supersedes the iTerm2 block cursor) overlay the profile at this same chokepoint.
 export const realDeps: MountDeps = {
   createTerminal: () =>
     new Terminal({

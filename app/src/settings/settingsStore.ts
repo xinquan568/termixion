@@ -43,13 +43,17 @@ export interface SettingsValues {
 
 export type SettingKey = keyof SettingsValues;
 
-/** trmx-51 defaults: auto-check on, check on startup, auto-download on, underline cursor, blink on. */
+/**
+ * trmx-51 defaults: auto-check on, check on startup, auto-download on, underline cursor.
+ * trmx-55: cursor blink defaults OFF (iTerm2-default parity — iTerm2 ships a solid, non-blinking
+ * cursor; see iterm2Theme.ts). Users who want blinking keep the toggle.
+ */
 export const SETTING_DEFAULTS: SettingsValues = {
   "update.autoCheck": true,
   "update.checkFrequency": "on-startup",
   "update.autoDownload": true,
   "terminal.cursorStyle": "underline",
-  "terminal.cursorBlink": true,
+  "terminal.cursorBlink": false,
 };
 
 // Storage keys: the trmx-48 auto-check key is kept verbatim so existing installs keep their choice.
@@ -69,12 +73,15 @@ export const SETTING_KEYS = Object.keys(SETTING_DEFAULTS) as SettingKey[];
 const FREQUENCIES: readonly CheckFrequency[] = ["on-startup", "daily", "weekly", "manual"];
 const CURSOR_STYLES: readonly CursorStyle[] = ["bar", "block", "underline"];
 
-// Booleans stay permissive the way trmx-48 was (anything but the literal "false" is true); enums
-// fall back to the default on anything unknown.
+// trmx-55: booleans are default-aware — only the "true"/"false" literals parse; anything else
+// falls back to the key's default, matching the enums (and the registry contract: default when
+// unset, unparseable, or storage is unavailable). Supersedes trmx-48's permissive `raw !== "false"`.
 function parse<K extends SettingKey>(key: K, raw: string): SettingsValues[K] {
   const fallback = SETTING_DEFAULTS[key];
   if (typeof fallback === "boolean") {
-    return (raw !== "false") as SettingsValues[K];
+    if (raw === "true") return true as SettingsValues[K];
+    if (raw === "false") return false as SettingsValues[K];
+    return fallback;
   }
   if (key === "update.checkFrequency") {
     return (FREQUENCIES.includes(raw as CheckFrequency)

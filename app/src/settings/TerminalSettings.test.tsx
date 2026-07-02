@@ -2,9 +2,9 @@
 // Copyright (c) 2026 Eric Y. Liu
 //
 // trmx-51: the Terminal settings page spec — exactly the two red-boxed rows from the vmark
-// screenshot (Cursor Style + Cursor Blink), vmark's option labels with cursor glyphs, trmx-51
-// defaults (Underline, blink on), persistence through the settings store, and the settings:changed
-// broadcast the live terminal consumes. R8: written before the page exists.
+// screenshot (Cursor Style + Cursor Blink), vmark's option labels with cursor glyphs, the registry
+// defaults (Underline; blink off since trmx-55), persistence through the settings store, and the
+// settings:changed broadcast the live terminal consumes. R8: written before the page exists.
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { TerminalSettings } from "./TerminalSettings";
@@ -50,12 +50,12 @@ describe("TerminalSettings", () => {
     expect(select.value).toBe("underline");
   });
 
-  it("defaults Cursor Blink to on", () => {
+  it("defaults Cursor Blink to off (trmx-55, iTerm2-default parity)", () => {
     const store = makeSettingsStore(fakeStorage());
     render(<TerminalSettings settings={store} />);
     expect(screen.getByRole("switch", { name: "Cursor Blink" })).toHaveAttribute(
       "aria-checked",
-      "true",
+      "false",
     );
   });
 
@@ -74,15 +74,15 @@ describe("TerminalSettings", () => {
     });
   });
 
-  it("persists and broadcasts a blink toggle", () => {
+  it("persists and broadcasts a blink toggle (off-by-default → on)", () => {
     const bus = fakeBus();
     const store = makeSettingsStore(fakeStorage(), bus, "settings-window");
     render(<TerminalSettings settings={store} />);
     screen.getByRole("switch", { name: "Cursor Blink" }).click();
-    expect(store.get("terminal.cursorBlink")).toBe(false);
+    expect(store.get("terminal.cursorBlink")).toBe(true);
     expect(bus.events).toContainEqual({
       event: SETTINGS_CHANGED_EVENT,
-      payload: { key: "terminal.cursorBlink", value: false, source: "settings-window" },
+      payload: { key: "terminal.cursorBlink", value: true, source: "settings-window" },
     });
   });
 
@@ -90,7 +90,7 @@ describe("TerminalSettings", () => {
     const store = makeSettingsStore(
       fakeStorage({
         "termixion.terminal.cursorStyle": "block",
-        "termixion.terminal.cursorBlink": "false",
+        "termixion.terminal.cursorBlink": "true",
       }),
     );
     render(<TerminalSettings settings={store} />);
@@ -99,7 +99,7 @@ describe("TerminalSettings", () => {
     );
     expect(screen.getByRole("switch", { name: "Cursor Blink" })).toHaveAttribute(
       "aria-checked",
-      "false",
+      "true",
     );
   });
 });

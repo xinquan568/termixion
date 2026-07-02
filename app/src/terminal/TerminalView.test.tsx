@@ -292,23 +292,24 @@ describe("TerminalView", () => {
     );
     expect(observeSettings).toHaveBeenCalledTimes(1);
 
-    // The settings window changes the cursor — the live terminal follows without a remount.
+    // The settings window changes the cursor (user turns blink ON over the trmx-55 off default) —
+    // the live terminal follows without a remount.
     fireSettings?.({ key: "terminal.cursorStyle", value: "bar", source: "settings" });
-    fireSettings?.({ key: "terminal.cursorBlink", value: false, source: "settings" });
+    fireSettings?.({ key: "terminal.cursorBlink", value: true, source: "settings" });
     expect(terminal.options.cursorStyle).toBe("bar");
-    expect(terminal.options.cursorBlink).toBe(false);
+    expect(terminal.options.cursorBlink).toBe(true);
     expect(mount).toHaveBeenCalledTimes(1);
 
-    // Reset broadcasts the defaults — the live terminal reverts to underline + blink-on.
+    // Reset broadcasts the defaults — the live terminal reverts to underline + no blink (trmx-55).
     fireSettings?.({ key: "terminal.cursorStyle", value: "underline", source: "settings" });
-    fireSettings?.({ key: "terminal.cursorBlink", value: true, source: "settings" });
+    fireSettings?.({ key: "terminal.cursorBlink", value: false, source: "settings" });
     expect(terminal.options.cursorStyle).toBe("underline");
-    expect(terminal.options.cursorBlink).toBe(true);
+    expect(terminal.options.cursorBlink).toBe(false);
 
     // Junk and non-cursor payloads are inert.
     fireSettings?.({ key: "update.autoCheck", value: false });
     fireSettings?.("garbage");
-    expect(terminal.options).toEqual({ cursorStyle: "underline", cursorBlink: true });
+    expect(terminal.options).toEqual({ cursorStyle: "underline", cursorBlink: false });
   });
 
   it("stops observing the system appearance on unmount (trmx-44: no leaked listener)", () => {

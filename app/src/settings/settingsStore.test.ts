@@ -31,13 +31,13 @@ function fakeBus(): SettingsBus & { events: Array<{ event: string; payload: unkn
 }
 
 describe("settingsStore defaults", () => {
-  it("serves the trmx-51 defaults when nothing is persisted", () => {
+  it("serves the registry defaults (trmx-51; blink off since trmx-55) when nothing is persisted", () => {
     const store = makeSettingsStore(fakeStorage());
     expect(store.get("update.autoCheck")).toBe(true);
     expect(store.get("update.checkFrequency")).toBe("on-startup");
     expect(store.get("update.autoDownload")).toBe(true);
     expect(store.get("terminal.cursorStyle")).toBe("underline");
-    expect(store.get("terminal.cursorBlink")).toBe(true);
+    expect(store.get("terminal.cursorBlink")).toBe(false);
   });
 
   it("round-trips every setting", () => {
@@ -46,12 +46,12 @@ describe("settingsStore defaults", () => {
     store.set("update.checkFrequency", "weekly");
     store.set("update.autoDownload", false);
     store.set("terminal.cursorStyle", "bar");
-    store.set("terminal.cursorBlink", false);
+    store.set("terminal.cursorBlink", true);
     expect(store.get("update.autoCheck")).toBe(false);
     expect(store.get("update.checkFrequency")).toBe("weekly");
     expect(store.get("update.autoDownload")).toBe(false);
     expect(store.get("terminal.cursorStyle")).toBe("bar");
-    expect(store.get("terminal.cursorBlink")).toBe(false);
+    expect(store.get("terminal.cursorBlink")).toBe(true);
   });
 
   it("honors the legacy trmx-48 auto-check storage key", () => {
@@ -65,12 +65,26 @@ describe("settingsStore defaults", () => {
         "termixion.terminal.cursorStyle": "sparkles",
         "termixion.update.checkFrequency": "hourly",
         "termixion.terminal.cursorBlink": "maybe",
+        "termixion.update.autoCheck": "maybe",
       }),
     );
     expect(store.get("terminal.cursorStyle")).toBe("underline");
     expect(store.get("update.checkFrequency")).toBe("on-startup");
-    // Boolean reads stay permissive the way trmx-48 was: anything but "false" is true.
+    // trmx-55: boolean reads are default-aware — only the "true"/"false" literals parse; anything
+    // else lands on the key's own default ("maybe" → blink off, but auto-check stays on).
+    expect(store.get("terminal.cursorBlink")).toBe(false);
+    expect(store.get("update.autoCheck")).toBe(true);
+  });
+
+  it("parses only the boolean literals — explicit choices survive in either direction", () => {
+    const store = makeSettingsStore(
+      fakeStorage({
+        "termixion.terminal.cursorBlink": "true",
+        "termixion.update.autoDownload": "false",
+      }),
+    );
     expect(store.get("terminal.cursorBlink")).toBe(true);
+    expect(store.get("update.autoDownload")).toBe(false);
   });
 
   it("degrades to defaults when storage is absent or throwing", () => {

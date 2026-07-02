@@ -16,7 +16,9 @@ import { Terminal } from "@xterm/xterm";
 import { realDeps } from "./TerminalView";
 import { iterm2TerminalOptions } from "./iterm2Theme";
 
-const TRMX51_CURSOR = { cursorStyle: "underline", cursorBlink: true } as const;
+// The registry cursor defaults: trmx-51's underline, with blink turned off by trmx-55 (iTerm2
+// parity — only the style still supersedes the iTerm2 block cursor).
+const TRMX51_CURSOR = { cursorStyle: "underline", cursorBlink: false } as const;
 
 function stubMatchMedia(prefersDark: boolean) {
   Object.defineProperty(window, "matchMedia", {
@@ -64,20 +66,21 @@ describe("realDeps.createTerminal (the display chokepoint)", () => {
     realDeps.createTerminal();
     const opts = vi.mocked(Terminal).mock.calls[0][0];
     expect(opts?.fontFamily).not.toBe("monospace");
-    // trmx-44 pinned block/non-blinking (iTerm2 parity); trmx-51 consciously supersedes it.
+    // trmx-44 pinned block/non-blinking (iTerm2 parity); trmx-51 superseded the style, and trmx-55
+    // realigned blink with iTerm2 — so only the underline style still diverges.
     expect(opts?.cursorStyle).toBe("underline");
-    expect(opts?.cursorBlink).toBe(true);
+    expect(opts?.cursorBlink).toBe(false);
   });
 
   it("persisted cursor settings override the defaults at the chokepoint", () => {
     stubMatchMedia(true);
     localStorage.setItem("termixion.terminal.cursorStyle", "block");
-    localStorage.setItem("termixion.terminal.cursorBlink", "false");
+    localStorage.setItem("termixion.terminal.cursorBlink", "true");
     try {
       realDeps.createTerminal();
       const opts = vi.mocked(Terminal).mock.calls[0][0];
       expect(opts?.cursorStyle).toBe("block");
-      expect(opts?.cursorBlink).toBe(false);
+      expect(opts?.cursorBlink).toBe(true);
     } finally {
       localStorage.removeItem("termixion.terminal.cursorStyle");
       localStorage.removeItem("termixion.terminal.cursorBlink");
