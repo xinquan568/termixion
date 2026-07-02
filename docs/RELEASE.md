@@ -1,20 +1,23 @@
 # Release runbook
 
 **Distribution (Alpha, Q-e / Q-g / Q1):** GitHub Releases only; one **Apple-silicon** (`aarch64`)
-artifact — `Termixion_0.0.1_aarch64.dmg` — built + signed + notarized on GitHub-hosted `macos-14`. The
-pipeline is [`.github/workflows/release.yml`](../.github/workflows/release.yml) (E-2). It triggers on a
-pushed `v*` tag.
+artifact — `Termixion_0.0.1_aarch64.dmg` — built on GitHub-hosted `macos-14` (signed + notarized when
+the Apple secrets are configured; see **Unsigned mode** below). The pipeline is
+[`.github/workflows/release.yml`](../.github/workflows/release.yml) (E-2). It triggers on a pushed
+`v*` tag.
 
 > ⚠️ **The repo ships the pipeline but NOT the secrets.** Signing/notarization credentials live **only**
 > as GitHub Actions secrets (R5 / P0-2); `.gitignore` blocks `*.p12`/`*.p8`/`*.cer`/`*.mobileprovision`
-> and the secret-scan hook refuses key material. **Until a maintainer adds the six secrets below, the
-> release job fails fast at its first step** ("Require signing secrets") — by design, so an unsigned /
-> un-notarized build can never be published by accident.
+> and the secret-scan hook refuses key material. The job's first step decides the **signing mode**
+> (trmx-49): **all six** Apple secrets → signed + notarized; **none** → a deliberate **unsigned**
+> personal-alpha build; a **partial** set fails fast — so a half-configured (accidentally unsigned)
+> release can never be published. `TAURI_SIGNING_PRIVATE_KEY` is required in every mode.
 
-## Required GitHub Actions secrets
+## Apple GitHub Actions secrets (signed mode)
 
-Set these under **Settings → Secrets and variables → Actions** on `xinquan568/termixion`. All six are
-required; the workflow's guard step lists any that are missing and refuses to build.
+Set these under **Settings → Secrets and variables → Actions** on `xinquan568/termixion`. Set **all six
+or none** — the workflow's mode gate refuses a partial set. They require an Apple Developer Program
+membership (US$99/year); without one, ship unsigned (below).
 
 | Secret | What it is | How to get it |
 |---|---|---|
@@ -30,6 +33,26 @@ required; the workflow's guard step lists any that are missing and refuses to bu
 > prefer that path, swap those three into the workflow's `env:` and the guard-step list. The default
 > wired here is the Apple-ID path.
 
+## Unsigned mode — personal alpha (trmx-49)
+
+With **zero** Apple secrets configured, the release job builds a **deliberately unsigned** `.dmg`
+(0.0.x personal alpha; the audience is the maintainer's own machines). What changes:
+
+- No codesign / notarize / staple; the `stapler validate` + `spctl` verification is skipped (both would
+  rightly fail) — the verify step only asserts the `.dmg` exists and logs its signature state.
+- `TAURI_SIGNING_PRIVATE_KEY` is **still required**: the updater artifact is signed and the in-app
+  updater verifies it against the committed pubkey, so **auto-update stays cryptographically verified**
+  even though Apple never signed the app.
+- Adding the six Apple secrets later upgrades the **next** tag to the signed path — no workflow edit.
+
+**Installing an unsigned build** (Gatekeeper blocks quarantined downloads): copy `Termixion.app` from
+the `.dmg` to `/Applications`, launch once to trigger the block, then approve it under **System
+Settings → Privacy & Security → "Open Anyway"** — or clear quarantine from a terminal instead:
+
+```sh
+xattr -d com.apple.quarantine /Applications/Termixion.app
+```
+
 ## How a release happens
 
 1. Land everything for the version on `main` (CI green — see `.github/workflows/ci.yml`, E-1).
@@ -38,8 +61,9 @@ required; the workflow's guard step lists any that are missing and refuses to bu
 3. Tag and push: `git tag v0.0.1 && git push origin v0.0.1`. **The tag must be `v<crate version>`** —
    the gate asserts `github.ref_name == v<workspace.package version>`, so a tag that disagrees with the
    crate version (which names the `.dmg`) fails before building.
-4. The `release` workflow runs on `macos-14` in this order: verify the secrets → metadata + tag gate →
-   build + codesign + `.dmg` + notarize + staple → **verify the staple** (`stapler validate` + `spctl`)
+4. The `release` workflow runs on `macos-14` in this order: signing-mode gate → metadata + tag gate →
+   build the `.dmg` (+ codesign + notarize + staple in signed mode) → **verify** (`stapler validate` +
+   `spctl` in signed mode; existence in unsigned mode)
    → assemble the updater `latest.json` → only then create a **draft** release with the verified `.dmg`,
    the signed updater artifact, and `latest.json` attached. **The release is NOT a prerelease** — the
    auto-updater's `/releases/latest/` endpoint only resolves to the newest *full* release (trmx-48; see
