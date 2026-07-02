@@ -121,4 +121,30 @@ mod tests {
         assert_eq!(SETTINGS_WINDOW_LABEL, "settings");
         assert_eq!(MAIN_WINDOW_LABEL, "main");
     }
+
+    #[test]
+    fn the_settings_window_capability_grants_start_dragging() {
+        // trmx-54: the Overlay-titlebar settings window has no native titlebar, so dragging only
+        // works when the webview's `data-tauri-drag-region` chrome may invoke `start_dragging` —
+        // a permission that is NOT part of core:window:default and must stay explicitly granted.
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json"))
+                .expect("capabilities/default.json parses as JSON");
+        let strings = |key: &str| -> Vec<String> {
+            capability[key]
+                .as_array()
+                .unwrap_or_else(|| panic!("capability declares `{key}`"))
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        };
+        assert!(
+            strings("windows").contains(&SETTINGS_WINDOW_LABEL.to_owned()),
+            "the capability must target the settings window"
+        );
+        assert!(
+            strings("permissions").contains(&"core:window:allow-start-dragging".to_owned()),
+            "the settings window drag regions need core:window:allow-start-dragging"
+        );
+    }
 }
