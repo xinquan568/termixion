@@ -291,7 +291,7 @@ export async function runPerf(config: PerfLaunchConfig, deps: PerfDeps): Promise
     pass,
     reason: error ?? verdict.reason,
   };
-  await deps.reportDone(JSON.stringify(report, null, 2), pass);
+  await deps.reportDone(JSON.stringify(report, null, 2), pass, deps.invoke);
   return report;
 }
 
