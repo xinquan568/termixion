@@ -53,7 +53,7 @@ describe("buildXtermTheme", () => {
       magenta: "#bc8cff",
       cyan: "#39c5cf",
       white: "#b1bac4",
-      brightBlack: "#484f58",
+      brightBlack: "#6e7681", // trmx-77 audited deviation (G2); see themes.acceptance.test.ts
       brightRed: "#ff7b72",
       brightGreen: "#56d364",
       brightYellow: "#e3b341",

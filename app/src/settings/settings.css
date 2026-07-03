@@ -25,6 +25,12 @@
   --tx-primary: #58a6ff;
   --tx-success: #4ade80;
   --tx-error: #f85149;
+  /* trmx-77 G5: Night's derived on-surface text (all three resolve to Night's bg) — without
+   * these, pre-JS button text falls back to white on the light-blue accent, the exact seam G5
+   * fixed. Guarded: txCssVars.test.ts pins this block to equal txCssVars(night) var-for-var. */
+  --tx-on-accent: #23262b;
+  --tx-on-success: #23262b;
+  --tx-on-error: #23262b;
 }
 
 .tx-settings {
@@ -225,12 +231,13 @@
 .tx-btn--primary {
   background: var(--tx-primary);
   border-color: var(--tx-primary);
-  color: #fff;
+  /* trmx-77 G5: derived per theme — hardcoded white fails on Night's light-blue accent (2.53:1). */
+  color: var(--tx-on-accent, #fff);
 }
 .tx-btn--success {
   background: var(--tx-success);
   border-color: var(--tx-success);
-  color: #fff;
+  color: var(--tx-on-success, #fff);
 }
 /* The Reset section's destructive action: red outline at rest (vmark's Reset to Defaults). */
 .tx-btn--danger {
@@ -241,7 +248,7 @@
 .tx-btn--danger:hover {
   background: var(--tx-error);
   border-color: var(--tx-error);
-  color: #fff;
+  color: var(--tx-on-error, #fff);
 }
 
 /* Select (styled native control). trmx-53: the chevron is a masked ::after on the wrapper,

@@ -11,7 +11,8 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { themes } from "./themes";
+import { contrastRatio, pickReadableOn } from "./contrast";
+import { THEME_IDS, themes } from "./themes";
 import { applyTxTheme, txCssVars } from "./txCssVars";
 
 describe("txCssVars — role mapping", () => {
@@ -27,6 +28,9 @@ describe("txCssVars — role mapping", () => {
       "--tx-primary": "#0066cc",
       "--tx-success": "#16a34a",
       "--tx-error": "#cf222e",
+      "--tx-on-accent": "#fff",
+      "--tx-on-success": "#fff",
+      "--tx-on-error": "#fff",
     });
   });
 
@@ -42,7 +46,38 @@ describe("txCssVars — role mapping", () => {
       "--tx-primary": "#58a6ff",
       "--tx-success": "#4ade80",
       "--tx-error": "#f85149",
+      "--tx-on-accent": "#23262b",
+      "--tx-on-success": "#23262b",
+      "--tx-on-error": "#23262b",
     });
+  });
+});
+
+// trmx-77: G5 — readable text on the accent/semantic control surfaces (the settings buttons).
+// White text was hardcoded and failed on Night's light-blue accent (#58a6ff, 2.53:1); the three
+// --tx-on-* vars are DERIVED per surface via pickReadableOn, never hardcoded per theme. Floors and
+// rationale: docs/design/visual-baseline.md §4.
+describe("on-surface text derivation (G5, trmx-77)", () => {
+  const SURFACES = [
+    ["--tx-on-accent", (t: (typeof themes)["white"]) => t.color.accent.primary],
+    ["--tx-on-success", (t: (typeof themes)["white"]) => t.color.semantic.success],
+    ["--tx-on-error", (t: (typeof themes)["white"]) => t.color.semantic.error],
+  ] as const;
+
+  it.each(THEME_IDS)("%s: each on-* var is the pickReadableOn derivation, ≥ 3:1 on its surface", (id) => {
+    const theme = themes[id];
+    const vars = txCssVars(theme);
+    for (const [name, surfaceOf] of SURFACES) {
+      const surface = surfaceOf(theme);
+      expect(vars[name]).toBe(pickReadableOn(surface, ["#fff", theme.color.bg.primary]));
+      expect(contrastRatio(vars[name] === "#fff" ? "#ffffff" : vars[name], surface)).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it("derives per surface, not per theme (Solarized: dark text on accent, white on error)", () => {
+    const vars = txCssVars(themes.solarized);
+    expect(vars["--tx-on-accent"]).toBe("#002b36");
+    expect(vars["--tx-on-error"]).toBe("#fff");
   });
 });
 
@@ -101,5 +136,24 @@ describe("settings.css cascade guard (plan D4 layer i)", () => {
     // with the theme; glyphs are masked and tinted with background-color: var(--tx-*) instead.
     expect(css).not.toMatch(/stroke='%23[0-9a-fA-F]/);
     expect(css).not.toMatch(/fill='%23[0-9a-fA-F]/);
+  });
+
+  it("hardcodes no white TEXT on control surfaces — button text routes via --tx-on-* (G5, trmx-77)", () => {
+    // background: #fff (the toggle knob — a physical affordance on the track) stays allowed;
+    // color: #fff on an accent/semantic surface is exactly the Night-accent seam G5 fixed.
+    expect(css).not.toMatch(/color:\s*#fff\b/);
+  });
+
+  it("keeps the :root static fallback equal to txCssVars(night), var for var (step-8 F2)", () => {
+    // The pre-JS fallback IS Night's mapping (the dark first-run default, per the file header).
+    // A var emitted at runtime but missing here silently falls back to its var() default before
+    // JS applies — for --tx-on-accent that would resurrect the white-on-#58a6ff seam G5 fixed.
+    const root = /:root\s*\{([^}]*)\}/.exec(css);
+    expect(root).not.toBeNull();
+    const declared: Record<string, string> = {};
+    for (const m of root![1].matchAll(/(--tx-[\w-]+)\s*:\s*([^;]+);/g)) {
+      declared[m[1]] = m[2].trim();
+    }
+    expect(declared).toEqual(txCssVars(themes.night));
   });
 });
