@@ -19,9 +19,15 @@ import type { ITerminalOptions } from "@xterm/xterm";
  *   and rewriting it corrupts cursor motion. `true` was a leftover from the pre-PTY demo phase
  *   (B-4, before C-2 wired the real shell); the conformance harness pins the corrected behavior
  *   (cursor-controls group, "LF keeps column").
+ * - `allowProposedApi: true` — the trmx-64 OSC integrations (52 write-only clipboard, 7 cwd)
+ *   register through `terminal.parser`, a proposed API whose ACCESSOR throws without this flag —
+ *   omitting it crashed the app at mount (round-2 blocker). Carrying it in this slice keeps
+ *   production and the conformance harness on the identical configuration; the regression pin is
+ *   oscIntegration.test.ts (which must always build from the BARE slice).
  */
 export function emulationTerminalOptions(): ITerminalOptions {
   return {
     convertEol: false,
+    allowProposedApi: true,
   };
 }

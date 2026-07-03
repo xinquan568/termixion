@@ -108,6 +108,9 @@ describe("realDeps.createTerminal (the display chokepoint)", () => {
     realDeps.createTerminal();
     const opts = vi.mocked(Terminal).mock.calls[0][0];
     expect(opts?.convertEol).toBe(false);
+    // Round-2 pin: the OSC integrations dereference terminal.parser (proposed API) at mount —
+    // without this flag the accessor throws and the app crashes (step-8 blocker).
+    expect(opts?.allowProposedApi).toBe(true);
   });
 
   it("wires the OSC 8 link policy at the chokepoint (trmx-64)", () => {

@@ -37,15 +37,16 @@ import { emulationTerminalOptions } from "../terminal/emulationOptions";
 
 /**
  * Construct a headless terminal from the production emulation slice. 80x24 is the vttest-canonical
- * geometry; `allowProposedApi` unlocks the `buffer` inspection API (proposed in xterm 5.x) that the
- * whole harness reads through — it does not alter VT semantics.
+ * geometry. `allowProposedApi` (which the harness's `buffer` inspection needs) comes from the slice
+ * itself since round 2 — production and harness must share the identical configuration, so the
+ * driver adds NO flags of its own (a driver-added flag is exactly how the round-1 production crash
+ * hid from the suite).
  */
 export function openTerm(
   overrides?: ITerminalOptions & ITerminalInitOnlyOptions,
 ): Terminal {
   return new Terminal({
     ...emulationTerminalOptions(),
-    allowProposedApi: true,
     cols: 80,
     rows: 24,
     ...overrides,
