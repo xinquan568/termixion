@@ -162,6 +162,10 @@ function startFrameSampling(deps: PerfDeps): { stop(): number[] } {
 
 const POLL_MS = 25;
 
+/** Timeout for the backend invokes the driver awaits (open_pty, pty_write, perf_done): a hung
+ *  invoke must fail INTO the report path, not starve the Rust watchdog report-less. */
+const INVOKE_TIMEOUT_MS = 15000;
+
 async function waitFor(
   predicate: () => boolean,
   timeoutMs: number,
@@ -179,44 +183,93 @@ async function waitFor(
   }
 }
 
+/** Bound `promise` by the waitFor discipline (clock + iteration cap over deps.delay) so a hung
+ *  backend invoke throws into the normal error/report path instead of hanging runPerf. */
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  what: string,
+  deps: PerfDeps,
+): Promise<T> {
+  let settled = false;
+  const guarded = promise.then(
+    (value) => {
+      settled = true;
+      return value;
+    },
+    (err) => {
+      settled = true;
+      throw err;
+    },
+  );
+  const start = deps.now();
+  for (let i = 0; !settled; i += 1) {
+    if (deps.now() - start > timeoutMs || i * POLL_MS > timeoutMs) {
+      throw new Error(`perf: timed out after ${timeoutMs}ms waiting for ${what}`);
+    }
+    await deps.delay(POLL_MS);
+  }
+  return guarded;
+}
+
 /**
  * Drive the NFR-1 scenarios and report the verdict. Resolves with the full report once
  * `reportDone` has been called (the backend then writes the JSON and exits 0/1).
  */
 export async function runPerf(config: PerfLaunchConfig, deps: PerfDeps): Promise<PerfReport> {
-  const mounted = deps.mount();
   const body: PerfReportBody = {
     schema: 1,
     build: config.build,
-    renderer: mounted.renderer(),
+    renderer: "unmounted",
     hasFocus: deps.hasFocus(),
     scenarios: {},
   };
   let error: string | undefined;
+  let mounted: PerfMount | undefined;
 
-  // A DOM fallback invalidates every number — skip the scenarios entirely (the verdict below
-  // fails on the renderer check with a named reason).
-  if (mounted.renderer() === "webgl") {
-    try {
+  // Everything after this point — INCLUDING the mount — fails into the report path: two field
+  // runs died report-less to the Rust watchdog, and a report naming the hung phase is the only
+  // way a failure in the field is diagnosable.
+  try {
+    mounted = deps.mount();
+    body.renderer = mounted.renderer();
+    // A DOM fallback invalidates every number — skip the scenarios entirely (the verdict below
+    // fails on the renderer check with a named reason).
+    if (mounted.renderer() === "webgl") {
       const router = new ByteRouter();
+      const terminal = mounted.terminal; // const-captured for the closure (strict narrowing)
       const onBytes: PtyBytesHandler = (bytes) => {
         router.ingest(bytes);
         if (router.phase === "typing") {
           // The measured tail: chunk parsed (write callback) → next frame (rAF) → close samples.
-          mounted.terminal.write(bytes, () =>
-            deps.raf((t1) => router.closeSamples(bytes.length, t1)),
-          );
+          terminal.write(bytes, () => deps.raf((t1) => router.closeSamples(bytes.length, t1)));
         } else {
-          mounted.terminal.write(bytes);
+          terminal.write(bytes);
         }
       };
-      const { sessionId } = await deps.openPty(onBytes, 24, 80, deps.invoke);
-      const send = (data: string) => deps.sendInput(sessionId, data, deps.invoke);
+      const { sessionId } = await withTimeout(
+        deps.openPty(onBytes, 24, 80, deps.invoke),
+        INVOKE_TIMEOUT_MS,
+        "open_pty",
+        deps,
+      );
+      const send = (data: string) =>
+        withTimeout(
+          deps.sendInput(sessionId, data, deps.invoke),
+          INVOKE_TIMEOUT_MS,
+          "pty_write",
+          deps,
+        );
 
       // Readiness (D4): configure the tty + start the echo discipline; wait for the CONTIGUOUS
       // marker (the echoed command carries the split form and cannot match).
       await send(READY_LINE);
-      await waitFor(() => router.sawMarker(READY_MARKER), SCENARIO.readinessTimeoutMs, "readiness", deps);
+      await waitFor(
+        () => router.sawMarker(READY_MARKER),
+        SCENARIO.readinessTimeoutMs,
+        "readiness",
+        deps,
+      );
       router.phase = "discard"; // trailing marker-echo noise must not count as warmup bytes
       await deps.delay(SCENARIO.settleMs);
 
@@ -257,7 +310,12 @@ export async function runPerf(config: PerfLaunchConfig, deps: PerfDeps): Promise
       router.resetText();
       const seqSampler = startFrameSampling(deps);
       await send(SEQ_LINE);
-      await waitFor(() => router.sawMarker(SCROLL_MARKER), SCENARIO.scrollTimeoutMs, "seq scroll", deps);
+      await waitFor(
+        () => router.sawMarker(SCROLL_MARKER),
+        SCENARIO.scrollTimeoutMs,
+        "seq scroll",
+        deps,
+      );
       body.scenarios.scrollSeq = missedFrames(seqSampler.stop());
 
       // Sustained stream: yes for a fixed window, then SIGINT.
@@ -279,14 +337,14 @@ export async function runPerf(config: PerfLaunchConfig, deps: PerfDeps): Promise
         await deps.delay(SCENARIO.pagingPaceMs);
       }
       body.scenarios.scrollbackPaging = missedFrames(pagingSampler.stop());
-    } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
     }
+  } catch (err) {
+    error = err instanceof Error ? err.message : String(err);
   }
 
   // Re-read the renderer AFTER the scenarios (step-8 F2): a WebGL context loss mid-run flips the
   // handle to "dom", and the report must carry — and be judged on — the end-of-run value.
-  body.renderer = mounted.renderer();
+  if (mounted) body.renderer = mounted.renderer();
   const verdict = evaluatePerf(body);
   const pass = verdict.ok && error === undefined;
   const report: PerfReport = {
@@ -296,7 +354,16 @@ export async function runPerf(config: PerfLaunchConfig, deps: PerfDeps): Promise
     pass,
     reason: error ?? verdict.reason,
   };
-  await deps.reportDone(JSON.stringify(report, null, 2), pass, deps.invoke);
+  try {
+    await withTimeout(
+      deps.reportDone(JSON.stringify(report, null, 2), pass, deps.invoke),
+      INVOKE_TIMEOUT_MS,
+      "perf_done",
+      deps,
+    );
+  } catch {
+    // Nothing left to report to — the Rust watchdog is the final backstop.
+  }
   return report;
 }
 
@@ -320,8 +387,7 @@ export function realPerfDeps(): PerfDeps {
     },
     openPty: (onBytes, rows, cols, invoke) => openPty(onBytes, rows, cols, undefined, invoke),
     sendInput: sendPtyInput,
-    reportDone: (report, ok, invoke) =>
-      invoke("perf_done", { report, success: ok }).then(() => {}),
+    reportDone: (report, ok, invoke) => invoke("perf_done", { report, success: ok }).then(() => {}),
     raf: (callback) => requestAnimationFrame(callback),
     now: () => performance.now(),
     delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),

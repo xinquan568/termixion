@@ -184,6 +184,15 @@ describe("runPerf (fake world)", () => {
     expect(world.reports[0].ok).toBe(false);
   });
 
+  it("a hung backend invoke fails into a report instead of starving the watchdog", async () => {
+    const world = fakeWorld();
+    world.deps.openPty = () => new Promise(() => {}); // never resolves — the watchdog-starver
+    const report = await runPerf({ outDir: "/tmp/x", build: "release" }, world.deps);
+    expect(report.pass).toBe(false);
+    expect(report.error).toContain("open_pty");
+    expect(world.reports).toHaveLength(1); // the report still reaches the backend
+  }, 15000);
+
   it("an echo-only world (marker never arrives) times out readiness and fails the run", async () => {
     const world = fakeWorld({ respondReady: false });
     const report = await runPerf({ outDir: "/tmp/x", build: "release" }, world.deps);
