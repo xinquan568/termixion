@@ -241,6 +241,14 @@ const PTY_HANDOFF_CHUNKS: usize = 256;
 /// floods into the message storm this exists to fix.
 const PTY_BATCH_MAX_BYTES: usize = 262_144;
 
+/// The pacing window under sustained load (trmx-78 round 2, measured): `channel.send` queues
+/// internally and returns fast — no backpressure — so drain-only batching never accumulates a
+/// backlog (a `yes` flood still produced millions of tiny messages). After each send the sender
+/// therefore accumulates for up to this window before the next send, bounding the message rate
+/// at ~1000/WINDOW per second with growing batches. The idle path is untouched: a chunk arriving
+/// after a quiet period (typing echoes at ≥50 ms spacing) is sent immediately.
+const PTY_BATCH_WINDOW_MS: u64 = 4;
+
 /// One batch: block for the first chunk, then opportunistically drain the backlog up to `max`
 /// bytes (the first chunk always rides, even if larger than `max`). `None` = closed and empty.
 /// Pure over std types — unit-tested (order, cap, residue-after-close).
@@ -267,6 +275,8 @@ fn run_batch_sender(
     mut send_batch: impl FnMut(Vec<u8>) -> bool,
     on_done: impl FnOnce(),
 ) {
+    use std::time::Instant;
+
     /// Drop guard: `on_done` runs exactly once on EVERY exit — return AND unwind. Field evidence
     /// (round 2): a panic inside the send path killed the sender thread between the loop and the
     /// reap, orphaning the session (stale registry entry, poller spinning, webview waiting
@@ -280,10 +290,32 @@ fn run_batch_sender(
         }
     }
     let _guard = DoneGuard(Some(on_done));
-    while let Some(batch) = next_batch(&rx, max) {
+    let window = Duration::from_millis(PTY_BATCH_WINDOW_MS);
+    // Start "long idle" so the very first chunk (and any chunk after a quiet period) sends
+    // immediately — the pacing only bites while the producer sustains output.
+    let mut last_send = Instant::now() - window;
+    while let Some(mut batch) = next_batch(&rx, max) {
+        // Micro-window pacing: if the previous send was within the window, keep accumulating
+        // until the window elapses (or the cap is hit / the stream ends) — forced coalescing
+        // against a transport that queues instead of backpressuring.
+        let since = last_send.elapsed();
+        if since < window {
+            let deadline = Instant::now() + (window - since);
+            while batch.len() < max {
+                let now = Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                match rx.recv_timeout(deadline - now) {
+                    Ok(chunk) => batch.extend_from_slice(&chunk),
+                    Err(_) => break, // window elapsed with no data, or producer closed
+                }
+            }
+        }
         if !send_batch(batch) {
             break; // transport gone (webview/channel closed)
         }
+        last_send = Instant::now();
     }
     // rx drops here (releasing a producer blocked on the full queue), then the guard fires.
 }
@@ -1118,6 +1150,68 @@ mod tests {
         }));
         assert!(result.is_err(), "the panic propagates");
         assert_eq!(*log.lock().expect("log"), vec!["done".to_string()]);
+    }
+
+    #[test]
+    fn sender_paces_a_flood_into_windowed_batches_against_a_nonblocking_transport() {
+        // Field evidence (round 2): Tauri's channel.send returns quickly (internal queueing, no
+        // backpressure), so drain-only "natural batching" never accumulates — a `yes` flood still
+        // became millions of tiny messages. The sender must FORCE coalescing: after a send, wait
+        // out PTY_BATCH_WINDOW while accumulating before the next send. A fast producer feeding
+        // 200 chunks through a non-blocking send must land in far fewer batches.
+        let (tx, rx) = sync_channel::<Vec<u8>>(256);
+        let producer = std::thread::spawn(move || {
+            for _ in 0..200 {
+                tx.send(vec![b'y'; 2]).expect("queue");
+                std::thread::sleep(Duration::from_micros(200)); // ~40ms of sustained flood
+            }
+        });
+        let batches: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&batches);
+        run_batch_sender(
+            rx,
+            1024 * 1024,
+            move |batch| {
+                sink.lock().expect("batches").push(batch.len());
+                true
+            },
+            || {},
+        );
+        producer.join().expect("producer");
+        let sent = batches.lock().expect("batches");
+        let total: usize = sent.iter().sum();
+        assert_eq!(total, 400, "every byte arrives exactly once, in order");
+        assert!(
+            sent.len() <= 30,
+            "a ~40ms flood must coalesce into windowed batches, got {} sends",
+            sent.len()
+        );
+    }
+
+    #[test]
+    fn sender_first_send_after_idle_is_immediate() {
+        // The pacing must never tax the idle path: a lone echo byte after a quiet period goes out
+        // without waiting for the window (typing latency budget).
+        let (tx, rx) = sync_channel::<Vec<u8>>(4);
+        let started = std::time::Instant::now();
+        tx.send(b"x".to_vec()).expect("queue");
+        drop(tx);
+        let sent_at: Arc<Mutex<Option<Duration>>> = Arc::new(Mutex::new(None));
+        let sink = Arc::clone(&sent_at);
+        run_batch_sender(
+            rx,
+            1024,
+            move |_| {
+                *sink.lock().expect("sent") = Some(started.elapsed());
+                true
+            },
+            || {},
+        );
+        let elapsed = sent_at.lock().expect("sent").expect("one send happened");
+        assert!(
+            elapsed < Duration::from_millis(PTY_BATCH_WINDOW_MS * 2),
+            "idle send must be immediate-ish, took {elapsed:?}"
+        );
     }
 
     #[test]
