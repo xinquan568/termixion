@@ -22,6 +22,7 @@ import {
   type AttachScrollbarHandle,
   type ScrollbarTerminalLike,
 } from "./scrollbar";
+import { makeResizeCoalescer, type FrameSchedule } from "./resizeCoalescer";
 import { initialAppearanceFromWindow, iterm2TerminalOptions } from "./iterm2Theme";
 import { emulationTerminalOptions } from "./emulationOptions";
 import { scrollbackTerminalOptions } from "./scrollbackSettings";
@@ -215,6 +216,12 @@ export interface TerminalViewProps {
   attachOscIntegrations?: AttachOscIntegrations;
   /** Injection seam for tests; defaults to the real ⌘C/⌘V clipboard guards (trmx-66). */
   attachClipboard?: AttachClipboard;
+  /**
+   * Injection seam for tests; the frame source for resize coalescing (trmx-67). Defaults to
+   * requestAnimationFrame — tests inject an immediate or manually-fired schedule so the
+   * coalesced fit runs deterministically instead of on a real animation frame.
+   */
+  resizeSchedule?: FrameSchedule;
 }
 
 export function TerminalView({
@@ -226,6 +233,7 @@ export function TerminalView({
   observeSettings = realObserveSettings,
   attachOscIntegrations = realAttachOscIntegrations,
   attachClipboard = realAttachClipboard,
+  resizeSchedule,
 }: TerminalViewProps) {
   const hostRef = useRef<HTMLDivElement>(null);
 
@@ -246,13 +254,19 @@ export function TerminalView({
     const detachOsc = attachOscIntegrations(handle.terminal);
     // trmx-66: owned ⌘C/⌘V — capture-phase guards on the host (sanitized paste, no-clear copy).
     const detachClipboard = attachClipboard(host, handle.terminal);
-    // Keep the grid filling the host as the window resizes (issue 2): every size change re-fits, which
-    // makes xterm fire onResize → the PTY grid is resized to match (wired in useBackend). Recompute the
-    // scrollbar AFTER the fit so it reads the freshly-resized rows/cols (trmx-41).
-    const stopObserving = observeResize(host, () => {
+    // Keep the grid filling the host as the window resizes (issue 2): a size change re-fits, which
+    // makes xterm fire onResize → the PTY grid is resized to match (wired in useBackend). Recompute
+    // the scrollbar AFTER the fit so it reads the freshly-resized rows/cols (trmx-41).
+    // trmx-67: a live window drag floods ResizeObserver ticks; one fit per frame bounds the SIGWINCH
+    // stream (xterm's same-size dedup already stops repeats), and a zero-area/hidden host is skipped
+    // entirely so the upstream 2×1 floor artifact never reaches the PTY — the first restore's real
+    // resize tick re-fits.
+    const coalescer = makeResizeCoalescer(() => {
+      if (host.clientWidth === 0 || host.clientHeight === 0) return;
       handle.fit();
       scrollbar.recompute();
-    });
+    }, resizeSchedule);
+    const stopObserving = observeResize(host, () => coalescer.tick());
     // trmx-51/53: settings edited in the settings window (or reverted by Reset) apply to the live
     // terminal by option assignment — no remount. Cursor style/blink reassign their options;
     // a theme change (trmx-53, superseding trmx-44's live OS-following) reassigns options.theme
@@ -277,12 +291,15 @@ export function TerminalView({
     return () => {
       stopObserving();
       stopObservingSettings();
+      // trmx-67: revoke any coalesced fit still waiting on a frame — a frame that fires after
+      // teardown must not touch the disposed terminal.
+      coalescer.dispose();
       detachClipboard();
       detachOsc();
       scrollbar.dispose();
       handle.dispose();
     };
-  }, [mount, deps, onReady, observeResize, attachScrollbar, observeSettings, attachOscIntegrations, attachClipboard]);
+  }, [mount, deps, onReady, observeResize, attachScrollbar, observeSettings, attachOscIntegrations, attachClipboard, resizeSchedule]);
 
   return <div ref={hostRef} data-testid="terminal" className="terminal-host" />;
 }

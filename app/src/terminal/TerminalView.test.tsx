@@ -34,6 +34,21 @@ const noopAttachOsc: AttachOscIntegrations = () => () => {};
 // A no-op clipboard seam (trmx-66) for tests that don't exercise it.
 const noopAttachClipboard: AttachClipboard = () => () => {};
 
+// trmx-67: resize fits are coalesced onto animation frames. Tests that just want "a resize fits"
+// inject an immediate frame (fire the callback now; cancel is a no-op) so firing the captured
+// resize callback still fits synchronously — deterministic, no rAF in the loop.
+const immediateFrame = (cb: () => void) => {
+  cb();
+  return () => {};
+};
+
+// trmx-67: jsdom measures every element 0×0 — exactly the hidden-window shape the coalesced fit
+// skips. Tests that expect a fit give the host real area; the zero-area test leaves it unmeasured.
+function giveHostArea(host: HTMLElement) {
+  Object.defineProperty(host, "clientWidth", { value: 800, configurable: true });
+  Object.defineProperty(host, "clientHeight", { value: 600, configurable: true });
+}
+
 describe("TerminalView", () => {
   it("mounts into its container element and disposes on unmount", () => {
     const dispose = vi.fn();
@@ -121,12 +136,14 @@ describe("TerminalView", () => {
         attachScrollbar={noopAttachScrollbar}
         attachOscIntegrations={noopAttachOsc}
         attachClipboard={noopAttachClipboard}
+        resizeSchedule={immediateFrame}
       />,
     );
 
     // The component observes the very element it mounted the terminal into.
     expect(observeResize).toHaveBeenCalledTimes(1);
     expect(observeResize.mock.calls[0][0]).toBe(mount.mock.calls[0][0]);
+    giveHostArea(mount.mock.calls[0][0]);
 
     // A resize re-fits the grid so the content scales with the window.
     expect(fit).not.toHaveBeenCalled();
@@ -205,13 +222,163 @@ describe("TerminalView", () => {
         attachScrollbar={attachScrollbar}
         attachOscIntegrations={noopAttachOsc}
         attachClipboard={noopAttachClipboard}
+        resizeSchedule={immediateFrame}
       />,
     );
+    giveHostArea(mount.mock.calls[0][0]);
 
     fireResize?.();
 
     // fit must run before recompute, otherwise the scrollbar would read stale rows/cols.
     expect(calls).toEqual(["fit", "recompute"]);
+  });
+
+  it("coalesces a resize burst to one fit on the next frame (trmx-67: a live drag floods ResizeObserver)", () => {
+    const calls: string[] = [];
+    const fit = vi.fn(() => calls.push("fit"));
+    const handle: TerminalHandle = {
+      terminal: {} as never,
+      renderer: "webgl",
+      fit,
+      dispose: vi.fn(),
+    };
+    const mount = vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(
+      () => handle,
+    );
+
+    let fireResize: (() => void) | undefined;
+    const observeResize = vi.fn<ResizeObservation>((_target, onResize) => {
+      fireResize = onResize;
+      return () => {};
+    });
+
+    const recompute = vi.fn(() => calls.push("recompute"));
+    const attachScrollbar = vi.fn<AttachScrollbar>(() => ({
+      recompute,
+      dispose: vi.fn(),
+    }));
+
+    // Manual frame: capture the coalesced callback so the test decides when the frame fires.
+    let frameCb: (() => void) | undefined;
+    const resizeSchedule = (cb: () => void) => {
+      frameCb = cb;
+      return () => {};
+    };
+
+    render(
+      <TerminalView
+        mount={mount}
+        observeResize={observeResize}
+        attachScrollbar={attachScrollbar}
+        attachOscIntegrations={noopAttachOsc}
+        attachClipboard={noopAttachClipboard}
+        resizeSchedule={resizeSchedule}
+      />,
+    );
+    giveHostArea(mount.mock.calls[0][0]);
+
+    // A drag burst: five observer ticks land inside one frame — nothing fits yet…
+    for (let i = 0; i < 5; i++) fireResize?.();
+    expect(fit).not.toHaveBeenCalled();
+
+    // …then the frame fires exactly one fit, with the scrollbar recomputed after it.
+    frameCb?.();
+    expect(fit).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual(["fit", "recompute"]);
+  });
+
+  it("never fits a zero-area host, so a hidden window's 2×1 floor never reaches the PTY (trmx-67)", () => {
+    const fit = vi.fn();
+    const handle: TerminalHandle = {
+      terminal: {} as never,
+      renderer: "webgl",
+      fit,
+      dispose: vi.fn(),
+    };
+    const mount = vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(
+      () => handle,
+    );
+
+    let fireResize: (() => void) | undefined;
+    const observeResize = vi.fn<ResizeObservation>((_target, onResize) => {
+      fireResize = onResize;
+      return () => {};
+    });
+
+    const recompute = vi.fn();
+    const attachScrollbar = vi.fn<AttachScrollbar>(() => ({
+      recompute,
+      dispose: vi.fn(),
+    }));
+
+    let frameCb: (() => void) | undefined;
+    const resizeSchedule = (cb: () => void) => {
+      frameCb = cb;
+      return () => {};
+    };
+
+    render(
+      <TerminalView
+        mount={mount}
+        observeResize={observeResize}
+        attachScrollbar={attachScrollbar}
+        attachOscIntegrations={noopAttachOsc}
+        attachClipboard={noopAttachClipboard}
+        resizeSchedule={resizeSchedule}
+      />,
+    );
+
+    // The host keeps jsdom's 0×0 measurements — exactly the hidden/minimized-window shape. The
+    // frame fires, but the zero-area skip keeps the fit (and the 2×1-floor artifact it would
+    // emit upstream) away from the PTY entirely.
+    fireResize?.();
+    frameCb?.();
+    expect(fit).not.toHaveBeenCalled();
+    expect(recompute).not.toHaveBeenCalled();
+  });
+
+  it("a frame that fires after unmount does not fit (trmx-67: coalescer dispose guard)", () => {
+    const fit = vi.fn();
+    const handle: TerminalHandle = {
+      terminal: {} as never,
+      renderer: "webgl",
+      fit,
+      dispose: vi.fn(),
+    };
+    const mount = vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(
+      () => handle,
+    );
+
+    let fireResize: (() => void) | undefined;
+    const observeResize = vi.fn<ResizeObservation>((_target, onResize) => {
+      fireResize = onResize;
+      return () => {};
+    });
+
+    let frameCb: (() => void) | undefined;
+    const resizeSchedule = (cb: () => void) => {
+      frameCb = cb;
+      return () => {};
+    };
+
+    const { unmount } = render(
+      <TerminalView
+        mount={mount}
+        observeResize={observeResize}
+        attachScrollbar={noopAttachScrollbar}
+        attachOscIntegrations={noopAttachOsc}
+        attachClipboard={noopAttachClipboard}
+        resizeSchedule={resizeSchedule}
+      />,
+    );
+    giveHostArea(mount.mock.calls[0][0]);
+
+    // A resize arrives, then the component unmounts before its frame fires. The captured frame
+    // firing afterwards must be inert — the cleanup disposed the coalescer.
+    fireResize?.();
+    unmount();
+    frameCb?.();
+    expect(fit).not.toHaveBeenCalled();
   });
 
   it("re-themes the live terminal, syncs the backgrounds, and recomputes the scrollbar on a theme broadcast (trmx-53)", () => {

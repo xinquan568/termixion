@@ -20,12 +20,16 @@ pub struct Session {
 impl Session {
     /// Spawn a new session via `factory`. The title defaults to the spec's program; callers may
     /// override it with [`Session::set_title`] (e.g. from an OSC title or the foreground process).
+    ///
+    /// Rejects a zero-row or zero-col `size` with [`PtyError::InvalidSize`] — a PTY grid is at
+    /// least 1x1, and a degenerate size must never reach a backend.
     pub fn spawn(
         id: SessionId,
         factory: &dyn PtyFactory,
         spec: &SessionSpec,
         size: PtySize,
     ) -> Result<Self, PtyError> {
+        ensure_nonzero_size(size)?;
         let backend = factory.spawn(spec, size)?;
         Ok(Self {
             id,
@@ -86,7 +90,11 @@ impl Session {
     }
 
     /// Resize the PTY and remember the new size. Errors with [`PtyError::NotRunning`] once killed.
+    ///
+    /// Rejects a zero-row or zero-col `size` with [`PtyError::InvalidSize`] before anything
+    /// reaches the backend — the session keeps its previous size and stays alive.
     pub fn resize(&mut self, size: PtySize) -> Result<(), PtyError> {
+        ensure_nonzero_size(size)?;
         if !self.alive {
             return Err(PtyError::NotRunning);
         }
@@ -116,6 +124,16 @@ impl Session {
     pub fn take_reader(&mut self) -> Option<Box<dyn crate::pty::PtyReader>> {
         self.backend.take_reader()
     }
+}
+
+/// The shared ingress guard for [`Session::spawn`] and [`Session::resize`]: a PTY grid is at
+/// least 1x1, so a size with zero rows or zero cols is rejected with [`PtyError::InvalidSize`]
+/// before it reaches any backend.
+fn ensure_nonzero_size(size: PtySize) -> Result<(), PtyError> {
+    if size.rows == 0 || size.cols == 0 {
+        return Err(PtyError::InvalidSize(size));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -160,6 +178,56 @@ mod tests {
         ));
         assert_eq!(session.read(&mut buf).expect("read after kill"), 0);
         session.kill().expect("kill is idempotent");
+    }
+
+    #[test]
+    fn spawn_rejects_a_zero_sized_grid() {
+        // The core-ingress invariant (trmx-67): a PTY grid is at least 1x1, so a zero-row or
+        // zero-col initial size errors up front — it must never reach a backend.
+        let factory = FakePtyFactory;
+        let spec = SessionSpec::shell("/bin/zsh");
+        assert!(matches!(
+            Session::spawn(10, &factory, &spec, PtySize::new(0, 80)),
+            Err(PtyError::InvalidSize(size)) if size == PtySize::new(0, 80)
+        ));
+        assert!(matches!(
+            Session::spawn(11, &factory, &spec, PtySize::new(24, 0)),
+            Err(PtyError::InvalidSize(size)) if size == PtySize::new(24, 0)
+        ));
+        // The minimum valid grid still spawns.
+        let session = Session::spawn(12, &factory, &spec, PtySize::new(1, 1)).expect("1x1 spawn");
+        assert_eq!(session.size(), PtySize::new(1, 1));
+    }
+
+    #[test]
+    fn resize_rejects_a_zero_sized_grid_and_keeps_the_session_intact() {
+        // The same invariant on the resize ingress: zero rows/cols error with InvalidSize while
+        // the session keeps its previous size and stays alive (nothing reached the backend).
+        let factory = FakePtyFactory;
+        let spec = SessionSpec::shell("/bin/zsh");
+        let mut session = Session::spawn(13, &factory, &spec, PtySize::new(24, 80)).expect("spawn");
+
+        assert!(matches!(
+            session.resize(PtySize::new(0, 80)),
+            Err(PtyError::InvalidSize(size)) if size == PtySize::new(0, 80)
+        ));
+        assert!(matches!(
+            session.resize(PtySize::new(40, 0)),
+            Err(PtyError::InvalidSize(size)) if size == PtySize::new(40, 0)
+        ));
+        assert!(
+            session.is_alive(),
+            "a rejected resize must not end the session"
+        );
+        assert_eq!(
+            session.size(),
+            PtySize::new(24, 80),
+            "a rejected resize must leave the stored size unchanged"
+        );
+
+        // A valid resize still works afterwards.
+        session.resize(PtySize::new(40, 120)).expect("valid resize");
+        assert_eq!(session.size(), PtySize::new(40, 120));
     }
 
     #[test]

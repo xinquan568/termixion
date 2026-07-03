@@ -38,6 +38,8 @@ pub enum PtyError {
     Spawn(String),
     /// An I/O error during read/write/resize/kill.
     Io(String),
+    /// A requested size had zero rows or zero cols — a PTY grid is at least 1x1.
+    InvalidSize(PtySize),
 }
 
 impl fmt::Display for PtyError {
@@ -46,6 +48,11 @@ impl fmt::Display for PtyError {
             PtyError::NotRunning => write!(f, "pty session is not running"),
             PtyError::Spawn(msg) => write!(f, "failed to spawn pty session: {msg}"),
             PtyError::Io(msg) => write!(f, "pty I/O error: {msg}"),
+            PtyError::InvalidSize(size) => write!(
+                f,
+                "invalid pty size: {} rows x {} cols (both must be nonzero)",
+                size.rows, size.cols
+            ),
         }
     }
 }
@@ -200,6 +207,10 @@ mod tests {
         assert_eq!(
             PtyError::Io("disk full".into()).to_string(),
             "pty I/O error: disk full"
+        );
+        assert_eq!(
+            PtyError::InvalidSize(PtySize::new(0, 80)).to_string(),
+            "invalid pty size: 0 rows x 80 cols (both must be nonzero)"
         );
 
         // It is a std::error::Error with no deeper source (we carry messages, not nested errors).
