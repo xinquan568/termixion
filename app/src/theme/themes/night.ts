@@ -3,6 +3,10 @@
 //
 // trmx-53: Night theme — the dark theme (the dark-OS first-run default). Values copied verbatim
 // from vmark origin/main:src/theme/themes/night.ts @ d7e70e3f (pruned to Termixion's token schema).
+// trmx-77: one audited deviation from vmark — ansi.brightBlack #484f58 → #6e7681 (GitHub Dark's
+// canonical bright black, same hue family): 1.83:1 on bg failed the G2 legibility gate (≥2.5:1);
+// brightBlack renders dim/comment text, so it carries real legibility stakes. See
+// docs/design/visual-baseline.md §4.
 import type { ThemeTokens } from "../tokens";
 
 export const night: ThemeTokens = {
@@ -25,7 +29,7 @@ export const night: ThemeTokens = {
       magenta: "#bc8cff",
       cyan: "#39c5cf",
       white: "#b1bac4",
-      brightBlack: "#484f58",
+      brightBlack: "#6e7681",
       brightRed: "#ff7b72",
       brightGreen: "#56d364",
       brightYellow: "#e3b341",

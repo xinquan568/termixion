@@ -3,10 +3,15 @@
 //
 // trmx-53: per-theme acceptance tests (modeled on vmark's `__acceptance__` suite). The fixtures
 // below pin every theme's core UI tokens (the issue's table) and its COMPLETE terminal slice —
-// all 16 ANSI colors, cursor, cursorAccent, selectionBackground, and the scrollbar triple —
-// value-exactly to vmark origin/main @ d7e70e3f9eef21789e9f9974cbb7d2b90fa5b076. The catalog is
-// the single runtime color source; if these drift, the app no longer renders vmark's themes.
+// all 16 ANSI colors, cursor, cursorAccent, selectionBackground, and the scrollbar triple.
+// trmx-53 pinned them value-exactly to vmark origin/main @ d7e70e3f9eef21789e9f9974cbb7d2b90fa5b076.
+// trmx-77 FORKED the pin: the fixtures now record Termixion's AUDITED visual baseline
+// (docs/design/visual-baseline.md), which deviates from vmark in exactly two values that failed
+// the legibility gates below — night.ansi.brightBlack #484f58 → #6e7681 (G2) and
+// solarized.selectionBackground alpha 0.22 → 0.15 (G3). Every other value remains vmark-exact;
+// any future drift must pass the CONTRAST_GATES and update docs/design/visual-baseline.md.
 import { describe, expect, it } from "vitest";
+import { compositeOver, contrastRatio } from "./contrast";
 import { THEME_IDS, themeLabel, themes, type ThemeId } from "./themes";
 import type { ThemeTokens } from "./tokens";
 
@@ -20,7 +25,8 @@ const CORE: Record<ThemeId, { bg: string; bg2: string; text: string; accent: str
   solarized: { bg: "#002b36", bg2: "#073642", text: "#93a1a1", accent: "#268bd2", border: "#0e4753", dark: true },
 };
 
-/** Full terminal slices, verbatim from vmark origin/main @ d7e70e3f (per-theme files). */
+/** Full terminal slices — vmark origin/main @ d7e70e3f plus the two trmx-77 audited deviations
+ *  (night.brightBlack, solarized.selectionBackground); see the header comment. */
 const TERMINAL: Record<ThemeId, ThemeTokens["terminal"]> = {
   white: {
     ansi: {
@@ -74,7 +80,7 @@ const TERMINAL: Record<ThemeId, ThemeTokens["terminal"]> = {
     ansi: {
       black: "#1a1d22", red: "#f85149", green: "#3fb950", yellow: "#d29922",
       blue: "#58a6ff", magenta: "#bc8cff", cyan: "#39c5cf", white: "#b1bac4",
-      brightBlack: "#484f58", brightRed: "#ff7b72", brightGreen: "#56d364", brightYellow: "#e3b341",
+      brightBlack: "#6e7681", brightRed: "#ff7b72", brightGreen: "#56d364", brightYellow: "#e3b341",
       brightBlue: "#79c0ff", brightMagenta: "#d2a8ff", brightCyan: "#56d4dd", brightWhite: "#f0f6fc",
     },
     cursor: "#d6d9de",
@@ -91,7 +97,7 @@ const TERMINAL: Record<ThemeId, ThemeTokens["terminal"]> = {
     },
     cursor: "#93a1a1",
     cursorAccent: "#002b36",
-    selectionBackground: "rgba(38, 139, 210, 0.22)",
+    selectionBackground: "rgba(38, 139, 210, 0.15)",
     scrollbar: { idle: "rgba(255, 255, 255, 0.12)", hover: "rgba(255, 255, 255, 0.20)", active: "rgba(255, 255, 255, 0.30)" },
   },
 };
@@ -146,5 +152,59 @@ describe.each(THEME_IDS)("theme %s", (id) => {
     };
     walk(theme.color);
     walk(theme.terminal);
+  });
+});
+
+// trmx-77: the FR-3.6 legibility gates (G1–G4) — the catalog-wide regression floor locked by
+// docs/design/visual-baseline.md §4, which records the thresholds' rationale and the measured
+// matrix. Floors, not targets: WCAG-anchored and chosen so every audited token passes; a future
+// theme (or token tweak) that regresses legibility fails here. G5 (settings-surface on-accent
+// text) lives with its surface in txCssVars.test.ts.
+export const CONTRAST_GATES = {
+  /** G1: text.primary vs bg.primary — WCAG AA normal text. */
+  foreground: 4.5,
+  /** G2: each ANSI color vs bg.primary. `black` is exempt — it doubles as the TUI background
+   *  color, and every canonical dark theme keeps it ≈ bg (iTerm2's is ≈1.0); see doc §4. */
+  ansi: 2.5,
+  /** G3: text.primary vs the selection tint composited over bg.primary (the token schema has no
+   *  selectionForeground — xterm keeps per-glyph colors, so the theme foreground is the floor). */
+  selectedText: 4.5,
+  /** G4: cursor vs bg.primary — WCAG 1.4.11 UI-component contrast. */
+  cursor: 3,
+} as const;
+
+describe.each(THEME_IDS)("legibility gates (trmx-77) — %s", (id) => {
+  const theme = themes[id];
+  const bg = theme.color.bg.primary;
+
+  it(`G1: foreground ≥ ${CONTRAST_GATES.foreground}:1 on the terminal background`, () => {
+    expect(contrastRatio(theme.color.text.primary, bg)).toBeGreaterThanOrEqual(
+      CONTRAST_GATES.foreground,
+    );
+  });
+
+  it(`G2: every ANSI color except black ≥ ${CONTRAST_GATES.ansi}:1 on the terminal background`, () => {
+    const failures: string[] = [];
+    for (const [name, value] of Object.entries(theme.terminal.ansi)) {
+      if (name === "black") continue; // exempt — TUI background role (doc §4)
+      const ratio = contrastRatio(value, bg);
+      if (ratio < CONTRAST_GATES.ansi) {
+        failures.push(`${name} ${value} = ${ratio.toFixed(2)}`);
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+
+  it(`G3: selected text ≥ ${CONTRAST_GATES.selectedText}:1 (foreground vs composited selection)`, () => {
+    const selection = compositeOver(theme.terminal.selectionBackground, bg);
+    expect(contrastRatio(theme.color.text.primary, selection)).toBeGreaterThanOrEqual(
+      CONTRAST_GATES.selectedText,
+    );
+  });
+
+  it(`G4: cursor ≥ ${CONTRAST_GATES.cursor}:1 on the terminal background`, () => {
+    expect(contrastRatio(theme.terminal.cursor, bg)).toBeGreaterThanOrEqual(
+      CONTRAST_GATES.cursor,
+    );
   });
 });

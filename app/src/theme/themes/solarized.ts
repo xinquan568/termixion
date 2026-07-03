@@ -5,6 +5,11 @@
 // base0/base1 text, blue #268bd2 accent; canonical ANSI mapping: normal = accent/base tones,
 // bright = base monotones + orange/violet). Values copied verbatim from
 // vmark origin/main:src/theme/themes/solarized.ts @ d7e70e3f (pruned to Termixion's token schema).
+// trmx-77: one audited deviation from vmark — terminal.selectionBackground alpha 0.22 → 0.15:
+// base1 text over the 0.22 composite measured 4.17:1, failing the G3 selected-text gate (≥4.5:1);
+// at 0.15 it measures ≈4.61:1 and the tint stays visible. The UI selection tint (color.selection)
+// keeps vmark's 0.22 — it highlights settings-window text, not terminal glyphs. See
+// docs/design/visual-baseline.md §4.
 import type { ThemeTokens } from "../tokens";
 
 export const solarized: ThemeTokens = {
@@ -38,7 +43,7 @@ export const solarized: ThemeTokens = {
     },
     cursor: "#93a1a1",
     cursorAccent: "#002b36",
-    selectionBackground: "rgba(38, 139, 210, 0.22)",
+    selectionBackground: "rgba(38, 139, 210, 0.15)",
     scrollbar: {
       idle: "rgba(255, 255, 255, 0.12)",
       hover: "rgba(255, 255, 255, 0.20)",
