@@ -44,6 +44,15 @@ export function evaluatePerf(report: PerfReportBody): PerfVerdict {
       reason: `invalid measurement: renderer is '${report.renderer}', not webgl`,
     };
   }
+  // The protocol's frontmost/visible requirement, ENFORCED (step-8 F1): an unfocused window gets
+  // rAF-throttled and fabricates both latency tails and dropped frames — those numbers must never
+  // pass, even when they happen to land inside the budgets.
+  if (report.hasFocus !== true) {
+    return {
+      ok: false,
+      reason: `invalid measurement: window did not have focus (hasFocus=${String(report.hasFocus)})`,
+    };
+  }
   const { typing } = report.scenarios;
   if (!typing) return { ok: false, reason: "incomplete run: typing scenario missing" };
   if (typing.p50 > BUDGETS.typingP50Ms) {

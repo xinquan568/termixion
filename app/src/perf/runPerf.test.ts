@@ -66,7 +66,9 @@ describe("ByteRouter", () => {
 });
 
 /** A controllable fake world: virtual clock, async rAF (+8 ms frame stamp), auto-responder PTY. */
-function fakeWorld(opts: { renderer?: "webgl" | "dom"; respondReady?: boolean } = {}) {
+function fakeWorld(
+  opts: { renderer?: "webgl" | "dom"; respondReady?: boolean; loseWebglAtSeq?: boolean } = {},
+) {
   const clock = { t: 0 };
   const sent: string[] = [];
   const scrolled: number[] = [];
@@ -74,6 +76,7 @@ function fakeWorld(opts: { renderer?: "webgl" | "dom"; respondReady?: boolean } 
   let onBytes: PtyBytesHandler = () => {};
   const emit = (text: string) => onBytes(encoder.encode(text));
 
+  let rendererNow: "webgl" | "dom" = opts.renderer ?? "webgl";
   const mount: PerfMount = {
     terminal: {
       open: () => {},
@@ -84,7 +87,8 @@ function fakeWorld(opts: { renderer?: "webgl" | "dom"; respondReady?: boolean } 
       onResize: () => {},
       dispose: () => {},
     },
-    renderer: opts.renderer ?? "webgl",
+    // Live read (step-8 F2): the real handle's renderer flips to "dom" on WebGL context loss.
+    renderer: () => rendererNow,
     scrollPages: (n: number) => scrolled.push(n),
     dispose: () => {},
   };
@@ -108,6 +112,7 @@ function fakeWorld(opts: { renderer?: "webgl" | "dom"; respondReady?: boolean } 
       } else if (data === "x") {
         emit("x"); // cat echo discipline: every key comes straight back
       } else if (data === SEQ_LINE) {
+        if (opts.loseWebglAtSeq) rendererNow = "dom"; // mid-run context loss
         setTimeout(() => {
           emit("1\r\n2\r\n3\r\n");
           emit(`${"4".repeat(80)}\r\n`);
@@ -168,6 +173,15 @@ describe("runPerf (fake world)", () => {
     expect(world.sent).toHaveLength(0); // no PTY driving at all
     expect(world.reports[0].ok).toBe(false);
     expect(world.reports[0].json).toContain("renderer");
+  });
+
+  it("a mid-run WebGL context loss is caught at evaluation time (step-8 F2)", async () => {
+    const world = fakeWorld({ loseWebglAtSeq: true });
+    const report = await runPerf({ outDir: "/tmp/x", build: "release" }, world.deps);
+    expect(report.pass).toBe(false);
+    expect(report.renderer).toBe("dom"); // the report carries the END-of-run renderer
+    expect(report.reason).toContain("renderer");
+    expect(world.reports[0].ok).toBe(false);
   });
 
   it("an echo-only world (marker never arrives) times out readiness and fails the run", async () => {

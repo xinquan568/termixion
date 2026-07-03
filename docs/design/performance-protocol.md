@@ -11,8 +11,10 @@ noise; the **reference Mac is the measurement instrument**.
   exact model/chip/macOS — filled by `scripts/perf.sh --commit`).
 - **Conditions (validity requirements, not suggestions):** app window **frontmost and fully
   visible** (rAF throttles when occluded — an occluded run *fabricates* dropped frames), display
-  awake, machine on AC power, no heavy background load. The report records `hasFocus` at mount as
-  a validity marker.
+  awake, machine on AC power, no heavy background load. **Enforced:** the report records
+  `hasFocus` at mount and `evaluatePerf` fails any run where it is not true (an occluded run can
+  never pass, even if its numbers land inside the budgets); `perf.sh --commit` additionally
+  refuses such reports.
 - **Build:** budgets are judged on the **release** build only
   (`(cd crates/termixion-tauri && cargo tauri build)`). The harness ships in debug too (for
   iteration), but `perf.sh --commit` refuses a `"build": "debug"` report.
@@ -54,7 +56,9 @@ never satisfy a wait (the smoke's marker discipline).
 pages up + 20 down through the filled buffer via xterm `scrollPages`, 100 ms pace).
 
 **Renderer assertion.** The report must say `renderer: "webgl"` — a silent DOM fallback
-invalidates every number, so the harness fails such a run outright without driving scenarios.
+invalidates every number, so the harness fails such a run outright without driving scenarios, and
+the renderer is **re-read after the scenarios** (the mount handle flips to `"dom"` on a WebGL
+context loss, so a mid-run fallback also fails the run).
 
 ## 4. Budgets (NFR-1)
 

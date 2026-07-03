@@ -89,6 +89,11 @@ if not report.get("pass"):
     print("perf: --commit REFUSED — report did not pass (invalid conditions or missed budgets);", file=sys.stderr)
     print(f"perf: reason: {report.get('reason','')} (hasFocus={report.get('hasFocus')})", file=sys.stderr)
     sys.exit(1)
+if report.get("hasFocus") is not True:
+    # evaluatePerf already fails unfocused runs (pass=false); this is defense in depth for any
+    # hand-edited or future-schema report reaching --commit.
+    print("perf: --commit REFUSED — hasFocus is not true; occluded-window numbers are never the record.", file=sys.stderr)
+    sys.exit(1)
 def sh(*cmd):
     try:
         return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout.strip()

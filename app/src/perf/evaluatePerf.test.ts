@@ -66,6 +66,18 @@ describe("evaluatePerf", () => {
     expect(verdict.reason).toContain("renderer");
   });
 
+  it("fails an unfocused run outright — the protocol's validity gate, enforced (step-8 F1)", () => {
+    const unfocused = goodReport();
+    unfocused.hasFocus = false;
+    const verdict = evaluatePerf(unfocused);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reason).toContain("focus");
+
+    const unknown = goodReport();
+    delete unknown.hasFocus;
+    expect(evaluatePerf(unknown).ok).toBe(false);
+  });
+
   it("fails a report with a missing scenario (a partial run must not pass)", () => {
     const report = goodReport();
     delete report.scenarios.scrollbackPaging;

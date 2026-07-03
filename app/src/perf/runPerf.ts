@@ -102,7 +102,9 @@ export class ByteRouter {
 /** What the driver needs from a mounted terminal (D2: the dedicated perf mount). */
 export interface PerfMount {
   terminal: TerminalLike;
-  renderer: RendererKind;
+  /** LIVE renderer read (step-8 F2) — the handle flips to "dom" on WebGL context loss, and a
+   *  mid-run fallback must invalidate the report, so the driver re-reads this at evaluation. */
+  renderer(): RendererKind;
   /** Scrollback paging (xterm `scrollPages`, reached via a localized adapter in the real deps). */
   scrollPages(pages: number): void;
   dispose(): void;
@@ -186,7 +188,7 @@ export async function runPerf(config: PerfLaunchConfig, deps: PerfDeps): Promise
   const body: PerfReportBody = {
     schema: 1,
     build: config.build,
-    renderer: mounted.renderer,
+    renderer: mounted.renderer(),
     hasFocus: deps.hasFocus(),
     scenarios: {},
   };
@@ -194,7 +196,7 @@ export async function runPerf(config: PerfLaunchConfig, deps: PerfDeps): Promise
 
   // A DOM fallback invalidates every number — skip the scenarios entirely (the verdict below
   // fails on the renderer check with a named reason).
-  if (mounted.renderer === "webgl") {
+  if (mounted.renderer() === "webgl") {
     try {
       const router = new ByteRouter();
       const onBytes: PtyBytesHandler = (bytes) => {
@@ -282,6 +284,9 @@ export async function runPerf(config: PerfLaunchConfig, deps: PerfDeps): Promise
     }
   }
 
+  // Re-read the renderer AFTER the scenarios (step-8 F2): a WebGL context loss mid-run flips the
+  // handle to "dom", and the report must carry — and be judged on — the end-of-run value.
+  body.renderer = mounted.renderer();
   const verdict = evaluatePerf(body);
   const pass = verdict.ok && error === undefined;
   const report: PerfReport = {
@@ -308,7 +313,7 @@ export function realPerfDeps(): PerfDeps {
       const t = handle.terminal as unknown as { scrollPages?: (pages: number) => void };
       return {
         terminal: handle.terminal,
-        renderer: handle.renderer,
+        renderer: () => handle.renderer, // live — flips on context loss (step-8 F2)
         scrollPages: (pages) => t.scrollPages?.(pages),
         dispose: () => handle.dispose(),
       };
