@@ -18,8 +18,14 @@ function makeFakeTerminal() {
   };
   let scrollHandler: (() => void) | undefined;
   let bufferHandler: (() => void) | undefined;
-  const scrollDispose = vi.fn();
-  const bufferDispose = vi.fn();
+  // Dispose also unregisters the handler — xterm's IDisposable contract — so a test can prove a
+  // post-dispose event fire is truly inert (attachScrollbar really tore its subscription down).
+  const scrollDispose = vi.fn(() => {
+    scrollHandler = undefined;
+  });
+  const bufferDispose = vi.fn(() => {
+    bufferHandler = undefined;
+  });
 
   const terminal: ScrollbarTerminalLike = {
     rows: 24,
@@ -207,6 +213,46 @@ describe("attachScrollbar", () => {
     sb.dispose();
   });
 
+  it("restores the bar after an alt-screen round-trip (trmx-64 pin of the trmx-41 × alt-screen interplay)", () => {
+    const host = makeHost();
+    const fake = makeFakeTerminal();
+    const sb = attachScrollbar(host, fake.terminal);
+    const container = host.querySelector(".termixion-scrollbar") as HTMLElement;
+    const thumb = host.querySelector(".termixion-scrollbar__thumb") as HTMLElement;
+
+    // Start scrolled back in the normal buffer → visible (the baseline pinned by "shows the overlay on
+    // scroll-back…"; re-established here only as the round-trip's starting state).
+    fake.active.viewportY = 40;
+    fake.fireScroll();
+    expect(container.style.display).toBe("");
+    const thumbTopBefore = thumb.style.top;
+    const thumbHeightBefore = thumb.style.height;
+
+    // DECSET 1049: a full-screen app enters the alternate screen. Real xterm swaps `buffer.active` to
+    // the alt buffer; the fake keeps baseY at 100 (> 0) so this pins that the *type* check alone hides
+    // the bar (Kitty's `has_scrollbar` requires the main line buffer), not merely a zeroed baseY.
+    fake.active.type = "alternate";
+    fake.fireBufferChange();
+    expect(container.style.display).toBe("none");
+
+    // DECRST 1049: the app exits and xterm reactivates the SAME normal buffer with its scroll state
+    // intact — viewportY/baseY were never touched — firing only a buffer change, not a scroll. The bar
+    // must come back on its own.
+    fake.active.type = "normal";
+    fake.fireBufferChange();
+    expect(container.style.display).toBe("");
+    // Identical restored buffer state ⇒ identical geometry: the thumb is exactly where it was.
+    expect(thumb.style.top).toBe(thumbTopBefore);
+    expect(thumb.style.height).toBe(thumbHeightBefore);
+
+    // Back at the live bottom on the restored normal buffer → hidden again (Kitty `scrolled` policy).
+    fake.active.viewportY = 100;
+    fake.fireScroll();
+    expect(container.style.display).toBe("none");
+
+    sb.dispose();
+  });
+
   it("widens the handle and fades in the track inside the right-edge hover zone, reverting on leave", () => {
     const host = makeHost(800, 480); // cellWidth = 800 / 80 cols = 10px
     const fake = makeFakeTerminal();
@@ -273,5 +319,38 @@ describe("attachScrollbar", () => {
     expect(fake.scrollDispose).toHaveBeenCalledTimes(1);
     expect(fake.bufferDispose).toHaveBeenCalledTimes(1);
     expect(host.querySelector(".termixion-scrollbar")).toBeNull();
+  });
+
+  it("dispose() stays clean after alt-screen flips (no re-subscription accumulates across buffer changes)", () => {
+    // trmx-64 pin: buffer flips route through the ONE subscription pair made at attach time —
+    // attachScrollbar must not re-subscribe per buffer change — and dispose after a round-trip still
+    // tears everything down exactly once.
+    const host = makeHost();
+    const fake = makeFakeTerminal();
+    const sb = attachScrollbar(host, fake.terminal);
+    const container = host.querySelector(".termixion-scrollbar") as HTMLElement;
+
+    // A full normal → alternate → normal round-trip before disposing.
+    fake.active.viewportY = 40;
+    fake.fireScroll();
+    fake.active.type = "alternate";
+    fake.fireBufferChange();
+    fake.active.type = "normal";
+    fake.fireBufferChange();
+    expect(container.style.display).toBe("");
+
+    sb.dispose();
+
+    // Exactly one subscription pair existed to tear down, and the overlay left the host.
+    expect(fake.scrollDispose).toHaveBeenCalledTimes(1);
+    expect(fake.bufferDispose).toHaveBeenCalledTimes(1);
+    expect(host.querySelector(".termixion-scrollbar")).toBeNull();
+
+    // The fake's dispose unregisters its handler (xterm's IDisposable contract), so a post-dispose
+    // buffer flip must be inert: a leaked subscription would recompute and flip the detached
+    // container to "none" (alternate ⇒ hidden). It staying "" proves nothing ran.
+    fake.active.type = "alternate";
+    expect(() => fake.fireBufferChange()).not.toThrow();
+    expect(container.style.display).toBe("");
   });
 });
