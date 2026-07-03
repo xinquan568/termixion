@@ -205,21 +205,12 @@ fn core_version() -> String {
 /// tab's directory) — via the registry, moves the blocking reader onto a dedicated thread running
 /// the core pump, and returns the session id + initial title. When the stream ends the session is
 /// reaped and `pty:exited` tells the frontend to drop exactly that tab.
-#[tauri::command]
-fn open_pty(
-    app: tauri::AppHandle,
-    channel: Channel<Vec<u8>>,
-    rows: u16,
-    cols: u16,
-    cwd: Option<String>,
-    state: State<'_, PtyState>,
-    smoke: State<'_, SmokeDir>,
-) -> Result<SessionInfo, String> {
-    // Production opens the user's login shell; the `--smoke` run opens a deterministic rc-free
-    // shell (`zsh -f`, ignoring any `cwd`) so the automated sentinel sequence isn't garbled by the
-    // user's prompt / line editor — the transport (channel, pty_write, streaming) is still the
-    // production path.
-    let spec = if smoke.0.is_some() {
+/// The shell spec for a new session (trmx-78, pure): production opens the user's login shell at
+/// the requested cwd; a `--smoke` OR `--perf` run opens the deterministic rc-free `zsh -f`
+/// (ignoring any `cwd`) so the driven sequence is never garbled by the user's prompt / rc files /
+/// line editor — the transport (channel, pty_write, streaming) stays the production path.
+fn session_spec_for(smoke: bool, perf: bool, cwd: Option<String>) -> SessionSpec {
+    if smoke || perf {
         let mut s = SessionSpec::shell("/bin/zsh");
         s.args.push("-f".into());
         s
@@ -229,7 +220,20 @@ fn open_pty(
             s.cwd = Some(PathBuf::from(dir));
         }
         s
-    };
+    }
+}
+
+#[tauri::command]
+fn open_pty(
+    app: tauri::AppHandle,
+    channel: Channel<Vec<u8>>,
+    rows: u16,
+    cols: u16,
+    cwd: Option<String>,
+    state: State<'_, PtyState>,
+    launch: State<'_, SpecialLaunch>,
+) -> Result<SessionInfo, String> {
+    let spec = session_spec_for(launch.smoke.is_some(), launch.perf.is_some(), cwd);
 
     let (id, reader) = state
         .registry
@@ -322,8 +326,12 @@ fn set_session_title(
         .map_err(|e| e.to_string())
 }
 
-/// The end-to-end `--smoke` target dir, exposed to the webview so it drives the production path (C-3).
-struct SmokeDir(Option<String>);
+/// The special-launch state (C-3 smoke / trmx-78 perf): at most one is set (launch_modes gives
+/// smoke precedence). One managed struct so `open_pty` reads a single State.
+struct SpecialLaunch {
+    smoke: Option<String>,
+    perf: Option<String>,
+}
 
 /// Whether/how the packaged smoke runs. `MissingDir` (smoke requested but no `DIR`) must FAIL the gate,
 /// not silently launch the app — otherwise the packaged `--smoke` would hang CI instead of exiting 1.
@@ -353,8 +361,116 @@ fn smoke_mode<I: IntoIterator<Item = String>>(
 
 /// The webview asks whether to run the end-to-end smoke, and against which dir (`None` = normal launch).
 #[tauri::command]
-fn smoke_config(smoke: State<'_, SmokeDir>) -> Option<String> {
-    smoke.0.clone()
+fn smoke_config(launch: State<'_, SpecialLaunch>) -> Option<String> {
+    launch.smoke.clone()
+}
+
+/// Whether/how the NFR-1 perf harness runs (trmx-78) — the exact [`SmokeMode`] shape: requesting
+/// perf without an output dir must FAIL the launch, not silently start the app.
+enum PerfMode {
+    Off,
+    MissingDir,
+    On(String),
+}
+
+/// Resolve perf mode: `--perf` arg OR truthy `TERMIXION_PERF` enables it; the report target is
+/// the `TERMIXION_PERF_OUT` env dir. Pure, for testing (mirror of [`smoke_mode`]).
+fn perf_mode<I: IntoIterator<Item = String>>(
+    args: I,
+    perf_env: Option<String>,
+    out_env: Option<String>,
+) -> PerfMode {
+    let enabled = args.into_iter().any(|a| a == "--perf")
+        || perf_env.is_some_and(|v| v == "1" || v == "true");
+    if !enabled {
+        return PerfMode::Off;
+    }
+    match out_env.filter(|d| !d.is_empty()) {
+        Some(dir) => PerfMode::On(dir),
+        None => PerfMode::MissingDir,
+    }
+}
+
+/// Combine the two special-launch resolutions (trmx-78, pure): smoke wins if both are requested
+/// (never expected — pinned by test), and either mode's MissingDir is a hard, fail-fast error.
+fn launch_modes(
+    smoke: SmokeMode,
+    perf: PerfMode,
+) -> Result<(Option<String>, Option<String>), String> {
+    let smoke = match smoke {
+        SmokeMode::Off => None,
+        SmokeMode::On(dir) => Some(dir),
+        SmokeMode::MissingDir => {
+            return Err("termixion-smoke: FAIL — smoke requested but DIR is missing/empty".into());
+        }
+    };
+    let perf = match perf {
+        PerfMode::Off => None,
+        PerfMode::On(dir) => Some(dir),
+        PerfMode::MissingDir => {
+            return Err(
+                "termixion-perf: FAIL — perf requested but TERMIXION_PERF_OUT is missing/empty"
+                    .into(),
+            );
+        }
+    };
+    if smoke.is_some() {
+        return Ok((smoke, None));
+    }
+    Ok((None, perf))
+}
+
+/// What `perf_config` returns to the webview (trmx-78): where to have the report written, and
+/// which build produced it (budgets are only recorded from `release`). camelCase for the frontend.
+#[derive(Clone, serde::Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct PerfConfig {
+    out_dir: String,
+    build: &'static str,
+}
+
+/// The perf watchdog (trmx-78): fail the run rather than hang if the webview driver never reports.
+/// 300 s ≈ 3× the harness's end-to-end schedule — the derivation is pinned in the tests below and
+/// quoted by docs/design/performance-protocol.md.
+const PERF_WATCHDOG_SECS: u64 = 300;
+
+/// The webview asks whether to run the NFR-1 perf harness (`None` = normal launch), and learns
+/// the report dir + build kind (trmx-78).
+#[tauri::command]
+fn perf_config(launch: State<'_, SpecialLaunch>) -> Option<PerfConfig> {
+    launch.perf.clone().map(|out_dir| PerfConfig {
+        out_dir,
+        build: if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+    })
+}
+
+/// The webview reports the perf result (trmx-78): persist the JSON report to the out dir, then
+/// exit `0`/`1` on budget pass/fail so `scripts/perf.sh` is a gate. The report lands on disk
+/// either way — a failed run's numbers are exactly the ones worth reading.
+#[tauri::command]
+fn perf_done(report: String, success: bool, launch: State<'_, SpecialLaunch>) {
+    if let Some(dir) = launch.perf.as_ref() {
+        let path = Path::new(dir).join("report.json");
+        if let Err(err) = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&path, &report))
+        {
+            eprintln!(
+                "termixion-perf: FAIL — could not write {}: {err}",
+                path.display()
+            );
+            std::process::exit(1);
+        }
+        println!("termixion-perf: report written to {}", path.display());
+    }
+    if success {
+        println!("termixion-perf: OK — budgets met");
+        std::process::exit(0);
+    }
+    eprintln!("termixion-perf: FAIL — budgets missed or the run was invalid");
+    std::process::exit(1);
 }
 
 /// The webview reports the smoke result; exit the process `0`/`1` so the packaged `--smoke` is a gate.
@@ -369,15 +485,22 @@ fn smoke_done(success: bool, reason: String) {
 }
 
 fn main() -> ExitCode {
-    let smoke = match smoke_mode(
-        std::env::args(),
-        std::env::var("TERMIXION_SMOKE").ok(),
-        std::env::var("DIR").ok(),
-    ) {
-        SmokeMode::Off => None,
-        SmokeMode::On(dir) => Some(dir),
-        SmokeMode::MissingDir => {
-            eprintln!("termixion-smoke: FAIL — smoke requested but DIR is missing/empty");
+    let resolved = launch_modes(
+        smoke_mode(
+            std::env::args(),
+            std::env::var("TERMIXION_SMOKE").ok(),
+            std::env::var("DIR").ok(),
+        ),
+        perf_mode(
+            std::env::args(),
+            std::env::var("TERMIXION_PERF").ok(),
+            std::env::var("TERMIXION_PERF_OUT").ok(),
+        ),
+    );
+    let (smoke, perf) = match resolved {
+        Ok(modes) => modes,
+        Err(msg) => {
+            eprintln!("{msg}");
             return ExitCode::FAILURE;
         }
     };
@@ -391,6 +514,14 @@ fn main() -> ExitCode {
             std::process::exit(1);
         });
     }
+    if perf.is_some() {
+        // trmx-78: same discipline, sized to the harness's schedule (see PERF_WATCHDOG_SECS).
+        std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_secs(PERF_WATCHDOG_SECS));
+            eprintln!("termixion-perf: FAIL — timed out waiting for the webview perf driver");
+            std::process::exit(1);
+        });
+    }
 
     let result = tauri::Builder::default()
         // trmx-48: auto-update (updater + relaunch) and opening external links from the About page.
@@ -398,7 +529,7 @@ fn main() -> ExitCode {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .manage(PtyState::default())
-        .manage(SmokeDir(smoke))
+        .manage(SpecialLaunch { smoke, perf })
         // trmx-48/trmx-51: install the app menu; "About Termixion" / "Settings…" open the
         // standalone Settings window (About lands on the About page). trmx-74 adds the Shell
         // submenu + Window tab-cycling items; trmx-75 adds Rename Tab… and spawns the
@@ -448,7 +579,9 @@ fn main() -> ExitCode {
             close_pty,
             set_session_title,
             smoke_config,
-            smoke_done
+            smoke_done,
+            perf_config,
+            perf_done
         ])
         .on_window_event(|window, event| {
             // trmx-51: only the MAIN window owns the PTY sessions — closing the settings window
@@ -665,6 +798,98 @@ mod tests {
             !*gate.has_sessions.lock().expect("gate lock"),
             "wait_while_empty must consume the wake latch"
         );
+    }
+
+    // --- trmx-78: the --perf mode's pure pieces ------------------------------------------------
+
+    fn perf(args_v: &[&str], perf_env: Option<&str>, out_env: Option<&str>) -> PerfMode {
+        perf_mode(
+            args(args_v),
+            perf_env.map(str::to_string),
+            out_env.map(str::to_string),
+        )
+    }
+
+    #[test]
+    fn perf_mode_resolves_off_on_and_missing_dir() {
+        let out = "/tmp/termixion-perf";
+
+        // Enabled (arg or env) WITH an output dir → On(dir).
+        assert!(matches!(perf(&["app", "--perf"], None, Some(out)), PerfMode::On(d) if d == out));
+        assert!(matches!(perf(&["app"], Some("1"), Some(out)), PerfMode::On(d) if d == out));
+        assert!(matches!(perf(&["app"], Some("true"), Some(out)), PerfMode::On(d) if d == out));
+
+        // Not enabled → Off, even with the dir set.
+        assert!(matches!(perf(&["app"], None, Some(out)), PerfMode::Off));
+
+        // Enabled but TERMIXION_PERF_OUT missing/empty → MissingDir (fail fast, never launch normally).
+        assert!(matches!(
+            perf(&["app", "--perf"], None, None),
+            PerfMode::MissingDir
+        ));
+        assert!(matches!(
+            perf(&["app", "--perf"], None, Some("")),
+            PerfMode::MissingDir
+        ));
+    }
+
+    #[test]
+    fn launch_modes_gives_smoke_precedence_and_fails_fast_on_missing_dirs() {
+        let dir = "/tmp/x".to_string();
+        // Smoke wins when both are requested (never expected, but pinned): perf is dropped.
+        let both = launch_modes(SmokeMode::On(dir.clone()), PerfMode::On(dir.clone()));
+        assert_eq!(both, Ok((Some(dir.clone()), None)));
+        // Perf alone rides through; either MissingDir is a hard error.
+        assert_eq!(
+            launch_modes(SmokeMode::Off, PerfMode::On(dir.clone())),
+            Ok((None, Some(dir.clone())))
+        );
+        assert_eq!(
+            launch_modes(SmokeMode::Off, PerfMode::Off),
+            Ok((None, None))
+        );
+        assert!(launch_modes(SmokeMode::MissingDir, PerfMode::Off).is_err());
+        assert!(launch_modes(SmokeMode::Off, PerfMode::MissingDir).is_err());
+    }
+
+    #[test]
+    fn perf_config_serializes_camel_case_for_the_frontend() {
+        // The frontend destructures `outDir`/`build` — pin the wire shape like SessionInfo above.
+        let value = serde_json::to_value(PerfConfig {
+            out_dir: "/tmp/perf".to_string(),
+            build: "release",
+        })
+        .expect("PerfConfig serializes");
+        assert_eq!(
+            value,
+            serde_json::json!({ "outDir": "/tmp/perf", "build": "release" })
+        );
+    }
+
+    #[test]
+    fn session_spec_for_selects_the_rc_free_shell_for_smoke_or_perf() {
+        // Production: login shell, cwd honored.
+        let prod = session_spec_for(false, false, Some("/tmp/somewhere".to_string()));
+        assert_eq!(prod.cwd, Some(PathBuf::from("/tmp/somewhere")));
+        assert!(prod.args.is_empty(), "login shell spawns with no args");
+
+        // Smoke or perf (or both): deterministic rc-free `zsh -f`, cwd deliberately ignored so
+        // rc/prompt noise and a surprising working dir can never pollute the driven sequence.
+        for (smoke, perf) in [(true, false), (false, true), (true, true)] {
+            let spec = session_spec_for(smoke, perf, Some("/tmp/ignored".to_string()));
+            assert_eq!(spec.program, OsStr::new("/bin/zsh"));
+            assert_eq!(spec.args, vec![std::ffi::OsString::from("-f")]);
+            assert_eq!(spec.cwd, None, "rc-free mode ignores cwd");
+        }
+    }
+
+    #[test]
+    fn perf_watchdog_outlasts_the_scenario_schedule() {
+        // Derivation (app/src/perf/runPerf.ts consts): typing 1000 keys × 50 ms ≈ 50 s, readiness
+        // + warmup ≈ 5 s, seq-scroll ≈ 30 s, yes-scroll 5 s, paging 40 × 100 ms = 4 s, settles ≈
+        // 10 s → ≈ 105 s end-to-end. 300 s ≈ 3× headroom without masking a genuine hang.
+        // ≈105 s schedule × ~3 headroom = the 300 s pinned here; change the consts together.
+        assert_eq!(PERF_WATCHDOG_SECS, 300);
     }
 
     #[test]
