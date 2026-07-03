@@ -53,15 +53,22 @@ describe("scrollback cap + viewport semantics (trmx-65)", () => {
     expect(first).toMatch(/^line-\d+$/);
   });
 
-  it("bottom-pinned viewport FOLLOWS streaming output (viewportY tracks baseY)", async () => {
+  it("bottom-pinned viewport FOLLOWS streaming output THROUGH cap eviction (viewportY tracks baseY)", async () => {
+    // Per the frozen plan (V4g): the stream must CROSS the scrollback threshold while pinned, so
+    // the pin is proven through eviction, not just ordinary growth.
     const term = openTerm();
-    await feed(term, lines(0, 200));
+    const seed = SCROLLBACK_LINES + ROWS - 100; // just below the cap
+    await feed(term, lines(0, seed));
     const buf = term.buffer.active;
     expect(buf.viewportY).toBe(buf.baseY); // at the live bottom
     const baseBefore = buf.baseY;
-    await feed(term, lines(200, 100));
-    expect(buf.baseY).toBeGreaterThan(baseBefore);
-    expect(buf.viewportY).toBe(buf.baseY); // still pinned after more output
+    await feed(term, lines(seed, 400)); // crosses the cap: eviction starts underneath
+    expect(buf.length).toBe(SCROLLBACK_LINES + ROWS); // capped
+    expect(buf.baseY).toBeGreaterThan(baseBefore); // advanced to the cap ceiling
+    expect(buf.baseY).toBe(SCROLLBACK_LINES);
+    expect(buf.viewportY).toBe(buf.baseY); // STILL pinned after evicting output
+    const first = buf.getLine(0)?.translateToString(true) ?? "";
+    expect(first).not.toBe("line-0"); // oldest lines really evicted while pinned
   });
 
   it("a scrolled-back viewport is NOT yanked by new output; scrollToBottom re-pins", async () => {
