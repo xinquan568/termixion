@@ -225,12 +225,13 @@
 .tx-btn--primary {
   background: var(--tx-primary);
   border-color: var(--tx-primary);
-  color: #fff;
+  /* trmx-77 G5: derived per theme — hardcoded white fails on Night's light-blue accent (2.53:1). */
+  color: var(--tx-on-accent, #fff);
 }
 .tx-btn--success {
   background: var(--tx-success);
   border-color: var(--tx-success);
-  color: #fff;
+  color: var(--tx-on-success, #fff);
 }
 /* The Reset section's destructive action: red outline at rest (vmark's Reset to Defaults). */
 .tx-btn--danger {
@@ -241,7 +242,7 @@
 .tx-btn--danger:hover {
   background: var(--tx-error);
   border-color: var(--tx-error);
-  color: #fff;
+  color: var(--tx-on-error, #fff);
 }
 
 /* Select (styled native control). trmx-53: the chevron is a masked ::after on the wrapper,

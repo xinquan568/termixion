@@ -9,11 +9,16 @@
 // under `:root` ONLY (guarded by test), so the runtime value inherits unimpeded into the
 // `.tx-settings` tree (plan D4 — the cascade-winning single write target, valid pre-mount and
 // live). The body background is painted alongside so the window chrome never flashes.
+import { pickReadableOn } from "./contrast";
 import { isThemeId, themes, type ThemeId } from "./themes";
 import type { ThemeTokens } from "./tokens";
 
 /** The settings-surface CSS variables derived from a theme — the single role table. */
 export function txCssVars(theme: ThemeTokens): Record<string, string> {
+  // trmx-77 (G5): text on the accent/semantic control surfaces is DERIVED, not hardcoded —
+  // white text fails on Night's light-blue accent (#58a6ff ≈ 2.53:1). Per surface, pick the more
+  // readable of white / the theme's own background (docs/design/visual-baseline.md §4).
+  const onSurface = (surface: string) => pickReadableOn(surface, ["#fff", theme.color.bg.primary]);
   return {
     "--tx-bg": theme.color.bg.primary,
     "--tx-bg-elev": theme.color.bg.tertiary,
@@ -25,6 +30,9 @@ export function txCssVars(theme: ThemeTokens): Record<string, string> {
     "--tx-primary": theme.color.accent.primary,
     "--tx-success": theme.color.semantic.success,
     "--tx-error": theme.color.semantic.error,
+    "--tx-on-accent": onSurface(theme.color.accent.primary),
+    "--tx-on-success": onSurface(theme.color.semantic.success),
+    "--tx-on-error": onSurface(theme.color.semantic.error),
   };
 }
 
