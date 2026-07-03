@@ -5,6 +5,12 @@ The user-facing changes to Termixion are documented here. The format follows
 [Semantic Versioning](https://semver.org). Auto-generated from Conventional Commits by git-cliff;
 internal changes (build / CI / tests / refactors / docs) live in the git history and the linked issues.
 
+## [0.0.4] - 2026-07-03
+
+### Added
+- Finalize + lock the single-pane visual baseline (trmx-77) (#108)
+- NFR-1 performance pass — --perf harness + budgets (trmx-78) (#109)
+
 ## [0.0.3] - 2026-07-03
 
 ### Added
