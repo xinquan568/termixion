@@ -5,6 +5,14 @@ The user-facing changes to Termixion are documented here. The format follows
 [Semantic Versioning](https://semver.org). Auto-generated from Conventional Commits by git-cliff;
 internal changes (build / CI / tests / refactors / docs) live in the git history and the linked issues.
 
+## [0.0.2] - 2026-07-03
+
+### Added
+- VT-correct LF + OSC 0/2, 7, 8, 52 integrations (trmx-64) (#68)
+- Explicit 10k scrollback cap + smooth discrete scrolling (trmx-65) (#69)
+- Owned cmd-C/cmd-V clipboard with bracketed-paste sanitization (trmx-66) (#70)
+- Resize/reflow hardening — coalesced winsize, actual-grid open, core size guard (trmx-67) (#71)
+
 ## [0.0.1] - 2026-07-02
 
 ### Added
