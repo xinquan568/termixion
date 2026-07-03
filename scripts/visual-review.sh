@@ -17,8 +17,9 @@
 #       (needs a TTY); needs the Screen Recording permission for the invoking terminal.
 #       Capture is by window CLICK (`screencapture -w`), deliberately: the Tauri app is not
 #       AppleScript-scriptable, so there is no reliable CGWindowID to feed `screencapture -l`;
-#       the click IS the window selection. Keep the window at the reference size for all six
-#       shots (resize once before the first capture; the script reminds you).
+#       the click IS the window selection. Keep the window at the REFERENCE SIZE — 1280×800
+#       logical points (docs/design/visual-baseline.md §5) — for all six shots (resize once
+#       before the first capture; the script reminds you and verifies shot dimensions match).
 #
 # The packaged app to review is the debug bundle:
 #   (cd crates/termixion-tauri && cargo tauri build --debug)
@@ -28,6 +29,10 @@
 set -euo pipefail
 
 THEMES=(white paper mint sepia night solarized)
+# The reference window size (logical points) every shot must share — doc §5. Shots are compared
+# across themes and releases; a drifting size invalidates the set.
+REF_W=1280
+REF_H=800
 
 content() {
   printf '\n== Termixion visual-review checklist content (trmx-77) ==\n\n'
@@ -76,11 +81,12 @@ capture() {
   open "$app"
   mkdir -p "$out_dir"
   echo "Capture protocol (docs/design/visual-baseline.md §5):"
-  echo "  1. Resize the Termixion window ONCE to the reference size and keep it for all shots."
+  echo "  1. Resize the Termixion window ONCE to the reference ${REF_W}x${REF_H} (logical points)"
+  echo "     and keep it for all shots."
   echo "  2. Inside Termixion run: scripts/visual-review.sh content"
   echo "  3. For each theme below: switch it in Settings → Appearance, then click the window."
   echo
-  local theme shot
+  local theme shot dims first_dims=""
   for theme in "${THEMES[@]}"; do
     shot="$out_dir/$theme.png"
     read -r -p "Theme '$theme' active? Press Enter, then CLICK the Termixion window… " _ </dev/tty
@@ -89,7 +95,19 @@ capture() {
       exit 1
     fi
     [[ -s "$shot" ]] || { echo "visual-review: empty capture for '$theme' (permission denied?)" >&2; exit 1; }
-    echo "  captured $shot"
+    # Same-size check: pixel dims are REF × backing scale (2x retina → 2560x1600); what must not
+    # drift is shot-to-shot consistency, so pin every shot to the first one's dimensions.
+    dims="$(sips -g pixelWidth -g pixelHeight "$shot" 2>/dev/null | awk '/pixel/ {printf "%sx", $2}')"
+    if [[ -z "$first_dims" ]]; then
+      first_dims="$dims"
+      echo "  captured $shot ($dims — the set's reference; target window ${REF_W}x${REF_H} pt)"
+    elif [[ "$dims" != "$first_dims" ]]; then
+      echo "visual-review: '$theme' shot is $dims but the set started at $first_dims —" >&2
+      echo "the window was resized mid-run; redo the set at one fixed size (doc §5)." >&2
+      exit 1
+    else
+      echo "  captured $shot ($dims)"
+    fi
   done
   echo "Done: ${#THEMES[@]} captures in $out_dir/"
 }

@@ -133,8 +133,10 @@ bash scripts/visual-review.sh capture        # opens the app; → docs/design/vi
 
 Theme switching is manual in v0.0.4 (Settings → Appearance; a scriptable hook would be a config
 surface, which FR-13/v0.0.5 owns), and window selection is by CLICK (`screencapture -w`) — the
-Tauri app is not AppleScript-scriptable, so there is no reliable CGWindowID for `-l`; resize the
-window once to the reference size and keep it fixed across all six shots. The set is committed
+Tauri app is not AppleScript-scriptable, so there is no reliable CGWindowID for `-l`. **The
+reference window size is 1280×800 logical points** (2560×1600 px at the M1 Pro's 2× backing
+scale): resize once before the first shot and keep it fixed — the script hard-fails a set whose
+shot dimensions drift mid-run. The set is committed
 under `docs/design/visual-baseline/` when size allows, else linked from the locking PR.
 **No pixel-diff CI gate** — font rendering makes it flaky; the gate is this protocol + the PR
 screenshot review (the issue's explicit call).
