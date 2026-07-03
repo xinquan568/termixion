@@ -360,6 +360,7 @@ fn next_batch(rx: &std::sync::mpsc::Receiver<Vec<u8>>, max: usize) -> Option<Vec
 fn run_batch_sender(
     rx: std::sync::mpsc::Receiver<Vec<u8>>,
     max: usize,
+    window: Duration,
     mut send_batch: impl FnMut(Vec<u8>) -> bool,
     on_done: impl FnOnce(),
 ) {
@@ -382,7 +383,6 @@ fn run_batch_sender(
     // this makes the receiver drop BEFORE on_done fires — a producer blocked on the full hand-off
     // is already released (SendError) when the reap runs (R2 step-8 F2).
     let rx = rx;
-    let window = Duration::from_millis(PTY_BATCH_WINDOW_MS);
     // Start "long idle" so the very first chunk (and any chunk after a quiet period) sends
     // immediately — the pacing only bites while the producer sustains output.
     let mut last_send = Instant::now() - window;
@@ -460,6 +460,7 @@ fn open_pty(
         run_batch_sender(
             rx,
             PTY_BATCH_MAX_BYTES,
+            Duration::from_millis(PTY_BATCH_WINDOW_MS),
             move |batch| {
                 // Flow control: park until the webview has parsed enough of what is in flight
                 // (ack via pty_ack). Timeout probes proceed only above the overdraw floor, so
@@ -1192,6 +1193,7 @@ mod tests {
         run_batch_sender(
             rx,
             1024,
+            Duration::from_millis(PTY_BATCH_WINDOW_MS),
             move |batch| {
                 for_send
                     .lock()
@@ -1216,6 +1218,7 @@ mod tests {
         run_batch_sender(
             rx,
             1024,
+            Duration::from_millis(PTY_BATCH_WINDOW_MS),
             |_| true,
             move || {
                 for_done.lock().expect("log").push("done".to_string());
@@ -1236,6 +1239,7 @@ mod tests {
         run_batch_sender(
             rx,
             1024,
+            Duration::from_millis(PTY_BATCH_WINDOW_MS),
             move |_| {
                 for_send
                     .lock()
@@ -1265,6 +1269,7 @@ mod tests {
             run_batch_sender(
                 rx,
                 1024,
+                Duration::from_millis(PTY_BATCH_WINDOW_MS),
                 |_| panic!("simulated Channel::send panic"),
                 move || for_done.lock().expect("log").push("done".to_string()),
             );
@@ -1397,6 +1402,7 @@ mod tests {
         run_batch_sender(
             rx,
             1024,
+            Duration::from_millis(PTY_BATCH_WINDOW_MS),
             |_| false,
             move || {
                 // The reap observes the producer ALREADY released (deterministic: bounded wait).
@@ -1412,14 +1418,15 @@ mod tests {
     fn sender_paces_a_flood_into_windowed_batches_against_a_nonblocking_transport() {
         // Field evidence (round 2): Tauri's channel.send returns quickly (internal queueing, no
         // backpressure), so drain-only "natural batching" never accumulates — a `yes` flood still
-        // became millions of tiny messages. The sender must FORCE coalescing: after a send, wait
-        // out PTY_BATCH_WINDOW while accumulating before the next send. A fast producer feeding
-        // 200 chunks through a non-blocking send must land in far fewer batches.
+        // became millions of tiny messages. The sender must FORCE coalescing: after a send,
+        // accumulate for the window before the next send. The test uses a GENEROUS 200 ms window
+        // so CI scheduler noise (which flaked the original 4 ms-window version at 96 sends) has
+        // real slack: 50 chunks paced ~1 ms fall well inside one window even at 10× stretch.
         let (tx, rx) = sync_channel::<Vec<u8>>(256);
         let producer = std::thread::spawn(move || {
-            for _ in 0..200 {
+            for _ in 0..50 {
                 tx.send(vec![b'y'; 2]).expect("queue");
-                std::thread::sleep(Duration::from_micros(200)); // ~40ms of sustained flood
+                std::thread::sleep(Duration::from_millis(1));
             }
         });
         let batches: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
@@ -1427,6 +1434,7 @@ mod tests {
         run_batch_sender(
             rx,
             1024 * 1024,
+            Duration::from_millis(200),
             move |batch| {
                 sink.lock().expect("batches").push(batch.len());
                 true
@@ -1436,10 +1444,10 @@ mod tests {
         producer.join().expect("producer");
         let sent = batches.lock().expect("batches");
         let total: usize = sent.iter().sum();
-        assert_eq!(total, 400, "every byte arrives exactly once, in order");
+        assert_eq!(total, 100, "every byte arrives exactly once, in order");
         assert!(
-            sent.len() <= 30,
-            "a ~40ms flood must coalesce into windowed batches, got {} sends",
+            sent.len() <= 5,
+            "a paced flood must coalesce into windowed batches (window 200ms), got {} sends",
             sent.len()
         );
     }
@@ -1457,6 +1465,7 @@ mod tests {
         run_batch_sender(
             rx,
             1024,
+            Duration::from_millis(PTY_BATCH_WINDOW_MS),
             move |_| {
                 *sink.lock().expect("sent") = Some(started.elapsed());
                 true
@@ -1478,7 +1487,13 @@ mod tests {
         tx.send(b"fill".to_vec()).expect("queue");
         let producer = std::thread::spawn(move || tx.send(b"blocked".to_vec()));
         std::thread::sleep(Duration::from_millis(50)); // let the producer park on the full queue
-        run_batch_sender(rx, 1024, |_| false, || {});
+        run_batch_sender(
+            rx,
+            1024,
+            Duration::from_millis(PTY_BATCH_WINDOW_MS),
+            |_| false,
+            || {},
+        );
         let result = producer.join().expect("producer thread");
         assert!(
             result.is_err(),
