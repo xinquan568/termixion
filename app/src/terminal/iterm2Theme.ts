@@ -95,11 +95,11 @@ export const ITERM2_FONT_SIZE = 12;
  * The full xterm option set that reproduces iTerm2's default display for `mode`. This is the single value
  * fed to `new Terminal(...)` at the chokepoint. Spacing 1.0×1.0 maps to `lineHeight: 1` / `letterSpacing: 0`;
  * the solid non-blinking block cursor and "Use Bright Bold" map to `cursorStyle`/`cursorBlink`/
- * `drawBoldTextInBrightColors`. `convertEol` is preserved from Termixion's prior config.
+ * `drawBoldTextInBrightColors`. Emulation-semantics options (e.g. `convertEol`) are NOT display
+ * facts and live in emulationOptions.ts (trmx-64) — this module records the iTerm2 LOOK only.
  */
 export function iterm2TerminalOptions(mode: Appearance): ITerminalOptions {
   return {
-    convertEol: true,
     fontFamily: ITERM2_FONT_FAMILY,
     fontSize: ITERM2_FONT_SIZE,
     fontWeight: "normal",

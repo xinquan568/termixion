@@ -84,7 +84,9 @@ describe("iterm2TerminalOptions", () => {
     expect(opts.cursorStyle).toBe("block");
     expect(opts.cursorBlink).toBe(false);
     expect(opts.drawBoldTextInBrightColors).toBe(true);
-    expect(opts.convertEol).toBe(true);
+    // trmx-64: convertEol is an emulation-semantics option, not a display fact — it moved to
+    // emulationOptions.ts (pinned false there and at the chokepoint in realDeps.test.ts).
+    expect(opts.convertEol).toBeUndefined();
   });
 
   it("carries the mode's theme", () => {

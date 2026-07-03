@@ -18,6 +18,7 @@ vi.mock("@xterm/addon-fit", () => ({ FitAddon: vi.fn() }));
 import { Terminal } from "@xterm/xterm";
 import { realDeps } from "./TerminalView";
 import { iterm2TerminalOptions } from "./iterm2Theme";
+import { emulationTerminalOptions } from "./emulationOptions";
 import { buildXtermTheme } from "../theme/buildXtermTheme";
 
 // The registry cursor defaults: trmx-51's underline, with blink turned off by trmx-55 (iTerm2
@@ -57,6 +58,8 @@ describe("realDeps.createTerminal (the display chokepoint)", () => {
       ...iterm2TerminalOptions("dark"),
       theme: buildXtermTheme("night"),
       ...TRMX51_CURSOR,
+      ...emulationTerminalOptions(),
+      linkHandler: expect.anything(),
     });
   });
 
@@ -67,6 +70,8 @@ describe("realDeps.createTerminal (the display chokepoint)", () => {
       ...iterm2TerminalOptions("light"),
       theme: buildXtermTheme("white"),
       ...TRMX51_CURSOR,
+      ...emulationTerminalOptions(),
+      linkHandler: expect.anything(),
     });
   });
 
@@ -92,6 +97,26 @@ describe("realDeps.createTerminal (the display chokepoint)", () => {
     // realigned blink with iTerm2 — so only the underline style still diverges.
     expect(opts?.cursorStyle).toBe("underline");
     expect(opts?.cursorBlink).toBe(false);
+  });
+
+  it("feeds the emulation slice into xterm: convertEol is FALSE at the chokepoint (trmx-64)", () => {
+    // A PTY-backed terminal must not rewrite LF→CRLF inside the emulator: the tty line discipline
+    // (ONLCR) owns that conversion in cooked mode, and raw-mode programs (vim, vttest) emit bare LF
+    // meaning "index down, keep the column". convertEol:true (the pre-PTY demo leftover) broke
+    // that; trmx-64 pins false via the exported emulation slice.
+    stubMatchMedia(true);
+    realDeps.createTerminal();
+    const opts = vi.mocked(Terminal).mock.calls[0][0];
+    expect(opts?.convertEol).toBe(false);
+  });
+
+  it("wires the OSC 8 link policy at the chokepoint (trmx-64)", () => {
+    // The policy itself (meta-gating + http/https allowlist) is unit-tested in linkHandler.test.ts;
+    // here we pin that the chokepoint actually installs it on the constructed terminal.
+    stubMatchMedia(true);
+    realDeps.createTerminal();
+    const opts = vi.mocked(Terminal).mock.calls[0][0];
+    expect(typeof opts?.linkHandler?.activate).toBe("function");
   });
 
   it("persisted cursor settings override the defaults at the chokepoint", () => {

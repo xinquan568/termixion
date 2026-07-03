@@ -8,6 +8,8 @@ import { describe, it, expect, vi } from "vitest";
 import { render } from "@testing-library/react";
 import {
   TerminalView,
+  realAttachOscIntegrations,
+  type AttachOscIntegrations,
   type ResizeObservation,
   type AttachScrollbar,
 } from "./TerminalView";
@@ -24,6 +26,9 @@ const noopScrollbarHandle: AttachScrollbarHandle = {
   dispose: () => {},
 };
 const noopAttachScrollbar: AttachScrollbar = () => noopScrollbarHandle;
+
+// A no-op OSC-integrations seam (trmx-64) for tests that don't exercise it.
+const noopAttachOsc: AttachOscIntegrations = () => () => {};
 
 describe("TerminalView", () => {
   it("mounts into its container element and disposes on unmount", () => {
@@ -43,6 +48,7 @@ describe("TerminalView", () => {
         mount={mount}
         observeResize={noopObserve}
         attachScrollbar={noopAttachScrollbar}
+        attachOscIntegrations={noopAttachOsc}
       />,
     );
 
@@ -74,6 +80,7 @@ describe("TerminalView", () => {
         onReady={onReady}
         observeResize={noopObserve}
         attachScrollbar={noopAttachScrollbar}
+        attachOscIntegrations={noopAttachOsc}
       />,
     );
 
@@ -106,6 +113,7 @@ describe("TerminalView", () => {
         mount={mount}
         observeResize={observeResize}
         attachScrollbar={noopAttachScrollbar}
+        attachOscIntegrations={noopAttachOsc}
       />,
     );
 
@@ -144,6 +152,7 @@ describe("TerminalView", () => {
         mount={mount}
         observeResize={noopObserve}
         attachScrollbar={attachScrollbar}
+        attachOscIntegrations={noopAttachOsc}
       />,
     );
 
@@ -186,6 +195,7 @@ describe("TerminalView", () => {
         mount={mount}
         observeResize={observeResize}
         attachScrollbar={attachScrollbar}
+        attachOscIntegrations={noopAttachOsc}
       />,
     );
 
@@ -230,6 +240,7 @@ describe("TerminalView", () => {
         observeResize={noopObserve}
         attachScrollbar={attachScrollbar}
         observeSettings={observeSettings}
+        attachOscIntegrations={noopAttachOsc}
       />,
     );
 
@@ -293,6 +304,7 @@ describe("TerminalView", () => {
         observeResize={noopObserve}
         attachScrollbar={attachScrollbar}
         observeSettings={observeSettings}
+        attachOscIntegrations={noopAttachOsc}
       />,
     );
     expect(observeSettings).toHaveBeenCalledTimes(1);
@@ -337,11 +349,78 @@ describe("TerminalView", () => {
         observeResize={noopObserve}
         attachScrollbar={noopAttachScrollbar}
         observeSettings={observeSettings}
+        attachOscIntegrations={noopAttachOsc}
       />,
     );
 
     expect(stopSettings).not.toHaveBeenCalled();
     unmount();
     expect(stopSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("attaches the OSC integrations to the mounted terminal and tears them down on unmount (trmx-64)", () => {
+    const teardown = vi.fn();
+    const handle: TerminalHandle = {
+      terminal: { id: "real-terminal" } as never,
+      renderer: "webgl",
+      fit: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const mount = vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(
+      () => handle,
+    );
+    const attachOsc = vi.fn<AttachOscIntegrations>(() => teardown);
+
+    const { unmount } = render(
+      <TerminalView
+        mount={mount}
+        observeResize={noopObserve}
+        attachScrollbar={noopAttachScrollbar}
+        attachOscIntegrations={attachOsc}
+      />,
+    );
+
+    expect(attachOsc).toHaveBeenCalledTimes(1);
+    expect(attachOsc.mock.calls[0][0]).toBe(handle.terminal);
+
+    unmount();
+    expect(teardown).toHaveBeenCalledTimes(1);
+  });
+
+  it("realAttachOscIntegrations wires title/52/7 over one terminal and disposes all three (trmx-64)", () => {
+    // A capable fake: the narrow slices the three modules need, with recording registrations.
+    let titleHandler: ((t: string) => void) | undefined;
+    const titleDispose = vi.fn();
+    const oscRegistrations: Array<{ ident: number; dispose: ReturnType<typeof vi.fn> }> = [];
+    const fakeTerminal = {
+      onTitleChange: (h: (t: string) => void) => {
+        titleHandler = h;
+        return { dispose: titleDispose };
+      },
+      parser: {
+        registerOscHandler: (ident: number) => {
+          const dispose = vi.fn();
+          oscRegistrations.push({ ident, dispose });
+          return { dispose };
+        },
+      },
+    };
+    const setTitle = vi.fn();
+    const writeClipboard = vi.fn();
+
+    const teardown = realAttachOscIntegrations(fakeTerminal as never, {
+      setTitle,
+      writeClipboard,
+    });
+
+    // OSC 0/2 titles forward to the injected sink; 52 and 7 handlers are registered.
+    titleHandler?.("hello from OSC 2");
+    expect(setTitle).toHaveBeenCalledWith("hello from OSC 2");
+    expect(oscRegistrations.map((r) => r.ident).sort((a, b) => a - b)).toEqual([7, 52]);
+
+    // One teardown disposes all three subscriptions.
+    teardown();
+    expect(titleDispose).toHaveBeenCalledTimes(1);
+    for (const r of oscRegistrations) expect(r.dispose).toHaveBeenCalledTimes(1);
   });
 });

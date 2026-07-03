@@ -23,6 +23,15 @@ import {
   type ScrollbarTerminalLike,
 } from "./scrollbar";
 import { initialAppearanceFromWindow, iterm2TerminalOptions } from "./iterm2Theme";
+import { emulationTerminalOptions } from "./emulationOptions";
+import { makeLinkHandler, realOpenUrl } from "./linkHandler";
+import {
+  attachWindowTitle,
+  realSetWindowTitle,
+  type TitleTerminalLike,
+} from "./windowTitle";
+import { attachOsc52, realWriteClipboard, type Osc52TerminalLike } from "./osc52";
+import { attachOsc7, type Osc7TerminalLike } from "./osc7";
 import {
   applyCursorSettingsChange,
   cursorTerminalOptions,
@@ -62,6 +71,11 @@ export const realDeps: MountDeps = {
       ...iterm2TerminalOptions(initialAppearanceFromWindow()),
       ...themeTerminalOptions(settings),
       ...cursorTerminalOptions(settings),
+      // trmx-64: the emulation-semantics slice (convertEol:false — VT-correct LF handling) spreads
+      // LAST so it always wins; the conformance harness builds from this same exported slice.
+      ...emulationTerminalOptions(),
+      // trmx-64: OSC 8 hyperlinks activate on ⌘-click only, http/https only, via the opener plugin.
+      linkHandler: makeLinkHandler(realOpenUrl),
     }) as unknown as TerminalLike;
   },
   createWebglAddon: () => {
@@ -98,6 +112,38 @@ export type AttachScrollbar = (
   terminal: ScrollbarTerminalLike,
   opts?: { document?: Document },
 ) => AttachScrollbarHandle;
+
+/**
+ * trmx-64: attach the OSC integrations (0/2 window title, 52 write-only clipboard, 7 cwd retention)
+ * to a mounted terminal; returns one combined teardown. Injectable so the React wiring stays
+ * unit-testable with fakes (the default casts to the modules' narrow slices — the same localized
+ * adapter-cast pattern as the scrollbar below). Sinks are injectable for the same reason; the
+ * defaults are the real Tauri/webview edges (inert without a runtime).
+ */
+export type AttachOscIntegrations = (terminal: TerminalLike) => () => void;
+
+export function realAttachOscIntegrations(
+  terminal: TerminalLike,
+  sinks: {
+    setTitle: (title: string) => void;
+    writeClipboard: (text: string) => void;
+  } = { setTitle: realSetWindowTitle, writeClipboard: realWriteClipboard },
+): () => void {
+  const detachTitle = attachWindowTitle(
+    terminal as unknown as TitleTerminalLike,
+    sinks.setTitle,
+  );
+  const detach52 = attachOsc52(
+    terminal as unknown as Osc52TerminalLike,
+    sinks.writeClipboard,
+  );
+  const detach7 = attachOsc7(terminal as unknown as Osc7TerminalLike);
+  return () => {
+    detachTitle();
+    detach52();
+    detach7();
+  };
+}
 
 /**
  * trmx-51: observe cross-window `settings:changed` broadcasts (the settings window editing cursor
@@ -138,6 +184,8 @@ export interface TerminalViewProps {
   attachScrollbar?: AttachScrollbar;
   /** Injection seam for tests; defaults to a real settings:changed listener (trmx-51). */
   observeSettings?: SettingsObservation;
+  /** Injection seam for tests; defaults to the real OSC title/52/7 wiring (trmx-64). */
+  attachOscIntegrations?: AttachOscIntegrations;
 }
 
 export function TerminalView({
@@ -147,6 +195,7 @@ export function TerminalView({
   observeResize = realObserveResize,
   attachScrollbar = realAttachScrollbar,
   observeSettings = realObserveSettings,
+  attachOscIntegrations = realAttachOscIntegrations,
 }: TerminalViewProps) {
   const hostRef = useRef<HTMLDivElement>(null);
 
@@ -163,6 +212,8 @@ export function TerminalView({
       handle.terminal as unknown as ScrollbarTerminalLike,
       { document: host.ownerDocument },
     );
+    // trmx-64: OSC integrations (0/2 title → window title, 52 → write-only clipboard, 7 → cwd).
+    const detachOsc = attachOscIntegrations(handle.terminal);
     // Keep the grid filling the host as the window resizes (issue 2): every size change re-fits, which
     // makes xterm fire onResize → the PTY grid is resized to match (wired in useBackend). Recompute the
     // scrollbar AFTER the fit so it reads the freshly-resized rows/cols (trmx-41).
@@ -194,10 +245,11 @@ export function TerminalView({
     return () => {
       stopObserving();
       stopObservingSettings();
+      detachOsc();
       scrollbar.dispose();
       handle.dispose();
     };
-  }, [mount, deps, onReady, observeResize, attachScrollbar, observeSettings]);
+  }, [mount, deps, onReady, observeResize, attachScrollbar, observeSettings, attachOscIntegrations]);
 
   return <div ref={hostRef} data-testid="terminal" className="terminal-host" />;
 }
