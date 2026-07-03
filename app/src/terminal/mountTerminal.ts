@@ -17,8 +17,10 @@
 export interface TerminalLike {
   open(container: HTMLElement): void;
   loadAddon(addon: AddonLike | FitLike): void;
-  /** Write PTY output bytes into the terminal. */
-  write(data: Uint8Array): void;
+  /** Write PTY output bytes into the terminal. The optional callback is xterm's own parse-
+   *  completion signal (`write(data, cb)` — fires after the chunk is parsed), surfaced for the
+   *  trmx-78 perf harness; production wiring keeps calling `write(bytes)` and fakes may ignore it. */
+  write(data: Uint8Array, callback?: () => void): void;
   /** Subscribe to user keystrokes (xterm delivers them as a string). */
   onData(handler: (data: string) => void): void;
   /** Subscribe to terminal resizes (cell grid). */

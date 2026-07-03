@@ -31,13 +31,15 @@ const SESSION: SessionInfo = { sessionId: 42, title: "zsh" };
 // fit() before attach) that TerminalLike deliberately doesn't declare; omit it for a bare fake.
 function fakeHandle(size?: { rows: number; cols: number }) {
   const writes: Uint8Array[] = [];
+  const writeCallbacks: Array<() => void> = [];
   let dataHandler: ((d: string) => void) | undefined;
   let resizeHandler: ((s: { rows: number; cols: number }) => void) | undefined;
   const terminal: TerminalLike & { rows?: number; cols?: number } = {
     open() {},
     loadAddon() {},
-    write(d) {
+    write(d, callback) {
       writes.push(d);
+      if (callback) writeCallbacks.push(callback);
     },
     onData(h) {
       dataHandler = h;
@@ -57,6 +59,9 @@ function fakeHandle(size?: { rows: number; cols: number }) {
   return {
     handle,
     writes,
+    flushWriteCallbacks: () => {
+      while (writeCallbacks.length > 0) writeCallbacks.shift()?.();
+    },
     type: (s: string) => dataHandler?.(s),
     resize: (rows: number, cols: number) => resizeHandler?.({ rows, cols }),
     isWired: () => dataHandler !== undefined,
@@ -103,6 +108,12 @@ describe("useBackend", () => {
     onBytes(new Uint8Array([104, 105]));
     expect(t.writes).toHaveLength(1);
     expect(Array.from(t.writes[0])).toEqual([104, 105]);
+
+    // trmx-78 round 2b: parse completion acks the bytes back (flow control) — the write callback
+    // fires pty_ack scoped to the session with the chunk's byte count.
+    t.flushWriteCallbacks();
+    await Promise.resolve();
+    expect(invoke).toHaveBeenCalledWith("pty_ack", { sessionId: 42, bytes: 2 });
 
     // Keystrokes → pty_write (UTF-8 encoded); resizes → pty_resize — both scoped to sessionId 42,
     // the id open_pty RESOLVED (a fake invoke captures the exact args).

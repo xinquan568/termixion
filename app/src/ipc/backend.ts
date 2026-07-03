@@ -117,6 +117,16 @@ export function sendPtyInput(
   return invoke("pty_write", { sessionId, data: encodePtyInput(data) }).then(() => {});
 }
 
+/** Ack parsed PTY bytes back to the backend's flow-control window (trmx-78 round 2b): called on
+ *  xterm's parse-completion callback so ingestion stays bounded by the real parse rate. */
+export function sendPtyAck(
+  sessionId: number,
+  bytes: number,
+  invoke: InvokeFn = realInvoke,
+): Promise<void> {
+  return invoke("pty_ack", { sessionId, bytes }).then(() => {});
+}
+
 /** Tell the backend one session's PTY character grid resized (from xterm `onResize`, trmx-74). */
 export function sendPtyResize(
   sessionId: number,

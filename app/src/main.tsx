@@ -6,6 +6,7 @@ import { App } from "./App";
 import { SettingsWindowHost } from "./settings/SettingsWindowHost";
 import { resolveSurface } from "./surface";
 import { realInvoke } from "./ipc/backend";
+import { runPerf, realPerfDeps, type PerfLaunchConfig } from "./perf/runPerf";
 import { runSmoke, realSmokeDeps } from "./smoke/runSmoke";
 import { applyStartupTheme } from "./theme/applyStartupTheme";
 import "./index.css";
@@ -32,6 +33,20 @@ async function boot() {
   if (smokeDir) {
     await runSmoke(smokeDir, realSmokeDeps);
     return; // the backend exits via smoke_done
+  }
+
+  // trmx-78: the NFR-1 perf harness gate, directly beside the smoke gate (smoke wins if both are
+  // somehow set — the backend's launch_modes already enforces that). A perf launch mounts the real
+  // terminal pipeline into #root (no React tree) and the backend exits via perf_done.
+  let perfConfig: PerfLaunchConfig | null = null;
+  try {
+    perfConfig = (await realInvoke("perf_config")) as PerfLaunchConfig | null;
+  } catch {
+    perfConfig = null;
+  }
+  if (perfConfig) {
+    await runPerf(perfConfig, realPerfDeps());
+    return; // the backend exits via perf_done
   }
 
   const surface = resolveSurface(window.location.search);

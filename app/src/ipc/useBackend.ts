@@ -16,6 +16,7 @@ import {
   getCoreVersion,
   openPty as realOpenPty,
   realInvoke,
+  sendPtyAck,
   sendPtyInput,
   sendPtyResize,
   type InvokeFn,
@@ -87,9 +88,18 @@ export function useBackend({
       // fallback covers bare fakes in tests.
       const t = handle.terminal as unknown as { rows?: number; cols?: number };
       let session: SessionInfo;
+      // trmx-78 round 2b: ack every chunk on xterm PARSE COMPLETION so the backend's
+      // flow-control window tracks the real parse rate. The session id resolves only after the
+      // open; the handful of pre-resolution chunks (shell banner) ride the ample initial window.
+      let ackSessionId = 0;
       try {
         session = await openPty(
-          (bytes) => term.write(bytes),
+          (bytes) =>
+            term.write(bytes, () => {
+              if (ackSessionId > 0) {
+                void sendPtyAck(ackSessionId, bytes.length, invoke).catch(() => {});
+              }
+            }),
           t.rows ?? 24,
           t.cols ?? 80,
           opts,
@@ -99,6 +109,7 @@ export function useBackend({
         console.error("[termixion] open pty failed", err);
         throw err;
       }
+      ackSessionId = session.sessionId;
       // Only NOW is there a sessionId to address — subscribe after the open resolves (trmx-74), so
       // a keystroke racing the open can never fire a session-less (or wrong-session) pty_write.
       // Keystrokes → the PTY.
