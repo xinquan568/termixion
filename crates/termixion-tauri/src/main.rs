@@ -267,13 +267,25 @@ fn run_batch_sender(
     mut send_batch: impl FnMut(Vec<u8>) -> bool,
     on_done: impl FnOnce(),
 ) {
+    /// Drop guard: `on_done` runs exactly once on EVERY exit — return AND unwind. Field evidence
+    /// (round 2): a panic inside the send path killed the sender thread between the loop and the
+    /// reap, orphaning the session (stale registry entry, poller spinning, webview waiting
+    /// forever). The guard makes that impossible by construction.
+    struct DoneGuard<F: FnOnce()>(Option<F>);
+    impl<F: FnOnce()> Drop for DoneGuard<F> {
+        fn drop(&mut self) {
+            if let Some(done) = self.0.take() {
+                done();
+            }
+        }
+    }
+    let _guard = DoneGuard(Some(on_done));
     while let Some(batch) = next_batch(&rx, max) {
         if !send_batch(batch) {
             break; // transport gone (webview/channel closed)
         }
     }
-    drop(rx);
-    on_done();
+    // rx drops here (releasing a producer blocked on the full queue), then the guard fires.
 }
 
 #[tauri::command]
@@ -1085,6 +1097,27 @@ mod tests {
             vec!["send-attempt".to_string(), "done".to_string()]
         );
         drop(tx);
+    }
+
+    #[test]
+    fn sender_runs_on_done_even_when_send_batch_panics() {
+        // Field evidence (trmx-78 round 2): the sender thread died without reaping — an unwind
+        // between the loop and on_done orphans the session (the poller spins on a stale pid and
+        // the webview waits forever). on_done must be exactly-once even on panic.
+        let (tx, rx) = sync_channel::<Vec<u8>>(4);
+        tx.send(b"boom".to_vec()).expect("queue");
+        drop(tx);
+        let (_, for_done, log) = event_log();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            run_batch_sender(
+                rx,
+                1024,
+                |_| panic!("simulated Channel::send panic"),
+                move || for_done.lock().expect("log").push("done".to_string()),
+            );
+        }));
+        assert!(result.is_err(), "the panic propagates");
+        assert_eq!(*log.lock().expect("log"), vec!["done".to_string()]);
     }
 
     #[test]
