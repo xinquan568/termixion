@@ -3,11 +3,14 @@
 //
 // C-3 (test-first): the smoke driver — opens the PTY, writes the sentinel sequence, waits for the
 // done marker in the output, evaluates, and reports the result. Injected deps → no Tauri runtime.
+// trmx-74: open_pty resolves { sessionId, title } and pty_write is session-scoped, so the driver
+// must thread the resolved id into sendInput; the sentinel behavior itself is unchanged.
 import { describe, it, expect, vi } from "vitest";
 import { runSmoke, type SmokeDeps } from "./runSmoke";
-import type { InvokeFn, PtyBytesHandler } from "../ipc/backend";
+import type { InvokeFn, PtyBytesHandler, SessionInfo } from "../ipc/backend";
 
 const DIR = "/private/tmp/x/termixion-smoke";
+const SESSION: SessionInfo = { sessionId: 11, title: "zsh" };
 const goodOutput = [
   "host% pwd",
   "/Users/me",
@@ -23,11 +26,12 @@ const goodOutput = [
 describe("runSmoke", () => {
   it("drives the sentinel sequence, evaluates the output, and reports success", async () => {
     let onBytes: PtyBytesHandler | undefined;
-    const openPty = vi.fn(async (cb: PtyBytesHandler) => {
+    const openPty = vi.fn(async (cb: PtyBytesHandler): Promise<SessionInfo> => {
       onBytes = cb;
+      return SESSION;
     });
     const sendInput =
-      vi.fn<(data: string, invoke: InvokeFn) => Promise<void>>();
+      vi.fn<(sessionId: number, data: string, invoke: InvokeFn) => Promise<void>>();
     sendInput.mockResolvedValue(undefined);
     const reportDone =
       vi.fn<(ok: boolean, reason: string, invoke: InvokeFn) => Promise<void>>();
@@ -42,9 +46,11 @@ describe("runSmoke", () => {
     onBytes!(new TextEncoder().encode(goodOutput));
     const result = await promise;
 
-    // The script drives pwd / cd via the $DIR env var / pwd / ls, plus a disambiguated done marker.
+    // trmx-74: the driver threads the sessionId open_pty RESOLVED into the session-scoped write.
     expect(sendInput).toHaveBeenCalledTimes(1);
-    const script = sendInput.mock.calls[0][0];
+    const [sessionId, script] = sendInput.mock.calls[0];
+    expect(sessionId).toBe(SESSION.sessionId);
+    // The script drives pwd / cd via the $DIR env var / pwd / ls, plus a disambiguated done marker.
     expect(script).toContain("pwd");
     expect(script).toContain('cd -- "$DIR"'); // env-var expansion, not interpolated path
     expect(script).toContain("ls");
@@ -56,6 +62,9 @@ describe("runSmoke", () => {
 
   it("reports failure when the sentinel file is absent", async () => {
     let onBytes: PtyBytesHandler | undefined;
+    const sendInput =
+      vi.fn<(sessionId: number, data: string, invoke: InvokeFn) => Promise<void>>();
+    sendInput.mockResolvedValue(undefined);
     const reportDone =
       vi.fn<(ok: boolean, reason: string, invoke: InvokeFn) => Promise<void>>();
     reportDone.mockResolvedValue(undefined);
@@ -63,8 +72,9 @@ describe("runSmoke", () => {
       invoke: (() => Promise.resolve(undefined)) as InvokeFn,
       openPty: async (cb) => {
         onBytes = cb;
+        return SESSION;
       },
-      sendInput: async () => {},
+      sendInput,
       reportDone,
     };
     const promise = runSmoke(DIR, deps);
@@ -73,6 +83,12 @@ describe("runSmoke", () => {
     );
     const result = await promise;
     expect(result.ok).toBe(false);
+    // The id is threaded on the failure path too — the write happened before the evaluation.
+    expect(sendInput).toHaveBeenCalledWith(
+      SESSION.sessionId,
+      expect.any(String),
+      deps.invoke,
+    );
     expect(deps.reportDone).toHaveBeenCalledWith(false, expect.any(String), deps.invoke);
   });
 });

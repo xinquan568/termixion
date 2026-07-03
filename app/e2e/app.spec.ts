@@ -22,12 +22,13 @@ test("the terminal webview boots, fills the window, and has no in-page chrome", 
 
   // Issue 1: the terminal is flush to the top-left and spans (about) the whole viewport — no body
   // margin/padding. The fit addon leaves at most a sub-cell remainder at the bottom-right.
+  // trmx-74: the window now ends in the 34px tab strip, so the terminal owns everything ABOVE it.
   const box = await xterm.boundingBox();
   expect(box).not.toBeNull();
   expect(box!.x).toBeLessThanOrEqual(2);
   expect(box!.y).toBeLessThanOrEqual(2);
   expect(box!.width).toBeGreaterThan(900 * 0.95);
-  expect(box!.height).toBeGreaterThan(600 * 0.95);
+  expect(box!.height).toBeGreaterThan((600 - 34) * 0.95);
 });
 
 test("the terminal content re-fits as the window grows (responsive)", async ({

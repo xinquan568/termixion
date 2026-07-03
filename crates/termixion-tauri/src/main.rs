@@ -1,37 +1,61 @@
 // SPDX-License-Identifier: ISC
 // Copyright (c) 2026 Eric Y. Liu
-//! Termixion — the thin Tauri 2 desktop shell. It owns the single terminal session and streams it to
-//! the xterm.js webview over a Tauri IPC `Channel` (ADR-0001): a dedicated thread forwards PTY output
-//! to the frontend while `pty_write` / `pty_resize` drive keystrokes and size back. The session domain
-//! logic lives in `termixion-core`; this file is runtime glue (validated by the C-3 packaged `--smoke`
-//! and `cargo tauri dev`, not headless unit tests).
+//! Termixion — the thin Tauri 2 desktop shell. Since trmx-74 it drives the multi-session
+//! [`SessionRegistry`] (one session per tab) and streams each session to the xterm.js webview over
+//! its own Tauri IPC `Channel` (ADR-0001): a dedicated thread per session runs the core reader
+//! pump while `pty_write` / `pty_resize` / `close_pty` route by session id. The session domain
+//! logic lives in `termixion-core`; this file is runtime glue (validated by the C-3 packaged
+//! `--smoke` and `cargo tauri dev`) — the pure pieces (`program_title`, the payload wire shapes)
+//! are unit-tested.
 
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tauri::ipc::Channel;
-use tauri::{Manager, State, WindowEvent};
-use termixion_core::{PtySize, Session, SessionSpec};
+use tauri::{Emitter, Manager, State, WindowEvent};
+use termixion_core::{PtySize, SessionRegistry, SessionSpec};
 use termixion_platform::MacosPtyFactory;
 
 mod menu;
 mod window_manager;
 
-/// The single active terminal session (one window / one tab for v0.0.1). Command handlers `write`/
-/// `resize` the session while the reader thread streams its output concurrently. `generation` tags
-/// each `open_pty` so a stale reader thread only reaps the session **it** opened, never a replacement.
+/// The live terminal sessions (trmx-74): one per tab, keyed by the registry's monotonic
+/// **never-reused** ids. That id discipline replaces the old single-slot generation counter — a
+/// stale reader thread reaping its own id after that session is gone is an idempotent no-op that
+/// can never touch another session (documented in `termixion_core::registry`).
 #[derive(Default)]
 struct PtyState {
-    generation: AtomicU64,
-    slot: Arc<Mutex<Option<ActiveSession>>>,
+    registry: Arc<Mutex<SessionRegistry>>,
 }
 
-/// A live session tagged with the generation that opened it.
-struct ActiveSession {
-    generation: u64,
-    session: Session,
+/// What `open_pty` returns to the webview: the id every later `pty_write`/`pty_resize`/`close_pty`
+/// routes by, plus the initial tab title (trmx-74). camelCase so the frontend sees `sessionId`.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionInfo {
+    session_id: u64,
+    title: String,
+}
+
+/// Payload of the `pty:exited` event: the child of session `session_id` ended (shell exit, kill,
+/// or read error), so the frontend drops exactly that tab (trmx-74).
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PtyExited {
+    session_id: u64,
+}
+
+/// The initial tab title for a spawned program: the basename of its path, lossy UTF-8
+/// (`/bin/zsh` → `zsh`), falling back to `"shell"` when there is no basename. Pure, unit-tested.
+fn program_title(program: &OsStr) -> String {
+    Path::new(program)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "shell".to_string())
 }
 
 /// Placeholder command exercising the frontend↔backend channel: reports the core version.
@@ -40,106 +64,103 @@ fn core_version() -> String {
     termixion_platform::CORE_VERSION.to_string()
 }
 
-/// Open the terminal session and stream its output to the webview over `channel` (ADR-0001). Spawns
-/// the login shell at the given size, moves the blocking reader onto a dedicated thread that forwards
-/// bytes to the channel, and stores the session so `pty_write`/`pty_resize` can drive it.
+/// Open a terminal session and stream its output to the webview over `channel` (ADR-0001). Spawns
+/// the login shell — at `cwd` when the frontend passes one (trmx-74: new tabs inherit the active
+/// tab's directory) — via the registry, moves the blocking reader onto a dedicated thread running
+/// the core pump, and returns the session id + initial title. When the stream ends the session is
+/// reaped and `pty:exited` tells the frontend to drop exactly that tab.
 #[tauri::command]
 fn open_pty(
+    app: tauri::AppHandle,
     channel: Channel<Vec<u8>>,
     rows: u16,
     cols: u16,
+    cwd: Option<String>,
     state: State<'_, PtyState>,
     smoke: State<'_, SmokeDir>,
-) -> Result<(), String> {
-    let factory = MacosPtyFactory;
-    // Production opens the user's login shell; the `--smoke` run opens a deterministic rc-free shell
-    // (`zsh -f`) so the automated sentinel sequence isn't garbled by the user's prompt / line editor —
-    // the transport (channel, pty_write, streaming) is still the production path.
+) -> Result<SessionInfo, String> {
+    // Production opens the user's login shell; the `--smoke` run opens a deterministic rc-free
+    // shell (`zsh -f`, ignoring any `cwd`) so the automated sentinel sequence isn't garbled by the
+    // user's prompt / line editor — the transport (channel, pty_write, streaming) is still the
+    // production path.
     let spec = if smoke.0.is_some() {
         let mut s = SessionSpec::shell("/bin/zsh");
         s.args.push("-f".into());
         s
     } else {
-        SessionSpec::login_shell()
+        let mut s = SessionSpec::login_shell();
+        if let Some(dir) = cwd {
+            s.cwd = Some(PathBuf::from(dir));
+        }
+        s
     };
-    let mut session =
-        Session::spawn(1, &factory, &spec, PtySize::new(rows, cols)).map_err(|e| e.to_string())?;
 
-    let mut reader = session
-        .take_reader()
-        .ok_or_else(|| "pty backend exposes no readable stream".to_string())?;
+    let (id, reader) = state
+        .registry
+        .lock()
+        .map_err(|_| "pty state poisoned".to_string())?
+        .spawn(&MacosPtyFactory, &spec, PtySize::new(rows, cols))
+        .map_err(|e| e.to_string())?;
 
-    // Tag this open, then store the session BEFORE streaming so `pty_write` targets it immediately.
-    // Replacing a prior session drops it here (kill + reap via Drop).
-    let generation = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
-    {
-        let mut slot = state
-            .slot
-            .lock()
-            .map_err(|_| "pty state poisoned".to_string())?;
-        *slot = Some(ActiveSession {
-            generation,
-            session,
-        });
-    }
-
-    // Output → webview on its own thread: reads block here while keystrokes are written concurrently.
-    let slot = Arc::clone(&state.slot);
+    // Output → webview on a dedicated thread (ADR-0001) via the core pump. On stream end the
+    // session is reaped — `registry.close(id)` is idempotent and ids are never reused, so this
+    // stale-safe reap can never touch a newer session — and `pty:exited` is emitted best-effort
+    // (the webview may already be gone during shutdown).
+    let registry = Arc::clone(&state.registry);
     std::thread::spawn(move || {
-        let mut buf = [0u8; 4096];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break, // EOF (shell exited) or read error → stop streaming
-                Ok(n) => {
-                    if channel.send(buf[..n].to_vec()).is_err() {
-                        break; // the webview/channel is gone
-                    }
-                }
-            }
-        }
-        // Shell exited / stream ended: reap + clear OUR session — but only if it is still the current
-        // one, so a replacement opened in the meantime (e.g. a re-open) is left untouched.
-        if let Ok(mut slot) = slot.lock()
-            && slot.as_ref().is_some_and(|a| a.generation == generation)
-            && let Some(mut active) = slot.take()
-        {
-            let _ = active.session.kill();
-        }
+        termixion_core::pump(
+            reader,
+            |chunk| channel.send(chunk.to_vec()).is_ok(),
+            move || {
+                let _ = registry.lock().map(|mut r| r.close(id));
+                let _ = app.emit("pty:exited", PtyExited { session_id: id });
+            },
+        );
     });
 
-    Ok(())
+    Ok(SessionInfo {
+        session_id: id,
+        title: program_title(&spec.program),
+    })
 }
 
-/// Send keystrokes (raw bytes from xterm `onData`) to the PTY.
+/// Send keystrokes (raw bytes from xterm `onData`) to the session's PTY.
 #[tauri::command]
-fn pty_write(data: Vec<u8>, state: State<'_, PtyState>) -> Result<(), String> {
-    let mut slot = state
-        .slot
+fn pty_write(session_id: u64, data: Vec<u8>, state: State<'_, PtyState>) -> Result<(), String> {
+    state
+        .registry
         .lock()
-        .map_err(|_| "pty state poisoned".to_string())?;
-    let active = slot
-        .as_mut()
-        .ok_or_else(|| "no active pty session".to_string())?;
-    active
-        .session
-        .write(&data)
+        .map_err(|_| "pty state poisoned".to_string())?
+        .write(session_id, &data)
         .map(|_| ())
         .map_err(|e| e.to_string())
 }
 
-/// Resize the PTY's character grid (from xterm `onResize`).
+/// Resize the session's PTY character grid (from xterm `onResize`).
 #[tauri::command]
-fn pty_resize(rows: u16, cols: u16, state: State<'_, PtyState>) -> Result<(), String> {
-    let mut slot = state
-        .slot
+fn pty_resize(
+    session_id: u64,
+    rows: u16,
+    cols: u16,
+    state: State<'_, PtyState>,
+) -> Result<(), String> {
+    state
+        .registry
         .lock()
-        .map_err(|_| "pty state poisoned".to_string())?;
-    let active = slot
-        .as_mut()
-        .ok_or_else(|| "no active pty session".to_string())?;
-    active
-        .session
-        .resize(PtySize::new(rows, cols))
+        .map_err(|_| "pty state poisoned".to_string())?
+        .resize(session_id, PtySize::new(rows, cols))
+        .map_err(|e| e.to_string())
+}
+
+/// Close a session (tab closed by the user, trmx-74). Idempotent: closing an id that already
+/// exited (e.g. the reader thread reaped it first) is `Ok(())`.
+#[tauri::command]
+fn close_pty(session_id: u64, state: State<'_, PtyState>) -> Result<(), String> {
+    state
+        .registry
+        .lock()
+        .map_err(|_| "pty state poisoned".to_string())?
+        .close(session_id)
         .map_err(|e| e.to_string())
 }
 
@@ -189,15 +210,6 @@ fn smoke_done(success: bool, reason: String) {
     std::process::exit(1);
 }
 
-/// Dispose the active session (no zombie) — used on window close.
-fn dispose_session(state: &PtyState) {
-    if let Ok(mut slot) = state.slot.lock()
-        && let Some(mut active) = slot.take()
-    {
-        let _ = active.session.kill();
-    }
-}
-
 fn main() -> ExitCode {
     let smoke = match smoke_mode(
         std::env::args(),
@@ -230,20 +242,38 @@ fn main() -> ExitCode {
         .manage(PtyState::default())
         .manage(SmokeDir(smoke))
         // trmx-48/trmx-51: install the app menu; "About Termixion" / "Settings…" open the
-        // standalone Settings window (About lands on the About page).
+        // standalone Settings window (About lands on the About page). trmx-74 adds the Shell
+        // submenu + Window tab-cycling items.
         .setup(|app| {
             let menu = menu::build_menu(app.handle())?;
             app.set_menu(menu)?;
             Ok(())
         })
         .on_menu_event(|app, event| {
-            if let Some(menu::MenuAction::ShowSettings { section }) =
-                menu::menu_action(event.id().0.as_str())
-                && let Err(err) = window_manager::show_settings_window(app, section)
-            {
-                // No unwrap/expect: report and carry on rather than panic (a broken menu item
-                // must not take the terminal down).
-                eprintln!("termixion: failed to open the settings window: {err}");
+            // No unwrap/expect anywhere here: report and carry on rather than panic (a broken
+            // menu item must not take the terminal down).
+            match menu::menu_action(event.id().0.as_str()) {
+                Some(menu::MenuAction::ShowSettings { section }) => {
+                    if let Err(err) = window_manager::show_settings_window(app, section) {
+                        eprintln!("termixion: failed to open the settings window: {err}");
+                    }
+                }
+                // trmx-74: the frontend tab manager owns tab state, so the menu just broadcasts
+                // the intent ("new"/"close"/"next"/"prev") as a `tabs:action` event.
+                Some(menu::MenuAction::EmitTabsAction(action)) => {
+                    if let Err(err) = app.emit("tabs:action", action) {
+                        eprintln!("termixion: failed to emit tabs:action ({action}): {err}");
+                    }
+                }
+                // trmx-74: ⌘W closes a tab now; Close Window (⇧⌘W) closes the main window, which
+                // kills every session via the CloseRequested handler below.
+                Some(menu::MenuAction::CloseMainWindow) => {
+                    if let Some(window) = app.get_webview_window(window_manager::MAIN_WINDOW_LABEL)
+                    {
+                        let _ = window.close();
+                    }
+                }
+                None => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -251,19 +281,23 @@ fn main() -> ExitCode {
             open_pty,
             pty_write,
             pty_resize,
+            close_pty,
             smoke_config,
             smoke_done
         ])
         .on_window_event(|window, event| {
-            // trmx-51: only the MAIN window owns the PTY — closing the settings window must leave
-            // the terminal session alone. Closing main disposes the PTY and takes the settings
-            // window with it, so the app exits exactly as it did when main was the only window.
+            // trmx-51: only the MAIN window owns the PTY sessions — closing the settings window
+            // must leave the terminal alone. Closing main kills every live session (trmx-74:
+            // `registry.kill_all()`, no zombies) and takes the settings window with it, so the
+            // app exits exactly as it did when main was the only window.
             if let WindowEvent::CloseRequested { .. } = event {
                 if !window_manager::disposes_pty_for(window.label()) {
                     return;
                 }
-                if let Some(state) = window.try_state::<PtyState>() {
-                    dispose_session(&state);
+                if let Some(state) = window.try_state::<PtyState>()
+                    && let Ok(mut registry) = state.registry.lock()
+                {
+                    registry.kill_all();
                 }
                 if let Some(settings) = window
                     .app_handle()
@@ -293,6 +327,33 @@ mod tests {
         let v = core_version();
         assert!(!v.is_empty(), "core version must not be empty");
         assert_eq!(v, termixion_platform::CORE_VERSION);
+    }
+
+    #[test]
+    fn program_title_is_the_program_basename_with_a_shell_fallback() {
+        // A path yields its basename; a plain name passes through unchanged.
+        assert_eq!(program_title(OsStr::new("/bin/zsh")), "zsh");
+        assert_eq!(program_title(OsStr::new("/opt/homebrew/bin/fish")), "fish");
+        assert_eq!(program_title(OsStr::new("bash")), "bash");
+        // No basename at all falls back to a generic tab title.
+        assert_eq!(program_title(OsStr::new("")), "shell");
+        assert_eq!(program_title(OsStr::new("/")), "shell");
+    }
+
+    #[test]
+    fn session_payloads_serialize_camel_case_for_the_frontend() {
+        // The frontend destructures `sessionId` from open_pty's return and the `pty:exited`
+        // payload (trmx-74) — pin the wire shape.
+        let info = serde_json::to_value(SessionInfo {
+            session_id: 7,
+            title: "zsh".to_string(),
+        })
+        .expect("SessionInfo serializes");
+        assert_eq!(info, serde_json::json!({ "sessionId": 7, "title": "zsh" }));
+
+        let exited =
+            serde_json::to_value(PtyExited { session_id: 42 }).expect("PtyExited serializes");
+        assert_eq!(exited, serde_json::json!({ "sessionId": 42 }));
     }
 
     fn args(v: &[&str]) -> Vec<String> {

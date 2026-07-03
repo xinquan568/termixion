@@ -17,6 +17,7 @@ import {
 import type { MountDeps, TerminalHandle } from "./mountTerminal";
 import type { AttachScrollbarHandle } from "./scrollbar";
 import { buildXtermTheme } from "../theme/buildXtermTheme";
+import { currentCwd, makeCwdStore } from "./osc7";
 
 // A no-op resize seam for tests that don't care about the resize path.
 const noopObserve: ResizeObservation = () => () => {};
@@ -601,6 +602,61 @@ describe("TerminalView", () => {
     teardown();
     expect(titleDispose).toHaveBeenCalledTimes(1);
     for (const r of oscRegistrations) expect(r.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes the injected per-tab cwdStore through the OSC seam (trmx-74)", () => {
+    const handle: TerminalHandle = {
+      terminal: { id: "real-terminal" } as never,
+      renderer: "webgl",
+      fit: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const mount = vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(
+      () => handle,
+    );
+    const attachOsc = vi.fn<AttachOscIntegrations>(() => () => {});
+    const store = makeCwdStore();
+
+    render(
+      <TerminalView
+        mount={mount}
+        observeResize={noopObserve}
+        attachScrollbar={noopAttachScrollbar}
+        attachOscIntegrations={attachOsc}
+        attachClipboard={noopAttachClipboard}
+        cwdStore={store}
+      />,
+    );
+
+    expect(attachOsc).toHaveBeenCalledTimes(1);
+    expect(attachOsc.mock.calls[0][0]).toBe(handle.terminal);
+    expect(attachOsc.mock.calls[0][1]).toBe(store);
+  });
+
+  it("realAttachOscIntegrations threads an injected store into the OSC 7 handler — not the module default (trmx-74)", () => {
+    // A capable fake that captures each OSC handler's CALLBACK so the test can feed it a report.
+    const oscHandlers = new Map<number, (data: string) => boolean>();
+    const fakeTerminal = {
+      onTitleChange: () => ({ dispose: vi.fn() }),
+      parser: {
+        registerOscHandler: (ident: number, cb: (data: string) => boolean) => {
+          oscHandlers.set(ident, cb);
+          return { dispose: vi.fn() };
+        },
+      },
+    };
+    const store = makeCwdStore();
+
+    realAttachOscIntegrations(
+      fakeTerminal as never,
+      { setTitle: vi.fn(), writeClipboard: vi.fn() },
+      store,
+    );
+
+    oscHandlers.get(7)?.("file://mac/Users/me/proj");
+    expect(store.get()).toBe("/Users/me/proj");
+    // Per-tab isolation: the module-default store stays untouched by an injected-store terminal.
+    expect(currentCwd()).toBeNull();
   });
 
   it("binds the clipboard guards to the host + terminal and unbinds on unmount (trmx-66)", () => {

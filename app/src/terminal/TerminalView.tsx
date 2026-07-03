@@ -39,7 +39,7 @@ import {
   type TitleTerminalLike,
 } from "./windowTitle";
 import { attachOsc52, realWriteClipboard, type Osc52TerminalLike } from "./osc52";
-import { attachOsc7, type Osc7TerminalLike } from "./osc7";
+import { attachOsc7, defaultCwdStore, type CwdStore, type Osc7TerminalLike } from "./osc7";
 import {
   applyCursorSettingsChange,
   cursorTerminalOptions,
@@ -130,9 +130,15 @@ export type AttachScrollbar = (
  * to a mounted terminal; returns one combined teardown. Injectable so the React wiring stays
  * unit-testable with fakes (the default casts to the modules' narrow slices — the same localized
  * adapter-cast pattern as the scrollbar below). Sinks are injectable for the same reason; the
- * defaults are the real Tauri/webview edges (inert without a runtime).
+ * defaults are the real Tauri/webview edges (inert without a runtime). trmx-74: the OSC 7 cwd
+ * lands in `cwdStore` — App injects one PER TAB so each tab retains its own shell cwd
+ * (new-tab-inherits-cwd); when omitted it stays the module-default store, so every pre-tab
+ * consumer and test is unaffected.
  */
-export type AttachOscIntegrations = (terminal: TerminalLike) => () => void;
+export type AttachOscIntegrations = (
+  terminal: TerminalLike,
+  cwdStore?: CwdStore,
+) => () => void;
 
 export function realAttachOscIntegrations(
   terminal: TerminalLike,
@@ -140,6 +146,7 @@ export function realAttachOscIntegrations(
     setTitle: (title: string) => void;
     writeClipboard: (text: string) => void;
   } = { setTitle: realSetWindowTitle, writeClipboard: realWriteClipboard },
+  cwdStore: CwdStore = defaultCwdStore,
 ): () => void {
   const detachTitle = attachWindowTitle(
     terminal as unknown as TitleTerminalLike,
@@ -149,13 +156,19 @@ export function realAttachOscIntegrations(
     terminal as unknown as Osc52TerminalLike,
     sinks.writeClipboard,
   );
-  const detach7 = attachOsc7(terminal as unknown as Osc7TerminalLike);
+  const detach7 = attachOsc7(terminal as unknown as Osc7TerminalLike, cwdStore);
   return () => {
     detachTitle();
     detach52();
     detach7();
   };
 }
+
+// The default seam value: the real integrations over the real sinks, with the caller's per-tab
+// store (or the module default) threaded through. A module-level const — an inline arrow would
+// change identity every render and remount the terminal via the effect deps (trmx-74).
+const defaultAttachOscIntegrations: AttachOscIntegrations = (terminal, cwdStore) =>
+  realAttachOscIntegrations(terminal, undefined, cwdStore);
 
 /**
  * trmx-66: bind the owned ⌘C/⌘V clipboard guards (capture-phase copy/paste on the host — see
@@ -214,6 +227,12 @@ export interface TerminalViewProps {
   observeSettings?: SettingsObservation;
   /** Injection seam for tests; defaults to the real OSC title/52/7 wiring (trmx-64). */
   attachOscIntegrations?: AttachOscIntegrations;
+  /**
+   * Where this terminal's OSC 7 cwd reports land (trmx-74): App injects one store PER TAB so a
+   * new tab can inherit the ACTIVE tab's cwd. Defaults to the osc7 module store (pre-tab
+   * behavior).
+   */
+  cwdStore?: CwdStore;
   /** Injection seam for tests; defaults to the real ⌘C/⌘V clipboard guards (trmx-66). */
   attachClipboard?: AttachClipboard;
   /**
@@ -231,8 +250,9 @@ export function TerminalView({
   observeResize = realObserveResize,
   attachScrollbar = realAttachScrollbar,
   observeSettings = realObserveSettings,
-  attachOscIntegrations = realAttachOscIntegrations,
+  attachOscIntegrations = defaultAttachOscIntegrations,
   attachClipboard = realAttachClipboard,
+  cwdStore,
   resizeSchedule,
 }: TerminalViewProps) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -250,8 +270,9 @@ export function TerminalView({
       handle.terminal as unknown as ScrollbarTerminalLike,
       { document: host.ownerDocument },
     );
-    // trmx-64: OSC integrations (0/2 title → window title, 52 → write-only clipboard, 7 → cwd).
-    const detachOsc = attachOscIntegrations(handle.terminal);
+    // trmx-64: OSC integrations (0/2 title → window title, 52 → write-only clipboard, 7 → cwd —
+    // into this tab's injected store when the tab layer provides one, trmx-74).
+    const detachOsc = attachOscIntegrations(handle.terminal, cwdStore);
     // trmx-66: owned ⌘C/⌘V — capture-phase guards on the host (sanitized paste, no-clear copy).
     const detachClipboard = attachClipboard(host, handle.terminal);
     // Keep the grid filling the host as the window resizes (issue 2): a size change re-fits, which
@@ -299,7 +320,7 @@ export function TerminalView({
       scrollbar.dispose();
       handle.dispose();
     };
-  }, [mount, deps, onReady, observeResize, attachScrollbar, observeSettings, attachOscIntegrations, attachClipboard, resizeSchedule]);
+  }, [mount, deps, onReady, observeResize, attachScrollbar, observeSettings, attachOscIntegrations, attachClipboard, cwdStore, resizeSchedule]);
 
   return <div ref={hostRef} data-testid="terminal" className="terminal-host" />;
 }
