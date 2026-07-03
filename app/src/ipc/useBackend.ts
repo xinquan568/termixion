@@ -72,10 +72,15 @@ export function useBackend({
           console.error("[termixion] pty resize failed", err),
         );
       });
-      // Open the session and stream output → the terminal. v0.0.1 uses the default 24x80 grid (no fit
-      // addon yet); onResize keeps the PTY in sync if that changes.
-      openPty((bytes) => term.write(bytes), 24, 80, invoke).catch((err: unknown) =>
-        console.error("[termixion] open pty failed", err),
+      // Open the session at the mounted terminal's ACTUAL grid size (trmx-67). mountTerminal's
+      // initial fit() already ran before this onResize subscription existed, and xterm dedups
+      // same-size fits (no resize event replays it) — so a hardcoded 24x80 here would strand the
+      // child process at 24x80 while the screen renders e.g. 30x100. TerminalLike deliberately stays
+      // narrow, so read the real xterm Terminal's rows/cols via a localized adapter cast; the 24x80
+      // fallback covers bare fakes in tests.
+      const t = handle.terminal as unknown as { rows?: number; cols?: number };
+      openPty((bytes) => term.write(bytes), t.rows ?? 24, t.cols ?? 80, invoke).catch(
+        (err: unknown) => console.error("[termixion] open pty failed", err),
       );
     },
     [invoke, openPty],

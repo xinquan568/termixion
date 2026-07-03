@@ -21,11 +21,13 @@ type OpenPty = (
 ) => Promise<void>;
 
 // A fake terminal capturing the wired handlers so the test can simulate input/output/resize.
-function fakeHandle() {
+// `size` mimics the real xterm Terminal's live `rows`/`cols` (already set by mountTerminal's initial
+// fit() before attach) that TerminalLike deliberately doesn't declare; omit it for a bare fake.
+function fakeHandle(size?: { rows: number; cols: number }) {
   const writes: Uint8Array[] = [];
   let dataHandler: ((d: string) => void) | undefined;
   let resizeHandler: ((s: { rows: number; cols: number }) => void) | undefined;
-  const terminal: TerminalLike = {
+  const terminal: TerminalLike & { rows?: number; cols?: number } = {
     open() {},
     loadAddon() {},
     write(d) {
@@ -38,6 +40,7 @@ function fakeHandle() {
       resizeHandler = h;
     },
     dispose() {},
+    ...size,
   };
   const handle: TerminalHandle = {
     terminal,
@@ -100,6 +103,43 @@ describe("useBackend", () => {
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("pty_resize", { rows: 40, cols: 120 }),
     );
+  });
+
+  // trmx-67: mountTerminal's initial fit() runs BEFORE attachTerminal subscribes onResize, and xterm
+  // dedups same-size fits (no resize event replays it) — so attach must read the terminal's actual
+  // grid, or the child process stays at 24x80 while the screen renders e.g. 30x100.
+  it("attachTerminal opens the pty with the mounted terminal's actual grid size", () => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    const invoke = vi.fn<InvokeFn>();
+    invoke.mockResolvedValue(undefined);
+    const openPty = vi.fn<OpenPty>();
+    openPty.mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useBackend({ invoke, openPty }));
+    const t = fakeHandle({ rows: 30, cols: 100 }); // grid already fit before attach
+    result.current.attachTerminal(t.handle);
+
+    expect(openPty).toHaveBeenCalledTimes(1);
+    const [, rows, cols] = openPty.mock.calls[0];
+    expect(rows).toBe(30);
+    expect(cols).toBe(100);
+  });
+
+  it("attachTerminal falls back to 24x80 when the terminal exposes no grid size", () => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    const invoke = vi.fn<InvokeFn>();
+    invoke.mockResolvedValue(undefined);
+    const openPty = vi.fn<OpenPty>();
+    openPty.mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useBackend({ invoke, openPty }));
+    const t = fakeHandle(); // bare fake: no rows/cols on the terminal
+    result.current.attachTerminal(t.handle);
+
+    expect(openPty).toHaveBeenCalledTimes(1);
+    const [, rows, cols] = openPty.mock.calls[0];
+    expect(rows).toBe(24);
+    expect(cols).toBe(80);
   });
 
   it("does not throw and stays unconnected when the handshake fails", async () => {
