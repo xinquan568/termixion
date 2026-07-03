@@ -20,6 +20,7 @@ import { realDeps } from "./TerminalView";
 import { iterm2TerminalOptions } from "./iterm2Theme";
 import { emulationTerminalOptions } from "./emulationOptions";
 import { scrollbackTerminalOptions } from "./scrollbackSettings";
+import { clipboardTerminalOptions } from "./clipboard";
 import { buildXtermTheme } from "../theme/buildXtermTheme";
 
 // The registry cursor defaults: trmx-51's underline, with blink turned off by trmx-55 (iTerm2
@@ -61,6 +62,7 @@ describe("realDeps.createTerminal (the display chokepoint)", () => {
       ...TRMX51_CURSOR,
       ...scrollbackTerminalOptions(),
       ...emulationTerminalOptions(),
+      ...clipboardTerminalOptions(),
       linkHandler: expect.anything(),
     });
   });
@@ -74,6 +76,7 @@ describe("realDeps.createTerminal (the display chokepoint)", () => {
       ...TRMX51_CURSOR,
       ...scrollbackTerminalOptions(),
       ...emulationTerminalOptions(),
+      ...clipboardTerminalOptions(),
       linkHandler: expect.anything(),
     });
   });
@@ -126,6 +129,15 @@ describe("realDeps.createTerminal (the display chokepoint)", () => {
     expect(opts?.smoothScrollDuration).toBe(120);
     // xterm's scroll-on-user-input default (typing snaps to bottom) must not be disabled.
     expect(opts?.scrollOnUserInput).not.toBe(false);
+  });
+
+  it("enables Option-drag selection at the chokepoint (trmx-66)", () => {
+    // macOptionClickForcesSelection: while a full-screen app owns the mouse (mouse reporting),
+    // Option-drag still makes a normal selection — the iTerm2 convention on macOS.
+    stubMatchMedia(true);
+    realDeps.createTerminal();
+    const opts = vi.mocked(Terminal).mock.calls[0][0];
+    expect(opts?.macOptionClickForcesSelection).toBe(true);
   });
 
   it("wires the OSC 8 link policy at the chokepoint (trmx-64)", () => {
