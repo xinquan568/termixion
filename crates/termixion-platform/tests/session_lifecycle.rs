@@ -10,7 +10,7 @@ use std::process::Command;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use termixion_core::{PtySize, Session, SessionSpec};
+use termixion_core::{PtyReader, PtySize, Session, SessionRegistry, SessionSpec};
 use termixion_platform::MacosPtyFactory;
 
 /// The process state of `pid` via `ps -o stat=` — `None` if the pid is gone, else the state string
@@ -176,4 +176,210 @@ fn resize_winsize_is_observed_by_the_child() {
     assert!(!session.is_alive());
     pump.join().expect("the reader thread exits at EOF");
     assert_no_zombie(pid);
+}
+
+// ---------------------------------------------------------------------------------------------
+// trmx-74 (FR-2.1): the same golden lifecycle, driven through `SessionRegistry` — the multi-
+// session collection a tab manager uses — instead of a bare `Session`. Same conventions as
+// above: rc-free `zsh -f`, `ps -o stat=` zombie polling, pump-thread reads with deadlines.
+// ---------------------------------------------------------------------------------------------
+
+/// The deterministic, rc-free interactive shell every golden test here uses (see the rationale in
+/// `session_lifecycle_through_the_trait_leaves_no_zombie`): `zsh -f` (NO_RCS) skips all startup
+/// files, so a dev/CI rc hook can never garble or hang the transcript.
+fn rc_free_zsh() -> SessionSpec {
+    let mut spec = SessionSpec::shell("/bin/zsh");
+    spec.args.push("-f".into());
+    spec
+}
+
+/// Move a blocking [`PtyReader`] onto its own thread (ADR-0001 — the registry hands the reader out
+/// at spawn for exactly this), forwarding chunks over a channel so every wait below stays bounded.
+/// The pump exits at EOF or on a torn-down PTY, so joining it after `close`/`kill_all` cannot hang.
+fn pump_reader(
+    mut reader: Box<dyn PtyReader>,
+) -> (mpsc::Receiver<Vec<u8>>, std::thread::JoinHandle<()>) {
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let pump = std::thread::spawn(move || {
+        let mut buf = [0u8; 1024];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break, // EOF (shell exited) or a torn-down PTY
+                Ok(n) => {
+                    if tx.send(buf[..n].to_vec()).is_err() {
+                        break; // the test stopped listening
+                    }
+                }
+            }
+        }
+    });
+    (rx, pump)
+}
+
+/// Accumulate pumped chunks until the transcript contains `needle`, with the same deadline pattern
+/// as `resize_winsize_is_observed_by_the_child`: generous, and only load-bearing when the plumbing
+/// is actually broken. Panics (with the transcript) on timeout or if the output ends first.
+fn read_until(rx: &mpsc::Receiver<Vec<u8>>, needle: &str, deadline: Instant) -> String {
+    let mut transcript = Vec::new();
+    while !String::from_utf8_lossy(&transcript).contains(needle) {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            panic!(
+                "pty output never contained {needle:?} before the deadline; transcript: {:?}",
+                String::from_utf8_lossy(&transcript)
+            );
+        }
+        match rx.recv_timeout(remaining) {
+            Ok(chunk) => transcript.extend_from_slice(&chunk),
+            // Timeout, or the pump ended early (EOF / read error — the shell died under us).
+            Err(err) => panic!(
+                "pty output ended before {needle:?} appeared ({err}); transcript: {:?}",
+                String::from_utf8_lossy(&transcript)
+            ),
+        }
+    }
+    String::from_utf8_lossy(&transcript).into_owned()
+}
+
+/// trmx-74: closing ONE registry session reaps ONLY its own child. Two real shells through one
+/// registry; each proves independent routing by echoing its own marker (the `hel""lo` trick from
+/// the lifecycle test — the literal marker can only come from the shell *executing* echo), then
+/// `close(id1)` must reap pid1 while session 2 stays alive AND still answers a round-trip.
+#[test]
+fn registry_close_reaps_only_its_own_child() {
+    let factory = MacosPtyFactory;
+    let mut registry = SessionRegistry::new();
+    let (id1, reader1) = registry
+        .spawn(&factory, &rc_free_zsh(), PtySize::new(24, 80))
+        .expect("spawn session 1 through the registry");
+    let (id2, reader2) = registry
+        .spawn(&factory, &rc_free_zsh(), PtySize::new(24, 80))
+        .expect("spawn session 2 through the registry");
+    let pid1 = registry
+        .process_id(id1)
+        .expect("session 1 is live")
+        .expect("a real PTY has a child pid");
+    let pid2 = registry
+        .process_id(id2)
+        .expect("session 2 is live")
+        .expect("a real PTY has a child pid");
+    let (rx1, pump1) = pump_reader(reader1);
+    let (rx2, pump2) = pump_reader(reader2);
+
+    // Distinguishable round-trip on EACH session via its OWN reader: writes routed by id must come
+    // back on the matching PTY, not the other one.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    registry
+        .write(id1, b"echo fir\"\"st-marker\n")
+        .expect("write to session 1");
+    registry
+        .write(id2, b"echo sec\"\"ond-marker\n")
+        .expect("write to session 2");
+    read_until(&rx1, "first-marker", deadline);
+    read_until(&rx2, "second-marker", deadline);
+
+    // Close session 1: its child must be reaped (gone or zombie-free, per the ps convention)...
+    registry.close(id1).expect("close session 1");
+    assert_no_zombie(pid1);
+    pump1
+        .join()
+        .expect("session 1's reader thread exits at EOF");
+
+    // ...while session 2's child is UNTOUCHED: still a live (non-zombie) process...
+    let state2 = process_state(pid2).expect("session 2's child must survive session 1's close");
+    assert!(
+        !state2.starts_with('Z'),
+        "session 2's child (pid {pid2}) must not be a zombie after closing session 1; state: {state2:?}"
+    );
+    assert_eq!(registry.ids(), vec![id2]);
+
+    // ...and still answering a full write/read round-trip.
+    registry
+        .write(id2, b"echo sti\"\"ll-alive\n")
+        .expect("write to session 2 after session 1's close");
+    read_until(
+        &rx2,
+        "still-alive",
+        Instant::now() + Duration::from_secs(10),
+    );
+
+    // Then session 2 closes and reaps just the same.
+    registry.close(id2).expect("close session 2");
+    assert_no_zombie(pid2);
+    pump2
+        .join()
+        .expect("session 2's reader thread exits at EOF");
+    assert!(registry.is_empty());
+}
+
+/// trmx-74: `SessionSpec::cwd` must reach the real child. Spawn into a unique temp dir and have
+/// the shell report `pwd` — the dir path can only appear in the transcript if the kernel-side
+/// chdir actually happened (the typed command `pwd` contains no path). macOS `/tmp` and `/var`
+/// are symlinks into `/private`, so both the spec's cwd and the needle use the CANONICAL path.
+#[test]
+fn registry_spawn_honors_spec_cwd() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock is past the epoch")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("trmx74-cwd-{}-{unique}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create the temp cwd for the spawned shell");
+    let dir = dir
+        .canonicalize()
+        .expect("canonicalize the temp cwd (macOS /tmp is a symlink into /private)");
+    let needle = dir.to_str().expect("the temp cwd path is valid UTF-8");
+
+    let factory = MacosPtyFactory;
+    let mut registry = SessionRegistry::new();
+    let mut spec = rc_free_zsh();
+    spec.cwd = Some(dir.clone());
+    let (id, reader) = registry
+        .spawn(&factory, &spec, PtySize::new(24, 80))
+        .expect("spawn a shell with an explicit cwd through the registry");
+    let pid = registry
+        .process_id(id)
+        .expect("the session is live")
+        .expect("a real PTY has a child pid");
+    let (rx, pump) = pump_reader(reader);
+
+    registry
+        .write(id, b"pwd\n")
+        .expect("write `pwd` to the pty");
+    read_until(&rx, needle, Instant::now() + Duration::from_secs(10));
+
+    registry.close(id).expect("close the session");
+    assert_no_zombie(pid);
+    pump.join().expect("the reader thread exits at EOF");
+    std::fs::remove_dir_all(&dir).expect("remove the temp cwd");
+}
+
+/// trmx-74: `kill_all` (window close) reaps EVERY child and leaves the registry empty — the
+/// multi-session version of the C-1 no-zombie invariant. No reads are needed: SIGKILL + reap do
+/// not depend on the readers, and a fresh `zsh -f` prompt fits the kernel PTY buffer, so holding
+/// the unpumped readers on the test thread cannot deadlock the kill.
+#[test]
+fn registry_kill_all_leaves_no_zombies() {
+    let factory = MacosPtyFactory;
+    let mut registry = SessionRegistry::new();
+    let (id1, _reader1) = registry
+        .spawn(&factory, &rc_free_zsh(), PtySize::new(24, 80))
+        .expect("spawn session 1 through the registry");
+    let (id2, _reader2) = registry
+        .spawn(&factory, &rc_free_zsh(), PtySize::new(24, 80))
+        .expect("spawn session 2 through the registry");
+    let pid1 = registry
+        .process_id(id1)
+        .expect("session 1 is live")
+        .expect("a real PTY has a child pid");
+    let pid2 = registry
+        .process_id(id2)
+        .expect("session 2 is live")
+        .expect("a real PTY has a child pid");
+    assert_eq!(registry.len(), 2);
+
+    registry.kill_all();
+
+    assert_no_zombie(pid1);
+    assert_no_zombie(pid2);
+    assert!(registry.is_empty());
 }

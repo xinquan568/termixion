@@ -4,13 +4,16 @@
 // C-3: the end-to-end smoke driver. In `--smoke` mode the webview opens a session over the PRODUCTION
 // Tauri channel (C-2), writes the deterministic sentinel sequence, accumulates the output, asserts via
 // evaluateSmoke, and reports back so the backend exits 0/1. Deps are injected so the logic is unit-
-// tested headless; the real run needs the packaged app (D-3).
+// tested headless; the real run needs the packaged app (D-3). trmx-74: open_pty resolves
+// { sessionId, title } and pty_write is session-scoped, so the driver threads the resolved id into
+// sendInput; the sentinel sequence and reporting are unchanged.
 import {
   openPty,
   realInvoke,
   sendPtyInput,
   type InvokeFn,
   type PtyBytesHandler,
+  type SessionInfo,
 } from "../ipc/backend";
 import { evaluateSmoke, type SmokeResult } from "./evaluateSmoke";
 
@@ -27,13 +30,15 @@ const SMOKE_SCRIPT = `pwd; cd -- "$DIR"; pwd; ls; echo __TXSMOKE""DONE__\r`;
 
 export interface SmokeDeps {
   invoke: InvokeFn;
+  /** Opens the smoke's PTY session; resolves its identity (trmx-74 session-scoped contract). */
   openPty: (
     onBytes: PtyBytesHandler,
     rows: number,
     cols: number,
     invoke: InvokeFn,
-  ) => Promise<void>;
-  sendInput: (data: string, invoke: InvokeFn) => Promise<void>;
+  ) => Promise<SessionInfo>;
+  /** Session-scoped write: the driver threads the sessionId openPty resolved (trmx-74). */
+  sendInput: (sessionId: number, data: string, invoke: InvokeFn) => Promise<void>;
   reportDone: (ok: boolean, reason: string, invoke: InvokeFn) => Promise<void>;
 }
 
@@ -49,7 +54,7 @@ export async function runSmoke(
     signalDone = resolve;
   });
 
-  await deps.openPty(
+  const { sessionId } = await deps.openPty(
     (bytes) => {
       output += decoder.decode(bytes);
       if (output.includes(DONE_MARKER) && signalDone) {
@@ -61,7 +66,7 @@ export async function runSmoke(
     80,
     deps.invoke,
   );
-  await deps.sendInput(SMOKE_SCRIPT, deps.invoke);
+  await deps.sendInput(sessionId, SMOKE_SCRIPT, deps.invoke);
   await reachedMarker; // the backend watchdog (30s) fails the smoke if this never fires
 
   const result = evaluateSmoke(output, dir);
@@ -72,7 +77,9 @@ export async function runSmoke(
 /** The real, Tauri-backed deps used by the app entry. */
 export const realSmokeDeps: SmokeDeps = {
   invoke: realInvoke,
-  openPty,
+  // The smoke session runs in the backend's default cwd — no `cwd` opt (trmx-74 signature).
+  openPty: (onBytes, rows, cols, invoke) =>
+    openPty(onBytes, rows, cols, undefined, invoke),
   sendInput: sendPtyInput,
   reportDone: (ok, reason, invoke) =>
     invoke("smoke_done", { success: ok, reason }).then(() => {}),

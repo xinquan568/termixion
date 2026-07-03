@@ -40,6 +40,10 @@ pub enum PtyError {
     Io(String),
     /// A requested size had zero rows or zero cols — a PTY grid is at least 1x1.
     InvalidSize(PtySize),
+    /// No session with this id exists in the registry (trmx-74). Distinct from [`PtyError::NotRunning`]:
+    /// `NotRunning` is a session that exists but whose child exited; `NotFound` is an id the registry
+    /// has never seen or has already removed.
+    NotFound(crate::session::SessionId),
 }
 
 impl fmt::Display for PtyError {
@@ -53,6 +57,7 @@ impl fmt::Display for PtyError {
                 "invalid pty size: {} rows x {} cols (both must be nonzero)",
                 size.rows, size.cols
             ),
+            PtyError::NotFound(id) => write!(f, "no session with id {id}"),
         }
     }
 }
@@ -212,6 +217,7 @@ mod tests {
             PtyError::InvalidSize(PtySize::new(0, 80)).to_string(),
             "invalid pty size: 0 rows x 80 cols (both must be nonzero)"
         );
+        assert_eq!(PtyError::NotFound(7).to_string(), "no session with id 7");
 
         // It is a std::error::Error with no deeper source (we carry messages, not nested errors).
         let err: &dyn std::error::Error = &PtyError::NotRunning;

@@ -5,6 +5,12 @@
 // returns `attachTerminal`, which the TerminalView calls once its terminal is mounted to wire the live
 // PTY (ADR-0001): PTY output → terminal, keystrokes/resizes → the backend. `invoke`/`openPty` are
 // injectable so the wiring is testable without the Tauri runtime; the real edge is `cargo tauri dev`.
+//
+// trmx-74: attach is session-scoped. It awaits open_pty FIRST — the sessionId must exist before any
+// keystroke can be addressed to the backend — THEN subscribes onData/onResize against the returned
+// id, and resolves the SessionInfo so the tab layer can bind session→tab (or dispose the orphan when
+// the tab died while the open was in flight). An optional `cwd` opt seeds the shell's directory
+// (new-tab-inherits-cwd, fed from the OSC 7 store).
 import { useCallback, useEffect, useState } from "react";
 import {
   getCoreVersion,
@@ -14,6 +20,7 @@ import {
   sendPtyResize,
   type InvokeFn,
   type PtyBytesHandler,
+  type SessionInfo,
 } from "./backend";
 import type { TerminalHandle } from "../terminal/mountTerminal";
 
@@ -23,15 +30,24 @@ export interface UseBackendOptions {
     onBytes: PtyBytesHandler,
     rows: number,
     cols: number,
+    opts: { cwd?: string } | undefined,
     invoke: InvokeFn,
-  ) => Promise<void>;
+  ) => Promise<SessionInfo>;
 }
 
 export interface BackendApi {
   /** The backend's core version once the handshake resolves, else `null` (connecting / no backend). */
   coreVersion: string | null;
-  /** Wire a mounted terminal to a live PTY session: output → terminal, keystrokes/resizes → backend. */
-  attachTerminal: (handle: TerminalHandle) => void;
+  /**
+   * Wire a mounted terminal to a live PTY session: output → terminal, keystrokes/resizes → backend
+   * (scoped to the opened sessionId, trmx-74). Resolves the session's identity; on open failure it
+   * logs and rethrows — callers decide (the tab layer marks the tab dead; a fire-and-forget caller
+   * may ignore the promise).
+   */
+  attachTerminal: (
+    handle: TerminalHandle,
+    opts?: { cwd?: string },
+  ) => Promise<SessionInfo>;
 }
 
 export function useBackend({
@@ -58,20 +74,11 @@ export function useBackend({
   }, [invoke]);
 
   const attachTerminal = useCallback(
-    (handle: TerminalHandle) => {
+    async (
+      handle: TerminalHandle,
+      opts?: { cwd?: string },
+    ): Promise<SessionInfo> => {
       const term = handle.terminal;
-      // Keystrokes → the PTY.
-      term.onData((data) => {
-        sendPtyInput(data, invoke).catch((err: unknown) =>
-          console.error("[termixion] pty write failed", err),
-        );
-      });
-      // Resizes → the PTY's grid.
-      term.onResize(({ rows, cols }) => {
-        sendPtyResize(rows, cols, invoke).catch((err: unknown) =>
-          console.error("[termixion] pty resize failed", err),
-        );
-      });
       // Open the session at the mounted terminal's ACTUAL grid size (trmx-67). mountTerminal's
       // initial fit() already ran before this onResize subscription existed, and xterm dedups
       // same-size fits (no resize event replays it) — so a hardcoded 24x80 here would strand the
@@ -79,9 +86,34 @@ export function useBackend({
       // narrow, so read the real xterm Terminal's rows/cols via a localized adapter cast; the 24x80
       // fallback covers bare fakes in tests.
       const t = handle.terminal as unknown as { rows?: number; cols?: number };
-      openPty((bytes) => term.write(bytes), t.rows ?? 24, t.cols ?? 80, invoke).catch(
-        (err: unknown) => console.error("[termixion] open pty failed", err),
-      );
+      let session: SessionInfo;
+      try {
+        session = await openPty(
+          (bytes) => term.write(bytes),
+          t.rows ?? 24,
+          t.cols ?? 80,
+          opts,
+          invoke,
+        );
+      } catch (err: unknown) {
+        console.error("[termixion] open pty failed", err);
+        throw err;
+      }
+      // Only NOW is there a sessionId to address — subscribe after the open resolves (trmx-74), so
+      // a keystroke racing the open can never fire a session-less (or wrong-session) pty_write.
+      // Keystrokes → the PTY.
+      term.onData((data) => {
+        sendPtyInput(session.sessionId, data, invoke).catch((err: unknown) =>
+          console.error("[termixion] pty write failed", err),
+        );
+      });
+      // Resizes → the PTY's grid.
+      term.onResize(({ rows, cols }) => {
+        sendPtyResize(session.sessionId, rows, cols, invoke).catch((err: unknown) =>
+          console.error("[termixion] pty resize failed", err),
+        );
+      });
+      return session;
     },
     [invoke, openPty],
   );
