@@ -25,6 +25,12 @@ import {
 import { initialAppearanceFromWindow, iterm2TerminalOptions } from "./iterm2Theme";
 import { emulationTerminalOptions } from "./emulationOptions";
 import { scrollbackTerminalOptions } from "./scrollbackSettings";
+import {
+  attachClipboardGuards,
+  clipboardTerminalOptions,
+  type CopyTerminalLike,
+  type PasteTerminalLike,
+} from "./clipboard";
 import { makeLinkHandler, realOpenUrl } from "./linkHandler";
 import {
   attachWindowTitle,
@@ -74,6 +80,8 @@ export const realDeps: MountDeps = {
       ...cursorTerminalOptions(settings),
       // trmx-65: scrollback capacity + smooth discrete scrolling (10k cap until FR-13 config).
       ...scrollbackTerminalOptions(),
+      // trmx-66: Option-drag selection while an app owns the mouse (iTerm2 convention).
+      ...clipboardTerminalOptions(),
       // trmx-64: the emulation-semantics slice (convertEol:false — VT-correct LF handling) spreads
       // LAST so it always wins; the conformance harness builds from this same exported slice.
       ...emulationTerminalOptions(),
@@ -149,6 +157,22 @@ export function realAttachOscIntegrations(
 }
 
 /**
+ * trmx-66: bind the owned ⌘C/⌘V clipboard guards (capture-phase copy/paste on the host — see
+ * clipboard.ts for why ownership + stopPropagation are load-bearing). Injectable for tests; the
+ * default binds the real handlers over the localized adapter cast.
+ */
+export type AttachClipboard = (
+  host: HTMLElement,
+  terminal: TerminalLike,
+) => () => void;
+
+export const realAttachClipboard: AttachClipboard = (host, terminal) =>
+  attachClipboardGuards(
+    host,
+    terminal as unknown as CopyTerminalLike & PasteTerminalLike,
+  );
+
+/**
  * trmx-51: observe cross-window `settings:changed` broadcasts (the settings window editing cursor
  * style/blink, or a reset's default-value broadcast) and invoke `onChange(payload)`; returns a
  * teardown. Injectable for tests; the default listens over the Tauri event bus and is a no-op in a
@@ -189,6 +213,8 @@ export interface TerminalViewProps {
   observeSettings?: SettingsObservation;
   /** Injection seam for tests; defaults to the real OSC title/52/7 wiring (trmx-64). */
   attachOscIntegrations?: AttachOscIntegrations;
+  /** Injection seam for tests; defaults to the real ⌘C/⌘V clipboard guards (trmx-66). */
+  attachClipboard?: AttachClipboard;
 }
 
 export function TerminalView({
@@ -199,6 +225,7 @@ export function TerminalView({
   attachScrollbar = realAttachScrollbar,
   observeSettings = realObserveSettings,
   attachOscIntegrations = realAttachOscIntegrations,
+  attachClipboard = realAttachClipboard,
 }: TerminalViewProps) {
   const hostRef = useRef<HTMLDivElement>(null);
 
@@ -217,6 +244,8 @@ export function TerminalView({
     );
     // trmx-64: OSC integrations (0/2 title → window title, 52 → write-only clipboard, 7 → cwd).
     const detachOsc = attachOscIntegrations(handle.terminal);
+    // trmx-66: owned ⌘C/⌘V — capture-phase guards on the host (sanitized paste, no-clear copy).
+    const detachClipboard = attachClipboard(host, handle.terminal);
     // Keep the grid filling the host as the window resizes (issue 2): every size change re-fits, which
     // makes xterm fire onResize → the PTY grid is resized to match (wired in useBackend). Recompute the
     // scrollbar AFTER the fit so it reads the freshly-resized rows/cols (trmx-41).
@@ -248,11 +277,12 @@ export function TerminalView({
     return () => {
       stopObserving();
       stopObservingSettings();
+      detachClipboard();
       detachOsc();
       scrollbar.dispose();
       handle.dispose();
     };
-  }, [mount, deps, onReady, observeResize, attachScrollbar, observeSettings, attachOscIntegrations]);
+  }, [mount, deps, onReady, observeResize, attachScrollbar, observeSettings, attachOscIntegrations, attachClipboard]);
 
   return <div ref={hostRef} data-testid="terminal" className="terminal-host" />;
 }

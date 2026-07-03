@@ -10,6 +10,7 @@ import {
   TerminalView,
   realAttachOscIntegrations,
   type AttachOscIntegrations,
+  type AttachClipboard,
   type ResizeObservation,
   type AttachScrollbar,
 } from "./TerminalView";
@@ -30,6 +31,9 @@ const noopAttachScrollbar: AttachScrollbar = () => noopScrollbarHandle;
 // A no-op OSC-integrations seam (trmx-64) for tests that don't exercise it.
 const noopAttachOsc: AttachOscIntegrations = () => () => {};
 
+// A no-op clipboard seam (trmx-66) for tests that don't exercise it.
+const noopAttachClipboard: AttachClipboard = () => () => {};
+
 describe("TerminalView", () => {
   it("mounts into its container element and disposes on unmount", () => {
     const dispose = vi.fn();
@@ -49,6 +53,7 @@ describe("TerminalView", () => {
         observeResize={noopObserve}
         attachScrollbar={noopAttachScrollbar}
         attachOscIntegrations={noopAttachOsc}
+        attachClipboard={noopAttachClipboard}
       />,
     );
 
@@ -81,6 +86,7 @@ describe("TerminalView", () => {
         observeResize={noopObserve}
         attachScrollbar={noopAttachScrollbar}
         attachOscIntegrations={noopAttachOsc}
+        attachClipboard={noopAttachClipboard}
       />,
     );
 
@@ -114,6 +120,7 @@ describe("TerminalView", () => {
         observeResize={observeResize}
         attachScrollbar={noopAttachScrollbar}
         attachOscIntegrations={noopAttachOsc}
+        attachClipboard={noopAttachClipboard}
       />,
     );
 
@@ -153,6 +160,7 @@ describe("TerminalView", () => {
         observeResize={noopObserve}
         attachScrollbar={attachScrollbar}
         attachOscIntegrations={noopAttachOsc}
+        attachClipboard={noopAttachClipboard}
       />,
     );
 
@@ -196,6 +204,7 @@ describe("TerminalView", () => {
         observeResize={observeResize}
         attachScrollbar={attachScrollbar}
         attachOscIntegrations={noopAttachOsc}
+        attachClipboard={noopAttachClipboard}
       />,
     );
 
@@ -241,6 +250,7 @@ describe("TerminalView", () => {
         attachScrollbar={attachScrollbar}
         observeSettings={observeSettings}
         attachOscIntegrations={noopAttachOsc}
+        attachClipboard={noopAttachClipboard}
       />,
     );
 
@@ -305,6 +315,7 @@ describe("TerminalView", () => {
         attachScrollbar={attachScrollbar}
         observeSettings={observeSettings}
         attachOscIntegrations={noopAttachOsc}
+        attachClipboard={noopAttachClipboard}
       />,
     );
     expect(observeSettings).toHaveBeenCalledTimes(1);
@@ -350,6 +361,7 @@ describe("TerminalView", () => {
         attachScrollbar={noopAttachScrollbar}
         observeSettings={observeSettings}
         attachOscIntegrations={noopAttachOsc}
+        attachClipboard={noopAttachClipboard}
       />,
     );
 
@@ -422,5 +434,36 @@ describe("TerminalView", () => {
     teardown();
     expect(titleDispose).toHaveBeenCalledTimes(1);
     for (const r of oscRegistrations) expect(r.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("binds the clipboard guards to the host + terminal and unbinds on unmount (trmx-66)", () => {
+    const teardown = vi.fn();
+    const handle: TerminalHandle = {
+      terminal: { id: "real-terminal" } as never,
+      renderer: "webgl",
+      fit: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const mount = vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(
+      () => handle,
+    );
+    const attachClipboard = vi.fn<AttachClipboard>(() => teardown);
+
+    const { unmount } = render(
+      <TerminalView
+        mount={mount}
+        observeResize={noopObserve}
+        attachScrollbar={noopAttachScrollbar}
+        attachOscIntegrations={noopAttachOsc}
+        attachClipboard={attachClipboard}
+      />,
+    );
+
+    expect(attachClipboard).toHaveBeenCalledTimes(1);
+    expect(attachClipboard.mock.calls[0][0]).toBe(mount.mock.calls[0][0]); // the host
+    expect(attachClipboard.mock.calls[0][1]).toBe(handle.terminal);
+
+    unmount();
+    expect(teardown).toHaveBeenCalledTimes(1);
   });
 });
