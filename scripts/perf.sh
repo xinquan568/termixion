@@ -12,7 +12,8 @@
 #   out-dir default: a fresh mktemp -d
 #   --commit: merge machine identity into the report and copy it to
 #     docs/design/perf-results/<date>-v<version>.json — REFUSED unless the report says
-#     "build": "release" (debug numbers are never the record).
+#     "build": "release" AND "pass": true (debug numbers and invalid/occluded runs are never
+#     the record; a rAF-throttled run behind a sleeping display fails exactly this way).
 # Exit code: the app's own budget verdict (0 pass / 1 fail); --commit failures also exit 1.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
@@ -83,6 +84,10 @@ import json, subprocess, sys
 report = json.load(open(sys.argv[1]))
 if report.get("build") != "release":
     print("perf: --commit REFUSED — report build is not 'release'; debug numbers are never the record.", file=sys.stderr)
+    sys.exit(1)
+if not report.get("pass"):
+    print("perf: --commit REFUSED — report did not pass (invalid conditions or missed budgets);", file=sys.stderr)
+    print(f"perf: reason: {report.get('reason','')} (hasFocus={report.get('hasFocus')})", file=sys.stderr)
     sys.exit(1)
 def sh(*cmd):
     try:
