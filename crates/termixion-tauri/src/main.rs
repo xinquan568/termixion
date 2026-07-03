@@ -35,6 +35,9 @@ mod window_manager;
 struct PtyState {
     registry: Arc<Mutex<SessionRegistry>>,
     poller_gate: Arc<PollerGate>,
+    /// Per-session flow-control cells (trmx-78 round 2b): registered at open_pty, consumed by the
+    /// batch sender, refilled by pty_ack, removed at reap. An ack for a dead session is inert.
+    credits: Arc<Mutex<HashMap<u64, Arc<CreditCell>>>>,
 }
 
 /// trmx-75: the zero-session park for the foreground-title poller — a REAL condvar block, not a
@@ -241,6 +244,58 @@ const PTY_HANDOFF_CHUNKS: usize = 256;
 /// floods into the message storm this exists to fix.
 const PTY_BATCH_MAX_BYTES: usize = 262_144;
 
+/// Flow-control window (trmx-78 round 2b): at most this many UNACKED bytes may be in flight to
+/// the webview. The webview acks bytes on xterm PARSE COMPLETION (`pty_ack`, wired to the
+/// `write(data, cb)` callback), so ingestion is bounded by the terminal's real parse rate and the
+/// kernel ultimately blocks a flooding producer (`yes`) on the full PTY buffer — the classic
+/// terminal feedback loop the issue's ladder names as "respect the parse callback".
+const PTY_CREDIT_BYTES: i64 = 1_048_576;
+
+/// Bounded park while credits are exhausted: a dead webview never acks, so the sender proceeds
+/// after this wait and lets the next `channel.send` failure end the loop — never a deadlock.
+const PTY_CREDIT_WAIT: Duration = Duration::from_millis(500);
+
+/// Per-session unacked-byte accounting (trmx-78 round 2b). Consumers park at <= 0; `pty_ack`
+/// refills on parse completion. Negative overdraw is bounded by one batch (PTY_BATCH_MAX_BYTES).
+struct CreditCell {
+    credits: Mutex<i64>,
+    refilled: Condvar,
+}
+
+impl CreditCell {
+    fn new(initial: i64) -> Self {
+        Self {
+            credits: Mutex::new(initial),
+            refilled: Condvar::new(),
+        }
+    }
+
+    /// Deduct `bytes`, parking (up to `wait`) while credits are exhausted. Returns false when the
+    /// wait timed out and the deduction proceeded anyway — starvation-bounded, deadlock-free.
+    fn consume(&self, bytes: i64, wait: Duration) -> bool {
+        let Ok(guard) = self.credits.lock() else {
+            return false; // poisoned peer: degrade to unthrottled rather than wedge the stream
+        };
+        let (mut guard, timeout) = match self
+            .refilled
+            .wait_timeout_while(guard, wait, |credits| *credits <= 0)
+        {
+            Ok(ok) => ok,
+            Err(_) => return false,
+        };
+        *guard -= bytes;
+        !timeout.timed_out()
+    }
+
+    /// Return parsed bytes to the window and wake a parked consumer (`pty_ack`).
+    fn refill(&self, bytes: i64) {
+        if let Ok(mut credits) = self.credits.lock() {
+            *credits = (*credits + bytes).min(PTY_CREDIT_BYTES);
+        }
+        self.refilled.notify_all();
+    }
+}
+
 /// The pacing window under sustained load (trmx-78 round 2, measured): `channel.send` queues
 /// internally and returns fast — no backpressure — so drain-only batching never accumulates a
 /// backlog (a `yes` flood still produced millions of tiny messages). After each send the sender
@@ -351,6 +406,11 @@ fn open_pty(
     // stale-safe reap can never touch a newer session; the emit stays best-effort (the webview
     // may already be gone during shutdown).
     let registry = Arc::clone(&state.registry);
+    let cell = Arc::new(CreditCell::new(PTY_CREDIT_BYTES));
+    if let Ok(mut credits) = state.credits.lock() {
+        credits.insert(id, Arc::clone(&cell));
+    }
+    let credits_map = Arc::clone(&state.credits);
     let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(PTY_HANDOFF_CHUNKS);
     std::thread::spawn(move || {
         termixion_core::pump(
@@ -363,8 +423,16 @@ fn open_pty(
         run_batch_sender(
             rx,
             PTY_BATCH_MAX_BYTES,
-            |batch| channel.send(batch).is_ok(),
+            move |batch| {
+                // Flow control: bounded-park until the webview has parsed enough of what is
+                // already in flight (ack via pty_ack). Timeout proceeds — send failure ends us.
+                let _ = cell.consume(batch.len() as i64, PTY_CREDIT_WAIT);
+                channel.send(batch).is_ok()
+            },
             move || {
+                if let Ok(mut credits) = credits_map.lock() {
+                    credits.remove(&id);
+                }
                 let _ = registry.lock().map(|mut r| r.close(id));
                 let _ = app.emit("pty:exited", PtyExited { session_id: id });
             },
@@ -403,6 +471,20 @@ fn pty_resize(
         .map_err(|_| "pty state poisoned".to_string())?
         .resize(session_id, PtySize::new(rows, cols))
         .map_err(|e| e.to_string())
+}
+
+/// The webview acks parsed PTY bytes (trmx-78 round 2b): refill the session's flow-control
+/// window on xterm parse completion. Acks for unknown/dead sessions are inert.
+#[tauri::command]
+fn pty_ack(session_id: u64, bytes: u32, state: State<'_, PtyState>) {
+    let cell = state
+        .credits
+        .lock()
+        .ok()
+        .and_then(|credits| credits.get(&session_id).cloned());
+    if let Some(cell) = cell {
+        cell.refill(i64::from(bytes));
+    }
 }
 
 /// Close a session (tab closed by the user, trmx-74). Idempotent: closing an id that already
@@ -684,6 +766,7 @@ fn main() -> ExitCode {
             core_version,
             open_pty,
             pty_write,
+            pty_ack,
             pty_resize,
             close_pty,
             set_session_title,
@@ -1150,6 +1233,62 @@ mod tests {
         }));
         assert!(result.is_err(), "the panic propagates");
         assert_eq!(*log.lock().expect("log"), vec!["done".to_string()]);
+    }
+
+    // --- trmx-78 round 2b: credit-based flow control -------------------------------------------
+
+    #[test]
+    fn credit_cell_deducts_while_positive_without_parking() {
+        // Positive credits never park — a batch may overdraw into negative (bounded by the batch
+        // cap), which is what makes the accounting simple: park only at <= 0.
+        let cell = CreditCell::new(8);
+        let started = std::time::Instant::now();
+        assert!(cell.consume(6, Duration::from_millis(500)));
+        assert!(
+            cell.consume(6, Duration::from_millis(500)),
+            "2 left: still positive, overdraws"
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "no parking while positive"
+        );
+        cell.refill(100);
+        assert!(cell.consume(50, Duration::from_millis(50)));
+    }
+
+    #[test]
+    fn credit_cell_zero_or_negative_parks_and_refill_unparks() {
+        let cell = Arc::new(CreditCell::new(4));
+        assert!(cell.consume(4, Duration::from_millis(50))); // now 0 — next consume parks
+        let parked = Arc::clone(&cell);
+        let (tx, rx) = mpsc::channel::<bool>();
+        let waiter = std::thread::spawn(move || {
+            let got = parked.consume(2, Duration::from_secs(3));
+            tx.send(got).expect("send");
+        });
+        std::thread::sleep(Duration::from_millis(80));
+        assert!(
+            rx.try_recv().is_err(),
+            "consumer must be parked while credits are exhausted"
+        );
+        cell.refill(10);
+        let got = rx.recv_timeout(Duration::from_secs(2)).expect("unparked");
+        assert!(got, "refill unparks the consumer");
+        waiter.join().expect("waiter");
+    }
+
+    #[test]
+    fn credit_cell_timeout_proceeds_rather_than_deadlocks() {
+        // A dead webview never acks: the consumer's bounded wait expires and it proceeds (the
+        // next channel.send failure ends the loop) — starvation-bounded, never deadlocked.
+        let cell = CreditCell::new(1);
+        assert!(cell.consume(1, Duration::from_millis(10)));
+        let started = std::time::Instant::now();
+        assert!(
+            !cell.consume(1, Duration::from_millis(60)),
+            "timeout path returns false"
+        );
+        assert!(started.elapsed() >= Duration::from_millis(55));
     }
 
     #[test]

@@ -93,6 +93,7 @@ function fakeWorld(
     dispose: () => {},
   };
 
+  const acks: number[] = [];
   const deps: PerfDeps = {
     invoke: (() => Promise.resolve()) as InvokeFn,
     mount: () => mount,
@@ -123,6 +124,10 @@ function fakeWorld(
       }
       return Promise.resolve();
     },
+    sendAck: (_id, bytes) => {
+      acks.push(bytes);
+      return Promise.resolve();
+    },
     reportDone: (json, ok) => {
       reports.push({ json, ok });
       return Promise.resolve();
@@ -138,7 +143,7 @@ function fakeWorld(
     delay: () => new Promise((resolve) => setTimeout(resolve, 0)),
     hasFocus: () => true,
   };
-  return { deps, sent, scrolled, reports, clock };
+  return { deps, sent, scrolled, reports, clock, acks };
 }
 
 describe("runPerf (fake world)", () => {
@@ -159,6 +164,8 @@ describe("runPerf (fake world)", () => {
     expect(world.scrolled.filter((n) => n > 0)).toHaveLength(SCENARIO.pagingPages);
     // The scenario ended cat + yes with SIGINT (isig stays on under stty -icanon).
     expect(world.sent.filter((s) => s === "\x03").length).toBeGreaterThanOrEqual(2);
+    // Flow-control acks flowed for the parsed chunks (round 2b — mirrors production wiring).
+    expect(world.acks.length).toBeGreaterThan(SCENARIO.typingKeys / 2);
     // The verdict reached the backend exactly once, ok=true, with the report JSON.
     expect(world.reports).toHaveLength(1);
     expect(world.reports[0].ok).toBe(true);

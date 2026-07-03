@@ -15,6 +15,7 @@
 import {
   openPty,
   realInvoke,
+  sendPtyAck,
   sendPtyInput,
   type InvokeFn,
   type PtyBytesHandler,
@@ -121,6 +122,8 @@ export interface PerfDeps {
     invoke: InvokeFn,
   ): Promise<SessionInfo>;
   sendInput(sessionId: number, data: string, invoke: InvokeFn): Promise<void>;
+  /** Flow-control ack on parse completion (trmx-78 round 2b) — mirrors the production wiring. */
+  sendAck(sessionId: number, bytes: number, invoke: InvokeFn): Promise<void>;
   reportDone(reportJson: string, ok: boolean, invoke: InvokeFn): Promise<void>;
   raf(callback: (t: number) => void): void;
   now(): number;
@@ -238,13 +241,23 @@ export async function runPerf(config: PerfLaunchConfig, deps: PerfDeps): Promise
     if (mounted.renderer() === "webgl") {
       const router = new ByteRouter();
       const terminal = mounted.terminal; // const-captured for the closure (strict narrowing)
+      // Flow-control acks mirror production: every chunk is acked on PARSE COMPLETION so the
+      // backend's credit window throttles floods by the real parse rate (the id lands after
+      // openPty resolves; the readiness preamble rides the initial window).
+      let ackSessionId = 0;
+      const ack = (bytes: number) => {
+        if (ackSessionId > 0) void deps.sendAck(ackSessionId, bytes, deps.invoke).catch(() => {});
+      };
       const onBytes: PtyBytesHandler = (bytes) => {
         router.ingest(bytes);
         if (router.phase === "typing") {
           // The measured tail: chunk parsed (write callback) → next frame (rAF) → close samples.
-          terminal.write(bytes, () => deps.raf((t1) => router.closeSamples(bytes.length, t1)));
+          terminal.write(bytes, () => {
+            ack(bytes.length);
+            deps.raf((t1) => router.closeSamples(bytes.length, t1));
+          });
         } else {
-          terminal.write(bytes);
+          terminal.write(bytes, () => ack(bytes.length));
         }
       };
       const { sessionId } = await withTimeout(
@@ -253,6 +266,7 @@ export async function runPerf(config: PerfLaunchConfig, deps: PerfDeps): Promise
         "open_pty",
         deps,
       );
+      ackSessionId = sessionId;
       const send = (data: string) =>
         withTimeout(
           deps.sendInput(sessionId, data, deps.invoke),
@@ -387,6 +401,7 @@ export function realPerfDeps(): PerfDeps {
     },
     openPty: (onBytes, rows, cols, invoke) => openPty(onBytes, rows, cols, undefined, invoke),
     sendInput: sendPtyInput,
+    sendAck: sendPtyAck,
     reportDone: (report, ok, invoke) => invoke("perf_done", { report, success: ok }).then(() => {}),
     raf: (callback) => requestAnimationFrame(callback),
     now: () => performance.now(),
