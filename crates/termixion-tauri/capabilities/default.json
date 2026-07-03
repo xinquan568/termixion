@@ -1,14 +1,16 @@
 {
   "$schema": "https://schema.tauri.app/capability/2",
   "identifier": "default",
-  "description": "Default capability set for the Termixion main and settings windows: PTY command/channel core permissions plus trmx-48 auto-update (updater/process), external-link opening (opener), the trmx-51 cross-window settings/update events, the trmx-54 start-dragging grant (not in core:window:default) that makes the settings window's data-tauri-drag-region chrome actually drag, the trmx-64 set-title grant (core:default only carries the read-side allow-title) so OSC 0/2 terminal titles reach the native window, and the trmx-74 close grant so the frontend closes the main window when the last tab closes.",
-  "windows": ["main", "settings"],
+  "description": "Default capability set for the Termixion main and settings windows: PTY command/channel core permissions plus trmx-48 auto-update (updater/process), external-link opening (opener), the trmx-51 cross-window settings/update events, the trmx-54 start-dragging grant (not in core:window:default) that makes the settings window's data-tauri-drag-region chrome actually drag, and the trmx-64 set-title grant (core:default only carries the read-side allow-title) so OSC 0/2 terminal titles reach the native window.",
+  "windows": [
+    "main",
+    "settings"
+  ],
   "permissions": [
     "core:default",
     "core:event:default",
     "core:window:allow-start-dragging",
     "core:window:allow-set-title",
-    "core:window:allow-close",
     "updater:allow-check",
     "updater:allow-download-and-install",
     "process:allow-restart",

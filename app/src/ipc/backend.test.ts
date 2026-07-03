@@ -156,6 +156,10 @@ describe("openPty", () => {
     { sessionId: "7", title: "zsh" }, // stringly-typed id
     { sessionId: NaN, title: "zsh" }, // non-finite id
     { sessionId: 7, title: 42 }, // non-string title
+    { sessionId: 0, title: "zsh" }, // ids start at 1 (backend contract)
+    { sessionId: -1, title: "zsh" }, // negative — no u64 maps here
+    { sessionId: 1.5, title: "zsh" }, // fractional — could alias another session
+    { sessionId: 2 ** 53, title: "zsh" }, // beyond Number.isSafeInteger — precision-lossy
   ])("rejects with a typed Error when open_pty resolves junk (%j)", async (junk) => {
     const invoke = vi.fn<InvokeFn>();
     invoke.mockResolvedValue(junk);
@@ -250,6 +254,10 @@ describe("onPtyExited", () => {
     { sessionId: "4" },
     { sessionId: NaN },
     { session_id: 4 }, // wrong casing — Tauri events carry the serialized camelCase payload
+    { sessionId: 0 }, // ids start at 1 (backend contract)
+    { sessionId: -1 }, // negative
+    { sessionId: 1.5 }, // fractional
+    { sessionId: 2 ** 53 }, // beyond Number.isSafeInteger
   ])("is inert for a junk payload (%j)", async (junk) => {
     const { bus, exit } = fakeBus();
     const handler = vi.fn<(sessionId: number) => void>();

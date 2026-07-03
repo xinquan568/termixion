@@ -30,17 +30,30 @@ fn process_state(pid: u32) -> Option<String> {
 }
 
 fn assert_no_zombie(pid: u32) {
-    // The only failure is a *persistent zombie* (`Z…`). Reaped-and-gone or pid-reused-by-a-live-process
-    // both pass. Reaping is synchronous in teardown, so this normally passes on the first check; the
-    // bounded retry only lets an in-flight reap settle.
+    // A killed child must be REAPED AND GONE — teardown (MacosPtyBackend::kill) waits on the child
+    // synchronously, so `ps` must stop reporting the pid. A persistent `Z…` state is the classic
+    // zombie leak; a persistent *live* state is worse (the kill never landed / an orphan survived)
+    // and must fail just as loudly — merely "not a zombie" would hide a still-running child
+    // (trmx-74 review). The 2 s deadline only lets an in-flight reap settle; the residual
+    // pid-reuse race (freed pid re-issued to an unrelated process within the window) is accepted —
+    // macOS allocates pids forward, making a same-window reuse vanishingly unlikely.
+    let mut last_state: Option<String> = None;
     for _ in 0..40 {
         match process_state(pid) {
-            None => return,                                           // reaped & gone
-            Some(state) if !state.starts_with('Z') => return, // pid reused by a live process
-            Some(_) => std::thread::sleep(Duration::from_millis(50)), // zombie — wait for the reap
+            None => return, // reaped & gone — the only pass
+            Some(state) => {
+                last_state = Some(state);
+                std::thread::sleep(Duration::from_millis(50));
+            }
         }
     }
-    panic!("child pid {pid} was left as a zombie after teardown");
+    let state = last_state.unwrap_or_default();
+    if state.starts_with('Z') {
+        panic!("child pid {pid} was left as a zombie after teardown (state {state})");
+    }
+    panic!(
+        "child pid {pid} is still alive after teardown (state {state}) — kill/reap never landed"
+    );
 }
 
 #[test]

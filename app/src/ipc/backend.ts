@@ -63,17 +63,21 @@ export function encodePtyInput(data: string): number[] {
 /** The real Tauri `invoke`. In a plain browser (`pnpm dev`) there is no backend, so it rejects. */
 export const realInvoke: InvokeFn = tauriInvoke as InvokeFn;
 
-// The one place open_pty's response contract is asserted: an object with a finite numeric sessionId
-// and a string title. Junk from a mismatched backend must fail HERE, loudly — not surface later as
-// NaN session ids silently threaded into pty_write calls.
+// The backend contract for a session id: Rust allocates positive u64s starting at 1, so anything
+// non-integral, non-positive, or beyond JS's safe-integer range is junk (a fractional or unsafe id
+// could alias another session once threaded back into pty_write). One guard, used by every ingress
+// point (open_pty's response and the pty:exited payload).
+function isSessionId(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+// The one place open_pty's response contract is asserted: an object with a positive safe-integer
+// sessionId and a string title. Junk from a mismatched backend must fail HERE, loudly — not
+// surface later as bogus session ids silently threaded into pty_write calls.
 function isSessionInfo(value: unknown): value is SessionInfo {
   if (typeof value !== "object" || value === null) return false;
   const { sessionId, title } = value as { sessionId?: unknown; title?: unknown };
-  return (
-    typeof sessionId === "number" &&
-    Number.isFinite(sessionId) &&
-    typeof title === "string"
-  );
+  return isSessionId(sessionId) && typeof title === "string";
 }
 
 /**
@@ -154,7 +158,7 @@ export function onPtyExited(
       if (!live) return;
       if (typeof payload !== "object" || payload === null) return;
       const { sessionId } = payload as { sessionId?: unknown };
-      if (typeof sessionId !== "number" || !Number.isFinite(sessionId)) return;
+      if (!isSessionId(sessionId)) return;
       handler(sessionId);
     })
     .then((u) => {

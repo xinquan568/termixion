@@ -83,6 +83,16 @@ impl PtyFactory for FakePtyFactory {
     }
 }
 
+impl FakePtyFactory {
+    /// The reader-capable counterpart (the trmx-74 plan's named entry point): a factory whose
+    /// backends split off a real [`PtyReader`] via `take_reader`. Returns the distinct
+    /// [`SeparableFakePtyFactory`] type rather than mutating this one, so the plain fake's
+    /// "no separable reader" contract (pinned by session tests) can never change under a caller.
+    pub fn with_separable_reader() -> SeparableFakePtyFactory {
+        SeparableFakePtyFactory
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Separable-reader fake (trmx-74). The plain fake above deliberately has NO separable reader
 // (`take_reader` → `None`) so the spawn-refuses-cleanly path stays testable. The types below are
@@ -361,6 +371,15 @@ mod tests {
     #[test]
     fn separable_factory_spawns_reader_capable_backends() {
         let factory = SeparableFakePtyFactory;
+        let spec = SessionSpec::shell("/bin/sh");
+        let mut backend = factory.spawn(&spec, PtySize::default()).expect("spawn");
+        assert!(backend.take_reader().is_some());
+    }
+
+    #[test]
+    fn with_separable_reader_is_the_named_route_to_the_reader_capable_factory() {
+        // The plan-named constructor and the direct type produce equivalent factories.
+        let factory = FakePtyFactory::with_separable_reader();
         let spec = SessionSpec::shell("/bin/sh");
         let mut backend = factory.spawn(&spec, PtySize::default()).expect("spawn");
         assert!(backend.take_reader().is_some());

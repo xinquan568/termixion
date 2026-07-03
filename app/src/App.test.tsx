@@ -162,6 +162,35 @@ describe("App (the tab manager, trmx-74)", () => {
     expect(screen.getByTestId("tab-1")).toHaveTextContent("zsh");
   });
 
+  it("closes the STALE session when StrictMode double-mounts a tab's terminal (attach epoch)", async () => {
+    // StrictMode's dev mount→unmount→remount invokes onReady twice for the SAME live tab, so two
+    // PTYs open; only the CURRENT epoch's session may be kept, whichever order the opens resolve.
+    const { calls, closeSession } = renderApp({ strict: true });
+    expect(calls.length).toBe(2); // two mounts → two in-flight attaches for tab 1
+
+    // Order A: the stale (first-mount) attach resolves FIRST — it must be disposed, and the
+    // later (current-epoch) resolution attaches.
+    await resolveAttach(calls[0], { sessionId: 41, title: "stale" });
+    expect(closeSession).toHaveBeenCalledExactlyOnceWith(41);
+    await resolveAttach(calls[1], { sessionId: 42, title: "live" });
+    expect(screen.getByTestId("tab-1")).toHaveTextContent("live");
+    expect(closeSession).toHaveBeenCalledTimes(1); // the live session was NOT closed
+  });
+
+  it("closes the STALE session even when it resolves AFTER the current epoch's (attach epoch, reversed order)", async () => {
+    const { calls, closeSession } = renderApp({ strict: true });
+    expect(calls.length).toBe(2);
+
+    // Order B: the current epoch resolves first and attaches; the stale one lands late and is
+    // disposed instead of clobbering the live session.
+    await resolveAttach(calls[1], { sessionId: 52, title: "live" });
+    expect(screen.getByTestId("tab-1")).toHaveTextContent("live");
+    expect(closeSession).not.toHaveBeenCalled();
+    await resolveAttach(calls[0], { sessionId: 51, title: "stale" });
+    expect(closeSession).toHaveBeenCalledExactlyOnceWith(51);
+    expect(screen.getByTestId("tab-1")).toHaveTextContent("live");
+  });
+
   it("renders no in-page chrome beyond the strip (trmx-35: the terminal owns the window)", () => {
     renderApp();
     expect(screen.queryByRole("heading")).not.toBeInTheDocument();

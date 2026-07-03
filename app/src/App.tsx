@@ -125,6 +125,11 @@ export function App({
   const sessionsRef = useRef(new Map<number, number>()); // attached backend sessionIds
   const pendingCwdRef = useRef(new Map<number, string | undefined>()); // cwd to seed the open with
   const readyCbsRef = useRef(new Map<number, (handle: TerminalHandle) => void>()); // stable onReady per tab
+  // Attach epoch per tab: each onReady invocation bumps it, and a resolution whose epoch is no
+  // longer current is STALE. StrictMode's dev mount→unmount→remount fires onReady twice for the
+  // same live tab, opening two PTYs — only the epoch that matches keeps its session; the stale
+  // one is closed no matter which order the two open_pty calls resolve in (trmx-74 review).
+  const attachEpochRef = useRef(new Map<number, number>());
   const bootedRef = useRef(false);
 
   // Latest-seam ref: the cached per-tab onReady callbacks (stable identity — an inline arrow
@@ -164,10 +169,14 @@ export function App({
     if (!cb) {
       cb = (handle) => {
         handlesRef.current.set(tabId, handle);
+        const epoch = (attachEpochRef.current.get(tabId) ?? 0) + 1;
+        attachEpochRef.current.set(tabId, epoch);
         seamsRef.current
           .attach(handle, { cwd: pendingCwdRef.current.get(tabId) })
           .then((info) => {
-            if (stateRef.current.tabs.some((t) => t.tabId === tabId)) {
+            const tabAlive = stateRef.current.tabs.some((t) => t.tabId === tabId);
+            const epochCurrent = attachEpochRef.current.get(tabId) === epoch;
+            if (tabAlive && epochCurrent) {
               sessionsRef.current.set(tabId, info.sessionId);
               dispatch({
                 kind: "attachSession",
@@ -176,7 +185,8 @@ export function App({
                 title: info.title,
               });
             } else {
-              // ORPHAN GUARD: the tab closed mid-attach — kill the session it will never show.
+              // ORPHAN GUARD: the tab closed mid-attach, OR this resolution is from a superseded
+              // mount (StrictMode remount bumped the epoch) — kill the session it will never show.
               seamsRef.current.closeSession(info.sessionId).catch((err: unknown) => {
                 console.error("[termixion] orphan session close failed", err);
               });
