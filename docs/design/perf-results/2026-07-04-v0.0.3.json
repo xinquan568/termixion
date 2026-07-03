@@ -1,0 +1,52 @@
+{
+  "schema": 1,
+  "build": "release",
+  "renderer": "webgl",
+  "hasFocus": true,
+  "scenarios": {
+    "typing": {
+      "count": 1000,
+      "p50": 2,
+      "p95": 7,
+      "p99": 10,
+      "max": 20
+    },
+    "scrollSeq": {
+      "totalFrames": 29,
+      "missed": 0,
+      "droppedPct": 0
+    },
+    "scrollYes": {
+      "totalFrames": 384,
+      "missed": 18,
+      "droppedPct": 4.6875
+    },
+    "scrollbackPaging": {
+      "totalFrames": 312,
+      "missed": 0,
+      "droppedPct": 0
+    }
+  },
+  "budgets": {
+    "typingP50Ms": 16,
+    "typingP95Ms": 33,
+    "droppedPct": 5
+  },
+  "pass": true,
+  "reason": "all budgets met (typing p50 2ms p95 7ms; worst scroll 4.7%)",
+  "machine": {
+    "model": "MacBookPro18,1",
+    "chip": "Apple M1 Pro",
+    "macos": "26.5.2",
+    "memoryBytes": 34359738368
+  },
+  "idle": {
+    "oneTab": {
+      "cpuPct": 1.06,
+      "rssMb": 109,
+      "method": "ps 12x5s avg, release build, shell prompt idle"
+    },
+    "threeTabs": null,
+    "note": "3-tab sample pending an interactive session (scripted cmd-T blocked by accessibility); 1-tab re-sample in a second 60s window: 1.24%/109MB"
+  }
+}

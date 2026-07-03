@@ -113,6 +113,17 @@ comparison surfaces its scaling.
 
 ## 8. If budgets fail (the optimization ladder)
 
+**Applied at v0.0.4 (trmx-78 round 2), measured on the reference Mac (release):** the first valid
+baseline passed typing (p50 3 ms / p95 10 ms) and paging (1.61 %) but failed the floods —
+scrollSeq **94.29 %**, scrollYes **99.55 %** dropped (one IPC message per 4096-byte PTY read; a
+`yes` field-run crossed as ~10.8 M tiny messages). Two ladder steps fixed it, one commit each:
+(1) **micro-window batching** in the shell's sender (4 ms accumulate against the queueing,
+non-backpressuring `channel.send`) → scrollSeq **0.00 %**, paging **2.48 %**, but scrollYes still
+68.8 %; (2) **credit-based flow control** (`pty_ack` on xterm parse completion, 1 MiB unacked
+window, bounded 500 ms park) → **all budgets met**: typing p50 2 ms / p95 7 ms, scrollSeq 0.00 %,
+scrollYes 4.69 %, paging 0.00 % (`docs/design/perf-results/2026-07-04-v0.0.3.json`). The ADR tier
+was not needed — Channel IPC clears the budgets once ingestion is bounded by the parse rate.
+
 One change per commit (`perf(...)` type — surfaces as **Changed** in the changelog), before/after
 numbers in the commit message, re-run `perf.sh` between steps, stop at green:
 
