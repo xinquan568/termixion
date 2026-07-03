@@ -16,12 +16,14 @@ import type { SessionInfo } from "./ipc/backend";
 import type { TerminalHandle } from "./terminal/mountTerminal";
 
 // Hoisted recorder shared with the TerminalView stub (vi.mock factories run before the test
-// body's bindings exist). One entry per stub MOUNT: the fake handle it announced and the per-tab
-// cwdStore App injected; `unmounts` counts stub cleanups (must stay 0 across tab switches).
+// body's bindings exist). One entry per stub MOUNT: the fake handle it announced, the per-tab
+// cwdStore App injected, and the per-tab onOscTitle callback (trmx-75 — tests fire it to simulate
+// a program's OSC 0/2 title); `unmounts` counts stub cleanups (must stay 0 across tab switches).
 const recorder = vi.hoisted(() => ({
   mounts: [] as Array<{
     handle: { terminal: { focus: () => void } };
     cwdStore: { get(): string | null; set(cwd: string): void } | undefined;
+    onOscTitle: ((title: string) => void) | undefined;
   }>,
   unmounts: 0,
   reset() {
@@ -36,9 +38,11 @@ vi.mock("./terminal/TerminalView", async () => {
     TerminalView: ({
       onReady,
       cwdStore,
+      onOscTitle,
     }: {
       onReady?: (handle: unknown) => void;
       cwdStore?: { get(): string | null; set(cwd: string): void };
+      onOscTitle?: (title: string) => void;
     }) => {
       useEffect(() => {
         const handle = {
@@ -47,14 +51,15 @@ vi.mock("./terminal/TerminalView", async () => {
           fit: () => {},
           dispose: () => {},
         };
-        recorder.mounts.push({ handle, cwdStore });
+        recorder.mounts.push({ handle, cwdStore, onOscTitle });
         onReady?.(handle);
         return () => {
           recorder.unmounts += 1;
         };
         // The real TerminalView remounts when these identities change — mirroring that makes the
-        // keep-alive test honest: an unstable onReady/cwdStore from App would count an unmount.
-      }, [onReady, cwdStore]);
+        // keep-alive test honest: an unstable onReady/cwdStore/onOscTitle from App would count an
+        // unmount (trmx-75: the per-tab OSC callback must be cached like onReady).
+      }, [onReady, cwdStore, onOscTitle]);
       return <div data-testid="terminal-view-stub" />;
     },
   };
@@ -101,18 +106,39 @@ function makeObservation<T>() {
   return { observe, teardown, fire: (value: T) => handler?.(value) };
 }
 
+// The title-hint seam carries TWO values (sessionId, name) — same capture pattern (trmx-75).
+function makeHintObservation() {
+  let handler: ((sessionId: number, name: string) => void) | undefined;
+  const teardown = vi.fn();
+  const observe = vi.fn((h: (sessionId: number, name: string) => void) => {
+    handler = h;
+    return teardown;
+  });
+  return {
+    observe,
+    teardown,
+    fire: (sessionId: number, name: string) => handler?.(sessionId, name),
+  };
+}
+
 function renderApp(opts: { strict?: boolean } = {}) {
   const { attach, calls } = makeAttach();
   const closeWindow = vi.fn();
   const closeSession = vi.fn(() => Promise.resolve());
   const tabsAction = makeObservation<unknown>();
   const ptyExited = makeObservation<number>();
+  const titleHint = makeHintObservation();
+  const setWindowTitle = vi.fn();
+  const mirrorTitle = vi.fn(() => Promise.resolve());
   const props: AppProps = {
     attach,
     closeWindow,
     closeSession,
     observeTabsAction: tabsAction.observe,
     observePtyExited: ptyExited.observe,
+    observeTitleHint: titleHint.observe,
+    setWindowTitle,
+    mirrorTitle,
   };
   const ui = opts.strict ? (
     <StrictMode>
@@ -122,7 +148,18 @@ function renderApp(opts: { strict?: boolean } = {}) {
     <App {...props} />
   );
   const view = render(ui);
-  return { view, attach, calls, closeWindow, closeSession, tabsAction, ptyExited };
+  return {
+    view,
+    attach,
+    calls,
+    closeWindow,
+    closeSession,
+    tabsAction,
+    ptyExited,
+    titleHint,
+    setWindowTitle,
+    mirrorTitle,
+  };
 }
 
 async function resolveAttach(call: AttachCall, info: SessionInfo) {
@@ -380,5 +417,242 @@ describe("App (the tab manager, trmx-74)", () => {
     // Reordering is a state permutation, not a remount; keyed hosts survive.
     expect(recorder.unmounts).toBe(0);
     expect(screen.getByTestId("tab-2").className).toContain(activeClass); // identity, not index
+  });
+});
+
+// trmx-75 (FR-2.4): title routing — per-tab OSC callbacks, session:title-hint → process slot,
+// the native window title (ACTIVE tab only), and the core mirror (EFFECTIVE titles only).
+describe("App tab titles (trmx-75)", () => {
+  // Boot two attached tabs: tab 1 (session 11, "one") in the background, tab 2 (session 22,
+  // "two") active — the canonical isolation fixture.
+  async function twoTabs() {
+    const ctx = renderApp();
+    await resolveAttach(ctx.calls[0], { sessionId: 11, title: "one" });
+    fireEvent.click(screen.getByTestId("tab-new"));
+    await resolveAttach(ctx.calls[1], { sessionId: 22, title: "two" });
+    return ctx;
+  }
+
+  it("routes a BACKGROUND tab's OSC title to its own label only — the window title never sees it", async () => {
+    const { setWindowTitle } = await twoTabs();
+
+    await act(async () => {
+      recorder.mounts[0].onOscTitle?.("secret build"); // tab 1 is hidden behind tab 2
+    });
+
+    expect(screen.getByTestId("tab-1")).toHaveTextContent("secret build");
+    expect(screen.getByTestId("tab-2")).toHaveTextContent("two");
+    // Background isolation: only the ACTIVE tab's title ever reaches the native window.
+    expect(setWindowTitle).not.toHaveBeenCalledWith("secret build");
+    expect(setWindowTitle).toHaveBeenLastCalledWith("two");
+  });
+
+  it("the native window title follows the ACTIVE tab across switches", async () => {
+    const { setWindowTitle } = await twoTabs();
+    expect(setWindowTitle).toHaveBeenLastCalledWith("two");
+
+    clickTab(1);
+    expect(setWindowTitle).toHaveBeenLastCalledWith("one");
+    clickTab(2);
+    expect(setWindowTitle).toHaveBeenLastCalledWith("two");
+  });
+
+  it("an empty OSC title clears the slot — the tab reverts to the automatic layers", async () => {
+    const { calls } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 11, title: "zsh" });
+
+    await act(async () => {
+      recorder.mounts[0].onOscTitle?.("running tests");
+    });
+    expect(screen.getByTestId("tab-1")).toHaveTextContent("running tests");
+
+    // The program resets its title (printf '\e]2;\a') — back to the fallback.
+    await act(async () => {
+      recorder.mounts[0].onOscTitle?.("");
+    });
+    expect(screen.getByTestId("tab-1")).toHaveTextContent("zsh");
+  });
+
+  it("routes session:title-hint by sessionId into the process slot; an unknown session is inert", async () => {
+    const { calls, titleHint } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 11, title: "zsh" });
+
+    await act(async () => {
+      titleHint.fire(11, "vim");
+    });
+    expect(screen.getByTestId("tab-1")).toHaveTextContent("vim");
+
+    // A hint for a session no tab owns (raced a close, or junk) dispatches nothing.
+    await act(async () => {
+      titleHint.fire(999, "ghost");
+    });
+    expect(screen.getByTestId("tab-1")).toHaveTextContent("vim");
+    expect(screen.getByTestId("tab-strip")).not.toHaveTextContent("ghost");
+  });
+
+  it("mirrors the EFFECTIVE title to the core — a process hint under a manual title never reaches it", async () => {
+    const { calls, titleHint, mirrorTitle } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 11, title: "zsh" });
+    // The attach itself mirrors the effective title into the core session.
+    expect(mirrorTitle).toHaveBeenCalledWith(11, "zsh");
+
+    // Prime MANUAL via the real rename path (double-click the label, type, Enter).
+    fireEvent.doubleClick(screen.getByTitle("zsh"));
+    fireEvent.change(screen.getByTestId("tab-rename-input"), {
+      target: { value: "My Tab" },
+    });
+    fireEvent.keyDown(screen.getByTestId("tab-rename-input"), { key: "Enter" });
+    expect(mirrorTitle).toHaveBeenCalledWith(11, "My Tab");
+    const countAfterRename = mirrorTitle.mock.calls.length;
+
+    // A process hint lands in the sources but manual outranks it: the EFFECTIVE title is
+    // unchanged, so the mirror must not fire — and must NEVER carry the raw hint value.
+    await act(async () => {
+      titleHint.fire(11, "vim");
+    });
+    expect(mirrorTitle).not.toHaveBeenCalledWith(11, "vim");
+    expect(mirrorTitle.mock.calls.length).toBe(countAfterRename);
+  });
+
+  it("never mirrors a title for a tab whose session has not attached", async () => {
+    const { mirrorTitle } = renderApp(); // the attach stays in flight
+
+    await act(async () => {
+      recorder.mounts[0].onOscTitle?.("early bird");
+    });
+
+    expect(screen.getByTestId("tab-1")).toHaveTextContent("early bird");
+    expect(mirrorTitle).not.toHaveBeenCalled();
+  });
+});
+
+// trmx-75 (FR-2.4): the rename UI — menu path, double-click path, focus discipline (the input
+// owns the keyboard until commit/cancel; then the terminal takes it back), keymap inertness.
+describe("App rename (trmx-75)", () => {
+  it("menu 'rename' (tabs:action) opens the inline input on the ACTIVE tab", async () => {
+    const { calls, tabsAction } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 11, title: "one" });
+    fireEvent.click(screen.getByTestId("tab-new"));
+    await resolveAttach(calls[1], { sessionId: 22, title: "two" });
+
+    await act(async () => {
+      tabsAction.fire("rename");
+    });
+
+    const input = screen.getByTestId("tab-rename-input") as HTMLInputElement;
+    expect(input.value).toBe("two"); // the ACTIVE tab (2), not tab 1
+    fireEvent.change(input, { target: { value: "deploy" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByTestId("tab-2")).toHaveTextContent("deploy");
+    expect(screen.getByTestId("tab-1")).toHaveTextContent("one");
+  });
+
+  it("double-click on an INACTIVE tab activates it AND starts rename; the input keeps focus; commit refocuses the terminal", async () => {
+    const { calls } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 11, title: "one" });
+    fireEvent.click(screen.getByTestId("tab-new"));
+    await resolveAttach(calls[1], { sessionId: 22, title: "two" });
+    // Active = 2; tab 1 is in the background. Its terminal focus() spy:
+    const tab1Focus = recorder.mounts[0].handle.terminal.focus as ReturnType<typeof vi.fn>;
+    const focusCallsBefore = tab1Focus.mock.calls.length;
+
+    // The double-click path: activation fires first, then rename — the suppression must keep
+    // focus-follows-activation from stealing the input's focus.
+    fireEvent.doubleClick(screen.getByTitle("one"));
+
+    const input = screen.getByTestId("tab-rename-input") as HTMLInputElement;
+    expect(screen.getByTestId("tab-1").className).toContain(activeClass); // activated
+    expect(document.activeElement).toBe(input); // …and the INPUT holds focus
+    expect(tab1Focus.mock.calls.length).toBe(focusCallsBefore); // suppressed while renaming
+
+    // Commit: the input goes away, the ACTIVE tab's terminal takes the keyboard back.
+    fireEvent.change(input, { target: { value: "build box" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.queryByTestId("tab-rename-input")).not.toBeInTheDocument();
+    expect(screen.getByTestId("tab-1")).toHaveTextContent("build box");
+    expect(tab1Focus.mock.calls.length).toBe(focusCallsBefore + 1);
+  });
+
+  it("cancel (Esc) discards the edit and refocuses the terminal", async () => {
+    const { calls, tabsAction } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 11, title: "one" });
+    const tab1Focus = recorder.mounts[0].handle.terminal.focus as ReturnType<typeof vi.fn>;
+
+    await act(async () => {
+      tabsAction.fire("rename");
+    });
+    const focusCallsBefore = tab1Focus.mock.calls.length;
+    const input = screen.getByTestId("tab-rename-input");
+    fireEvent.change(input, { target: { value: "nope" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    expect(screen.queryByTestId("tab-rename-input")).not.toBeInTheDocument();
+    expect(screen.getByTestId("tab-1")).toHaveTextContent("one"); // unchanged
+    expect(tab1Focus.mock.calls.length).toBe(focusCallsBefore + 1); // focus returned
+  });
+
+  it("⌘1..⌘9 are inert while the rename input has focus (editable non-terminal target)", async () => {
+    const { calls, tabsAction } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 11, title: "one" });
+    fireEvent.click(screen.getByTestId("tab-new"));
+    await resolveAttach(calls[1], { sessionId: 22, title: "two" });
+    clickTab(1);
+    expect(screen.getByTestId("tab-1").className).toContain(activeClass);
+
+    await act(async () => {
+      tabsAction.fire("rename");
+    });
+    // The chord lands ON the input (capture-phase window listener sees target=input) — the
+    // describeTarget veto (editable, non-terminal) must keep it a plain keystroke.
+    fireEvent.keyDown(screen.getByTestId("tab-rename-input"), { key: "2", metaKey: true });
+    expect(screen.getByTestId("tab-1").className).toContain(activeClass);
+    expect(screen.queryByTestId("tab-rename-input")).toBeInTheDocument(); // still editing
+  });
+
+  it("manual-clear (empty commit) reverts the title to the automatic layers (process hint here)", async () => {
+    const { calls, titleHint } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 11, title: "zsh" });
+    await act(async () => {
+      titleHint.fire(11, "vim");
+    });
+    expect(screen.getByTestId("tab-1")).toHaveTextContent("vim");
+
+    // Rename to a manual title…
+    fireEvent.doubleClick(screen.getByTitle("vim"));
+    fireEvent.change(screen.getByTestId("tab-rename-input"), { target: { value: "Build" } });
+    fireEvent.keyDown(screen.getByTestId("tab-rename-input"), { key: "Enter" });
+    expect(screen.getByTestId("tab-1")).toHaveTextContent("Build");
+
+    // …then clear it (whitespace-only counts as empty): the process hint resurfaces.
+    fireEvent.doubleClick(screen.getByTitle("Build"));
+    const input = screen.getByTestId("tab-rename-input") as HTMLInputElement;
+    expect(input.value).toBe("Build"); // seeded with the CURRENT title
+    fireEvent.change(input, { target: { value: "   " } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByTestId("tab-1")).toHaveTextContent("vim");
+  });
+
+  it("closing the renamed tab (pty:exited) clears rename state so focus-follows-activation resumes", async () => {
+    const { calls, tabsAction, ptyExited } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 11, title: "one" });
+    fireEvent.click(screen.getByTestId("tab-new"));
+    await resolveAttach(calls[1], { sessionId: 22, title: "two" });
+
+    await act(async () => {
+      tabsAction.fire("rename"); // renaming the ACTIVE tab 2
+    });
+    expect(screen.getByTestId("tab-rename-input")).toBeInTheDocument();
+
+    const tab1Focus = recorder.mounts[0].handle.terminal.focus as ReturnType<typeof vi.fn>;
+    const focusCallsBefore = tab1Focus.mock.calls.length;
+    await act(async () => {
+      ptyExited.fire(22); // the renamed tab's shell dies mid-edit
+    });
+
+    // The input died with its tab; rename state cleared, so the surviving neighbor's terminal
+    // takes focus (a stuck renamingTabId would suppress activation-focus forever).
+    expect(screen.queryByTestId("tab-rename-input")).not.toBeInTheDocument();
+    expect(screen.getByTestId("tab-1").className).toContain(activeClass);
+    expect(tab1Focus.mock.calls.length).toBe(focusCallsBefore + 1);
   });
 });

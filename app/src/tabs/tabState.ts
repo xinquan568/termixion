@@ -15,16 +15,23 @@
 // - `selectIndex` 8 (⌘9) means the LAST tab regardless of count.
 // - Every no-op returns the IDENTICAL state object (===), so a React `useReducer` consumer skips
 //   the re-render and tests can pin no-op-ness exactly.
+// - trmx-75 (FR-2.4): titles are layered SOURCES (manual > osc > process > fallback, tabTitle.ts).
+//   `setTitleSource` sets/clears the three optional slots; `openTab`/`attachSession` seed/refresh
+//   the fallback; EVERY sources change recomputes `Tab.title = effectiveTitle(titleSources)`, so
+//   `title` stays THE one rendered string the strip/window consume.
+
+import { effectiveTitle, sanitizeTitle, type TitleSources } from "./tabTitle";
 
 /** One tab's terminal pane: the backend session it is bound to, or null while the open is in flight. */
 export interface TabPane {
   sessionId: number | null;
 }
 
-/** One tab: a stable identity, a user-visible title, and its pane. */
+/** One tab: a stable identity, the rendered title (always `effectiveTitle(titleSources)`), its pane. */
 export interface Tab {
   tabId: number;
   title: string;
+  titleSources: TitleSources;
   pane: TabPane;
 }
 
@@ -39,6 +46,14 @@ export interface TabsState {
 export type TabsAction =
   | { kind: "openTab"; title?: string }
   | { kind: "attachSession"; tabId: number; sessionId: number; title: string }
+  // trmx-75: set (string) or clear (null — a value that sanitizes to empty clears too) one of
+  // the three overridable title slots. The fallback slot is owned by openTab/attachSession.
+  | {
+      kind: "setTitleSource";
+      tabId: number;
+      source: "manual" | "osc" | "process";
+      value: string | null;
+    }
   | { kind: "closeTab"; tabId: number }
   | { kind: "activateTab"; tabId: number }
   | { kind: "nextTab" }
@@ -61,9 +76,15 @@ function withActive(state: TabsState, tabId: number): TabsState {
 export function reduceTabs(state: TabsState, action: TabsAction): TabsState {
   switch (action.kind) {
     case "openTab": {
+      // trmx-75: the title arg seeds the FALLBACK source, sanitized at the boundary; a junk arg
+      // (empty after sanitization) falls back to "Shell" so the last resort is never empty.
+      const titleSources: TitleSources = {
+        fallback: sanitizeTitle(action.title ?? "") || "Shell",
+      };
       const tab: Tab = {
         tabId: state.nextTabId,
-        title: action.title ?? "Shell",
+        title: effectiveTitle(titleSources),
+        titleSources,
         pane: { sessionId: null },
       };
       // Append + activate; the id counter only ever increments (never reused, see header).
@@ -78,11 +99,42 @@ export function reduceTabs(state: TabsState, action: TabsAction): TabsState {
       // The async open can resolve after the user closed the tab: don't resurrect it — no-op, and
       // the caller (seeing the unchanged state / missing tab) disposes the orphan session.
       if (!state.tabs.some((t) => t.tabId === action.tabId)) return state;
+      // trmx-75: the session title refreshes the FALLBACK source only — it must never demote a
+      // manual/OSC title that raced ahead of this async resolution. A junk title (empty after
+      // sanitization) keeps the previous fallback so the last resort stays non-empty.
+      const fallback = sanitizeTitle(action.title);
+      return {
+        ...state,
+        tabs: state.tabs.map((t) => {
+          if (t.tabId !== action.tabId) return t;
+          const titleSources: TitleSources =
+            fallback === "" ? t.titleSources : { ...t.titleSources, fallback };
+          return {
+            ...t,
+            title: effectiveTitle(titleSources),
+            titleSources,
+            pane: { sessionId: action.sessionId },
+          };
+        }),
+      };
+    }
+
+    case "setTitleSource": {
+      const tab = state.tabs.find((t) => t.tabId === action.tabId);
+      if (!tab) return state; // dead/unknown tab (e.g. a late poller hint) — junk-inert, === no-op
+      // Boundary sanitization: slots STORE sanitized values. null or empty-after-sanitize CLEARS
+      // the slot — the manual clear-to-auto and empty-OSC-reset rules share this one path.
+      const clean = action.value === null ? "" : sanitizeTitle(action.value);
+      const next = clean === "" ? undefined : clean;
+      if (tab.titleSources[action.source] === next) return state; // unchanged / already clear
+      const titleSources: TitleSources = { ...tab.titleSources };
+      if (next === undefined) delete titleSources[action.source];
+      else titleSources[action.source] = next;
       return {
         ...state,
         tabs: state.tabs.map((t) =>
           t.tabId === action.tabId
-            ? { ...t, title: action.title, pane: { sessionId: action.sessionId } }
+            ? { ...t, title: effectiveTitle(titleSources), titleSources }
             : t,
         ),
       };

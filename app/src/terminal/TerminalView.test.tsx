@@ -659,6 +659,84 @@ describe("TerminalView", () => {
     expect(currentCwd()).toBeNull();
   });
 
+  it("routes OSC 0/2 titles into onOscTitle when provided — through the DEFAULT integrations (trmx-75)", () => {
+    // A capable fake terminal: the default seam runs the REAL realAttachOscIntegrations, which
+    // needs onTitleChange (title) and parser.registerOscHandler (52/7).
+    let titleHandler: ((t: string) => void) | undefined;
+    const fakeTerminal = {
+      onTitleChange: (h: (t: string) => void) => {
+        titleHandler = h;
+        return { dispose: vi.fn() };
+      },
+      parser: { registerOscHandler: () => ({ dispose: vi.fn() }) },
+    };
+    const handle: TerminalHandle = {
+      terminal: fakeTerminal as never,
+      renderer: "dom",
+      fit: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const mount = vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(
+      () => handle,
+    );
+    const onOscTitle = vi.fn();
+
+    render(
+      <TerminalView
+        mount={mount}
+        observeResize={noopObserve}
+        attachScrollbar={noopAttachScrollbar}
+        attachClipboard={noopAttachClipboard}
+        onOscTitle={onOscTitle}
+      />,
+    );
+
+    // The program retitles via OSC 2 — the TAB layer's callback receives it, not the window.
+    titleHandler?.("build box");
+    expect(onOscTitle).toHaveBeenCalledExactlyOnceWith("build box");
+  });
+
+  it("threads onOscTitle through the attachOscIntegrations seam; absent stays undefined (trmx-75)", () => {
+    const handle: TerminalHandle = {
+      terminal: { id: "real-terminal" } as never,
+      renderer: "webgl",
+      fit: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const mount = vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(
+      () => handle,
+    );
+    const attachOsc = vi.fn<AttachOscIntegrations>(() => () => {});
+    const onOscTitle = vi.fn();
+
+    render(
+      <TerminalView
+        mount={mount}
+        observeResize={noopObserve}
+        attachScrollbar={noopAttachScrollbar}
+        attachOscIntegrations={attachOsc}
+        attachClipboard={noopAttachClipboard}
+        onOscTitle={onOscTitle}
+      />,
+    );
+    expect(attachOsc).toHaveBeenCalledTimes(1);
+    expect(attachOsc.mock.calls[0][2]).toBe(onOscTitle);
+
+    // Without the prop the seam sees undefined — the standalone (window-title) default persists.
+    const attachOscAbsent = vi.fn<AttachOscIntegrations>(() => () => {});
+    render(
+      <TerminalView
+        mount={mount}
+        observeResize={noopObserve}
+        attachScrollbar={noopAttachScrollbar}
+        attachOscIntegrations={attachOscAbsent}
+        attachClipboard={noopAttachClipboard}
+      />,
+    );
+    expect(attachOscAbsent).toHaveBeenCalledTimes(1);
+    expect(attachOscAbsent.mock.calls[0][2]).toBeUndefined();
+  });
+
   it("binds the clipboard guards to the host + terminal and unbinds on unmount (trmx-66)", () => {
     const teardown = vi.fn();
     const handle: TerminalHandle = {

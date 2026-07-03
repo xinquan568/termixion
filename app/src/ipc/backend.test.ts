@@ -12,10 +12,13 @@ import {
   encodePtyInput,
   getCoreVersion,
   onPtyExited,
+  onTitleHint,
   openPty,
   PTY_EXITED_EVENT,
   sendPtyInput,
   sendPtyResize,
+  setSessionTitle,
+  TITLE_HINT_EVENT,
   wirePtyChannel,
   type InvokeFn,
   type MessageChannel,
@@ -210,6 +213,160 @@ describe("pty input/resize/close (session-scoped, trmx-74)", () => {
     invoke.mockResolvedValue(undefined);
     await closePty(5, invoke);
     expect(invoke).toHaveBeenCalledWith("close_pty", { sessionId: 5 });
+  });
+});
+
+// trmx-75: the core-title mirror path — App writes each tab's EFFECTIVE title into the core
+// session (the SOLE core-title writer; the poller only hints).
+describe("setSessionTitle", () => {
+  it("invokes set_session_title with exactly { sessionId, title }", async () => {
+    const invoke = vi.fn<InvokeFn>();
+    invoke.mockResolvedValue(undefined);
+    await setSessionTitle(3, "build box", invoke);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("set_session_title", {
+      sessionId: 3,
+      title: "build box",
+    });
+  });
+
+  it("propagates a rejected invoke (App's mirror catch owns the error)", async () => {
+    const invoke = vi.fn<InvokeFn>();
+    invoke.mockRejectedValue(new Error("session gone"));
+    await expect(setSessionTitle(3, "x", invoke)).rejects.toThrow("session gone");
+  });
+});
+
+// trmx-75: the poller's foreground-process hints arrive over the event bus. Same discipline as
+// onPtyExited: the payload is untrusted input (junk inert — isSessionId for the id, a string for
+// the name), and the teardown is safe before the async `listen` resolves.
+describe("onTitleHint", () => {
+  /** A synchronous in-memory bus: listen registers immediately, unlisten removes. */
+  function fakeBus() {
+    const handlers = new Map<string, Set<(payload: unknown) => void>>();
+    const bus: EventBus = {
+      emit(event, payload) {
+        handlers.get(event)?.forEach((h) => h(payload));
+      },
+      listen(event, handler) {
+        const set = handlers.get(event) ?? new Set();
+        set.add(handler);
+        handlers.set(event, set);
+        return Promise.resolve(() => set.delete(handler));
+      },
+    };
+    return { bus, hint: (payload: unknown) => bus.emit(TITLE_HINT_EVENT, payload) };
+  }
+
+  it("dispatches sessionId + name for a valid payload", async () => {
+    const { bus, hint } = fakeBus();
+    const handler = vi.fn<(sessionId: number, name: string) => void>();
+    onTitleHint(handler, bus);
+    await Promise.resolve(); // let the listen promise settle
+
+    hint({ sessionId: 4, name: "vim" });
+    expect(handler).toHaveBeenCalledExactlyOnceWith(4, "vim");
+  });
+
+  it("passes the name RAW — sanitization is the reducer's job, not the bridge's", async () => {
+    const { bus, hint } = fakeBus();
+    const handler = vi.fn<(sessionId: number, name: string) => void>();
+    onTitleHint(handler, bus);
+    await Promise.resolve();
+
+    hint({ sessionId: 4, name: "  spacedname  " });
+    expect(handler).toHaveBeenCalledWith(4, "  spacedname  ");
+  });
+
+  it.each([
+    {},
+    null,
+    undefined,
+    "vim",
+    4,
+    { sessionId: 4 }, // missing name
+    { name: "vim" }, // missing sessionId
+    { sessionId: "4", name: "vim" }, // stringly-typed id
+    { sessionId: NaN, name: "vim" }, // non-finite id
+    { session_id: 4, name: "vim" }, // wrong casing — the event payload is serde camelCase
+    { sessionId: 0, name: "vim" }, // ids start at 1 (backend contract)
+    { sessionId: -1, name: "vim" }, // negative — no u64 maps here
+    { sessionId: 1.5, name: "vim" }, // fractional — could alias another session
+    { sessionId: 2 ** 53, name: "vim" }, // beyond Number.isSafeInteger — precision-lossy
+    { sessionId: 4, name: 42 }, // non-string name
+    { sessionId: 4, name: null }, // null name
+    { sessionId: 4, name: ["vim"] }, // array name
+  ])("is inert for a junk payload (%j)", async (junk) => {
+    const { bus, hint } = fakeBus();
+    const handler = vi.fn<(sessionId: number, name: string) => void>();
+    onTitleHint(handler, bus);
+    await Promise.resolve();
+
+    hint(junk);
+    expect(handler).not.toHaveBeenCalled();
+    // The subscription itself must survive the junk: a valid payload still dispatches.
+    hint({ sessionId: 9, name: "sleep" });
+    expect(handler).toHaveBeenCalledExactlyOnceWith(9, "sleep");
+  });
+
+  it("teardown unsubscribes — later hints no longer dispatch", async () => {
+    const { bus, hint } = fakeBus();
+    const handler = vi.fn<(sessionId: number, name: string) => void>();
+    const teardown = onTitleHint(handler, bus);
+    await Promise.resolve();
+
+    hint({ sessionId: 1, name: "vim" });
+    expect(handler).toHaveBeenCalledTimes(1);
+    teardown();
+    hint({ sessionId: 1, name: "less" });
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("a teardown that runs BEFORE listen resolves still unlistens (no leaked subscription)", async () => {
+    let resolveListen: ((unlisten: () => void) => void) | undefined;
+    const unlisten = vi.fn();
+    const bus: EventBus = {
+      emit() {},
+      listen: () =>
+        new Promise((resolve) => {
+          resolveListen = resolve;
+        }),
+    };
+
+    const teardown = onTitleHint(() => {}, bus);
+    teardown(); // the subscriber is gone before the async listen ever resolved
+    resolveListen?.(unlisten);
+    await vi.waitFor(() => expect(unlisten).toHaveBeenCalledTimes(1));
+  });
+
+  it("dispatches nothing after teardown even if the bus still fires (torn-down guard)", async () => {
+    // A bus whose unlisten is a no-op — the `live` guard alone must keep the handler silent.
+    const registered: Array<(payload: unknown) => void> = [];
+    const bus: EventBus = {
+      emit(_event, payload) {
+        registered.forEach((h) => h(payload));
+      },
+      listen(_event, handler) {
+        registered.push(handler);
+        return Promise.resolve(() => {});
+      },
+    };
+    const handler = vi.fn<(sessionId: number, name: string) => void>();
+    const teardown = onTitleHint(handler, bus);
+    await Promise.resolve();
+
+    teardown();
+    bus.emit(TITLE_HINT_EVENT, { sessionId: 3, name: "vim" });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("swallows a bus without a runtime (listen rejects) and the teardown stays safe", async () => {
+    const bus: EventBus = {
+      emit() {},
+      listen: () => Promise.reject(new Error("no Tauri runtime")),
+    };
+    const teardown = onTitleHint(() => {}, bus);
+    await Promise.resolve();
+    expect(() => teardown()).not.toThrow();
   });
 });
 

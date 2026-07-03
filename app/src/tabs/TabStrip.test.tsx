@@ -12,17 +12,24 @@ import { TabStrip, hoverIndexFromPoint, DRAG_SLOP_PX } from "./TabStrip";
 import type { Tab } from "./tabState";
 
 function tab(tabId: number, title: string): Tab {
-  return { tabId, title, pane: { sessionId: null } };
+  // trmx-75: `Tab` carries its title sources; the strip renders `title` only, so seeding the
+  // fallback from it keeps these fixtures shape-valid without changing what is exercised.
+  return { tabId, title, titleSources: { fallback: title }, pane: { sessionId: null } };
 }
 
 function renderStrip(overrides: Partial<Parameters<typeof TabStrip>[0]> = {}) {
   const props = {
     tabs: [tab(1, "Shell"), tab(2, "vim"), tab(3, "build")],
     activeTabId: 2,
+    // trmx-75: rename is App-owned state reported upward, like every other intent.
+    renamingTabId: null as number | null,
     onActivate: vi.fn(),
     onClose: vi.fn(),
     onNew: vi.fn(),
     onMove: vi.fn(),
+    onRenameStart: vi.fn(),
+    onRenameCommit: vi.fn(),
+    onRenameCancel: vi.fn(),
     ...overrides,
   };
   const view = render(<TabStrip {...props} />);
@@ -161,5 +168,110 @@ describe("TabStrip", () => {
     fireEvent.pointerUp(el, { pointerId: 5, clientX: 260, clientY: 10 });
     expect(onMove).not.toHaveBeenCalled();
     expect(onActivate).not.toHaveBeenCalled();
+  });
+});
+
+// trmx-75 (FR-2.4): the inline rename input. It replaces the renamed tab's label, seeds from the
+// current title, commits on Enter/blur, cancels on Esc — and is EVENT-ISOLATED from the strip's
+// activation/drag machinery (pointer + key events inside the input never reach the tab div).
+describe("TabStrip rename (trmx-75)", () => {
+  const input = () => screen.getByTestId("tab-rename-input") as HTMLInputElement;
+
+  it("renders the input in place of the renamed tab's label, seeded + focused + select-all", () => {
+    renderStrip({ renamingTabId: 2 });
+    const el = input();
+    expect(el.value).toBe("vim"); // seeded with the tab's CURRENT title
+    // The label span is replaced (the other tabs keep theirs).
+    expect(screen.getByTestId("tab-2").querySelector(".tab-strip__title")).toBeNull();
+    expect(screen.getByTestId("tab-1").querySelector(".tab-strip__title")).not.toBeNull();
+    // Autofocus + select-all: the first keystroke replaces the whole title.
+    expect(document.activeElement).toBe(el);
+    expect(el.selectionStart).toBe(0);
+    expect(el.selectionEnd).toBe("vim".length);
+  });
+
+  it("double-click on a tab label starts rename for THAT tab", () => {
+    // The handler sits on the tab DIV (pointer capture retargets click/dblclick there in a real
+    // browser); a dblclick on the label bubbles up to it.
+    const { onRenameStart } = renderStrip();
+    fireEvent.doubleClick(screen.getByTitle("build"));
+    expect(onRenameStart).toHaveBeenCalledExactlyOnceWith(3);
+  });
+
+  it("double-click on the close button does not start rename", () => {
+    const { onRenameStart } = renderStrip();
+    fireEvent.doubleClick(screen.getByTestId("tab-close-3"));
+    expect(onRenameStart).not.toHaveBeenCalled();
+  });
+
+  it("Enter commits the edited value exactly once — a following blur must not double-commit", () => {
+    const { onRenameCommit, onRenameCancel } = renderStrip({ renamingTabId: 2 });
+    fireEvent.change(input(), { target: { value: "a b c" } });
+    fireEvent.keyDown(input(), { key: "Enter" });
+    expect(onRenameCommit).toHaveBeenCalledExactlyOnceWith(2, "a b c");
+    // In the app the input unmounts on commit; if a blur still lands, it must not re-commit.
+    fireEvent.blur(input());
+    expect(onRenameCommit).toHaveBeenCalledTimes(1);
+    expect(onRenameCancel).not.toHaveBeenCalled();
+  });
+
+  it("blur commits the current value", () => {
+    const { onRenameCommit } = renderStrip({ renamingTabId: 2 });
+    fireEvent.change(input(), { target: { value: "deploy" } });
+    fireEvent.blur(input());
+    expect(onRenameCommit).toHaveBeenCalledExactlyOnceWith(2, "deploy");
+  });
+
+  it("Escape cancels without committing — even if a blur follows", () => {
+    const { onRenameCommit, onRenameCancel } = renderStrip({ renamingTabId: 2 });
+    fireEvent.change(input(), { target: { value: "nope" } });
+    fireEvent.keyDown(input(), { key: "Escape" });
+    expect(onRenameCancel).toHaveBeenCalledTimes(1);
+    expect(onRenameCommit).not.toHaveBeenCalled();
+    fireEvent.blur(input());
+    expect(onRenameCommit).not.toHaveBeenCalled();
+  });
+
+  it("an emptied input commits the empty string (App turns it into clear-to-auto)", () => {
+    const { onRenameCommit } = renderStrip({ renamingTabId: 2 });
+    fireEvent.change(input(), { target: { value: "" } });
+    fireEvent.keyDown(input(), { key: "Enter" });
+    expect(onRenameCommit).toHaveBeenCalledExactlyOnceWith(2, "");
+  });
+
+  it("typing lands verbatim — Space/Enter inside the input never reach the tab's key handlers", () => {
+    const { onActivate, onRenameCommit } = renderStrip({ renamingTabId: 2 });
+    // The tab div activates on Space/Enter keydown; from INSIDE the input those must only type
+    // (Space) or commit (Enter) — stopPropagation is the event-isolation requirement.
+    fireEvent.keyDown(input(), { key: "a" });
+    fireEvent.keyDown(input(), { key: " " });
+    fireEvent.keyDown(input(), { key: "b" });
+    expect(onActivate).not.toHaveBeenCalled();
+    fireEvent.change(input(), { target: { value: "a b c" } });
+    fireEvent.keyDown(input(), { key: "Enter" });
+    expect(onRenameCommit).toHaveBeenCalledExactlyOnceWith(2, "a b c");
+    expect(onActivate).not.toHaveBeenCalled();
+  });
+
+  it("pointer interactions inside the input neither activate nor drag the tab", () => {
+    const { onActivate, onMove } = renderStrip({ renamingTabId: 2 });
+    layOutTabs();
+    const el = input();
+    // A click inside the input (caret placement)…
+    fireEvent.pointerDown(el, { pointerId: 1, clientX: 150, clientY: 10, button: 0 });
+    fireEvent.pointerUp(el, { pointerId: 1, clientX: 150, clientY: 10 });
+    fireEvent.click(el);
+    // …and a text-selection drag well past the slop (would reorder if the strip saw it).
+    fireEvent.pointerDown(el, { pointerId: 2, clientX: 110, clientY: 10, button: 0 });
+    fireEvent.pointerMove(el, { pointerId: 2, clientX: 260, clientY: 10 });
+    fireEvent.pointerUp(el, { pointerId: 2, clientX: 260, clientY: 10 });
+    expect(onActivate).not.toHaveBeenCalled();
+    expect(onMove).not.toHaveBeenCalled();
+  });
+
+  it("double-click inside the input does not restart rename", () => {
+    const { onRenameStart } = renderStrip({ renamingTabId: 2 });
+    fireEvent.doubleClick(input());
+    expect(onRenameStart).not.toHaveBeenCalled();
   });
 });

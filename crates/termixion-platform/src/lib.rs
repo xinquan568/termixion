@@ -4,11 +4,15 @@
 //!
 //! All platform code lives behind `cfg(target_os = …)` **here**, never in `termixion-core`. B-2 adds
 //! the macOS [`macos::MacosPtyFactory`] (implementing the core's `PtyBackend` via portable-pty) and a
-//! clipboard stub.
+//! clipboard stub; trmx-75 adds [`foreground::foreground_process`] (the tab-title hint resolver).
 
+#[cfg(target_os = "macos")]
+pub mod foreground;
 #[cfg(target_os = "macos")]
 pub mod macos;
 
+#[cfg(target_os = "macos")]
+pub use foreground::{ForegroundProcess, foreground_process};
 #[cfg(target_os = "macos")]
 pub use macos::{Clipboard, MacosClipboard, MacosPtyFactory};
 

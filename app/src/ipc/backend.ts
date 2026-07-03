@@ -173,3 +173,58 @@ export function onPtyExited(
     unlisten?.();
   };
 }
+
+/** The backend broadcast carrying a session's foreground-process title hint (trmx-75). */
+export const TITLE_HINT_EVENT = "session:title-hint";
+
+/**
+ * Subscribe to `session:title-hint` and dispatch each `{ sessionId, name }` to `handler`
+ * (trmx-75 — the 1 Hz foreground poller's change-only hints; the tab layer routes each into that
+ * session's tab as the PROCESS title source, which never outranks manual/OSC). Same discipline as
+ * `onPtyExited`: the payload is untrusted input, guarded here (`isSessionId` for the id, a string
+ * for the name — junk is inert; sanitization is the reducer's job, so the name passes through
+ * RAW), and the returned teardown is safe to call BEFORE the async `listen` resolves (a
+ * late-resolving subscription is unlistened instead of leaked; the `live` guard keeps a torn-down
+ * handler silent even if the bus still fires). Without a Tauri runtime the listen rejects and
+ * hints simply never arrive.
+ */
+export function onTitleHint(
+  handler: (sessionId: number, name: string) => void,
+  bus: EventBus = realEventBus,
+): () => void {
+  let live = true;
+  let unlisten: (() => void) | undefined;
+  bus
+    .listen(TITLE_HINT_EVENT, (payload) => {
+      if (!live) return;
+      if (typeof payload !== "object" || payload === null) return;
+      const { sessionId, name } = payload as { sessionId?: unknown; name?: unknown };
+      if (!isSessionId(sessionId)) return;
+      if (typeof name !== "string") return;
+      handler(sessionId, name);
+    })
+    .then((u) => {
+      if (live) unlisten = u;
+      else u();
+    })
+    .catch(() => {
+      // No Tauri runtime — there is no poller to hint; the subscription is inert.
+    });
+  return () => {
+    live = false;
+    unlisten?.();
+  };
+}
+
+/**
+ * Mirror one tab's EFFECTIVE title into its core session (trmx-75). App is the SOLE core-title
+ * writer — the poller only ever hints — so `Session::title` always equals what the tab renders
+ * (manual > osc > process > fallback, tabTitle.ts), never a raw hint.
+ */
+export function setSessionTitle(
+  sessionId: number,
+  title: string,
+  invoke: InvokeFn = realInvoke,
+): Promise<void> {
+  return invoke("set_session_title", { sessionId, title }).then(() => {});
+}

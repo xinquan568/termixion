@@ -6,6 +6,10 @@
 // (index 8 = LAST tab, the iTerm2 ⌘9 rule), drag reorder — is pinned here headless: no React, no
 // DOM, just state in / state out. No-op transitions must return the IDENTICAL state object (===)
 // so a React reducer consumer skips the re-render.
+//
+// trmx-75 (FR-2.4) extends the model with per-tab title SOURCES (manual > OSC > process >
+// fallback, see tabTitle.ts) reduced through `setTitleSource`; `Tab.title` stays THE one rendered
+// string, now always recomputed as the effective title over those sources.
 import { describe, it, expect } from "vitest";
 import {
   initialTabsState,
@@ -32,6 +36,7 @@ const tabIds = (state: TabsState) => state.tabs.map((t) => t.tabId);
 function deepFreeze(state: TabsState): TabsState {
   state.tabs.forEach((t) => {
     Object.freeze(t.pane);
+    Object.freeze(t.titleSources);
     Object.freeze(t);
   });
   Object.freeze(state.tabs);
@@ -48,15 +53,23 @@ describe("openTab", () => {
   it("appends a session-less pane with the default title and activates it", () => {
     const state = run({ kind: "openTab" });
     expect(state.tabs).toEqual<Tab[]>([
-      { tabId: 1, title: "Shell", pane: { sessionId: null } },
+      { tabId: 1, title: "Shell", titleSources: { fallback: "Shell" }, pane: { sessionId: null } },
     ]);
     expect(state.activeTabId).toBe(1);
     expect(state.nextTabId).toBe(2);
   });
 
-  it("honors an explicit title", () => {
+  it("honors an explicit title (seeded as the FALLBACK source, trmx-75)", () => {
     const state = run({ kind: "openTab", title: "build" });
     expect(state.tabs[0].title).toBe("build");
+    expect(state.tabs[0].titleSources).toEqual({ fallback: "build" });
+  });
+
+  it("sanitizes the title arg at the boundary; a junk arg seeds the default fallback (trmx-75)", () => {
+    expect(run({ kind: "openTab", title: "  build " }).tabs[0].title).toBe("build");
+    const junk = run({ kind: "openTab", title: " \u{7} " });
+    expect(junk.tabs[0].title).toBe("Shell");
+    expect(junk.tabs[0].titleSources).toEqual({ fallback: "Shell" });
   });
 
   it("appends at the end and moves activation to the new tab", () => {
@@ -80,9 +93,43 @@ describe("attachSession", () => {
       { kind: "openTab" },
       { kind: "attachSession", tabId: 1, sessionId: 77, title: "zsh" },
     );
-    expect(state.tabs[0]).toEqual({ tabId: 1, title: "zsh", pane: { sessionId: 77 } });
+    expect(state.tabs[0]).toEqual({
+      tabId: 1,
+      title: "zsh",
+      titleSources: { fallback: "zsh" }, // the session title becomes the FALLBACK source (trmx-75)
+      pane: { sessionId: 77 },
+    });
     // The sibling tab is untouched.
-    expect(state.tabs[1]).toEqual({ tabId: 2, title: "Shell", pane: { sessionId: null } });
+    expect(state.tabs[1]).toEqual({
+      tabId: 2,
+      title: "Shell",
+      titleSources: { fallback: "Shell" },
+      pane: { sessionId: null },
+    });
+  });
+
+  // trmx-75: the attach refreshes the FALLBACK slot only — it must never demote a manual/OSC
+  // title that raced ahead of the async open resolution.
+  it("updates the fallback WITHOUT demoting a present OSC (or manual) title", () => {
+    let state = run({ kind: "openTab" });
+    state = reduceTabs(state, { kind: "setTitleSource", tabId: 1, source: "osc", value: "vim" });
+    expect(state.tabs[0].title).toBe("vim");
+    state = reduceTabs(state, { kind: "attachSession", tabId: 1, sessionId: 7, title: "zsh" });
+    expect(state.tabs[0].title).toBe("vim"); // still the OSC title
+    expect(state.tabs[0].pane.sessionId).toBe(7); // but the attach itself landed
+    // Clearing the OSC title reveals the refreshed fallback.
+    state = reduceTabs(state, { kind: "setTitleSource", tabId: 1, source: "osc", value: null });
+    expect(state.tabs[0].title).toBe("zsh");
+  });
+
+  it("keeps the previous fallback when the attach title sanitizes to empty (junk-inert, trmx-75)", () => {
+    const state = run(
+      { kind: "openTab" },
+      { kind: "attachSession", tabId: 1, sessionId: 7, title: " \u{1b} " },
+    );
+    expect(state.tabs[0].title).toBe("Shell");
+    expect(state.tabs[0].titleSources).toEqual({ fallback: "Shell" });
+    expect(state.tabs[0].pane.sessionId).toBe(7);
   });
 
   // The async open can resolve after the user already closed the tab: the reducer must not
@@ -103,6 +150,140 @@ describe("attachSession", () => {
     expect(
       reduceTabs(state, { kind: "attachSession", tabId: 1, sessionId: 1, title: "x" }),
     ).toBe(state);
+  });
+});
+
+describe("setTitleSource (trmx-75, FR-2.4)", () => {
+  /** One tab (tabId 1) with an attached session titled "zsh" — fallback = "zsh". */
+  function attached(): TabsState {
+    return run(
+      { kind: "openTab" },
+      { kind: "attachSession", tabId: 1, sessionId: 7, title: "zsh" },
+    );
+  }
+
+  /** Shorthand: set (or clear, value=null) one title slot on tab 1. */
+  function set(
+    state: TabsState,
+    source: "manual" | "osc" | "process",
+    value: string | null,
+  ): TabsState {
+    return reduceTabs(state, { kind: "setTitleSource", tabId: 1, source, value });
+  }
+
+  const title = (state: TabsState) => state.tabs[0].title;
+
+  it("renders the precedence chain end to end: attach, then OSC, then a process hint", () => {
+    let s = attached();
+    expect(title(s)).toBe("zsh"); // fallback only
+    s = set(s, "process", "sleep");
+    expect(title(s)).toBe("sleep"); // process beats fallback
+    s = set(s, "osc", "vim");
+    expect(title(s)).toBe("vim"); // OSC beats process — and STAYS on later hints
+    s = set(s, "process", "node");
+    expect(title(s)).toBe("vim");
+  });
+
+  it("manual overrides OSC, process, and fallback", () => {
+    let s = attached();
+    s = set(s, "osc", "vim");
+    s = set(s, "process", "sleep");
+    s = set(s, "manual", "work");
+    expect(title(s)).toBe("work");
+    s = set(s, "osc", "emacs"); // even a NEWER OSC title cannot displace the rename
+    expect(title(s)).toBe("work");
+  });
+
+  // The review's load-bearing pin: the 1 Hz poller must never be able to stomp on what the user
+  // or the program explicitly chose — the hint only waits UNDERNEATH for its turn.
+  it("a process hint can NEVER clobber a manual or OSC title", () => {
+    let s = attached();
+    s = set(s, "manual", "work");
+    s = set(s, "process", "sleep");
+    expect(title(s)).toBe("work");
+
+    let t = attached();
+    t = set(t, "osc", "vim");
+    t = set(t, "process", "sleep");
+    expect(title(t)).toBe("vim");
+    // ...but the hint WAS recorded: clearing the OSC title reveals it.
+    t = set(t, "osc", null);
+    expect(title(t)).toBe("sleep");
+  });
+
+  it("clearing cascades down the precedence chain: manual → OSC → process → fallback", () => {
+    let s = attached();
+    s = set(s, "process", "sleep");
+    s = set(s, "osc", "vim");
+    s = set(s, "manual", "work");
+    expect(title(s)).toBe("work");
+    s = set(s, "manual", null); // clear-to-auto (empty rename commit)
+    expect(title(s)).toBe("vim");
+    s = set(s, "osc", null);
+    expect(title(s)).toBe("sleep");
+    s = set(s, "process", null);
+    expect(title(s)).toBe("zsh");
+    expect(s.tabs[0].titleSources).toEqual({ fallback: "zsh" }); // all slots really gone
+  });
+
+  it('an empty value clears the slot like null (programs reset titles with OSC "")', () => {
+    let s = attached();
+    s = set(s, "process", "sleep");
+    s = set(s, "osc", "vim");
+    expect(title(s)).toBe("vim");
+    s = set(s, "osc", "");
+    expect(title(s)).toBe("sleep");
+    // A value that SANITIZES to empty (whitespace/controls only) clears the same way.
+    s = set(s, "manual", "work");
+    s = set(s, "manual", " \u{7} ");
+    expect(title(s)).toBe("sleep");
+  });
+
+  it("sanitizes values at the reducer boundary and STORES them sanitized", () => {
+    let s = attached();
+    s = set(s, "manual", "  wo\u{0}rk\u{9f}  ");
+    expect(title(s)).toBe("work");
+    expect(s.tabs[0].titleSources.manual).toBe("work");
+    s = set(s, "osc", "x".repeat(300));
+    expect(s.tabs[0].titleSources.osc).toBe("x".repeat(256)); // capped in storage too
+    expect(title(s)).toBe("work"); // manual still wins
+  });
+
+  it("retitles ONLY its own tab — the sibling is untouched", () => {
+    let s = run(
+      { kind: "openTab" },
+      { kind: "openTab" },
+      { kind: "attachSession", tabId: 2, sessionId: 9, title: "zsh" },
+    );
+    s = reduceTabs(s, { kind: "setTitleSource", tabId: 2, source: "osc", value: "vim" });
+    expect(s.tabs[1].title).toBe("vim");
+    expect(s.tabs[0].title).toBe("Shell");
+    expect(s.tabs[0].titleSources).toEqual({ fallback: "Shell" });
+  });
+
+  it("is a no-op (===) on a dead tab, an unknown tab, and the empty state", () => {
+    const s = run({ kind: "openTab" }, { kind: "openTab" }, { kind: "closeTab", tabId: 1 });
+    expect(set(s, "manual", "work")).toBe(s); // tab 1 is dead
+    expect(reduceTabs(s, { kind: "setTitleSource", tabId: 99, source: "osc", value: "x" })).toBe(s);
+    const empty = initialTabsState();
+    expect(
+      reduceTabs(empty, { kind: "setTitleSource", tabId: 1, source: "process", value: "x" }),
+    ).toBe(empty);
+  });
+
+  it("re-delivering the same value, or clearing an absent slot, is a no-op (===)", () => {
+    const s = set(attached(), "process", "sleep");
+    expect(set(s, "process", "sleep")).toBe(s); // identical hint re-delivered
+    expect(set(s, "process", " sleep \u{7}")).toBe(s); // identical AFTER sanitization
+    expect(set(s, "manual", null)).toBe(s); // clearing a slot that was never set
+    expect(set(s, "osc", "  ")).toBe(s); // empty-clear of an absent slot
+  });
+
+  it("does not mutate the input state (purity guard)", () => {
+    const before = deepFreeze(set(attached(), "osc", "vim"));
+    expect(() => set(before, "manual", "work")).not.toThrow();
+    expect(() => set(before, "osc", null)).not.toThrow();
+    expect(title(before)).toBe("vim");
   });
 });
 
