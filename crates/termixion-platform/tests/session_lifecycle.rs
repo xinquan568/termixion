@@ -7,7 +7,8 @@
 #![cfg(target_os = "macos")]
 
 use std::process::Command;
-use std::time::Duration;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use termixion_core::{PtySize, Session, SessionSpec};
 use termixion_platform::MacosPtyFactory;
@@ -99,5 +100,80 @@ fn session_lifecycle_through_the_trait_leaves_no_zombie() {
     assert!(!session.is_alive());
 
     // The whole point of C-1: teardown left no zombie.
+    assert_no_zombie(pid);
+}
+
+/// trmx-67: a resize must be observed by the **child**, not just recorded in our bookkeeping. The
+/// lifecycle test above asserts `session.size()` after `.resize()` — our own remembered number —
+/// but never proves the winsize reached the kernel side of the PTY. `stty size` asks the tty ioctl
+/// for the child's winsize, so a `40 120` line in the output can only mean the resize actually
+/// landed on the PTY (the spawn size was 24×80, and the echoed command text contains no digits).
+#[test]
+fn resize_winsize_is_observed_by_the_child() {
+    let factory = MacosPtyFactory;
+    // The same deterministic, rc-free interactive shell as the lifecycle test (see the rationale
+    // there): `zsh -f` (NO_RCS) skips all startup files, so a dev/CI rc hook can never garble or
+    // hang this golden test.
+    let mut spec = SessionSpec::shell("/bin/zsh");
+    spec.args.push("-f".into());
+    let mut session = Session::spawn(2, &factory, &spec, PtySize::new(24, 80))
+        .expect("spawn an rc-free shell through the trait");
+    let pid = session.process_id().expect("a real PTY has a child pid");
+    assert!(session.is_alive());
+
+    session
+        .resize(PtySize::new(40, 120))
+        .expect("resize the live pty");
+
+    // Reads block until data or EOF (the `PtyBackend` contract), so an in-test read loop could
+    // hang past any deadline if broken plumbing produced no further output. Keep the wait bounded
+    // like `assert_no_zombie`: move the blocking reader onto its own thread — the ADR-0001 split
+    // `take_reader` exists for exactly this — and receive chunks over a channel with a deadline.
+    let mut reader = session.take_reader().expect("a real PTY yields a reader");
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let pump = std::thread::spawn(move || {
+        let mut buf = [0u8; 1024];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break, // EOF (shell exited) or a torn-down PTY
+                Ok(n) => {
+                    if tx.send(buf[..n].to_vec()).is_err() {
+                        break; // the test stopped listening
+                    }
+                }
+            }
+        }
+    });
+
+    // Ask the CHILD for its winsize; `stty size` prints "<rows> <cols>" straight from the ioctl.
+    session.write(b"stty size\n").expect("write to the pty");
+
+    // Read-until the child reports the post-resize winsize. The deadline is generous — it only
+    // matters when the plumbing is actually broken, and a loaded CI box must not flake a green pin.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut transcript = Vec::new();
+    while !String::from_utf8_lossy(&transcript).contains("40 120") {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            panic!(
+                "child never reported the resized winsize `40 120` via `stty size`; transcript: {:?}",
+                String::from_utf8_lossy(&transcript)
+            );
+        }
+        match rx.recv_timeout(remaining) {
+            Ok(chunk) => transcript.extend_from_slice(&chunk),
+            // Timeout, or the pump ended early (EOF / read error — the shell died under us).
+            Err(err) => panic!(
+                "pty output ended before `stty size` reported `40 120` ({err}); transcript: {:?}",
+                String::from_utf8_lossy(&transcript)
+            ),
+        }
+    }
+
+    // Teardown: kill the live shell (SIGKILL + reap). That closes the PTY, so the pump thread sees
+    // EOF and exits — the join cannot hang — and the C-1 no-zombie invariant holds here too.
+    session.kill().expect("kill the live shell");
+    assert!(!session.is_alive());
+    pump.join().expect("the reader thread exits at EOF");
     assert_no_zombie(pid);
 }
