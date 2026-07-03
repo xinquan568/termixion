@@ -71,6 +71,7 @@ describe("handlePasteEvent", () => {
     const ev = fakeEvent("safe\x1b[201~; rm -rf /\nnext");
     const paste = vi.fn();
     handlePasteEvent(ev, { paste });
+    expect(ev.clipboardData.getData).toHaveBeenCalledTimes(1); // text/plain is the ONLY flavor read
     expect(ev.clipboardData.getData).toHaveBeenCalledWith("text/plain");
     expect(paste).toHaveBeenCalledWith("safe; rm -rf /\nnext");
     expect(ev.preventDefault).toHaveBeenCalledTimes(1);
@@ -122,12 +123,15 @@ describe("attachClipboardGuards (host-capture binding — the propagation pins)"
     it(`origin ${originName}: the guard intercepts copy+paste and xterm's would-be handler never fires`, () => {
       const { host, xtermEl, textarea } = makeDom();
       const origin = originName === "xterm-element" ? xtermEl : textarea;
-      // Plant listeners exactly where xterm registers its own (bubble phase, same node).
-      const xtermCopySpy = vi.fn();
-      const xtermPasteSpy = vi.fn();
-      xtermEl.addEventListener("copy", xtermCopySpy);
-      xtermEl.addEventListener("paste", xtermPasteSpy);
-      textarea.addEventListener("paste", xtermPasteSpy);
+      // Plant listeners exactly where xterm registers its own (bubble phase, same node) — one spy
+      // PER node so each registration point is proven independently (step-8 finding: a shared spy
+      // could not distinguish the textarea listener from the ancestor element listener).
+      const elCopySpy = vi.fn();
+      const elPasteSpy = vi.fn();
+      const textareaPasteSpy = vi.fn();
+      xtermEl.addEventListener("copy", elCopySpy);
+      xtermEl.addEventListener("paste", elPasteSpy);
+      textarea.addEventListener("paste", textareaPasteSpy);
 
       const dispose = attachClipboardGuards(host, term);
       term.paste.mockClear();
@@ -135,15 +139,22 @@ describe("attachClipboardGuards (host-capture binding — the propagation pins)"
       dispatchFrom(origin, "copy");
       dispatchFrom(origin, "paste");
       expect(term.paste).toHaveBeenCalledWith("pasted"); // guard handled paste
-      expect(xtermCopySpy).not.toHaveBeenCalled(); // propagation stopped
-      expect(xtermPasteSpy).not.toHaveBeenCalled();
+      expect(elCopySpy).not.toHaveBeenCalled(); // propagation stopped at the host
+      expect(elPasteSpy).not.toHaveBeenCalled();
+      expect(textareaPasteSpy).not.toHaveBeenCalled();
 
-      // Teardown: the same dispatches now reach the planted listeners.
+      // Teardown: the same dispatches now reach the planted listener(s) ON THE DISPATCH PATH.
       dispose();
       dispatchFrom(origin, "copy");
       dispatchFrom(origin, "paste");
-      expect(xtermCopySpy).toHaveBeenCalled();
-      expect(xtermPasteSpy).toHaveBeenCalled();
+      expect(elCopySpy).toHaveBeenCalledTimes(1); // both origins bubble through the element
+      expect(elPasteSpy).toHaveBeenCalledTimes(1);
+      if (originName === "textarea") {
+        // The textarea's OWN registration point saw the post-teardown paste — proven independently.
+        expect(textareaPasteSpy).toHaveBeenCalledTimes(1);
+      } else {
+        expect(textareaPasteSpy).not.toHaveBeenCalled(); // element-origin never reaches the child
+      }
       host.remove();
     });
   }
