@@ -223,6 +223,59 @@ fn session_spec_for(smoke: bool, perf: bool, cwd: Option<String>) -> SessionSpec
     }
 }
 
+/// trmx-78 round 2: the natural-batching hand-off between the core pump and the IPC channel.
+/// One Tauri message per 4096-byte PTY read saturated the webview main thread under output
+/// floods (`seq`/`yes` dropped >94 % of frames on the reference Mac while typing stayed at
+/// 3 ms p50 — the flood is a message-granularity problem, not a keystroke-path one). The sender
+/// below blocks for the FIRST chunk (an idle echo byte forwards immediately — zero added
+/// latency), then drains whatever else is already queued into ONE message, capped: coalescing
+/// happens exactly when the producer outruns the consumer ("natural batching").
+///
+/// The hand-off queue is BOUNDED ([`PTY_HANDOFF_CHUNKS`]): a full queue blocks the PTY reader —
+/// intended backpressure, same visible behavior as any slow terminal — so OUR queue can never
+/// grow without bound (Tauri-internal buffering past `channel.send` remains a residual,
+/// measured-not-assumed concern).
+const PTY_HANDOFF_CHUNKS: usize = 256;
+
+/// Cap one coalesced message at 256 KiB — bounds per-message parse cost without re-fragmenting
+/// floods into the message storm this exists to fix.
+const PTY_BATCH_MAX_BYTES: usize = 262_144;
+
+/// One batch: block for the first chunk, then opportunistically drain the backlog up to `max`
+/// bytes (the first chunk always rides, even if larger than `max`). `None` = closed and empty.
+/// Pure over std types — unit-tested (order, cap, residue-after-close).
+fn next_batch(rx: &std::sync::mpsc::Receiver<Vec<u8>>, max: usize) -> Option<Vec<u8>> {
+    let mut batch = rx.recv().ok()?;
+    while batch.len() < max {
+        match rx.try_recv() {
+            Ok(chunk) => batch.extend_from_slice(&chunk),
+            Err(_) => break, // empty right now, or closed — either way this batch is complete
+        }
+    }
+    Some(batch)
+}
+
+/// The sender loop: forward coalesced batches into `send_batch` until the stream ends (producer
+/// dropped, queue drained) or the transport rejects a batch; then run `on_done` exactly once.
+/// Dropping `rx` on return releases a producer blocked on the full bounded queue (`SendError`).
+/// Tauri-free seam — unit-tested with fake callbacks (flush-before-done, exactly-once,
+/// fail-close, blocked-producer release); `open_pty` instantiates it with the real channel +
+/// reap/emit.
+fn run_batch_sender(
+    rx: std::sync::mpsc::Receiver<Vec<u8>>,
+    max: usize,
+    mut send_batch: impl FnMut(Vec<u8>) -> bool,
+    on_done: impl FnOnce(),
+) {
+    while let Some(batch) = next_batch(&rx, max) {
+        if !send_batch(batch) {
+            break; // transport gone (webview/channel closed)
+        }
+    }
+    drop(rx);
+    on_done();
+}
+
 #[tauri::command]
 fn open_pty(
     app: tauri::AppHandle,
@@ -246,15 +299,27 @@ fn open_pty(
     // park. After a successful spawn only, and after the registry lock above is released.
     state.poller_gate.notify_session_opened();
 
-    // Output → webview on a dedicated thread (ADR-0001) via the core pump. On stream end the
-    // session is reaped — `registry.close(id)` is idempotent and ids are never reused, so this
-    // stale-safe reap can never touch a newer session — and `pty:exited` is emitted best-effort
-    // (the webview may already be gone during shutdown).
+    // Output → webview via the core pump + the trmx-78 natural-batching sender (ADR-0001; one
+    // coalesced message per send instead of one per 4096-byte read). The pump thread's only job
+    // on stream end is dropping `tx` — the SENDER then flushes the queued tail and performs the
+    // reap + `pty:exited` emission, so the frontend can never observe the exit ahead of the
+    // stream's final bytes. `registry.close(id)` is idempotent and ids are never reused, so the
+    // stale-safe reap can never touch a newer session; the emit stays best-effort (the webview
+    // may already be gone during shutdown).
     let registry = Arc::clone(&state.registry);
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(PTY_HANDOFF_CHUNKS);
     std::thread::spawn(move || {
         termixion_core::pump(
             reader,
-            |chunk| channel.send(chunk.to_vec()).is_ok(),
+            |chunk| tx.send(chunk.to_vec()).is_ok(),
+            || {}, // end-of-stream duty moved to the sender: dropping tx is the signal
+        );
+    });
+    std::thread::spawn(move || {
+        run_batch_sender(
+            rx,
+            PTY_BATCH_MAX_BYTES,
+            |batch| channel.send(batch).is_ok(),
             move || {
                 let _ = registry.lock().map(|mut r| r.close(id));
                 let _ = app.emit("pty:exited", PtyExited { session_id: id });
@@ -890,6 +955,152 @@ mod tests {
         // 10 s → ≈ 105 s end-to-end. 300 s ≈ 3× headroom without masking a genuine hang.
         // ≈105 s schedule × ~3 headroom = the 300 s pinned here; change the consts together.
         assert_eq!(PERF_WATCHDOG_SECS, 300);
+    }
+
+    // --- trmx-78 round 2: the natural-batching sender seam ------------------------------------
+
+    use std::sync::mpsc::{Receiver, sync_channel};
+
+    fn chunks(rx_cap: usize, items: &[&[u8]]) -> Receiver<Vec<u8>> {
+        let (tx, rx) = sync_channel::<Vec<u8>>(rx_cap);
+        for item in items {
+            tx.send(item.to_vec()).expect("queue");
+        }
+        rx
+    }
+
+    #[test]
+    fn next_batch_forwards_a_lone_chunk_immediately() {
+        // Idle path: one queued echo byte becomes one batch — zero added latency by construction.
+        let rx = chunks(8, &[b"x" as &[u8]]);
+        assert_eq!(next_batch(&rx, 1024), Some(b"x".to_vec()));
+    }
+
+    #[test]
+    fn next_batch_coalesces_a_backlog_into_one_ordered_batch() {
+        let rx = chunks(8, &[b"aa" as &[u8], b"bb", b"cc"]);
+        assert_eq!(next_batch(&rx, 1024), Some(b"aabbcc".to_vec()));
+    }
+
+    #[test]
+    fn next_batch_respects_the_cap_and_leaves_the_rest_queued() {
+        let rx = chunks(8, &[b"aaaa" as &[u8], b"bbbb", b"cccc"]);
+        // Cap of 6 bytes: the first chunk always goes; the drain stops once the batch reaches it.
+        assert_eq!(next_batch(&rx, 6), Some(b"aaaabbbb".to_vec()));
+        assert_eq!(next_batch(&rx, 6), Some(b"cccc".to_vec()));
+    }
+
+    #[test]
+    fn next_batch_returns_none_when_closed_and_empty() {
+        let (tx, rx) = sync_channel::<Vec<u8>>(1);
+        drop(tx);
+        assert_eq!(next_batch(&rx, 1024), None);
+    }
+
+    #[test]
+    fn next_batch_drains_residue_after_close_then_none() {
+        let (tx, rx) = sync_channel::<Vec<u8>>(4);
+        tx.send(b"tail".to_vec()).expect("queue");
+        drop(tx);
+        assert_eq!(next_batch(&rx, 1024), Some(b"tail".to_vec()));
+        assert_eq!(next_batch(&rx, 1024), None);
+    }
+
+    /// Shared event log for the sender-lifecycle tests: send_batch and on_done both append, so
+    /// ordering and exactly-once are assertable from one sequence.
+    type EventLog = Arc<Mutex<Vec<String>>>;
+
+    fn event_log() -> (EventLog, EventLog, EventLog) {
+        let log: EventLog = Arc::new(Mutex::new(Vec::new()));
+        (Arc::clone(&log), Arc::clone(&log), log)
+    }
+
+    #[test]
+    fn sender_flushes_the_queued_tail_before_on_done() {
+        // (f) flush-before-reap: everything queued at close is delivered BEFORE on_done runs, so
+        // the frontend can never see pty:exited ahead of the stream's final bytes.
+        let (tx, rx) = sync_channel::<Vec<u8>>(8);
+        tx.send(b"tail-a".to_vec()).expect("queue");
+        tx.send(b"tail-b".to_vec()).expect("queue");
+        drop(tx);
+        let (for_send, for_done, log) = event_log();
+        run_batch_sender(
+            rx,
+            1024,
+            move |batch| {
+                for_send
+                    .lock()
+                    .expect("log")
+                    .push(format!("batch:{}", String::from_utf8_lossy(&batch)));
+                true
+            },
+            move || for_done.lock().expect("log").push("done".to_string()),
+        );
+        assert_eq!(
+            *log.lock().expect("log"),
+            vec!["batch:tail-atail-b".to_string(), "done".to_string()]
+        );
+    }
+
+    #[test]
+    fn sender_fires_on_done_exactly_once_on_eof() {
+        // (g) exactly-once completion on the normal end (pump dropped its sender).
+        let (tx, rx) = sync_channel::<Vec<u8>>(1);
+        drop(tx);
+        let (_, for_done, log) = event_log();
+        run_batch_sender(
+            rx,
+            1024,
+            |_| true,
+            move || {
+                for_done.lock().expect("log").push("done".to_string());
+            },
+        );
+        assert_eq!(*log.lock().expect("log"), vec!["done".to_string()]);
+    }
+
+    #[test]
+    fn sender_send_failure_terminates_and_still_fires_on_done_once() {
+        // (h) fail-close: the transport rejecting a batch ends the loop; on_done still runs
+        // exactly once (the reap path must cover the webview-gone case).
+        let (tx, rx) = sync_channel::<Vec<u8>>(8);
+        tx.send(b"a".to_vec()).expect("queue");
+        tx.send(b"b".to_vec()).expect("queue");
+        // tx deliberately kept alive: termination must come from the send failure, not EOF.
+        let (for_send, for_done, log) = event_log();
+        run_batch_sender(
+            rx,
+            1024,
+            move |_| {
+                for_send
+                    .lock()
+                    .expect("log")
+                    .push("send-attempt".to_string());
+                false
+            },
+            move || for_done.lock().expect("log").push("done".to_string()),
+        );
+        assert_eq!(
+            *log.lock().expect("log"),
+            vec!["send-attempt".to_string(), "done".to_string()]
+        );
+        drop(tx);
+    }
+
+    #[test]
+    fn sender_end_releases_a_producer_blocked_on_the_full_queue() {
+        // (i) a pump blocked on a full bounded hand-off must unblock with SendError once the
+        // sender ends (receiver dropped) — otherwise a dead webview would wedge the pump thread.
+        let (tx, rx) = sync_channel::<Vec<u8>>(1);
+        tx.send(b"fill".to_vec()).expect("queue");
+        let producer = std::thread::spawn(move || tx.send(b"blocked".to_vec()));
+        std::thread::sleep(Duration::from_millis(50)); // let the producer park on the full queue
+        run_batch_sender(rx, 1024, |_| false, || {});
+        let result = producer.join().expect("producer thread");
+        assert!(
+            result.is_err(),
+            "the blocked send must resolve to SendError after the receiver drops"
+        );
     }
 
     #[test]
