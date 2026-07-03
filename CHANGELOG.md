@@ -5,6 +5,12 @@ The user-facing changes to Termixion are documented here. The format follows
 [Semantic Versioning](https://semver.org). Auto-generated from Conventional Commits by git-cliff;
 internal changes (build / CI / tests / refactors / docs) live in the git history and the linked issues.
 
+## [0.0.3] - 2026-07-03
+
+### Added
+- Multiple tabs with per-tab PTY sessions, keyboard nav, drag reorder (trmx-74) (#105)
+- Live tab titles — manual rename > OSC 0/2 > foreground process (trmx-75) (#106)
+
 ## [0.0.2] - 2026-07-03
 
 ### Added
