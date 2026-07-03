@@ -24,6 +24,7 @@ import {
 } from "./scrollbar";
 import { initialAppearanceFromWindow, iterm2TerminalOptions } from "./iterm2Theme";
 import { emulationTerminalOptions } from "./emulationOptions";
+import { scrollbackTerminalOptions } from "./scrollbackSettings";
 import { makeLinkHandler, realOpenUrl } from "./linkHandler";
 import {
   attachWindowTitle,
@@ -71,6 +72,8 @@ export const realDeps: MountDeps = {
       ...iterm2TerminalOptions(initialAppearanceFromWindow()),
       ...themeTerminalOptions(settings),
       ...cursorTerminalOptions(settings),
+      // trmx-65: scrollback capacity + smooth discrete scrolling (10k cap until FR-13 config).
+      ...scrollbackTerminalOptions(),
       // trmx-64: the emulation-semantics slice (convertEol:false — VT-correct LF handling) spreads
       // LAST so it always wins; the conformance harness builds from this same exported slice.
       ...emulationTerminalOptions(),

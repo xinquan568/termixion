@@ -174,6 +174,34 @@ describe("attachScrollbar", () => {
     sb.dispose();
   });
 
+  it("tracks an ANIMATED scroll: a burst of native viewport events recomputes the thumb every frame (trmx-65)", () => {
+    // With smoothScrollDuration set (trmx-65), a discrete wheel step / Shift+PageUp animates: xterm
+    // emits a burst of native `.xterm-viewport` scroll events (still no public onScroll) as the
+    // animation interpolates viewportY. The overlay must re-derive geometry on every frame of the
+    // burst — a stale thumb mid-animation reads as lag.
+    const host = makeHost();
+    const viewport = document.createElement("div");
+    viewport.className = "xterm-viewport";
+    host.appendChild(viewport);
+
+    const fake = makeFakeTerminal();
+    const sb = attachScrollbar(host, fake.terminal);
+    const thumb = host.querySelector(".termixion-scrollbar__thumb") as HTMLElement;
+
+    const tops: number[] = [];
+    for (const frameViewportY of [80, 60, 40, 20]) {
+      fake.active.viewportY = frameViewportY;
+      viewport.dispatchEvent(new Event("scroll"));
+      tops.push(parseFloat(thumb.style.top));
+    }
+    // Every frame recomputed: four distinct, strictly decreasing thumb positions (scrolling back
+    // moves the thumb up toward the older content).
+    expect(new Set(tops).size).toBe(4);
+    for (let i = 1; i < tops.length; i++) expect(tops[i]).toBeLessThan(tops[i - 1]);
+
+    sb.dispose();
+  });
+
   it("removes the viewport scroll listener on dispose (no leaked recompute on the detached overlay)", () => {
     const host = makeHost();
     const viewport = document.createElement("div");

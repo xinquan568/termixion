@@ -19,6 +19,7 @@ import { Terminal } from "@xterm/xterm";
 import { realDeps } from "./TerminalView";
 import { iterm2TerminalOptions } from "./iterm2Theme";
 import { emulationTerminalOptions } from "./emulationOptions";
+import { scrollbackTerminalOptions } from "./scrollbackSettings";
 import { buildXtermTheme } from "../theme/buildXtermTheme";
 
 // The registry cursor defaults: trmx-51's underline, with blink turned off by trmx-55 (iTerm2
@@ -58,6 +59,7 @@ describe("realDeps.createTerminal (the display chokepoint)", () => {
       ...iterm2TerminalOptions("dark"),
       theme: buildXtermTheme("night"),
       ...TRMX51_CURSOR,
+      ...scrollbackTerminalOptions(),
       ...emulationTerminalOptions(),
       linkHandler: expect.anything(),
     });
@@ -70,6 +72,7 @@ describe("realDeps.createTerminal (the display chokepoint)", () => {
       ...iterm2TerminalOptions("light"),
       theme: buildXtermTheme("white"),
       ...TRMX51_CURSOR,
+      ...scrollbackTerminalOptions(),
       ...emulationTerminalOptions(),
       linkHandler: expect.anything(),
     });
@@ -111,6 +114,18 @@ describe("realDeps.createTerminal (the display chokepoint)", () => {
     // Round-2 pin: the OSC integrations dereference terminal.parser (proposed API) at mount —
     // without this flag the accessor throws and the app crashes (step-8 blocker).
     expect(opts?.allowProposedApi).toBe(true);
+  });
+
+  it("feeds the scrollback slice into xterm: 10k cap + smooth discrete scrolling (trmx-65)", () => {
+    // FR-1.3: the cap is OUR constant (not xterm's silent 1000) until FR-13 makes it a setting;
+    // smoothScrollDuration animates discrete scrolls (wheel steps, Shift+PageUp/PageDown).
+    stubMatchMedia(true);
+    realDeps.createTerminal();
+    const opts = vi.mocked(Terminal).mock.calls[0][0];
+    expect(opts?.scrollback).toBe(10_000);
+    expect(opts?.smoothScrollDuration).toBe(120);
+    // xterm's scroll-on-user-input default (typing snaps to bottom) must not be disabled.
+    expect(opts?.scrollOnUserInput).not.toBe(false);
   });
 
   it("wires the OSC 8 link policy at the chokepoint (trmx-64)", () => {
