@@ -156,6 +156,26 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/*
+ * trmx-75 — the inline rename input replaces .tab-strip__title in the tab's flex row, so it takes
+ * the same slot (flex + min-width so it can shrink inside a narrow tab instead of overflowing) and
+ * inherits the tab's font/color; themed via the same --tx-* vars as the strip, with a subtle accent
+ * ring so the edit state reads across all six themes.
+ */
+.tab-strip__rename {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  color: var(--tx-text);
+  background: var(--tx-bg);
+  border: 1px solid var(--tx-primary);
+  border-radius: 3px;
+  outline: none;
+  padding: 0 4px;
+  margin: 0;
+  height: 20px;
+  box-sizing: border-box;
+}
 /* Always in the DOM (hit-testable, testable); revealed on hover/keyboard focus only. */
 .tab-strip__close {
   flex: 0 0 auto;
