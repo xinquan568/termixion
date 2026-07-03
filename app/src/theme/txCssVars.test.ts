@@ -143,4 +143,17 @@ describe("settings.css cascade guard (plan D4 layer i)", () => {
     // color: #fff on an accent/semantic surface is exactly the Night-accent seam G5 fixed.
     expect(css).not.toMatch(/color:\s*#fff\b/);
   });
+
+  it("keeps the :root static fallback equal to txCssVars(night), var for var (step-8 F2)", () => {
+    // The pre-JS fallback IS Night's mapping (the dark first-run default, per the file header).
+    // A var emitted at runtime but missing here silently falls back to its var() default before
+    // JS applies — for --tx-on-accent that would resurrect the white-on-#58a6ff seam G5 fixed.
+    const root = /:root\s*\{([^}]*)\}/.exec(css);
+    expect(root).not.toBeNull();
+    const declared: Record<string, string> = {};
+    for (const m of root![1].matchAll(/(--tx-[\w-]+)\s*:\s*([^;]+);/g)) {
+      declared[m[1]] = m[2].trim();
+    }
+    expect(declared).toEqual(txCssVars(themes.night));
+  });
 });

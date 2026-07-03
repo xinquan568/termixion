@@ -9,11 +9,16 @@
 #       ANSI 16-color table on the theme background, a truecolor gradient, and the attribute row
 #       (bold/italic/underline). Pure ANSI escapes — no dependencies.
 #
-#   scripts/visual-review.sh capture [out-dir]
-#       Guided capture of all six themes. For each theme the operator switches Termixion's theme
-#       (Settings → Appearance), then clicks the Termixion window; the shot lands in
-#       <out-dir>/<theme>.png (default docs/design/visual-baseline/). macOS-only; needs the
-#       Screen Recording permission for the invoking terminal (System Settings → Privacy).
+#   scripts/visual-review.sh capture [out-dir] [app-path]
+#       Guided capture of all six themes. Resolves + opens the packaged app (default
+#       target/debug/bundle/macos/Termixion.app), then for each theme the operator switches
+#       Termixion's theme (Settings → Appearance) and clicks the Termixion window; the shot lands
+#       in <out-dir>/<theme>.png (default docs/design/visual-baseline/). macOS-only; interactive
+#       (needs a TTY); needs the Screen Recording permission for the invoking terminal.
+#       Capture is by window CLICK (`screencapture -w`), deliberately: the Tauri app is not
+#       AppleScript-scriptable, so there is no reliable CGWindowID to feed `screencapture -l`;
+#       the click IS the window selection. Keep the window at the reference size for all six
+#       shots (resize once before the first capture; the script reminds you).
 #
 # The packaged app to review is the debug bundle:
 #   (cd crates/termixion-tauri && cargo tauri build --debug)
@@ -50,16 +55,30 @@ content() {
 
 capture() {
   local out_dir="${1:-docs/design/visual-baseline}"
+  local app="${2:-target/debug/bundle/macos/Termixion.app}"
   if [[ "$(uname)" != "Darwin" ]]; then
     echo "visual-review: capture needs macOS (screencapture). Run the manual protocol from" >&2
     echo "docs/design/visual-baseline.md §5 instead." >&2
     exit 1
   fi
   command -v screencapture >/dev/null || { echo "visual-review: screencapture not found" >&2; exit 1; }
+  if [[ ! -e /dev/tty ]] || ! { true </dev/tty; } 2>/dev/null; then
+    echo "visual-review: no interactive TTY — capture is operator-guided by design (window" >&2
+    echo "click selects the non-scriptable Tauri window). Re-run from a real terminal session," >&2
+    echo "or follow the manual protocol in docs/design/visual-baseline.md §5." >&2
+    exit 1
+  fi
+  if [[ ! -e "$app" ]]; then
+    echo "visual-review: app not found at '$app' — build it first:" >&2
+    echo "  (cd crates/termixion-tauri && cargo tauri build --debug)" >&2
+    exit 1
+  fi
+  open "$app"
   mkdir -p "$out_dir"
   echo "Capture protocol (docs/design/visual-baseline.md §5):"
-  echo "  1. Launch the packaged debug app and run: scripts/visual-review.sh content"
-  echo "  2. For each theme below: switch it in Settings → Appearance, then click the window."
+  echo "  1. Resize the Termixion window ONCE to the reference size and keep it for all shots."
+  echo "  2. Inside Termixion run: scripts/visual-review.sh content"
+  echo "  3. For each theme below: switch it in Settings → Appearance, then click the window."
   echo
   local theme shot
   for theme in "${THEMES[@]}"; do
@@ -78,5 +97,5 @@ capture() {
 case "${1:-}" in
   content) content ;;
   capture) shift; capture "$@" ;;
-  *) grep '^#' "$0" | sed -n '3,20p' | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) grep '^#' "$0" | sed -n '3,25p' | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

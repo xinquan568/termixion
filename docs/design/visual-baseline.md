@@ -81,10 +81,10 @@ enough that the audited failures were real legibility defects:
 | Gate | Pair | Floor | Post-audit minimum |
 |---|---|---|---|
 | G1 | `text.primary` vs `bg.primary` | ≥ 4.5:1 (AA normal text) | Solarized 5.61 |
-| G2 | each ANSI color vs `bg.primary` (**`black` exempt**) | ≥ 2.5:1 | Night brightBlack 3.30 (was 1.83) |
+| G2 | each ANSI color vs `bg.primary` (**`black` exempt**) | ≥ 2.5:1 | Solarized brightBlack 2.79 (Night's, the audit fix, is 3.30 — was 1.83) |
 | G3 | `text.primary` vs composited `selectionBackground` | ≥ 4.5:1 | Solarized 4.62 (was 4.17) |
 | G4 | `terminal.cursor` vs `bg.primary` | ≥ 3:1 (UI component) | Solarized 5.61 |
-| G5 | `--tx-on-*` text vs its accent/success/error surface | ≥ 3:1 (UI component) | Solarized on-accent 4.08 |
+| G5 | `--tx-on-*` text vs its accent/success/error surface | ≥ 3:1 (UI component) | light-theme on-success 3.30 (white on `#16a34a`) |
 
 **The `black` exemption (G2):** ANSI black doubles as the TUI *background* color; every canonical
 dark theme keeps it ≈ its own background (iTerm2's black on its dark bg ≈ 1.0; Night 1.11,
@@ -109,12 +109,15 @@ The audit changed exactly two values, making the fixtures Termixion's own audite
 Full post-audit matrix (fg / selected-text / cursor vs `bg.primary`): White 17.40 / 11.95 / 17.40 ·
 Paper 14.89 / 10.42 / 14.89 · Mint 8.93 / 6.41 / 8.93 · Sepia 7.36 / 5.13 / 7.36 ·
 Night 10.73 / 7.16 / 10.73 · Solarized 5.61 / 4.62 / 5.61. All 6 themes × 15 gated ANSI colors
-pass G2 (minima: Night brightBlack 3.30, Solarized brightBlack 2.79).
+pass G2 (catalog minimum: Solarized brightBlack 2.79; Night brightBlack, the audit fix, is 3.30).
 
 **G5 picks** (derived by `pickReadableOn(surface, [#fff, bg.primary])`, never hardcoded): light
-themes keep white text on all three surfaces (5.35–7.10); Night uses its own dark bg `#23262b` on
-all three (4.70–9.05); Solarized splits — dark `#002b36` on accent (4.08) and success (4.69),
-white on error (4.63). The split is the proof the derivation is per-surface.
+themes keep white text on all three surfaces — on-accent 5.57–7.10, on-success 3.30 (white on
+`#16a34a`, the G5 catalog minimum), on-error 5.35; Night uses its own dark bg `#23262b` on all
+three (4.70–9.05); Solarized splits — dark `#002b36` on accent (4.08) and success (4.69), white
+on error (4.63). The split is the proof the derivation is per-surface. The `:root` static
+fallback in `settings.css` mirrors Night's full mapping including the three on-* vars (guarded
+var-for-var by `txCssVars.test.ts`).
 
 ## 5. Screenshot set + capture protocol
 
@@ -124,15 +127,17 @@ debug app:
 
 ```
 (cd crates/termixion-tauri && cargo tauri build --debug)
-open target/debug/bundle/macos/Termixion.app
-# inside Termixion:  bash scripts/visual-review.sh content
-bash scripts/visual-review.sh capture        # → docs/design/visual-baseline/<theme>.png
+bash scripts/visual-review.sh capture        # opens the app; → docs/design/visual-baseline/<theme>.png
+# inside Termixion, before capturing:  bash scripts/visual-review.sh content
 ```
 
 Theme switching is manual in v0.0.4 (Settings → Appearance; a scriptable hook would be a config
-surface, which FR-13/v0.0.5 owns). The set is committed under `docs/design/visual-baseline/` when
-size allows, else linked from the locking PR. **No pixel-diff CI gate** — font rendering makes it
-flaky; the gate is this protocol + the PR screenshot review (the issue's explicit call).
+surface, which FR-13/v0.0.5 owns), and window selection is by CLICK (`screencapture -w`) — the
+Tauri app is not AppleScript-scriptable, so there is no reliable CGWindowID for `-l`; resize the
+window once to the reference size and keep it fixed across all six shots. The set is committed
+under `docs/design/visual-baseline/` when size allows, else linked from the locking PR.
+**No pixel-diff CI gate** — font rendering makes it flaky; the gate is this protocol + the PR
+screenshot review (the issue's explicit call).
 
 ## 6. The forward rule (v0.0.6 / v0.0.7)
 

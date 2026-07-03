@@ -25,6 +25,12 @@
   --tx-primary: #58a6ff;
   --tx-success: #4ade80;
   --tx-error: #f85149;
+  /* trmx-77 G5: Night's derived on-surface text (all three resolve to Night's bg) — without
+   * these, pre-JS button text falls back to white on the light-blue accent, the exact seam G5
+   * fixed. Guarded: txCssVars.test.ts pins this block to equal txCssVars(night) var-for-var. */
+  --tx-on-accent: #23262b;
+  --tx-on-success: #23262b;
+  --tx-on-error: #23262b;
 }
 
 .tx-settings {
