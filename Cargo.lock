@@ -3936,11 +3936,11 @@ dependencies = [
 
 [[package]]
 name = "termixion-core"
-version = "0.0.2"
+version = "0.0.3"
 
 [[package]]
 name = "termixion-platform"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "portable-pty",
  "termixion-core",
@@ -3948,7 +3948,7 @@ dependencies = [
 
 [[package]]
 name = "termixion-tauri"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "serde",
  "serde_json",
