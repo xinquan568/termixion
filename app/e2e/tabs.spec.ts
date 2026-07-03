@@ -81,3 +81,38 @@ test("a mouse drag past the neighbor's midpoint reorders the tabs", async ({ pag
   // A drag is a reorder, not a click: the active tab (2) kept its identity across the move.
   await expect(page.getByTestId("tab-2")).toHaveClass(ACTIVE);
 });
+
+// trmx-75 (FR-2.4): the inline rename round-trip against a real browser. No backend here, so the
+// automatic layers bottom out at the "Shell" fallback — exactly what the clear-to-auto flow needs.
+test("double-click rename: Enter commits (spaces type), Esc cancels, empty commit reverts to Shell", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const label = page.getByTestId("tab-1").locator(".tab-strip__title");
+  const input = page.getByTestId("tab-rename-input");
+
+  // Commit: double-click swaps the label for a seeded, select-all input; typed text (with a
+  // space — the strip's Space-activates handler must never see it) replaces the selection.
+  await label.dblclick();
+  await expect(input).toBeVisible();
+  await expect(input).toHaveValue("Shell");
+  await input.pressSequentially("build box");
+  await input.press("Enter");
+  await expect(input).toHaveCount(0);
+  await expect(label).toHaveText("build box");
+
+  // Cancel: Esc discards the edit, the manual title stands.
+  await label.dblclick();
+  await expect(input).toHaveValue("build box");
+  await input.pressSequentially("nope");
+  await input.press("Escape");
+  await expect(input).toHaveCount(0);
+  await expect(label).toHaveText("build box");
+
+  // Clear-to-auto: an emptied commit drops the manual title; the fallback resurfaces.
+  await label.dblclick();
+  await input.fill("");
+  await input.press("Enter");
+  await expect(input).toHaveCount(0);
+  await expect(label).toHaveText("Shell");
+});

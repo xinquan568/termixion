@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: ISC
 // Copyright (c) 2026 Eric Y. Liu
-//! trmx-48/trmx-51/trmx-74: the application menu. It carries the standard macOS app / Edit /
-//! Window submenus plus the custom items — **About Termixion** and **Settings… (⌘,)** (both open
-//! the standalone Settings window via `window_manager::show_settings_window`; About lands on the
-//! About page) — and, since trmx-74, the tab surface: a **Shell** submenu (New Tab ⌘T, Close Tab
-//! ⌘W, Close Window ⇧⌘W) plus Window-menu tab cycling (Show Previous/Next Tab ⇧⌘[ / ⇧⌘]). ⌘W now
-//! belongs to Close Tab, so the Window submenu drops the predefined close item and closing the
-//! window moves to ⇧⌘W. The menu construction is runtime glue (exercised by `cargo tauri dev` /
-//! the packaged app); the pure id→action mapping is unit-tested.
+//! trmx-48/trmx-51/trmx-74/trmx-75: the application menu. It carries the standard macOS app /
+//! Edit / Window submenus plus the custom items — **About Termixion** and **Settings… (⌘,)**
+//! (both open the standalone Settings window via `window_manager::show_settings_window`; About
+//! lands on the About page) — and, since trmx-74, the tab surface: a **Shell** submenu (New Tab
+//! ⌘T, Close Tab ⌘W, Rename Tab… since trmx-75, Close Window ⇧⌘W) plus Window-menu tab cycling
+//! (Show Previous/Next Tab ⇧⌘[ / ⇧⌘]). ⌘W now belongs to Close Tab, so the Window submenu drops
+//! the predefined close item and closing the window moves to ⇧⌘W. The menu construction is
+//! runtime glue (exercised by `cargo tauri dev` / the packaged app); the pure id→action mapping
+//! is unit-tested.
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Runtime};
@@ -36,6 +37,8 @@ pub fn menu_action(id: &str) -> Option<MenuAction> {
         "settings" => Some(MenuAction::ShowSettings { section: None }),
         "shell-new-tab" => Some(MenuAction::EmitTabsAction("new")),
         "shell-close-tab" => Some(MenuAction::EmitTabsAction("close")),
+        // trmx-75: Rename Tab… — the frontend opens the inline rename input on the active tab.
+        "shell-rename-tab" => Some(MenuAction::EmitTabsAction("rename")),
         "shell-close-window" => Some(MenuAction::CloseMainWindow),
         "window-next-tab" => Some(MenuAction::EmitTabsAction("next")),
         "window-prev-tab" => Some(MenuAction::EmitTabsAction("prev")),
@@ -81,6 +84,16 @@ pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         true,
         Some("CmdOrCtrl+W"),
     )?;
+    // trmx-75: manual rename, directly below Close Tab. Deliberately NO accelerator — the fast
+    // path is double-clicking the tab label; the menu item exists for discoverability and for
+    // keyboard-only access via macOS menu navigation.
+    let rename_tab = MenuItem::with_id(
+        handle,
+        "shell-rename-tab",
+        "Rename Tab…",
+        true,
+        None::<&str>,
+    )?;
     let close_window = MenuItem::with_id(
         handle,
         "shell-close-window",
@@ -95,6 +108,7 @@ pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         &[
             &new_tab,
             &close_tab,
+            &rename_tab,
             &PredefinedMenuItem::separator(handle)?,
             &close_window,
         ],
@@ -179,6 +193,12 @@ mod tests {
             menu_action("shell-close-tab"),
             Some(MenuAction::EmitTabsAction("close"))
         );
+        // trmx-75: Rename Tab… broadcasts "rename"; the frontend opens the inline rename input
+        // on the active tab. Deliberately no accelerator — double-click is the fast path.
+        assert_eq!(
+            menu_action("shell-rename-tab"),
+            Some(MenuAction::EmitTabsAction("rename"))
+        );
     }
 
     #[test]
@@ -208,9 +228,11 @@ mod tests {
         assert_eq!(menu_action("quit"), None);
         assert_eq!(menu_action(""), None);
         assert_eq!(menu_action("copy"), None);
-        // Near-misses of the trmx-74 ids stay unmapped too.
+        // Near-misses of the trmx-74/trmx-75 ids stay unmapped too.
         assert_eq!(menu_action("shell-close"), None);
         assert_eq!(menu_action("window-tab"), None);
         assert_eq!(menu_action("new-tab"), None);
+        assert_eq!(menu_action("shell-rename"), None);
+        assert_eq!(menu_action("rename-tab"), None);
     }
 }

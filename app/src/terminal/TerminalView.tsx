@@ -133,11 +133,14 @@ export type AttachScrollbar = (
  * defaults are the real Tauri/webview edges (inert without a runtime). trmx-74: the OSC 7 cwd
  * lands in `cwdStore` — App injects one PER TAB so each tab retains its own shell cwd
  * (new-tab-inherits-cwd); when omitted it stays the module-default store, so every pre-tab
- * consumer and test is unaffected.
+ * consumer and test is unaffected. trmx-75: `onTitle` redirects the OSC 0/2 TITLE sink — App
+ * injects a per-tab callback so a program's title retitles its TAB (the reducer's `osc` source),
+ * not the native window; when omitted the sink stays `realSetWindowTitle` (standalone compat).
  */
 export type AttachOscIntegrations = (
   terminal: TerminalLike,
   cwdStore?: CwdStore,
+  onTitle?: (title: string) => void,
 ) => () => void;
 
 export function realAttachOscIntegrations(
@@ -166,9 +169,17 @@ export function realAttachOscIntegrations(
 
 // The default seam value: the real integrations over the real sinks, with the caller's per-tab
 // store (or the module default) threaded through. A module-level const — an inline arrow would
-// change identity every render and remount the terminal via the effect deps (trmx-74).
-const defaultAttachOscIntegrations: AttachOscIntegrations = (terminal, cwdStore) =>
-  realAttachOscIntegrations(terminal, undefined, cwdStore);
+// change identity every render and remount the terminal via the effect deps (trmx-74). trmx-75:
+// a caller-provided title sink REPLACES realSetWindowTitle (the tab layer owns the window title
+// now — only the active tab's effective title may reach it, from App's window-title effect).
+const defaultAttachOscIntegrations: AttachOscIntegrations = (terminal, cwdStore, onTitle) =>
+  realAttachOscIntegrations(
+    terminal,
+    onTitle === undefined
+      ? undefined
+      : { setTitle: onTitle, writeClipboard: realWriteClipboard },
+    cwdStore,
+  );
 
 /**
  * trmx-66: bind the owned ⌘C/⌘V clipboard guards (capture-phase copy/paste on the host — see
@@ -233,6 +244,13 @@ export interface TerminalViewProps {
    * behavior).
    */
   cwdStore?: CwdStore;
+  /**
+   * Where this terminal's OSC 0/2 titles land (trmx-75): App injects a per-tab callback (cached
+   * — an unstable identity would remount the terminal via the effect deps) that routes the title
+   * into the tab reducer's `osc` source. When omitted the title keeps retitling the native
+   * window directly (`realSetWindowTitle` — standalone/pre-tab behavior).
+   */
+  onOscTitle?: (title: string) => void;
   /** Injection seam for tests; defaults to the real ⌘C/⌘V clipboard guards (trmx-66). */
   attachClipboard?: AttachClipboard;
   /**
@@ -253,6 +271,7 @@ export function TerminalView({
   attachOscIntegrations = defaultAttachOscIntegrations,
   attachClipboard = realAttachClipboard,
   cwdStore,
+  onOscTitle,
   resizeSchedule,
 }: TerminalViewProps) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -271,8 +290,10 @@ export function TerminalView({
       { document: host.ownerDocument },
     );
     // trmx-64: OSC integrations (0/2 title → window title, 52 → write-only clipboard, 7 → cwd —
-    // into this tab's injected store when the tab layer provides one, trmx-74).
-    const detachOsc = attachOscIntegrations(handle.terminal, cwdStore);
+    // into this tab's injected store when the tab layer provides one, trmx-74). trmx-75: when the
+    // tab layer provides onOscTitle, OSC titles go THERE (the tab's `osc` source) instead of the
+    // native window.
+    const detachOsc = attachOscIntegrations(handle.terminal, cwdStore, onOscTitle);
     // trmx-66: owned ⌘C/⌘V — capture-phase guards on the host (sanitized paste, no-clear copy).
     const detachClipboard = attachClipboard(host, handle.terminal);
     // Keep the grid filling the host as the window resizes (issue 2): a size change re-fits, which
@@ -320,7 +341,7 @@ export function TerminalView({
       scrollbar.dispose();
       handle.dispose();
     };
-  }, [mount, deps, onReady, observeResize, attachScrollbar, observeSettings, attachOscIntegrations, attachClipboard, cwdStore, resizeSchedule]);
+  }, [mount, deps, onReady, observeResize, attachScrollbar, observeSettings, attachOscIntegrations, attachClipboard, cwdStore, onOscTitle, resizeSchedule]);
 
   return <div ref={hostRef} data-testid="terminal" className="terminal-host" />;
 }

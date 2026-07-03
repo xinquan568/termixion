@@ -22,7 +22,19 @@
 // - Closing the LAST tab closes the WINDOW (the backend's CloseRequested kill_all owns cleanup).
 // Every runtime edge is an injectable seam prop with a real default (the TerminalView pattern),
 // so App.test.tsx drives all of it headless with fakes.
-import { useEffect, useReducer, useRef } from "react";
+//
+// trmx-75 (FR-2.4): App is also the TITLE ROUTER over the layered sources (tabTitle.ts):
+// - Each tab's OSC 0/2 titles arrive over a per-tab cached `onOscTitle` callback (identity-stable
+//   like `readyFor` — an unstable one would remount the terminal) → the reducer's `osc` slot.
+// - The poller's `session:title-hint` broadcasts route by sessionId → the `process` slot
+//   (unknown sessions inert — a hint can race a close).
+// - The NATIVE window title mirrors only the ACTIVE tab's effective title (background isolation).
+// - The core mirror writes each tab's EFFECTIVE title into its attached session
+//   (`set_session_title` — App is the SOLE core-title writer; hints never reach the core raw).
+// - Rename UI: `renamingTabId` lives here; menu "rename" targets the active tab, a label
+//   double-click activates + renames; while renaming, focus-follows-activation is SUPPRESSED so
+//   the input keeps the keyboard, and commit/cancel hands focus back to the terminal.
+import { useEffect, useReducer, useRef, useState } from "react";
 import { TerminalView } from "./terminal/TerminalView";
 import { TabStrip } from "./tabs/TabStrip";
 import {
@@ -32,9 +44,16 @@ import {
 } from "./tabs/tabState";
 import { describeTarget, tabKeyAction } from "./tabs/tabKeymap";
 import { useBackend } from "./ipc/useBackend";
-import { closePty, onPtyExited, type SessionInfo } from "./ipc/backend";
+import {
+  closePty,
+  onPtyExited,
+  onTitleHint,
+  setSessionTitle,
+  type SessionInfo,
+} from "./ipc/backend";
 import { realEventBus } from "./ipc/eventBus";
 import { makeCwdStore, type CwdStore } from "./terminal/osc7";
+import { realSetWindowTitle } from "./terminal/windowTitle";
 import type { TerminalHandle } from "./terminal/mountTerminal";
 import { UpdateAuthorityHost } from "./update/UpdateAuthorityHost";
 
@@ -52,6 +71,11 @@ export type TabsActionObservation = (onAction: (payload: unknown) => void) => ()
 
 /** Observe `pty:exited` sessionIds; returns a teardown. */
 export type PtyExitedObservation = (onExit: (sessionId: number) => void) => () => void;
+
+/** Observe `session:title-hint` broadcasts (trmx-75); returns a teardown. */
+export type TitleHintObservation = (
+  onHint: (sessionId: number, name: string) => void,
+) => () => void;
 
 /**
  * The production last-tab-close sink: close the native window. Lazy-imported and error-swallowed
@@ -102,6 +126,12 @@ export interface AppProps {
   observeTabsAction?: TabsActionObservation;
   /** Injection seam for tests; defaults to the real `pty:exited` event-bus subscription. */
   observePtyExited?: PtyExitedObservation;
+  /** Injection seam for tests; defaults to the real `session:title-hint` subscription (trmx-75). */
+  observeTitleHint?: TitleHintObservation;
+  /** Injection seam for tests; defaults to retitling the native window (trmx-75). */
+  setWindowTitle?: (title: string) => void;
+  /** Injection seam for tests; defaults to the real `set_session_title` core mirror (trmx-75). */
+  mirrorTitle?: (sessionId: number, title: string) => Promise<void>;
 }
 
 export function App({
@@ -110,11 +140,17 @@ export function App({
   closeSession = closePty,
   observeTabsAction = realObserveTabsAction,
   observePtyExited = onPtyExited,
+  observeTitleHint = onTitleHint,
+  setWindowTitle = realSetWindowTitle,
+  mirrorTitle = setSessionTitle,
 }: AppProps = {}) {
   const { attachTerminal } = useBackend();
   const attachFn = attach ?? attachTerminal;
 
   const [state, dispatch] = useReducer(reduceTabs, undefined, initialTabsState);
+  // trmx-75: the tab whose label is an inline rename input (null = not renaming). While non-null,
+  // focus-follows-activation is suppressed so the input keeps the keyboard.
+  const [renamingTabId, setRenamingTabId] = useState<number | null>(null);
 
   // Mirror of the reducer state for callbacks that fire OUTSIDE the render cycle (attach
   // resolutions, event subscriptions) — kept current by the effect below.
@@ -125,6 +161,8 @@ export function App({
   const sessionsRef = useRef(new Map<number, number>()); // attached backend sessionIds
   const pendingCwdRef = useRef(new Map<number, string | undefined>()); // cwd to seed the open with
   const readyCbsRef = useRef(new Map<number, (handle: TerminalHandle) => void>()); // stable onReady per tab
+  const oscTitleCbsRef = useRef(new Map<number, (title: string) => void>()); // stable onOscTitle per tab (trmx-75)
+  const mirroredRef = useRef(new Map<number, string>()); // last title mirrored to the core, per tab (trmx-75)
   // Attach epoch per tab: each onReady invocation bumps it, and a resolution whose epoch is no
   // longer current is STALE. StrictMode's dev mount→unmount→remount fires onReady twice for the
   // same live tab, opening two PTYs — only the epoch that matches keeps its session; the stale
@@ -134,8 +172,8 @@ export function App({
 
   // Latest-seam ref: the cached per-tab onReady callbacks (stable identity — an inline arrow
   // would remount the terminal via TerminalView's effect deps) read the CURRENT seams through it.
-  const seamsRef = useRef({ attach: attachFn, closeWindow, closeSession });
-  seamsRef.current = { attach: attachFn, closeWindow, closeSession };
+  const seamsRef = useRef({ attach: attachFn, closeWindow, closeSession, setWindowTitle, mirrorTitle });
+  seamsRef.current = { attach: attachFn, closeWindow, closeSession, setWindowTitle, mirrorTitle };
 
   useEffect(() => {
     stateRef.current = state;
@@ -203,6 +241,26 @@ export function App({
     return cb;
   };
 
+  // This tab's onOscTitle, cached like `readyFor` (an unstable identity would remount the
+  // terminal via TerminalView's effect deps — keep-alive). A program's OSC 0/2 title lands in
+  // the reducer's `osc` slot; the EMPTY string is the escape sequence's reset (printf '\e]2;\a')
+  // and clears the slot (trmx-75 empty-OSC-clears rule). Sanitization lives in the reducer.
+  const oscTitleFor = (tabId: number): ((title: string) => void) => {
+    let cb = oscTitleCbsRef.current.get(tabId);
+    if (!cb) {
+      cb = (title) => {
+        dispatch({
+          kind: "setTitleSource",
+          tabId,
+          source: "osc",
+          value: title === "" ? null : title,
+        });
+      };
+      oscTitleCbsRef.current.set(tabId, cb);
+    }
+    return cb;
+  };
+
   // Open a new tab inheriting the ACTIVE tab's cwd: capture it NOW (the user's intent is "where I
   // am"), keyed by the id the reducer WILL allocate (nextTabId — read before dispatch, mirroring
   // the reducer's own allocation). The active tab's store exists from mount, so this works even
@@ -233,6 +291,12 @@ export function App({
     storesRef.current.delete(tabId);
     pendingCwdRef.current.delete(tabId);
     readyCbsRef.current.delete(tabId);
+    oscTitleCbsRef.current.delete(tabId);
+    mirroredRef.current.delete(tabId);
+    // trmx-75: a tab dying MID-RENAME (e.g. its shell exited) must clear the rename state, or a
+    // stuck non-null renamingTabId would suppress focus-follows-activation forever. Functional
+    // update — this callback runs outside the render cycle and must not read stale state.
+    setRenamingTabId((current) => (current === tabId ? null : current));
     if (sessionId !== undefined && !opts?.alreadyExited) {
       closeSessionOf(sessionId);
     }
@@ -246,13 +310,41 @@ export function App({
 
   const requestCloseTab = (tabId: number) => closeTabInternal(tabId);
 
+  // trmx-75: the rename intents. Start = activate + flip into rename (the double-click path — a
+  // background tab's label must both surface its terminal AND open the editor); commit maps an
+  // empty-after-trim value to null, the reducer's clear-to-auto (the osc/process/fallback layers
+  // resurface); cancel just drops the edit. Commit/cancel clearing `renamingTabId` re-runs the
+  // focus effect below, handing the keyboard back to the active tab's terminal.
+  const startRename = (tabId: number) => {
+    dispatch({ kind: "activateTab", tabId });
+    setRenamingTabId(tabId);
+  };
+  const commitRename = (tabId: number, value: string) => {
+    dispatch({
+      kind: "setTitleSource",
+      tabId,
+      source: "manual",
+      value: value.trim() === "" ? null : value,
+    });
+    setRenamingTabId(null);
+  };
+  const cancelRename = () => setRenamingTabId(null);
+
   // Subscriptions: the backend's pty:exited (a shell exited → its tab closes, session already
-  // dead) and the menu's tabs:action intents. One effect, teardown-safe; the handlers reach
-  // state through stateRef only, so the first render's closures never go stale.
+  // dead), the poller's session:title-hint (trmx-75 — route by sessionId into the `process`
+  // title slot; a hint for a session no tab owns raced a close and is inert), and the menu's
+  // tabs:action intents. One effect, teardown-safe; the handlers reach state through stateRef
+  // only, so the first render's closures never go stale.
   useEffect(() => {
     const stopExited = observePtyExited((sessionId) => {
       const tab = tabBySessionId(stateRef.current, sessionId);
       if (tab) closeTabInternal(tab.tabId, { alreadyExited: true });
+    });
+    const stopTitleHints = observeTitleHint((sessionId, name) => {
+      const tab = tabBySessionId(stateRef.current, sessionId);
+      if (tab) {
+        dispatch({ kind: "setTitleSource", tabId: tab.tabId, source: "process", value: name });
+      }
     });
     const stopTabsAction = observeTabsAction((payload) => {
       // Events are untrusted input (cf. onPtyExited's payload guard): only the exact verb
@@ -263,12 +355,19 @@ export function App({
         if (active !== null) closeTabInternal(active);
       } else if (payload === "next") dispatch({ kind: "nextTab" });
       else if (payload === "prev") dispatch({ kind: "prevTab" });
+      else if (payload === "rename") {
+        // trmx-75: the Shell ▸ Rename Tab… menu item targets the ACTIVE tab (guard: only when
+        // a tab actually exists — activeTabId is null exactly when the strip is empty).
+        const active = stateRef.current.activeTabId;
+        if (active !== null) setRenamingTabId(active);
+      }
     });
     return () => {
       stopExited();
+      stopTitleHints();
       stopTabsAction();
     };
-  }, [observePtyExited, observeTabsAction]);
+  }, [observePtyExited, observeTitleHint, observeTabsAction]);
 
   // ⌘1..⌘9 select a tab by index (⌘9 = last, the reducer's rule). Capture phase on window so the
   // chord wins even while xterm's helper textarea has focus; tabKeymap vetoes non-terminal
@@ -288,11 +387,43 @@ export function App({
   // Focus follows activation: the newly active tab's terminal takes the keyboard. `focus()` is
   // on the real xterm Terminal but outside TerminalLike's deliberate narrowness — the localized
   // adapter cast (cf. useBackend's rows/cols read); bare test fakes may omit it.
+  // trmx-75 focus discipline: SUPPRESSED while a rename is in flight — the double-click path
+  // activates the tab in the same batch that opens the input, and stealing focus back to the
+  // terminal would kill the edit. When renamingTabId returns to null (commit/cancel/tab-death),
+  // the dep change re-runs this effect and the active tab's terminal takes the keyboard back.
   useEffect(() => {
+    if (renamingTabId !== null) return;
     if (state.activeTabId === null) return;
     const terminal = handlesRef.current.get(state.activeTabId)?.terminal;
     (terminal as unknown as { focus?: () => void } | undefined)?.focus?.();
-  }, [state.activeTabId]);
+  }, [state.activeTabId, renamingTabId]);
+
+  // trmx-75: the NATIVE window title is the ACTIVE tab's effective title — background tabs never
+  // reach it (their OSC titles stop at their strip labels), and a switch re-fires because the
+  // rendered `activeTitle` changes. Undefined = no tabs yet (boot) — leave the window alone.
+  const activeTitle = state.tabs.find((t) => t.tabId === state.activeTabId)?.title;
+  useEffect(() => {
+    if (activeTitle === undefined) return;
+    seamsRef.current.setWindowTitle(activeTitle);
+  }, [activeTitle]);
+
+  // trmx-75: the core mirror — every ATTACHED tab's effective title is written into its session
+  // (set_session_title) whenever it changes, so core `Session::title` always matches the UI. The
+  // per-tab dedup map is load-bearing twice over: it bounds the invoke stream to real changes,
+  // and it is WHY a raw hint can never leak into the core — a process hint under a manual/OSC
+  // title leaves `tab.title` unchanged, so nothing is written. Fire-and-forget with a catch: a
+  // lost race against a closing session must not crash the shell.
+  useEffect(() => {
+    for (const tab of state.tabs) {
+      const sessionId = sessionsRef.current.get(tab.tabId);
+      if (sessionId === undefined) continue; // not attached yet — nothing to mirror into
+      if (mirroredRef.current.get(tab.tabId) === tab.title) continue;
+      mirroredRef.current.set(tab.tabId, tab.title);
+      seamsRef.current.mirrorTitle(sessionId, tab.title).catch((err: unknown) => {
+        console.error("[termixion] title mirror failed", err);
+      });
+    }
+  }, [state.tabs]);
 
   return (
     <main className="app">
@@ -306,17 +437,25 @@ export function App({
             data-testid={`tab-host-${tab.tabId}`}
             style={{ display: tab.tabId === state.activeTabId ? undefined : "none" }}
           >
-            <TerminalView onReady={readyFor(tab.tabId)} cwdStore={storeFor(tab.tabId)} />
+            <TerminalView
+              onReady={readyFor(tab.tabId)}
+              cwdStore={storeFor(tab.tabId)}
+              onOscTitle={oscTitleFor(tab.tabId)}
+            />
           </div>
         ))}
       </div>
       <TabStrip
         tabs={state.tabs}
         activeTabId={state.activeTabId}
+        renamingTabId={renamingTabId}
         onActivate={(tabId) => dispatch({ kind: "activateTab", tabId })}
         onClose={requestCloseTab}
         onNew={requestNewTab}
         onMove={(from, to) => dispatch({ kind: "moveTab", from, to })}
+        onRenameStart={startRename}
+        onRenameCommit={commitRename}
+        onRenameCancel={cancelRename}
       />
       <UpdateAuthorityHost />
     </main>

@@ -104,8 +104,31 @@ impl SessionRegistry {
         }
     }
 
+    /// Override the session's title (trmx-75, FR-2.4). The frontend is the **single core-title
+    /// writer**: it mirrors each tab's EFFECTIVE title (manual > OSC > process > fallback,
+    /// computed in the reducer) through the shell's `set_session_title` command into here. The
+    /// foreground-name poller only *hints* and never calls this — so a process-name hint can
+    /// never clobber a manual rename or an OSC title. Absent id → [`PtyError::NotFound`].
+    pub fn set_title(&mut self, id: SessionId, title: impl Into<String>) -> Result<(), PtyError> {
+        self.sessions
+            .get_mut(&id)
+            .ok_or(PtyError::NotFound(id))?
+            .set_title(title);
+        Ok(())
+    }
+
+    /// The session's current title, owned (trmx-75 — the mirror read-back for tests and the
+    /// shell, without holding a borrow of the registry). Absent id → [`PtyError::NotFound`].
+    pub fn title(&self, id: SessionId) -> Result<String, PtyError> {
+        self.sessions
+            .get(&id)
+            .ok_or(PtyError::NotFound(id))
+            .map(|session| session.title().to_string())
+    }
+
     /// The child's OS pid, if the backend exposes one. Absent id → [`PtyError::NotFound`].
-    /// (Consumed by the platform golden tests' no-zombie assertions; later by FR-2.4/FR-7a.)
+    /// (Consumed by the platform golden tests' no-zombie assertions and, since trmx-75, by the
+    /// shell's foreground-name poller; later by FR-7a.)
     pub fn process_id(&self, id: SessionId) -> Result<Option<u32>, PtyError> {
         self.sessions
             .get(&id)
@@ -285,5 +308,29 @@ mod tests {
             .expect("spawn");
         // Fakes have no real child; the registry surfaces the backend's answer verbatim.
         assert_eq!(reg.process_id(id).expect("live id"), None);
+    }
+
+    #[test]
+    fn set_title_round_trips_through_the_registry() {
+        // trmx-75 (FR-2.4): the frontend mirrors each tab's EFFECTIVE title into the core via
+        // set_title; title() reads it back. Spawn seeds the title from the spec's program (the
+        // Session contract), then the override must round-trip verbatim.
+        let factory = SeparableFakePtyFactory;
+        let mut reg = SessionRegistry::new();
+        let (id, _r) = reg
+            .spawn(&factory, &spec(), PtySize::default())
+            .expect("spawn");
+        assert_eq!(reg.title(id).expect("live id"), "/bin/sh");
+        reg.set_title(id, "vim — main.rs").expect("set_title");
+        assert_eq!(reg.title(id).expect("live id"), "vim — main.rs");
+    }
+
+    #[test]
+    fn set_title_and_title_report_not_found_for_absent_ids() {
+        // trmx-75: sibling-shaped with write/resize/process_id — an id the registry has never
+        // seen (or already removed) refuses with NotFound rather than silently ignoring.
+        let mut reg = SessionRegistry::new();
+        assert!(matches!(reg.set_title(9, "x"), Err(PtyError::NotFound(9))));
+        assert!(matches!(reg.title(9), Err(PtyError::NotFound(9))));
     }
 }

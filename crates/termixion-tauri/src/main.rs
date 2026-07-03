@@ -3,21 +3,25 @@
 //! Termixion — the thin Tauri 2 desktop shell. Since trmx-74 it drives the multi-session
 //! [`SessionRegistry`] (one session per tab) and streams each session to the xterm.js webview over
 //! its own Tauri IPC `Channel` (ADR-0001): a dedicated thread per session runs the core reader
-//! pump while `pty_write` / `pty_resize` / `close_pty` route by session id. The session domain
-//! logic lives in `termixion-core`; this file is runtime glue (validated by the C-3 packaged
-//! `--smoke` and `cargo tauri dev`) — the pure pieces (`program_title`, the payload wire shapes)
-//! are unit-tested.
+//! pump while `pty_write` / `pty_resize` / `close_pty` route by session id. trmx-75 (FR-2.4) adds
+//! the tab-title plumbing: a 1 Hz foreground-name poller (condvar-parked at zero sessions via
+//! [`PollerGate`]) emitting change-only `session:title-hint` events, and the `set_session_title`
+//! command through which the frontend — the single core-title writer — mirrors each tab's
+//! effective title. The session domain logic lives in `termixion-core`; this file is runtime glue
+//! (validated by the C-3 packaged `--smoke` and `cargo tauri dev`) — the pure pieces
+//! (`program_title`, [`poll_tick`], the payload wire shapes, the gate's park/wake) are unit-tested.
 
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use tauri::ipc::Channel;
 use tauri::{Emitter, Manager, State, WindowEvent};
 use termixion_core::{PtySize, SessionRegistry, SessionSpec};
-use termixion_platform::MacosPtyFactory;
+use termixion_platform::{MacosPtyFactory, foreground_process};
 
 mod menu;
 mod window_manager;
@@ -25,10 +29,142 @@ mod window_manager;
 /// The live terminal sessions (trmx-74): one per tab, keyed by the registry's monotonic
 /// **never-reused** ids. That id discipline replaces the old single-slot generation counter — a
 /// stale reader thread reaping its own id after that session is gone is an idempotent no-op that
-/// can never touch another session (documented in `termixion_core::registry`).
+/// can never touch another session (documented in `termixion_core::registry`). trmx-75 adds the
+/// [`PollerGate`] `open_pty` uses to wake the foreground-title poller out of its zero-session park.
 #[derive(Default)]
 struct PtyState {
     registry: Arc<Mutex<SessionRegistry>>,
+    poller_gate: Arc<PollerGate>,
+}
+
+/// trmx-75: the zero-session park for the foreground-title poller — a REAL condvar block, not a
+/// timed idle loop, so an empty world costs zero wakeups. `has_sessions` is a **wake latch**:
+/// [`PollerGate::notify_session_opened`] sets it (then wakes), and the poller's
+/// [`PollerGate::wait_while_empty`] blocks until it is set, consuming it on return. The
+/// set-BEFORE-wake + consume-on-return protocol makes a missed wake impossible: a session opened
+/// between the poller's empty snapshot and its park leaves the latch set, so the park is a
+/// pass-through and the next snapshot sees the session. (The cost is at most one spurious
+/// pass-through after a stale latch — the poller just re-reads an empty snapshot and parks.)
+#[derive(Default)]
+struct PollerGate {
+    has_sessions: Mutex<bool>,
+    wake: Condvar,
+}
+
+impl PollerGate {
+    /// A session was spawned: set the latch, then wake a parked poller. Called by `open_pty`
+    /// after a successful spawn (never on failure — nothing new to watch).
+    fn notify_session_opened(&self) {
+        if let Ok(mut opened) = self.has_sessions.lock() {
+            *opened = true;
+        }
+        self.wake.notify_all();
+    }
+
+    /// Block until a session has been opened (since the last consumed wake), then consume the
+    /// latch so the NEXT empty-world park blocks again. Poisoned-lock recovery is "just return":
+    /// a poisoned gate means a panicking peer, and the poller degrades to re-snapshotting.
+    fn wait_while_empty(&self) {
+        let Ok(guard) = self.has_sessions.lock() else {
+            return;
+        };
+        let Ok(mut opened) = self.wake.wait_while(guard, |opened| !*opened) else {
+            return;
+        };
+        *opened = false;
+    }
+}
+
+/// Payload of the `session:title-hint` event (trmx-75): the foreground poller observed that
+/// session `session_id`'s foreground process is now `name`. A **hint only** — the frontend folds
+/// it into its per-tab title sources (where manual/OSC outrank it) and remains the single core-
+/// title writer; the poller never calls `registry.set_title`. camelCase for the frontend.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TitleHint {
+    session_id: u64,
+    name: String,
+}
+
+/// One poller tick's pure diff (trmx-75): `resolved` is this tick's snapshot with the foreground
+/// names already resolved (`None` = resolution failed right now), `prev` the names last hinted.
+/// Returns the change-only hints (new session, or a name that differs from `prev`) plus the next
+/// carry map. Dead sessions (absent from `resolved`) drop out of the carry; an unresolved name
+/// carries its previous value silently so a transient `ps` hiccup neither hints nor causes the
+/// recovered identical name to re-emit. Pure — the subprocess edge stays in the loop around it.
+fn poll_tick(
+    resolved: Vec<(u64, Option<String>)>,
+    prev: &HashMap<u64, String>,
+) -> (Vec<TitleHint>, HashMap<u64, String>) {
+    let mut hints = Vec::new();
+    let mut next = HashMap::new();
+    for (session_id, name) in resolved {
+        match name {
+            Some(name) => {
+                if prev.get(&session_id) != Some(&name) {
+                    hints.push(TitleHint {
+                        session_id,
+                        name: name.clone(),
+                    });
+                }
+                next.insert(session_id, name);
+            }
+            None => {
+                if let Some(kept) = prev.get(&session_id) {
+                    next.insert(session_id, kept.clone());
+                }
+            }
+        }
+    }
+    (hints, next)
+}
+
+/// trmx-75: the foreground-title poller loop, spawned once in `setup`. Each tick snapshots
+/// `(id, shell_pid)` pairs under the registry lock and **drops the lock before any `ps` call**
+/// (lock discipline — subprocess latency must never stall `pty_write`); an empty snapshot clears
+/// the carry map (a reopened world starts fresh) and parks on the [`PollerGate`] condvar until
+/// `open_pty` wakes it; otherwise it resolves names via [`foreground_process`], diffs through the
+/// pure [`poll_tick`], emits `session:title-hint` best-effort (the webview may be mid-teardown),
+/// and sleeps 1 s. It NEVER writes core titles — the frontend is the single writer.
+fn run_title_poller(
+    app: tauri::AppHandle,
+    registry: Arc<Mutex<SessionRegistry>>,
+    gate: Arc<PollerGate>,
+) {
+    let mut prev: HashMap<u64, String> = HashMap::new();
+    loop {
+        // Snapshot under the lock, then release it before the subprocess calls below.
+        let snapshot: Vec<(u64, Option<u32>)> = match registry.lock() {
+            Ok(reg) => reg
+                .ids()
+                .into_iter()
+                .map(|id| (id, reg.process_id(id).ok().flatten()))
+                .collect(),
+            // A poisoned registry means a panicking peer thread; the poller is best-effort
+            // decoration, so it just stops rather than compounding the failure.
+            Err(_) => return,
+        };
+        if snapshot.is_empty() {
+            prev.clear();
+            gate.wait_while_empty();
+            continue;
+        }
+        let resolved: Vec<(u64, Option<String>)> = snapshot
+            .into_iter()
+            .map(|(id, pid)| {
+                (
+                    id,
+                    pid.and_then(|pid| foreground_process(pid).map(|fg| fg.name)),
+                )
+            })
+            .collect();
+        let (hints, next) = poll_tick(resolved, &prev);
+        prev = next;
+        for hint in hints {
+            let _ = app.emit("session:title-hint", hint);
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
 }
 
 /// What `open_pty` returns to the webview: the id every later `pty_write`/`pty_resize`/`close_pty`
@@ -102,6 +238,10 @@ fn open_pty(
         .spawn(&MacosPtyFactory, &spec, PtySize::new(rows, cols))
         .map_err(|e| e.to_string())?;
 
+    // trmx-75: a session now exists to watch — wake the title poller out of its zero-session
+    // park. After a successful spawn only, and after the registry lock above is released.
+    state.poller_gate.notify_session_opened();
+
     // Output → webview on a dedicated thread (ADR-0001) via the core pump. On stream end the
     // session is reaped — `registry.close(id)` is idempotent and ids are never reused, so this
     // stale-safe reap can never touch a newer session — and `pty:exited` is emitted best-effort
@@ -161,6 +301,24 @@ fn close_pty(session_id: u64, state: State<'_, PtyState>) -> Result<(), String> 
         .lock()
         .map_err(|_| "pty state poisoned".to_string())?
         .close(session_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Mirror a tab's EFFECTIVE title into its core session (trmx-75). The frontend computes the
+/// effective title (manual > OSC > process hint > fallback) in its reducer and is the **single
+/// core-title writer** — the foreground poller only emits hints and never lands here. Absent id
+/// (a tab whose session already exited) surfaces the registry's NotFound as an error string.
+#[tauri::command]
+fn set_session_title(
+    session_id: u64,
+    title: String,
+    state: State<'_, PtyState>,
+) -> Result<(), String> {
+    state
+        .registry
+        .lock()
+        .map_err(|_| "pty state poisoned".to_string())?
+        .set_title(session_id, title)
         .map_err(|e| e.to_string())
 }
 
@@ -243,10 +401,16 @@ fn main() -> ExitCode {
         .manage(SmokeDir(smoke))
         // trmx-48/trmx-51: install the app menu; "About Termixion" / "Settings…" open the
         // standalone Settings window (About lands on the About page). trmx-74 adds the Shell
-        // submenu + Window tab-cycling items.
+        // submenu + Window tab-cycling items; trmx-75 adds Rename Tab… and spawns the
+        // foreground-title poller (parked on its condvar gate until the first session opens).
         .setup(|app| {
             let menu = menu::build_menu(app.handle())?;
             app.set_menu(menu)?;
+            let state = app.state::<PtyState>();
+            let registry = Arc::clone(&state.registry);
+            let gate = Arc::clone(&state.poller_gate);
+            let poller_app = app.handle().clone();
+            std::thread::spawn(move || run_title_poller(poller_app, registry, gate));
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -282,6 +446,7 @@ fn main() -> ExitCode {
             pty_write,
             pty_resize,
             close_pty,
+            set_session_title,
             smoke_config,
             smoke_done
         ])
@@ -319,6 +484,8 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
+
     use super::*;
 
     #[test]
@@ -366,6 +533,138 @@ mod tests {
             smoke_env.map(str::to_string),
             dir_env.map(str::to_string),
         )
+    }
+
+    // --- trmx-75: the foreground-title poller's pure pieces -----------------------------------
+
+    /// Build a prev/next carry map from `(id, name)` pairs.
+    fn names(entries: &[(u64, &str)]) -> HashMap<u64, String> {
+        entries
+            .iter()
+            .map(|(id, name)| (*id, (*name).to_string()))
+            .collect()
+    }
+
+    /// Build a resolved snapshot (`id` → the foreground name `ps` yielded, or `None`).
+    fn resolved(entries: &[(u64, Option<&str>)]) -> Vec<(u64, Option<String>)> {
+        entries
+            .iter()
+            .map(|(id, name)| (*id, name.map(str::to_string)))
+            .collect()
+    }
+
+    fn hint(session_id: u64, name: &str) -> TitleHint {
+        TitleHint {
+            session_id,
+            name: name.to_string(),
+        }
+    }
+
+    #[test]
+    fn poll_tick_hints_new_and_changed_names_and_keeps_unchanged_silent() {
+        // Session 1 is new, session 2's name changed, session 3 is unchanged — only 1 and 2
+        // emit (change-only diffing bounds emissions), and next carries all three.
+        let prev = names(&[(2, "zsh"), (3, "vim")]);
+        let (hints, next) = poll_tick(
+            resolved(&[(1, Some("zsh")), (2, Some("sleep")), (3, Some("vim"))]),
+            &prev,
+        );
+        assert_eq!(hints, vec![hint(1, "zsh"), hint(2, "sleep")]);
+        assert_eq!(next, names(&[(1, "zsh"), (2, "sleep"), (3, "vim")]));
+    }
+
+    #[test]
+    fn poll_tick_all_unchanged_emits_nothing() {
+        let prev = names(&[(1, "zsh"), (2, "vim")]);
+        let (hints, next) = poll_tick(resolved(&[(1, Some("zsh")), (2, Some("vim"))]), &prev);
+        assert!(hints.is_empty(), "unchanged names must stay silent");
+        assert_eq!(next, prev);
+    }
+
+    #[test]
+    fn poll_tick_drops_dead_sessions_without_hinting() {
+        // Session 1 closed between ticks: it vanishes from next (no residue for a future id —
+        // ids are never reused anyway) and emits nothing.
+        let prev = names(&[(1, "zsh"), (2, "vim")]);
+        let (hints, next) = poll_tick(resolved(&[(2, Some("vim"))]), &prev);
+        assert!(hints.is_empty());
+        assert_eq!(next, names(&[(2, "vim")]));
+    }
+
+    #[test]
+    fn poll_tick_empty_snapshot_clears_the_carry_and_emits_nothing() {
+        // The pure mirror of the poller's park path: a world with no sessions starts fresh.
+        let prev = names(&[(1, "zsh")]);
+        let (hints, next) = poll_tick(Vec::new(), &prev);
+        assert!(hints.is_empty());
+        assert!(next.is_empty());
+    }
+
+    #[test]
+    fn poll_tick_churn_between_ticks_hints_only_the_new_session() {
+        // Close + open between ticks: the dead id is dropped and the NEW session hints even
+        // though its name equals the dead one's (a fresh tab must still learn its title).
+        let prev = names(&[(1, "zsh")]);
+        let (hints, next) = poll_tick(resolved(&[(2, Some("zsh"))]), &prev);
+        assert_eq!(hints, vec![hint(2, "zsh")]);
+        assert_eq!(next, names(&[(2, "zsh")]));
+    }
+
+    #[test]
+    fn poll_tick_unresolved_name_carries_the_previous_one_silently() {
+        // A transient resolution failure (`ps` hiccup, child mid-exit) must neither hint nor
+        // forget the last known name — otherwise the recovered identical name would re-emit.
+        let prev = names(&[(1, "vim")]);
+        let (hints, next) = poll_tick(resolved(&[(1, None)]), &prev);
+        assert!(hints.is_empty());
+        assert_eq!(next, names(&[(1, "vim")]));
+        // The recovered identical name stays silent on the following tick.
+        let (hints2, next2) = poll_tick(resolved(&[(1, Some("vim"))]), &next);
+        assert!(hints2.is_empty());
+        assert_eq!(next2, next);
+    }
+
+    #[test]
+    fn title_hint_serializes_camel_case_for_the_frontend() {
+        // The frontend destructures `sessionId`/`name` from the `session:title-hint` payload
+        // (trmx-75) — pin the wire shape like SessionInfo/PtyExited above.
+        let value = serde_json::to_value(hint(3, "vim")).expect("TitleHint serializes");
+        assert_eq!(value, serde_json::json!({ "sessionId": 3, "name": "vim" }));
+    }
+
+    #[test]
+    fn parked_poller_gate_wakes_on_session_open_within_a_deadline() {
+        // Real-thread park/wake (the platform-test discipline, bounded waits only): a thread
+        // blocks in wait_while_empty, the test notifies, and the wake must land within 2 s.
+        let gate = Arc::new(PollerGate::default());
+        let waiter_gate = Arc::clone(&gate);
+        let (woke_tx, woke_rx) = mpsc::channel::<()>();
+        let waiter = std::thread::spawn(move || {
+            waiter_gate.wait_while_empty();
+            let _ = woke_tx.send(());
+        });
+        // Give the waiter a moment to actually park; the latch check below makes a missed wake
+        // impossible either way (notify sets the latch BEFORE waking).
+        std::thread::sleep(Duration::from_millis(100));
+        gate.notify_session_opened();
+        woke_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the parked poller must wake on notify_session_opened");
+        waiter.join().expect("the waiter thread exits");
+    }
+
+    #[test]
+    fn poller_gate_wake_is_consumed_so_the_next_wait_parks_again() {
+        // A notify BEFORE the wait makes it a pass-through (no missed wake between the poller's
+        // empty snapshot and its park)...
+        let gate = PollerGate::default();
+        gate.notify_session_opened();
+        gate.wait_while_empty();
+        // ...and returning consumes the latch, re-arming the park for the next empty world.
+        assert!(
+            !*gate.has_sessions.lock().expect("gate lock"),
+            "wait_while_empty must consume the wake latch"
+        );
     }
 
     #[test]
