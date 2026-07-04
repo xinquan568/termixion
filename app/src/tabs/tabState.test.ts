@@ -1,42 +1,48 @@
 // SPDX-License-Identifier: ISC
 // Copyright (c) 2026 Eric Y. Liu
 //
-// trmx-74 (test-first): the pure tab reducer. Every transition the tab bar needs — open, attach,
-// close (iTerm2 right-then-left activation), activate, wrap-around next/prev, ⌘1..⌘9 selectIndex
-// (index 8 = LAST tab, the iTerm2 ⌘9 rule), drag reorder — is pinned here headless: no React, no
-// DOM, just state in / state out. No-op transitions must return the IDENTICAL state object (===)
-// so a React reducer consumer skips the re-render.
-//
-// trmx-75 (FR-2.4) extends the model with per-tab title SOURCES (manual > OSC > process >
-// fallback, see tabTitle.ts) reduced through `setTitleSource`; `Tab.title` stays THE one rendered
-// string, now always recomputed as the effective title over those sources.
+// trmx-74/75/84 (test-first): the pure tab+pane reducer. Every transition — open, per-pane attach,
+// close (iTerm2 right-then-left activation), activate, wrap next/prev, ⌘1..⌘9 selectIndex (index 8
+// = LAST), drag reorder, AND the trmx-84 pane transitions (split/close/focus/ratio) — is pinned
+// here headless: no React, no DOM, state in / state out. No-op transitions return the IDENTICAL
+// state object (===). Titles are per-PANE layered sources; the tab's rendered title is the FOCUSED
+// pane's effective title (a background pane's title change never moves the tab label).
 import { describe, it, expect } from "vitest";
 import {
+  canSplitFocused,
   initialTabsState,
+  paneBySessionId,
   reduceTabs,
   tabBySessionId,
+  tabPaneIds,
   type Tab,
   type TabsAction,
   type TabsState,
 } from "./tabState";
+import { leaves } from "../panes/layoutTree";
 
 /** Reduce a fresh initial state through `actions` in order. */
 function run(...actions: TabsAction[]): TabsState {
   return actions.reduce(reduceTabs, initialTabsState());
 }
 
-/** A state with `n` open tabs (tabIds 1..n, the last one active). */
+/** A state with `n` open tabs (tabIds 1..n, paneIds 1..n, the last one active). */
 function withTabs(n: number): TabsState {
   return run(...Array.from({ length: n }, (): TabsAction => ({ kind: "openTab" })));
 }
 
 const tabIds = (state: TabsState) => state.tabs.map((t) => t.tabId);
+const focusedPane = (tab: Tab) => tab.panes[tab.focusedPaneId];
 
 // Freeze the state tree so any in-place mutation inside the reducer throws (purity guard).
 function deepFreeze(state: TabsState): TabsState {
   state.tabs.forEach((t) => {
-    Object.freeze(t.pane);
-    Object.freeze(t.titleSources);
+    Object.values(t.panes).forEach((p) => {
+      Object.freeze(p.titleSources);
+      Object.freeze(p);
+    });
+    Object.freeze(t.panes);
+    Object.freeze(t.tree);
     Object.freeze(t);
   });
   Object.freeze(state.tabs);
@@ -44,39 +50,54 @@ function deepFreeze(state: TabsState): TabsState {
 }
 
 describe("initialTabsState", () => {
-  it("starts empty: no tabs, no active tab, ids from 1", () => {
-    expect(initialTabsState()).toEqual({ tabs: [], activeTabId: null, nextTabId: 1 });
+  it("starts empty: no tabs, no active tab, tab AND pane ids from 1", () => {
+    expect(initialTabsState()).toEqual({
+      tabs: [],
+      activeTabId: null,
+      nextTabId: 1,
+      nextPaneId: 1,
+    });
   });
 });
 
 describe("openTab", () => {
-  it("appends a session-less pane with the default title and activates it", () => {
+  it("appends a single-leaf tab: one session-less focused pane, default title, activated", () => {
     const state = run({ kind: "openTab" });
-    expect(state.tabs).toEqual<Tab[]>([
-      { tabId: 1, title: "Shell", titleSources: { fallback: "Shell" }, pane: { sessionId: null } },
-    ]);
+    expect(state.tabs).toHaveLength(1);
+    const tab = state.tabs[0];
+    expect(tab.tabId).toBe(1);
+    expect(tab.tree).toEqual({ kind: "leaf", paneId: 1 });
+    expect(tab.focusedPaneId).toBe(1);
+    expect(tab.panes).toEqual({
+      1: { sessionId: null, titleSources: { fallback: "Shell" }, title: "Shell" },
+    });
+    expect(tab.title).toBe("Shell");
     expect(state.activeTabId).toBe(1);
     expect(state.nextTabId).toBe(2);
+    expect(state.nextPaneId).toBe(2);
   });
 
-  it("honors an explicit title (seeded as the FALLBACK source, trmx-75)", () => {
-    const state = run({ kind: "openTab", title: "build" });
-    expect(state.tabs[0].title).toBe("build");
-    expect(state.tabs[0].titleSources).toEqual({ fallback: "build" });
+  it("honors an explicit title (seeded as the focused pane's FALLBACK source)", () => {
+    const tab = run({ kind: "openTab", title: "build" }).tabs[0];
+    expect(tab.title).toBe("build");
+    expect(focusedPane(tab).titleSources).toEqual({ fallback: "build" });
   });
 
-  it("sanitizes the title arg at the boundary; a junk arg seeds the default fallback (trmx-75)", () => {
+  it("sanitizes the title arg; a junk arg seeds the default fallback", () => {
     expect(run({ kind: "openTab", title: "  build " }).tabs[0].title).toBe("build");
-    const junk = run({ kind: "openTab", title: " \u{7} " });
-    expect(junk.tabs[0].title).toBe("Shell");
-    expect(junk.tabs[0].titleSources).toEqual({ fallback: "Shell" });
+    const junk = run({ kind: "openTab", title: " \u{7} " }).tabs[0];
+    expect(junk.title).toBe("Shell");
+    expect(focusedPane(junk).titleSources).toEqual({ fallback: "Shell" });
   });
 
-  it("appends at the end and moves activation to the new tab", () => {
+  it("appends at the end, moves activation, and advances both id counters", () => {
     const state = run({ kind: "openTab" }, { kind: "openTab" }, { kind: "openTab" });
     expect(tabIds(state)).toEqual([1, 2, 3]);
     expect(state.activeTabId).toBe(3);
     expect(state.nextTabId).toBe(4);
+    expect(state.nextPaneId).toBe(4); // one pane per fresh tab
+    // Each tab has a distinct pane id.
+    expect(state.tabs.map((t) => t.focusedPaneId)).toEqual([1, 2, 3]);
   });
 
   it("does not mutate the input state", () => {
@@ -86,232 +107,292 @@ describe("openTab", () => {
   });
 });
 
-describe("attachSession", () => {
-  it("binds the sessionId and title to the tab's pane", () => {
+describe("attachSession (per pane)", () => {
+  it("binds the sessionId and title to the addressed pane", () => {
     const state = run(
       { kind: "openTab" },
       { kind: "openTab" },
-      { kind: "attachSession", tabId: 1, sessionId: 77, title: "zsh" },
+      { kind: "attachSession", tabId: 1, paneId: 1, sessionId: 77, title: "zsh" },
     );
-    expect(state.tabs[0]).toEqual({
-      tabId: 1,
-      title: "zsh",
-      titleSources: { fallback: "zsh" }, // the session title becomes the FALLBACK source (trmx-75)
-      pane: { sessionId: 77 },
-    });
-    // The sibling tab is untouched.
-    expect(state.tabs[1]).toEqual({
-      tabId: 2,
-      title: "Shell",
-      titleSources: { fallback: "Shell" },
-      pane: { sessionId: null },
-    });
-  });
-
-  // trmx-75: the attach refreshes the FALLBACK slot only — it must never demote a manual/OSC
-  // title that raced ahead of the async open resolution.
-  it("updates the fallback WITHOUT demoting a present OSC (or manual) title", () => {
-    let state = run({ kind: "openTab" });
-    state = reduceTabs(state, { kind: "setTitleSource", tabId: 1, source: "osc", value: "vim" });
-    expect(state.tabs[0].title).toBe("vim");
-    state = reduceTabs(state, { kind: "attachSession", tabId: 1, sessionId: 7, title: "zsh" });
-    expect(state.tabs[0].title).toBe("vim"); // still the OSC title
-    expect(state.tabs[0].pane.sessionId).toBe(7); // but the attach itself landed
-    // Clearing the OSC title reveals the refreshed fallback.
-    state = reduceTabs(state, { kind: "setTitleSource", tabId: 1, source: "osc", value: null });
-    expect(state.tabs[0].title).toBe("zsh");
-  });
-
-  it("keeps the previous fallback when the attach title sanitizes to empty (junk-inert, trmx-75)", () => {
-    const state = run(
-      { kind: "openTab" },
-      { kind: "attachSession", tabId: 1, sessionId: 7, title: " \u{1b} " },
-    );
-    expect(state.tabs[0].title).toBe("Shell");
-    expect(state.tabs[0].titleSources).toEqual({ fallback: "Shell" });
-    expect(state.tabs[0].pane.sessionId).toBe(7);
-  });
-
-  // The async open can resolve after the user already closed the tab: the reducer must not
-  // resurrect it — it stays a no-op and the CALLER disposes the orphan session (trmx-74).
-  it("is a no-op on a dead tab and returns the IDENTICAL state object", () => {
-    const state = run({ kind: "openTab" }, { kind: "openTab" }, { kind: "closeTab", tabId: 1 });
-    const next = reduceTabs(state, {
-      kind: "attachSession",
-      tabId: 1,
+    expect(state.tabs[0].panes[1]).toEqual({
       sessionId: 77,
+      titleSources: { fallback: "zsh" },
       title: "zsh",
     });
-    expect(next).toBe(state);
+    expect(state.tabs[0].title).toBe("zsh"); // pane 1 is focused → tab label follows
+    // The sibling tab is untouched.
+    expect(state.tabs[1].panes[2].sessionId).toBeNull();
+    expect(state.tabs[1].title).toBe("Shell");
   });
 
-  it("is a no-op (===) on the empty state", () => {
-    const state = initialTabsState();
+  it("updates the fallback WITHOUT demoting a present OSC title", () => {
+    let s = run({ kind: "openTab" });
+    s = reduceTabs(s, { kind: "setTitleSource", tabId: 1, paneId: 1, source: "osc", value: "vim" });
+    expect(s.tabs[0].title).toBe("vim");
+    s = reduceTabs(s, { kind: "attachSession", tabId: 1, paneId: 1, sessionId: 7, title: "zsh" });
+    expect(s.tabs[0].title).toBe("vim"); // still the OSC title
+    expect(s.tabs[0].panes[1].sessionId).toBe(7); // but the attach landed
+    s = reduceTabs(s, { kind: "setTitleSource", tabId: 1, paneId: 1, source: "osc", value: null });
+    expect(s.tabs[0].title).toBe("zsh"); // refreshed fallback revealed
+  });
+
+  it("keeps the previous fallback when the attach title sanitizes to empty (junk-inert)", () => {
+    const s = run(
+      { kind: "openTab" },
+      { kind: "attachSession", tabId: 1, paneId: 1, sessionId: 7, title: " \u{1b} " },
+    );
+    expect(s.tabs[0].title).toBe("Shell");
+    expect(s.tabs[0].panes[1].sessionId).toBe(7);
+  });
+
+  it("is a no-op (===) on a dead tab, an unknown pane, and the empty state", () => {
+    const dead = run({ kind: "openTab" }, { kind: "openTab" }, { kind: "closeTab", tabId: 1 });
     expect(
-      reduceTabs(state, { kind: "attachSession", tabId: 1, sessionId: 1, title: "x" }),
-    ).toBe(state);
+      reduceTabs(dead, { kind: "attachSession", tabId: 1, paneId: 1, sessionId: 9, title: "x" }),
+    ).toBe(dead);
+    const one = run({ kind: "openTab" });
+    expect(
+      reduceTabs(one, { kind: "attachSession", tabId: 1, paneId: 99, sessionId: 9, title: "x" }),
+    ).toBe(one); // unknown pane
+    const empty = initialTabsState();
+    expect(
+      reduceTabs(empty, { kind: "attachSession", tabId: 1, paneId: 1, sessionId: 1, title: "x" }),
+    ).toBe(empty);
   });
 });
 
-describe("setTitleSource (trmx-75, FR-2.4)", () => {
-  /** One tab (tabId 1) with an attached session titled "zsh" — fallback = "zsh". */
+// trmx-75 title precedence, now at PANE scope — the single-pane case is the regression that a tab
+// behaves exactly as before this feature.
+describe("setTitleSource — single-pane regression (trmx-75 precedence intact)", () => {
   function attached(): TabsState {
     return run(
       { kind: "openTab" },
-      { kind: "attachSession", tabId: 1, sessionId: 7, title: "zsh" },
+      { kind: "attachSession", tabId: 1, paneId: 1, sessionId: 7, title: "zsh" },
     );
   }
-
-  /** Shorthand: set (or clear, value=null) one title slot on tab 1. */
   function set(
     state: TabsState,
     source: "manual" | "osc" | "process",
     value: string | null,
   ): TabsState {
-    return reduceTabs(state, { kind: "setTitleSource", tabId: 1, source, value });
+    return reduceTabs(state, { kind: "setTitleSource", tabId: 1, paneId: 1, source, value });
   }
-
   const title = (state: TabsState) => state.tabs[0].title;
 
-  it("renders the precedence chain end to end: attach, then OSC, then a process hint", () => {
+  it("renders the precedence chain: fallback < process < osc, osc stays over later hints", () => {
     let s = attached();
-    expect(title(s)).toBe("zsh"); // fallback only
+    expect(title(s)).toBe("zsh");
     s = set(s, "process", "sleep");
-    expect(title(s)).toBe("sleep"); // process beats fallback
+    expect(title(s)).toBe("sleep");
     s = set(s, "osc", "vim");
-    expect(title(s)).toBe("vim"); // OSC beats process — and STAYS on later hints
+    expect(title(s)).toBe("vim");
     s = set(s, "process", "node");
     expect(title(s)).toBe("vim");
   });
 
-  it("manual overrides OSC, process, and fallback", () => {
+  it("manual overrides everything and a process hint can never clobber manual/osc", () => {
     let s = attached();
     s = set(s, "osc", "vim");
-    s = set(s, "process", "sleep");
     s = set(s, "manual", "work");
     expect(title(s)).toBe("work");
-    s = set(s, "osc", "emacs"); // even a NEWER OSC title cannot displace the rename
+    s = set(s, "osc", "emacs");
+    expect(title(s)).toBe("work");
+    s = set(s, "process", "sleep");
     expect(title(s)).toBe("work");
   });
 
-  // The review's load-bearing pin: the 1 Hz poller must never be able to stomp on what the user
-  // or the program explicitly chose — the hint only waits UNDERNEATH for its turn.
-  it("a process hint can NEVER clobber a manual or OSC title", () => {
-    let s = attached();
-    s = set(s, "manual", "work");
-    s = set(s, "process", "sleep");
-    expect(title(s)).toBe("work");
-
-    let t = attached();
-    t = set(t, "osc", "vim");
-    t = set(t, "process", "sleep");
-    expect(title(t)).toBe("vim");
-    // ...but the hint WAS recorded: clearing the OSC title reveals it.
-    t = set(t, "osc", null);
-    expect(title(t)).toBe("sleep");
-  });
-
-  it("clearing cascades down the precedence chain: manual → OSC → process → fallback", () => {
+  it("clearing cascades manual → osc → process → fallback", () => {
     let s = attached();
     s = set(s, "process", "sleep");
     s = set(s, "osc", "vim");
     s = set(s, "manual", "work");
-    expect(title(s)).toBe("work");
-    s = set(s, "manual", null); // clear-to-auto (empty rename commit)
+    s = set(s, "manual", null);
     expect(title(s)).toBe("vim");
     s = set(s, "osc", null);
     expect(title(s)).toBe("sleep");
     s = set(s, "process", null);
     expect(title(s)).toBe("zsh");
-    expect(s.tabs[0].titleSources).toEqual({ fallback: "zsh" }); // all slots really gone
   });
 
-  it('an empty value clears the slot like null (programs reset titles with OSC "")', () => {
-    let s = attached();
-    s = set(s, "process", "sleep");
-    s = set(s, "osc", "vim");
-    expect(title(s)).toBe("vim");
-    s = set(s, "osc", "");
-    expect(title(s)).toBe("sleep");
-    // A value that SANITIZES to empty (whitespace/controls only) clears the same way.
-    s = set(s, "manual", "work");
-    s = set(s, "manual", " \u{7} ");
-    expect(title(s)).toBe("sleep");
-  });
-
-  it("sanitizes values at the reducer boundary and STORES them sanitized", () => {
-    let s = attached();
-    s = set(s, "manual", "  wo\u{0}rk\u{9f}  ");
-    expect(title(s)).toBe("work");
-    expect(s.tabs[0].titleSources.manual).toBe("work");
-    s = set(s, "osc", "x".repeat(300));
-    expect(s.tabs[0].titleSources.osc).toBe("x".repeat(256)); // capped in storage too
-    expect(title(s)).toBe("work"); // manual still wins
-  });
-
-  it("retitles ONLY its own tab — the sibling is untouched", () => {
-    let s = run(
-      { kind: "openTab" },
-      { kind: "openTab" },
-      { kind: "attachSession", tabId: 2, sessionId: 9, title: "zsh" },
-    );
-    s = reduceTabs(s, { kind: "setTitleSource", tabId: 2, source: "osc", value: "vim" });
-    expect(s.tabs[1].title).toBe("vim");
-    expect(s.tabs[0].title).toBe("Shell");
-    expect(s.tabs[0].titleSources).toEqual({ fallback: "Shell" });
-  });
-
-  it("is a no-op (===) on a dead tab, an unknown tab, and the empty state", () => {
-    const s = run({ kind: "openTab" }, { kind: "openTab" }, { kind: "closeTab", tabId: 1 });
-    expect(set(s, "manual", "work")).toBe(s); // tab 1 is dead
-    expect(reduceTabs(s, { kind: "setTitleSource", tabId: 99, source: "osc", value: "x" })).toBe(s);
-    const empty = initialTabsState();
-    expect(
-      reduceTabs(empty, { kind: "setTitleSource", tabId: 1, source: "process", value: "x" }),
-    ).toBe(empty);
-  });
-
-  it("re-delivering the same value, or clearing an absent slot, is a no-op (===)", () => {
+  it("re-delivering the same value or clearing an absent slot is a no-op (===)", () => {
     const s = set(attached(), "process", "sleep");
-    expect(set(s, "process", "sleep")).toBe(s); // identical hint re-delivered
-    expect(set(s, "process", " sleep \u{7}")).toBe(s); // identical AFTER sanitization
-    expect(set(s, "manual", null)).toBe(s); // clearing a slot that was never set
-    expect(set(s, "osc", "  ")).toBe(s); // empty-clear of an absent slot
+    expect(set(s, "process", "sleep")).toBe(s);
+    expect(set(s, "process", " sleep \u{7}")).toBe(s);
+    expect(set(s, "manual", null)).toBe(s);
+  });
+
+  it("is a no-op (===) on a dead tab, an unknown pane, and the empty state", () => {
+    const dead = run({ kind: "openTab" }, { kind: "openTab" }, { kind: "closeTab", tabId: 1 });
+    expect(
+      reduceTabs(dead, { kind: "setTitleSource", tabId: 1, paneId: 1, source: "manual", value: "x" }),
+    ).toBe(dead);
+    const one = run({ kind: "openTab" });
+    expect(
+      reduceTabs(one, { kind: "setTitleSource", tabId: 1, paneId: 99, source: "osc", value: "x" }),
+    ).toBe(one);
   });
 
   it("does not mutate the input state (purity guard)", () => {
     const before = deepFreeze(set(attached(), "osc", "vim"));
     expect(() => set(before, "manual", "work")).not.toThrow();
-    expect(() => set(before, "osc", null)).not.toThrow();
     expect(title(before)).toBe("vim");
   });
 });
 
-describe("closeTab", () => {
-  it("closing the active tab activates its RIGHT neighbor (iTerm2 rule)", () => {
+describe("splitPane (trmx-84 FR-3.1/3.2)", () => {
+  it("splits the focused pane 50/50, allocates a monotonic pane id, focuses the NEW pane", () => {
+    const s = run({ kind: "openTab" }, { kind: "splitPane", tabId: 1, dir: "row" });
+    const tab = s.tabs[0];
+    expect(tab.tree).toEqual({
+      kind: "split",
+      dir: "row",
+      ratio: 0.5,
+      first: { kind: "leaf", paneId: 1 },
+      second: { kind: "leaf", paneId: 2 },
+    });
+    expect(tab.focusedPaneId).toBe(2); // the new pane takes focus
+    expect(Object.keys(tab.panes).map(Number).sort()).toEqual([1, 2]);
+    expect(tab.panes[2]).toEqual({
+      sessionId: null,
+      titleSources: { fallback: "Shell" },
+      title: "Shell",
+    });
+    expect(s.nextPaneId).toBe(3);
+  });
+
+  it("honors dir: column splits below", () => {
+    const s = run({ kind: "openTab" }, { kind: "splitPane", tabId: 1, dir: "column" });
+    expect((s.tabs[0].tree as { dir: string }).dir).toBe("column");
+  });
+
+  it("splitting again splits the NEW focused pane (nesting), preserving other panes' identity", () => {
+    let s = run({ kind: "openTab" }, { kind: "splitPane", tabId: 1, dir: "row" }); // panes 1|2, focus 2
+    const pane1Before = s.tabs[0].panes[1];
+    s = reduceTabs(s, { kind: "splitPane", tabId: 1, dir: "column" }); // splits 2 → (2/3)
+    expect(leaves(s.tabs[0].tree)).toEqual([1, 2, 3]);
+    expect(s.tabs[0].focusedPaneId).toBe(3);
+    expect(s.tabs[0].panes[1]).toBe(pane1Before); // untouched pane keeps identity
+  });
+
+  it("is a no-op (===) on an unknown tab", () => {
+    const s = run({ kind: "openTab" });
+    expect(reduceTabs(s, { kind: "splitPane", tabId: 99, dir: "row" })).toBe(s);
+  });
+
+  it("does not mutate the input state", () => {
+    const before = deepFreeze(run({ kind: "openTab" }));
+    expect(() => reduceTabs(before, { kind: "splitPane", tabId: 1, dir: "row" })).not.toThrow();
+    expect(leaves(before.tabs[0].tree)).toEqual([1]);
+  });
+});
+
+describe("closePane (trmx-84)", () => {
+  /** One tab with panes 1 | 2 (focus 2). */
+  function split(): TabsState {
+    return run({ kind: "openTab" }, { kind: "splitPane", tabId: 1, dir: "row" });
+  }
+
+  it("removes a pane, promotes the sibling, and focuses the neighbor", () => {
+    const s = reduceTabs(split(), { kind: "closePane", tabId: 1, paneId: 2 });
+    const tab = s.tabs[0];
+    expect(tab.tree).toEqual({ kind: "leaf", paneId: 1 });
+    expect(tab.focusedPaneId).toBe(1);
+    expect(Object.keys(tab.panes).map(Number)).toEqual([1]);
+    expect(tab.title).toBe(tab.panes[1].title);
+  });
+
+  it("closing a NON-focused pane keeps the current focus", () => {
+    // panes 1 | 2 focus 2; refocus 1, then close 2 → focus stays 1
+    let s = reduceTabs(split(), { kind: "focusPane", tabId: 1, paneId: 1 });
+    s = reduceTabs(s, { kind: "closePane", tabId: 1, paneId: 2 });
+    expect(s.tabs[0].focusedPaneId).toBe(1);
+  });
+
+  it("closing the LAST pane is a no-op (===) — App owns tab close, not the reducer", () => {
+    const one = run({ kind: "openTab" });
+    expect(reduceTabs(one, { kind: "closePane", tabId: 1, paneId: 1 })).toBe(one);
+  });
+
+  it("is a no-op (===) for an unknown pane or tab", () => {
+    const s = split();
+    expect(reduceTabs(s, { kind: "closePane", tabId: 1, paneId: 99 })).toBe(s);
+    expect(reduceTabs(s, { kind: "closePane", tabId: 99, paneId: 2 })).toBe(s);
+  });
+
+  it("never reuses a closed pane's id", () => {
+    let s = split(); // panes 1|2, nextPaneId 3
+    s = reduceTabs(s, { kind: "closePane", tabId: 1, paneId: 2 });
+    s = reduceTabs(s, { kind: "splitPane", tabId: 1, dir: "row" }); // new pane must be 3, not 2
+    expect(leaves(s.tabs[0].tree)).toEqual([1, 3]);
+    expect(s.nextPaneId).toBe(4);
+  });
+});
+
+describe("focusPane (trmx-84)", () => {
+  function split(): TabsState {
+    return run({ kind: "openTab" }, { kind: "splitPane", tabId: 1, dir: "row" });
+  }
+
+  it("switches the focused pane and the derived tab title follows", () => {
+    // give the two panes distinct titles
+    let s = split();
+    s = reduceTabs(s, { kind: "setTitleSource", tabId: 1, paneId: 1, source: "osc", value: "vim" });
+    s = reduceTabs(s, { kind: "setTitleSource", tabId: 1, paneId: 2, source: "osc", value: "top" });
+    expect(s.tabs[0].focusedPaneId).toBe(2);
+    expect(s.tabs[0].title).toBe("top");
+    s = reduceTabs(s, { kind: "focusPane", tabId: 1, paneId: 1 });
+    expect(s.tabs[0].focusedPaneId).toBe(1);
+    expect(s.tabs[0].title).toBe("vim"); // label switched source with focus
+  });
+
+  it("a background pane's title change never moves the tab label (isolation)", () => {
+    let s = split(); // focus 2
+    // pane 1 is in the background; its OSC title update must not touch the tab label
+    s = reduceTabs(s, { kind: "setTitleSource", tabId: 1, paneId: 1, source: "osc", value: "vim" });
+    expect(s.tabs[0].focusedPaneId).toBe(2);
+    expect(s.tabs[0].title).toBe("Shell"); // still the focused (pane 2) title
+    expect(s.tabs[0].panes[1].title).toBe("vim"); // but pane 1 recorded it
+  });
+
+  it("is a no-op (===) for the already-focused pane, an unknown pane, and an unknown tab", () => {
+    const s = split();
+    expect(reduceTabs(s, { kind: "focusPane", tabId: 1, paneId: 2 })).toBe(s); // already focused
+    expect(reduceTabs(s, { kind: "focusPane", tabId: 1, paneId: 99 })).toBe(s);
+    expect(reduceTabs(s, { kind: "focusPane", tabId: 99, paneId: 2 })).toBe(s);
+  });
+});
+
+describe("setPaneRatio (trmx-84 — FR-3.3 seam)", () => {
+  it("sets the ratio of the split at a path (clamped)", () => {
+    let s = run({ kind: "openTab" }, { kind: "splitPane", tabId: 1, dir: "row" });
+    s = reduceTabs(s, { kind: "setPaneRatio", tabId: 1, path: [], ratio: 0.7 });
+    expect((s.tabs[0].tree as { ratio: number }).ratio).toBeCloseTo(0.7);
+  });
+
+  it("is a no-op (===) when the ratio is unchanged or the path is invalid or the tab unknown", () => {
+    const s = run({ kind: "openTab" }, { kind: "splitPane", tabId: 1, dir: "row" });
+    expect(reduceTabs(s, { kind: "setPaneRatio", tabId: 1, path: [], ratio: 0.5 })).toBe(s);
+    expect(reduceTabs(s, { kind: "setPaneRatio", tabId: 1, path: ["first"], ratio: 0.3 })).toBe(s);
+    expect(reduceTabs(s, { kind: "setPaneRatio", tabId: 99, path: [], ratio: 0.3 })).toBe(s);
+  });
+});
+
+describe("closeTab (whole tab, unchanged tab-order semantics)", () => {
+  it("closing the active tab activates its RIGHT neighbor (iTerm2)", () => {
     const state = reduceTabs(withTabs(3), { kind: "activateTab", tabId: 2 });
     const next = reduceTabs(state, { kind: "closeTab", tabId: 2 });
     expect(tabIds(next)).toEqual([1, 3]);
-    expect(next.activeTabId).toBe(3); // the right neighbor, not the left
+    expect(next.activeTabId).toBe(3);
   });
 
   it("closing the active LAST tab falls back to the LEFT neighbor", () => {
-    const state = withTabs(3); // active = 3 (the last opened)
-    const next = reduceTabs(state, { kind: "closeTab", tabId: 3 });
+    const next = reduceTabs(withTabs(3), { kind: "closeTab", tabId: 3 });
     expect(tabIds(next)).toEqual([1, 2]);
     expect(next.activeTabId).toBe(2);
   });
 
-  it("closing an INACTIVE tab keeps the active tab", () => {
-    const state = withTabs(3); // active = 3
-    const next = reduceTabs(state, { kind: "closeTab", tabId: 1 });
-    expect(tabIds(next)).toEqual([2, 3]);
-    expect(next.activeTabId).toBe(3);
-  });
-
-  it("closing the only tab leaves the empty state (activeTabId null)", () => {
-    const state = withTabs(1);
-    const next = reduceTabs(state, { kind: "closeTab", tabId: 1 });
+  it("closing the only tab leaves the empty state", () => {
+    const next = reduceTabs(withTabs(1), { kind: "closeTab", tabId: 1 });
     expect(next.tabs).toEqual([]);
     expect(next.activeTabId).toBeNull();
   });
@@ -325,174 +406,88 @@ describe("closeTab", () => {
 
   it("never reuses a closed tab's id", () => {
     const state = run(
-      { kind: "openTab" }, // id 1
-      { kind: "openTab" }, // id 2
+      { kind: "openTab" },
+      { kind: "openTab" },
       { kind: "closeTab", tabId: 2 },
       { kind: "closeTab", tabId: 1 },
-      { kind: "openTab" }, // must be id 3, not a recycled 1
+      { kind: "openTab" },
     );
     expect(tabIds(state)).toEqual([3]);
     expect(state.nextTabId).toBe(4);
   });
 });
 
-describe("activateTab", () => {
-  it("activates an existing tab", () => {
+describe("activate / next / prev / selectIndex / moveTab (unchanged)", () => {
+  it("activateTab activates an existing tab; no-op on absent/already-active/empty", () => {
     const state = withTabs(3);
     expect(reduceTabs(state, { kind: "activateTab", tabId: 1 }).activeTabId).toBe(1);
-  });
-
-  it("is a no-op (===) for an absent tab and for the already-active tab", () => {
-    const state = withTabs(3); // active = 3
     expect(reduceTabs(state, { kind: "activateTab", tabId: 99 })).toBe(state);
     expect(reduceTabs(state, { kind: "activateTab", tabId: 3 })).toBe(state);
-    const empty = initialTabsState();
-    expect(reduceTabs(empty, { kind: "activateTab", tabId: 1 })).toBe(empty);
   });
-});
 
-describe("nextTab / prevTab", () => {
-  it("cycle through neighbors", () => {
+  it("nextTab / prevTab wrap; no-op on empty and single tab", () => {
     const state = reduceTabs(withTabs(3), { kind: "activateTab", tabId: 1 });
     expect(reduceTabs(state, { kind: "nextTab" }).activeTabId).toBe(2);
-    expect(reduceTabs(reduceTabs(state, { kind: "nextTab" }), { kind: "nextTab" }).activeTabId).toBe(3);
-  });
-
-  it("nextTab wraps from the last tab to the first", () => {
-    const state = withTabs(3); // active = 3 (last)
-    expect(reduceTabs(state, { kind: "nextTab" }).activeTabId).toBe(1);
-  });
-
-  it("prevTab wraps from the first tab to the last", () => {
-    const state = reduceTabs(withTabs(3), { kind: "activateTab", tabId: 1 });
-    expect(reduceTabs(state, { kind: "prevTab" }).activeTabId).toBe(3);
-  });
-
-  it("are no-ops (===) on the empty state and with a single tab (wrap to self)", () => {
-    const empty = initialTabsState();
-    expect(reduceTabs(empty, { kind: "nextTab" })).toBe(empty);
-    expect(reduceTabs(empty, { kind: "prevTab" })).toBe(empty);
+    expect(reduceTabs(withTabs(3), { kind: "nextTab" }).activeTabId).toBe(1); // 3 wraps to 1
+    expect(reduceTabs(state, { kind: "prevTab" }).activeTabId).toBe(3); // 1 wraps to 3
     const one = withTabs(1);
     expect(reduceTabs(one, { kind: "nextTab" })).toBe(one);
-    expect(reduceTabs(one, { kind: "prevTab" })).toBe(one);
   });
-});
 
-describe("selectIndex (⌘1..⌘9)", () => {
-  it("activates the 0-based index", () => {
+  it("selectIndex activates 0-based; ⌘9 (index 8) = last; out-of-range no-op", () => {
     const state = withTabs(3);
     expect(reduceTabs(state, { kind: "selectIndex", index: 0 }).activeTabId).toBe(1);
-    expect(reduceTabs(state, { kind: "selectIndex", index: 1 }).activeTabId).toBe(2);
-  });
-
-  it("index 8 (⌘9) selects the LAST tab even with only 3 tabs (iTerm2 rule)", () => {
-    const state = reduceTabs(withTabs(3), { kind: "activateTab", tabId: 1 });
-    expect(reduceTabs(state, { kind: "selectIndex", index: 8 }).activeTabId).toBe(3);
-  });
-
-  it("index 8 (⌘9) selects the LAST tab even when more than 9 tabs exist", () => {
-    const state = reduceTabs(withTabs(10), { kind: "activateTab", tabId: 1 });
-    expect(reduceTabs(state, { kind: "selectIndex", index: 8 }).activeTabId).toBe(10);
-  });
-
-  it("other out-of-range indices are no-ops (===)", () => {
-    const state = withTabs(3); // active = 3
+    expect(
+      reduceTabs(reduceTabs(state, { kind: "activateTab", tabId: 1 }), {
+        kind: "selectIndex",
+        index: 8,
+      }).activeTabId,
+    ).toBe(3);
     expect(reduceTabs(state, { kind: "selectIndex", index: 5 })).toBe(state);
-    expect(reduceTabs(state, { kind: "selectIndex", index: -1 })).toBe(state);
-    const empty = initialTabsState();
-    expect(reduceTabs(empty, { kind: "selectIndex", index: 0 })).toBe(empty);
-    expect(reduceTabs(empty, { kind: "selectIndex", index: 8 })).toBe(empty);
   });
 
-  it("selecting the already-active index is a no-op (===)", () => {
-    const state = withTabs(3); // active = 3, at index 2
-    expect(reduceTabs(state, { kind: "selectIndex", index: 2 })).toBe(state);
-  });
-});
-
-describe("moveTab", () => {
-  it("reorders forward and backward", () => {
-    const state = withTabs(3); // [1, 2, 3]
+  it("moveTab reorders (splice); active identity survives; clamps; no-ops", () => {
+    const state = withTabs(3);
     expect(tabIds(reduceTabs(state, { kind: "moveTab", from: 0, to: 2 }))).toEqual([2, 3, 1]);
-    expect(tabIds(reduceTabs(state, { kind: "moveTab", from: 2, to: 0 }))).toEqual([3, 1, 2]);
-  });
-
-  it("preserves the active tab's IDENTITY across a reorder", () => {
-    const state = reduceTabs(withTabs(3), { kind: "activateTab", tabId: 1 });
-    const next = reduceTabs(state, { kind: "moveTab", from: 0, to: 2 });
-    expect(next.activeTabId).toBe(1); // still tab 1, now at another index
-    expect(tabIds(next)).toEqual([2, 3, 1]);
-  });
-
-  it("clamps an out-of-range destination", () => {
-    const state = withTabs(3);
-    expect(tabIds(reduceTabs(state, { kind: "moveTab", from: 0, to: 99 }))).toEqual([2, 3, 1]);
-    expect(tabIds(reduceTabs(state, { kind: "moveTab", from: 2, to: -5 }))).toEqual([3, 1, 2]);
-  });
-
-  it("is a no-op (===) for an out-of-range source, a same-slot move, and the empty state", () => {
-    const state = withTabs(3);
+    const active1 = reduceTabs(state, { kind: "activateTab", tabId: 1 });
+    expect(reduceTabs(active1, { kind: "moveTab", from: 0, to: 2 }).activeTabId).toBe(1);
+    expect(reduceTabs(state, { kind: "moveTab", from: 1, to: 1 })).toBe(state);
     expect(reduceTabs(state, { kind: "moveTab", from: 3, to: 0 })).toBe(state);
-    expect(reduceTabs(state, { kind: "moveTab", from: -1, to: 0 })).toBe(state);
-    expect(reduceTabs(state, { kind: "moveTab", from: 1, to: 1 })).toBe(state);
-    // A destination that clamps back onto the source slot is the same no-op.
-    expect(reduceTabs(state, { kind: "moveTab", from: 2, to: 99 })).toBe(state);
-    const empty = initialTabsState();
-    expect(reduceTabs(empty, { kind: "moveTab", from: 0, to: 1 })).toBe(empty);
-  });
-
-  it("does not mutate the input state", () => {
-    const before = deepFreeze(withTabs(3));
-    expect(() => reduceTabs(before, { kind: "moveTab", from: 0, to: 2 })).not.toThrow();
-    expect(tabIds(before)).toEqual([1, 2, 3]);
   });
 });
 
-// trmx-81 (FR-2.2): AXIS-FREEDOM — moveTab is pure splice semantics over the tab ORDER. The
-// reducer never sees an axis: whether TabStrip mapped the pointer's X (horizontal bar) or Y
-// (vertical rail) onto the slots, the same {from, to} yields the same state. These tests document
-// that contract for the vertical case — deliberately NO reducer change ships with them.
-describe("moveTab axis-freedom (trmx-81)", () => {
-  it("a vertical drag's slots reorder identically to a horizontal drag's (same splice)", () => {
-    const state = withTabs(3); // [1, 2, 3] — rendered as a vertical rail, slots top-to-bottom
-    // Dragging the TOP tab past the bottom tab's Y midpoint = {from: 0, to: 2}, exactly what a
-    // rightward drag on a horizontal strip produces.
-    const down = reduceTabs(state, { kind: "moveTab", from: 0, to: 2 });
-    expect(tabIds(down)).toEqual([2, 3, 1]);
-    // And the BOTTOM tab dragged up to the top slot.
-    const up = reduceTabs(state, { kind: "moveTab", from: 2, to: 0 });
-    expect(tabIds(up)).toEqual([3, 1, 2]);
-  });
-
-  it("vertical no-ops match horizontal no-ops: a same-slot drop is the identical state (===)", () => {
-    const state = withTabs(3);
-    // A vertical drag that returns to its own row commits nothing…
-    expect(reduceTabs(state, { kind: "moveTab", from: 1, to: 1 })).toBe(state);
-    // …and a drag past the rail's end clamps onto the last slot (same clamp as horizontal).
-    expect(tabIds(reduceTabs(state, { kind: "moveTab", from: 0, to: 99 }))).toEqual([2, 3, 1]);
-  });
-
-  it("activation identity survives a vertical reorder (identity, not row index)", () => {
-    const state = reduceTabs(withTabs(3), { kind: "activateTab", tabId: 1 });
-    const next = reduceTabs(state, { kind: "moveTab", from: 0, to: 2 });
-    expect(next.activeTabId).toBe(1); // still tab 1, now the bottom row
-  });
-});
-
-describe("tabBySessionId", () => {
-  it("finds the tab bound to a session", () => {
-    const state = run(
+describe("paneBySessionId / tabBySessionId / tabPaneIds / canSplitFocused", () => {
+  it("paneBySessionId finds the tab + paneId bound to a session", () => {
+    const s = run(
       { kind: "openTab" },
       { kind: "openTab" },
-      { kind: "attachSession", tabId: 2, sessionId: 77, title: "zsh" },
+      { kind: "splitPane", tabId: 2, dir: "row" }, // tab 2 gets pane 3
+      { kind: "attachSession", tabId: 2, paneId: 3, sessionId: 77, title: "zsh" },
     );
-    expect(tabBySessionId(state, 77)?.tabId).toBe(2);
+    const hit = paneBySessionId(s, 77);
+    expect(hit?.tab.tabId).toBe(2);
+    expect(hit?.paneId).toBe(3);
+    expect(tabBySessionId(s, 77)?.tabId).toBe(2);
   });
 
   it("returns undefined for an unknown session and never matches session-less panes", () => {
-    const state = withTabs(2); // both panes have sessionId null
-    expect(tabBySessionId(state, 77)).toBeUndefined();
-    // A null-pane tab must not be matched by any numeric probe.
-    expect(tabBySessionId(state, 0)).toBeUndefined();
+    const s = withTabs(2);
+    expect(paneBySessionId(s, 77)).toBeUndefined();
+    expect(tabBySessionId(s, 0)).toBeUndefined();
+  });
+
+  it("tabPaneIds returns panes in layout order", () => {
+    let s = run({ kind: "openTab" }, { kind: "splitPane", tabId: 1, dir: "row" });
+    s = reduceTabs(s, { kind: "focusPane", tabId: 1, paneId: 1 });
+    s = reduceTabs(s, { kind: "splitPane", tabId: 1, dir: "column" }); // 1 → (1/3), so order 1,3,2
+    expect(tabPaneIds(s.tabs[0])).toEqual([1, 3, 2]);
+  });
+
+  it("canSplitFocused reflects the layout-tree guard", () => {
+    const s = run({ kind: "openTab" });
+    const big = { x: 0, y: 0, width: 800, height: 600 };
+    const tiny = { x: 0, y: 0, width: 100, height: 80 };
+    expect(canSplitFocused(s.tabs[0], "row", big, { width: 80, height: 60 })).toBe(true);
+    expect(canSplitFocused(s.tabs[0], "row", tiny, { width: 80, height: 60 })).toBe(false);
   });
 });
