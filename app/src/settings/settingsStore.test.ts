@@ -692,6 +692,92 @@ describe("onConfigWarningsChanged (trmx-80)", () => {
   });
 });
 
+// trmx-80 review R2 (round 2): FILE warnings and CLIENT warnings are separate ledgers. The
+// backend's config:warnings event describes only what the CORE parser can see, so it replaces the
+// FILE set wholesale — it must never wipe a CLIENT warning (e.g. an invalid theme id, which the
+// backend cannot validate). A client warning is keyed by its registry key and superseded only by
+// a NEW VALUE for that key: invalid → (re)set, valid → cleared.
+describe("file vs client warning ledgers (trmx-80)", () => {
+  it("a client warning SURVIVES the backend's empty config:warnings that follows it", async () => {
+    const bus = fakeListenBus();
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    await hydrateSettings({ invoke: backend.invoke, bus, storage: fakeStorage() });
+    // The watcher's sequence for a hand edit that breaks the theme: settings:changed (invalid
+    // theme id — the CLIENT authors the warning) then config:warnings [] (the core parsed the
+    // file clean; a theme is a free string to the backend).
+    bus.fire(SETTINGS_CHANGED_EVENT, {
+      key: "appearance.theme",
+      value: "nihgt",
+      source: "config-file",
+    });
+    bus.fire(CONFIG_WARNINGS_EVENT, []);
+    expect(
+      getConfigWarnings().some(
+        (w) => w.source === "client" && w.message.includes("appearance.theme"),
+      ),
+    ).toBe(true);
+    // Re-authoring the SAME key replaces, never accumulates: still exactly one client warning.
+    bus.fire(SETTINGS_CHANGED_EVENT, {
+      key: "appearance.theme",
+      value: "wrogn-again",
+      source: "config-file",
+    });
+    expect(getConfigWarnings().filter((w) => w.source === "client")).toHaveLength(1);
+    // A LATER VALID value for the key is what clears it — the merged list goes empty.
+    bus.fire(SETTINGS_CHANGED_EVENT, {
+      key: "appearance.theme",
+      value: "mint",
+      source: "config-file",
+    });
+    bus.fire(CONFIG_WARNINGS_EVENT, []);
+    expect(getConfigWarnings()).toEqual([]);
+  });
+
+  it("hydration's client warning coexists with the file set and clears on a later valid value", async () => {
+    const bus = fakeListenBus();
+    const backend = fakeConfigBackend({
+      values: { "appearance.theme": "hotdog-stand" },
+      warnings: [{ type: "UnknownKey", key: "old.key" }],
+    });
+    await hydrateSettings({ invoke: backend.invoke, bus, storage: fakeStorage() });
+    // The merged list: FILE warnings first, then CLIENT warnings.
+    const merged = getConfigWarnings();
+    expect(merged.map((w) => w.source)).toEqual(["file", "client"]);
+    expect(merged[0].message).toContain("old.key");
+    expect(merged[1].message).toContain("appearance.theme");
+    // The backend re-parses clean: the FILE set empties, the CLIENT warning survives.
+    bus.fire(CONFIG_WARNINGS_EVENT, []);
+    expect(getConfigWarnings().map((w) => w.source)).toEqual(["client"]);
+    // The user fixes the theme: the valid value clears exactly that key's client warning.
+    bus.fire(SETTINGS_CHANGED_EVENT, {
+      key: "appearance.theme",
+      value: "mint",
+      source: "config-file",
+    });
+    expect(getConfigWarnings()).toEqual([]);
+  });
+
+  it("notifies subscribers when a valid value clears a client warning (merged result changed)", async () => {
+    const bus = fakeListenBus();
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    await hydrateSettings({ invoke: backend.invoke, bus, storage: fakeStorage() });
+    bus.fire(SETTINGS_CHANGED_EVENT, {
+      key: "appearance.theme",
+      value: "nihgt",
+      source: "config-file",
+    });
+    const seen: ConfigWarningItem[][] = [];
+    onConfigWarningsChanged((items) => void seen.push(items));
+    bus.fire(SETTINGS_CHANGED_EVENT, {
+      key: "appearance.theme",
+      value: "mint",
+      source: "config-file",
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toEqual([]);
+  });
+});
+
 describe("legacy localStorage migration (trmx-80 T3b)", () => {
   it("fresh install: no legacy keys → no migration writes (only the theme materialization)", async () => {
     const backend = fakeConfigBackend({ exists: false, values: {} });

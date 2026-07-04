@@ -272,7 +272,14 @@ function renderConfigWarning(payload: unknown): string {
 
 const snapshot = new Map<SettingKey, SettingsValues[SettingKey]>();
 let configPath: string | null = null;
-let configWarnings: ConfigWarningItem[] = [];
+// trmx-80 review R2 (round 2): FILE and CLIENT warnings are SEPARATE ledgers. The backend's
+// config:warnings event describes only what the CORE parser can see, so it replaces the FILE set
+// wholesale (including with the empty set) — it must never wipe a CLIENT warning it cannot know
+// about (e.g. an invalid theme id: a free string to the backend, validated only here). A client
+// warning is keyed by its registry key and superseded only by a NEW VALUE for that same key:
+// invalid → (re)set, valid → cleared.
+let fileWarnings: ConfigWarningItem[] = [];
+const clientWarnings = new Map<SettingKey, ConfigWarningItem>();
 // The invoke used for config_write/config_reset_all after (or before) hydration. hydrateSettings
 // swaps in its injected invoke so every store instance writes through the same channel.
 let configInvoke: InvokeFn = realInvoke;
@@ -293,9 +300,10 @@ export function getConfigFilePath(): string | null {
   return configPath;
 }
 
-/** The current config warnings (file-rendered + client-authored) for the settings UI (T3e). */
+/** The current config warnings for the settings UI (T3e): the MERGED ledgers, file-rendered
+ * warnings first, then the client-authored per-key warnings. */
 export function getConfigWarnings(): ConfigWarningItem[] {
-  return [...configWarnings];
+  return [...fileWarnings, ...clientWarnings.values()];
 }
 
 // trmx-80 review R2: the store is the SINGLE warnings authority. The UI subscribes here rather
@@ -335,7 +343,8 @@ function publishConfigWarnings(): void {
 export function __resetSettingsForTest(): void {
   snapshot.clear();
   configPath = null;
-  configWarnings = [];
+  fileWarnings = [];
+  clientWarnings.clear();
   configWarningsListeners.clear();
   configInvoke = realInvoke;
   busSubscribed = false;
@@ -418,6 +427,9 @@ function makeSnapshotStore(bus: SettingsBus | undefined, source: string): Settin
         return;
       }
       snapshot.set(key, effective);
+      // A valid local write supersedes any client warning for this key (the file gets the
+      // valid value; the old "invalid value in the file" complaint no longer applies).
+      if (clientWarnings.delete(key)) publishConfigWarnings();
       invokeSafely("config_write", { key, value: effective }).catch((err: unknown) => {
         // Fire-and-forget by contract: the optimistic snapshot value stands for this session;
         // an unwritable config file must never break the control that wrote it.
@@ -596,10 +608,13 @@ export async function hydrateSettings(deps: HydrateSettingsDeps = {}): Promise<v
 
   if (read) {
     configPath = read.path;
-    configWarnings = read.warnings.map((w) => ({
+    // A hydration is a full fresh read of the file: it re-bases BOTH ledgers (the seeding loop
+    // below re-authors any client warnings the fresh values still deserve).
+    fileWarnings = read.warnings.map((w) => ({
       source: "file" as const,
       message: renderConfigWarning(w),
     }));
+    clientWarnings.clear();
 
     // Seed: PRESENT-ONLY values, each re-validated through the registry's per-key semantics. An
     // invalid config-origin value falls back to the default and records a CLIENT warning.
@@ -607,7 +622,7 @@ export async function hydrateSettings(deps: HydrateSettingsDeps = {}): Promise<v
       if (!(key in read.values)) continue;
       const value = coerce(key, read.values[key]);
       if (value === undefined) {
-        configWarnings.push({
+        clientWarnings.set(key, {
           source: "client",
           message: `Invalid value for "${key}" in the config file; using the default.`,
         });
@@ -717,12 +732,12 @@ function applySettingsChangedToSnapshot(payload: unknown): void {
     if (source === "config-file") {
       if (key === "appearance.theme") {
         snapshot.set(key, defaultThemeId());
-        configWarnings.push({
+        clientWarnings.set(key, {
           source: "client",
           message: `Invalid value for "${key}" from the config file; using the default theme.`,
         });
       } else {
-        configWarnings.push({
+        clientWarnings.set(key as SettingKey, {
           source: "client",
           message: `Invalid value for "${key}" from the config file; keeping the previous value.`,
         });
@@ -732,13 +747,17 @@ function applySettingsChangedToSnapshot(payload: unknown): void {
     return;
   }
   snapshot.set(key as SettingKey, coerced);
+  // A VALID new value for the key supersedes that key's client warning (and only that key's).
+  if (clientWarnings.delete(key as SettingKey)) publishConfigWarnings();
 }
 
-/** A `config:warnings` broadcast is a fresh parse of the file — it supersedes ALL stored warnings
- * (INCLUDING an empty set, which is how a fixed file clears the UI banner — trmx-80 review R2). */
+/** A `config:warnings` broadcast is a fresh parse of the file — it supersedes the FILE ledger
+ * wholesale (INCLUDING an empty set, which is how a fixed file clears the UI banner — trmx-80
+ * review R2). CLIENT warnings are untouched: the backend cannot see them (e.g. an invalid theme
+ * id parses clean as a Str), so only a new value for their key may clear them. */
 function replaceConfigWarnings(payload: unknown): void {
   if (!Array.isArray(payload)) return;
-  configWarnings = payload.map((w) => ({
+  fileWarnings = payload.map((w) => ({
     source: "file" as const,
     message: renderConfigWarning(w),
   }));

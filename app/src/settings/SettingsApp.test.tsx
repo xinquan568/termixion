@@ -291,6 +291,33 @@ describe("SettingsApp config warnings banner (trmx-80)", () => {
     );
   });
 
+  it("keeps the client warning through the backend's clean reparse; a valid value clears it", async () => {
+    // trmx-80 review R2 (round 2): a hand edit with an invalid theme id makes the watcher emit
+    // settings:changed (the client authors the warning) AND config:warnings [] — the core parsed
+    // the file clean, since a theme is a free string to the backend. The empty FILE set must not
+    // wipe the CLIENT warning; only a later valid value for the key clears it.
+    const bus = fakeListen();
+    await hydrateSettings({ invoke: fakeConfigInvoke([]), bus });
+    renderApp({ listen: bus.listen });
+
+    bus.deliver("settings:changed", {
+      key: "appearance.theme",
+      value: "nihgt",
+      source: "config-file",
+    });
+    bus.deliver(CONFIG_WARNINGS_EVENT, []);
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain("appearance.theme"),
+    );
+
+    bus.deliver("settings:changed", {
+      key: "appearance.theme",
+      value: "mint",
+      source: "config-file",
+    });
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+  });
+
   it("clears the banner once the user fixes the file (a clean reparse delivers ZERO warnings)", async () => {
     const bus = fakeListen();
     await hydrateSettings({
