@@ -42,14 +42,14 @@
 // keep-alive terminals — are untouched by a position switch (the trmx-74 remount lesson).
 //
 // trmx-82 (FR-2.3): App reads tabs.sideLabelOrientation alongside the position (the SAME ONE
-// settings subscription guards both keys), gates it through labelOrientationFor (top/bottom bars
-// force horizontal labels), and writes the railGeometryFor tokens as CSS custom properties on the
-// strip container (memoized per value — a label flip must never churn TerminalView prop
-// identities).
-import { useEffect, useMemo, useReducer, useRef, useState, type CSSProperties } from "react";
+// settings subscription guards both keys) and gates it through labelOrientationFor (top/bottom
+// bars force horizontal labels). The railGeometryFor CSS custom properties are NOT App's job:
+// TabStrip owns and writes them on its own root in vertical-label mode (the trmx-82 review-round
+// ownership fix — the vars can never be absent where index.css consumes them without fallbacks).
+import { useEffect, useReducer, useRef, useState } from "react";
 import { TerminalView, type SettingsObservation } from "./terminal/TerminalView";
 import { TabStrip } from "./tabs/TabStrip";
-import { barLayoutFor, labelOrientationFor, railGeometryFor } from "./tabs/barLayout";
+import { barLayoutFor, labelOrientationFor } from "./tabs/barLayout";
 import {
   initialTabsState,
   reduceTabs,
@@ -505,27 +505,10 @@ export function App({
   // trmx-81: the position class + the strip's axis, both from the pure layout engine. The class
   // drives index.css's flex-direction variants; the JSX below keeps hosts-then-strip order ALWAYS.
   const barLayout = barLayoutFor(barPosition);
-  // trmx-82: the EFFECTIVE label orientation (top/bottom force horizontal) and the rail-geometry
-  // tokens, written as CSS custom properties on the strip container. useMemo keyed on the token
-  // VALUES keeps the style object's identity stable per configuration — no re-render churn, and
-  // no TerminalView prop identity is touched by a label flip.
+  // trmx-82: the EFFECTIVE label orientation (top/bottom force horizontal). The rail-geometry
+  // CSS custom properties are TabStrip's own concern — it derives railGeometryFor from the same
+  // two props and writes the vars on its root in vertical-label mode, so App passes no style.
   const labelOrientation = labelOrientationFor(barPosition, sideLabelOrientation);
-  const railGeometry = railGeometryFor(barLayout.orientation, labelOrientation);
-  const stripStyle = useMemo<CSSProperties>(
-    () =>
-      ({
-        "--tab-rail-width": `${railGeometry.railWidthPx}px`,
-        "--tab-max-height": `${railGeometry.tabMaxHeightPx}px`,
-        "--tab-min-height": `${railGeometry.tabMinHeightPx}px`,
-        "--tab-close-min": `${railGeometry.closeHitTargetMinPx}px`,
-      }) as CSSProperties,
-    [
-      railGeometry.railWidthPx,
-      railGeometry.tabMaxHeightPx,
-      railGeometry.tabMinHeightPx,
-      railGeometry.closeHitTargetMinPx,
-    ],
-  );
 
   return (
     <main className={`app app--bar-${barPosition}`}>
@@ -553,7 +536,6 @@ export function App({
         renamingTabId={renamingTabId}
         orientation={barLayout.orientation}
         labelOrientation={labelOrientation}
-        style={stripStyle}
         onActivate={(tabId) => dispatch({ kind: "activateTab", tabId })}
         onClose={requestCloseTab}
         onNew={requestNewTab}

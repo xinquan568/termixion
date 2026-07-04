@@ -7,8 +7,10 @@
 // `?setting.tabs.sideLabelOrientation=<o>` (trmx-82) — the packaged app never reaches that path.
 //
 // Covered here (the browser-level half; jsdom can't do real layout/writing-mode/fixed anchoring):
-// - left + vertical: both strip modifier classes, the 44px rail token (inline --tab-rail-width
-//   var AND the real boundingBox), rotated label spans on every tab;
+// - left + vertical: both strip modifier classes, the 44px rail token (the inline
+//   --tab-rail-width var TabStrip owns AND the real boundingBox), rotated label spans on every
+//   tab, and the token bounds as real OUTER heights (60–180px border-box rows — padding must
+//   never push a row past the max token);
 // - the core tab flows survive vertical-label mode: activate by click, y-axis drag reorder past
 //   the neighbor's midpoint, the synthetic ⌘-digit chord (the trmx-81 pattern — real ⌘ chords
 //   are browser-owned and flaky in the dev server, so KeyboardEvents are dispatched on `window`,
@@ -16,7 +18,7 @@
 // - the D4 rename overlay on a SCROLLED rail: position:fixed with inline left/top, wider than
 //   the slim rail (never clipped by the 44px column), commit on Enter;
 // - the applicability gate: a TOP bar ignores a vertical setting (labelOrientationFor forces
-//   horizontal — no vertical-label class, status-quo geometry tokens);
+//   horizontal — no vertical-label class, NO geometry vars: the status-quo layout is CSS-owned);
 // - the Settings surface: the Appearance page's Orientation row is aria-disabled with the hint
 //   on the default bottom bar and enabled once the seam moves the bar left.
 import { test, expect, type Page } from "@playwright/test";
@@ -57,7 +59,8 @@ test("left bar + vertical setting: both modifier classes, the 44px rail, rotated
   await expect(strip).toHaveClass(/tab-strip--vertical/);
   await expect(strip).toHaveClass(/tab-strip--labels-vertical/);
 
-  // The railGeometryFor tokens land as CSS custom properties on the strip's INLINE style…
+  // The railGeometryFor tokens land as CSS custom properties on the strip's INLINE style
+  // (TabStrip owns and writes them in vertical-label mode)…
   expect(await strip.evaluate((el) => el.style.getPropertyValue("--tab-rail-width"))).toBe(
     "44px",
   );
@@ -74,6 +77,41 @@ test("left bar + vertical setting: both modifier classes, the 44px rail, rotated
   await page.getByTestId("tab-new").click();
   await expect(page.locator(".tab-strip__tab")).toHaveCount(3);
   await expect(page.locator(".tab-strip__title--vertical")).toHaveCount(3);
+});
+
+test("the height tokens bound the OUTER row: short tab within 60–180, long-title tab capped at 180", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 600 });
+  await page.goto(VERTICAL_URL);
+  const strip = page.getByTestId("tab-strip");
+  await expect(strip).toHaveClass(/tab-strip--labels-vertical/);
+  await page.getByTestId("tab-new").click();
+  await expect(page.locator(".tab-strip__tab")).toHaveCount(2);
+
+  // Pin both titles through the D4 rename overlay: tab-1 SHORT (floors at the 60px min token),
+  // tab-2 a 43-char path (its natural rotated length far exceeds the 180px max token).
+  const longTitle = "/Users/dev/projects/termixion/very/deep/dir"; // 43 chars
+  await page.getByTestId("tab-1").dblclick();
+  const input = page.getByTestId("tab-rename-input");
+  await input.fill("sh");
+  await input.press("Enter");
+  await expect(page.getByTestId("tab-1").locator(".tab-strip__title")).toHaveText("sh");
+  await page.getByTestId("tab-2").dblclick();
+  await input.fill(longTitle);
+  await input.press("Enter");
+  await expect(page.getByTestId("tab-2").locator(".tab-strip__title")).toHaveText(longTitle);
+
+  // The D2 tokens are OUTER (border-box) bounds — the row's padding lives INSIDE 60–180px, so a
+  // rendered row must never exceed the max token (the review-round regression: content-box
+  // min/max + 8px vertical padding rendered 76–196px rows).
+  const shortBox = (await page.getByTestId("tab-1").boundingBox())!;
+  const longBox = (await page.getByTestId("tab-2").boundingBox())!;
+  expect(shortBox.height).toBeGreaterThanOrEqual(60);
+  expect(shortBox.height).toBeLessThanOrEqual(180);
+  expect(longBox.height).toBeLessThanOrEqual(180);
+  // Natural sizing still works between the bounds: the long label renders TALLER than the short.
+  expect(longBox.height).toBeGreaterThan(shortBox.height);
 });
 
 test("core flows survive vertical labels: click-activate, y-drag reorder, synthetic ⌘-digit, close", async ({
@@ -175,10 +213,9 @@ test("a TOP bar ignores the vertical setting: horizontal labels enforced, status
   await expect(strip).not.toHaveClass(/tab-strip--vertical/);
   await expect(strip).not.toHaveClass(/tab-strip--labels-vertical/);
   await expect(page.locator(".tab-strip__title--vertical")).toHaveCount(0);
-  // labelOrientationFor forced horizontal, so railGeometryFor served the trmx-81 status quo.
-  expect(await strip.evaluate((el) => el.style.getPropertyValue("--tab-rail-width"))).toBe(
-    "180px",
-  );
+  // labelOrientationFor forced horizontal → NOT vertical-label mode, so TabStrip writes no
+  // geometry vars at all: the horizontal strip's layout is a CSS-owned constant.
+  expect(await strip.evaluate((el) => el.style.getPropertyValue("--tab-rail-width"))).toBe("");
 });
 
 test("Settings surface: the Orientation row is aria-disabled with the hint on the default bottom bar", async ({

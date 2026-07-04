@@ -12,8 +12,11 @@
 // trmx-82 (FR-2.3) adds the label-orientation gate and the rail-geometry tokens:
 // - labelOrientationFor: the tabs.sideLabelOrientation setting may only take effect on a VERTICAL
 //   rail — top/bottom bars force horizontal labels no matter what the setting says.
-// - railGeometryFor: the SINGLE source of the rail's geometry numbers. App writes them as CSS
-//   custom properties on the strip container; index.css consumes ONLY the variables.
+// - railGeometryFor: the SINGLE source of the VERTICAL-LABEL-MODE geometry numbers. TabStrip
+//   writes them as CSS custom properties on its own root in that mode; index.css's
+//   `.tab-strip--labels-vertical` rules consume ONLY the variables (no fallbacks). Every other
+//   strip layout (horizontal strips, the trmx-81 horizontal-label 180px rail) is a CSS-owned
+//   constant — no vars are written or consumed there.
 import type { LabelOrientation, TabBarPosition } from "../settings/settingsStore";
 
 /** How App's flex shell lays out for one bar position. */
@@ -67,10 +70,10 @@ export interface RailGeometry {
   closeHitTargetMinPx: number;
 }
 
-// The trmx-81 status quo, kept as data for totality: the 180px rail, the 34px strip height /
-// rail-row min-height, and the 16px close square. Only railWidthPx is CONSUMED outside
-// vertical-label mode (the rail's width var); the height/close tokens are inert there — no CSS
-// rule outside `.tab-strip--labels-vertical` reads them.
+// The trmx-81 status quo, kept as data for totality and REFERENCE ONLY: the 180px rail, the 34px
+// strip height / rail-row min-height, and the 16px close square. NOTHING consumes it at runtime —
+// index.css hardcodes these numbers as its own constants, and TabStrip writes no vars outside
+// vertical-label mode.
 const STATUS_QUO_GEOMETRY: RailGeometry = {
   railWidthPx: 180,
   tabMaxHeightPx: 34,
@@ -88,10 +91,15 @@ const VERTICAL_LABEL_GEOMETRY: RailGeometry = {
 };
 
 /**
- * The geometry tokens for one strip configuration (trmx-82). Only the exact vertical rail WITH
- * vertical labels gets the narrow-rail tokens; every other combination — horizontal strips (where
- * railWidthPx is irrelevant and stays 180 so the vars are inert), horizontal-label rails, and any
- * junk cast — returns the trmx-81 status quo, so existing layouts are untouched by construction.
+ * The geometry tokens for one strip configuration (trmx-82). This helper OWNS only the
+ * vertical-label-mode geometry: the exact vertical rail WITH vertical labels gets the narrow-rail
+ * tokens, which TabStrip writes as CSS custom properties on its root and
+ * `.tab-strip--labels-vertical` consumes (variables only, no fallbacks).
+ *
+ * Every other combination — horizontal strips, horizontal-label rails, and any junk cast —
+ * returns the trmx-81 status-quo numbers for REFERENCE AND TESTS ONLY; they are not consumed at
+ * runtime. The horizontal-label rail width (180px) and the horizontal strip metrics stay
+ * CSS-owned constants in index.css, so those layouts are untouched by construction.
  */
 export function railGeometryFor(
   orientation: "horizontal" | "vertical",

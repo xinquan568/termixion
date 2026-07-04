@@ -7,8 +7,9 @@
 // own orientation follows the edge: horizontal along top/bottom, vertical along left/right.
 // trmx-82 (FR-2.3, test-first): labelOrientationFor gates the side-rail label orientation — the
 // setting may only take effect on a VERTICAL rail (left/right); top/bottom bars force horizontal.
-// railGeometryFor is the SINGLE geometry source for the rail tokens (App writes them as CSS
-// custom properties; index.css consumes only the variables).
+// railGeometryFor is the SINGLE geometry source for VERTICAL-LABEL mode (TabStrip writes the
+// tokens as CSS custom properties on its root there; index.css consumes only the bare variables);
+// its non-vertical-label returns are the CSS status quo, kept as reference data for these tests.
 import { describe, it, expect } from "vitest";
 import { barLayoutFor, labelOrientationFor, railGeometryFor } from "./barLayout";
 import type { LabelOrientation, TabBarPosition } from "../settings/settingsStore";
@@ -80,10 +81,11 @@ describe("labelOrientationFor (trmx-82)", () => {
   });
 });
 
-// trmx-82: the rail-geometry tokens — the SINGLE source both App's CSS custom properties and the
-// tests measure against. Only the vertical rail WITH vertical labels gets the narrow-rail tokens;
-// everything else is the trmx-81 status quo (railWidthPx 180; the 34px strip/row height and the
-// 16px close square, kept as data — no rule outside vertical-label mode consumes them).
+// trmx-82: the rail-geometry tokens. Only the vertical rail WITH vertical labels gets the
+// narrow-rail tokens (the ONE combination consumed at runtime — TabStrip writes them, the
+// labels-vertical CSS reads them); everything else is the trmx-81 status quo (railWidthPx 180;
+// the 34px strip/row height and the 16px close square), kept as REFERENCE data for totality —
+// index.css hardcodes those numbers itself and no rule consumes them as vars.
 describe("railGeometryFor (trmx-82)", () => {
   const STATUS_QUO = {
     railWidthPx: 180,
@@ -106,7 +108,7 @@ describe("railGeometryFor (trmx-82)", () => {
   });
 
   it("horizontal strips return the status-quo tokens regardless of the label orientation", () => {
-    // railWidthPx is irrelevant on a horizontal strip — kept at 180 so the vars stay inert.
+    // railWidthPx is irrelevant on a horizontal strip — reference data only, never written.
     expect(railGeometryFor("horizontal", "horizontal")).toEqual(STATUS_QUO);
     expect(railGeometryFor("horizontal", "vertical")).toEqual(STATUS_QUO);
   });

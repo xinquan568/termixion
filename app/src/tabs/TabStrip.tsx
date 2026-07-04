@@ -33,7 +33,10 @@
 // via labelOrientationFor, but the component is safe standalone). It adds
 // `tab-strip--labels-vertical` on the root, the writing-mode class on the label span, and the
 // end-position class on the close ×; all GEOMETRY comes from the railGeometryFor CSS custom
-// properties App writes through `style`. Drag logic is untouched (the axis is already Y). The
+// properties the strip WRITES ON ITS OWN ROOT in vertical-label mode — TabStrip is the one
+// component that knows both orientation and labelOrientation, so the vars can never be absent
+// where index.css consumes them (with NO fallbacks). Outside vertical-label mode no vars are
+// written: those layouts are CSS-owned constants. Drag logic is untouched (the axis is Y). The
 // rename input becomes the D4 FIXED OVERLAY: anchored to the renaming tab's viewport rect
 // (measured once, at rename start), horizontal text, wider than the slim rail — while STAYING in
 // the tab's DOM subtree so the trmx-75 commit/cancel/latch + stopPropagation wiring is untouched.
@@ -46,6 +49,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { railGeometryFor } from "./barLayout";
 import type { Tab } from "./tabState";
 
 export interface TabStripProps {
@@ -65,9 +69,10 @@ export interface TabStripProps {
    */
   labelOrientation?: "horizontal" | "vertical";
   /**
-   * The strip container's inline style (trmx-82): App writes the railGeometryFor tokens through
-   * it as CSS custom properties (--tab-rail-width / --tab-max-height / --tab-min-height /
-   * --tab-close-min); index.css consumes only the variables.
+   * The strip container's inline style — a plain passthrough seam. The railGeometryFor tokens
+   * (--tab-rail-width / --tab-max-height / --tab-min-height / --tab-close-min) are NOT the
+   * caller's job: TabStrip writes them itself in vertical-label mode (merged OVER this style, so
+   * a caller cannot accidentally shear the geometry off).
    */
   style?: CSSProperties;
   onActivate: (tabId: number) => void;
@@ -266,6 +271,23 @@ export function TabStrip({
   // trmx-82: vertical-label mode is the AND — a vertical labelOrientation handed to a HORIZONTAL
   // strip is ignored (the strip renders exactly as before).
   const labelsVertical = orientation === "vertical" && labelOrientation === "vertical";
+  // The D2 geometry tokens, written HERE (the ownership fix of the trmx-82 review round): in
+  // vertical-label mode the four railGeometryFor vars go on the root's inline style — index.css's
+  // `.tab-strip--labels-vertical` rules consume them with NO fallbacks, which is safe exactly
+  // because the class and the vars are set by the same expression and can never split. Outside
+  // vertical-label mode nothing is written; those layouts are CSS-owned constants (a fresh style
+  // object per render is fine — this div re-renders with the strip anyway).
+  let rootStyle = style;
+  if (labelsVertical) {
+    const geometry = railGeometryFor(orientation, labelOrientation);
+    rootStyle = {
+      ...style,
+      "--tab-rail-width": `${geometry.railWidthPx}px`,
+      "--tab-max-height": `${geometry.tabMaxHeightPx}px`,
+      "--tab-min-height": `${geometry.tabMinHeightPx}px`,
+      "--tab-close-min": `${geometry.closeHitTargetMinPx}px`,
+    } as CSSProperties;
+  }
 
   const onTabPointerDown =
     (tab: Tab, index: number) => (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -334,7 +356,7 @@ export function TabStrip({
       className={`tab-strip${orientation === "vertical" ? " tab-strip--vertical" : ""}${
         labelsVertical ? " tab-strip--labels-vertical" : ""
       }`}
-      style={style}
+      style={rootStyle}
       data-testid="tab-strip"
       role="tablist"
       aria-label="Tabs"

@@ -452,6 +452,42 @@ describe("TabStrip vertical labels (trmx-82)", () => {
     }
   });
 
+  // The D2 geometry ownership (review round): TabStrip — the one component that knows BOTH
+  // orientation and labelOrientation — writes the railGeometryFor tokens itself, so index.css can
+  // consume the vars with NO fallbacks (they can never be absent in vertical-label mode).
+  it("owns the D2 geometry: vertical-label mode writes all four token vars on the root", () => {
+    renderStrip({ orientation: "vertical", labelOrientation: "vertical" });
+    const strip = screen.getByTestId("tab-strip");
+    expect(strip.style.getPropertyValue("--tab-rail-width")).toBe("44px");
+    expect(strip.style.getPropertyValue("--tab-max-height")).toBe("180px");
+    expect(strip.style.getPropertyValue("--tab-min-height")).toBe("60px");
+    expect(strip.style.getPropertyValue("--tab-close-min")).toBe("24px");
+  });
+
+  it("writes NO geometry vars outside vertical-label mode (those layouts are CSS-owned)", () => {
+    const vars = ["--tab-rail-width", "--tab-max-height", "--tab-min-height", "--tab-close-min"];
+    const { view, ...props } = renderStrip({ orientation: "vertical" }); // horizontal labels
+    for (const name of vars) {
+      expect(screen.getByTestId("tab-strip").style.getPropertyValue(name)).toBe("");
+    }
+    // A vertical label setting on a HORIZONTAL strip is ignored — still no vars.
+    view.rerender(<TabStrip {...props} orientation="horizontal" labelOrientation="vertical" />);
+    for (const name of vars) {
+      expect(screen.getByTestId("tab-strip").style.getPropertyValue(name)).toBe("");
+    }
+  });
+
+  it("merges the caller's style prop UNDER the owned tokens (the style seam survives)", () => {
+    renderStrip({
+      orientation: "vertical",
+      labelOrientation: "vertical",
+      style: { opacity: 0.5 },
+    });
+    const strip = screen.getByTestId("tab-strip");
+    expect(strip.style.opacity).toBe("0.5"); // the caller's style still lands…
+    expect(strip.style.getPropertyValue("--tab-rail-width")).toBe("44px"); // …under the tokens
+  });
+
   it("moves the close × to the tab's END with the hit-target class", () => {
     renderStrip({ orientation: "vertical", labelOrientation: "vertical" });
     const close = screen.getByTestId("tab-close-1");
