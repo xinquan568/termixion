@@ -56,7 +56,9 @@ export function applyScrollbackSettingsChange(
 ): boolean {
   if (typeof payload !== "object" || payload === null) return false;
   const { key, value } = payload as { key?: unknown; value?: unknown };
-  if (key !== "terminal.scrollbackLines" || typeof value !== "number" || !Number.isFinite(value)) {
+  // Number.isInteger rejects NaN/±Infinity AND fractional caps (trmx-80 review R4: integers
+  // only — the backend refuses them, so a fractional broadcast must never touch the terminal).
+  if (key !== "terminal.scrollbackLines" || typeof value !== "number" || !Number.isInteger(value)) {
     return false;
   }
   terminal.options.scrollback = clampNumberSetting("terminal.scrollbackLines", value);

@@ -63,11 +63,12 @@ describe("AboutSettings identity", () => {
     await waitFor(() => expect(screen.getByText("Version 0.0.1")).toBeInTheDocument());
   });
 
-  it("opens BOTH links to the GitHub URL", () => {
+  it("opens BOTH links to the GitHub URL through the URL opener (never the path opener)", () => {
     const opener = renderAbout(fakeUpdate());
     screen.getByRole("button", { name: "Website" }).click();
     screen.getByRole("button", { name: "GitHub" }).click();
     expect(opener.opened).toEqual([GITHUB_URL, GITHUB_URL]);
+    expect(opener.openedPaths).toEqual([]);
   });
 
   it("stacks the links vertically, each led by its icon (vmark parity)", () => {
@@ -250,7 +251,9 @@ describe("AboutSettings config file (trmx-80)", () => {
     };
   }
 
-  it("shows the config path and opens the file through the opener", async () => {
+  it("shows the config path and opens the file through the PATH opener (a file is not a URL)", async () => {
+    // trmx-80 review R3: openExternal is backed by openUrl — routing a raw filesystem path
+    // through it is wrong; the config row must use the plugin's PATH opener instead.
     await hydrateSettings({
       invoke: fakeConfigInvoke(CONFIG_PATH),
       bus: { listen: () => Promise.resolve(() => {}) },
@@ -260,7 +263,8 @@ describe("AboutSettings config file (trmx-80)", () => {
     // The path shows as the row's secondary text so the user can see where the file lives.
     expect(screen.getByText(CONFIG_PATH)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Open" }));
-    expect(opener.opened).toEqual([CONFIG_PATH]);
+    expect(opener.openedPaths).toEqual([CONFIG_PATH]);
+    expect(opener.opened).toEqual([]); // never routed through the URL opener
   });
 
   it("hides the affordance when there is no config path (plain browser)", () => {

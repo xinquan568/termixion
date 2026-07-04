@@ -50,7 +50,9 @@ export function applyFontSettingsChange(terminal: FontOptionsSink, payload: unkn
     terminal.options.fontFamily = resolveFontFamily(value);
     return true;
   }
-  if (key === "terminal.fontSize" && typeof value === "number" && Number.isFinite(value)) {
+  // Number.isInteger rejects NaN/±Infinity AND fractional sizes (trmx-80 review R4: integers
+  // only — the backend refuses them, so a fractional broadcast must never touch the terminal).
+  if (key === "terminal.fontSize" && typeof value === "number" && Number.isInteger(value)) {
     terminal.options.fontSize = clampNumberSetting("terminal.fontSize", value);
     return true;
   }

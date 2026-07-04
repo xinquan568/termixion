@@ -166,10 +166,11 @@ export function TextField({
 }
 
 /** trmx-80: a numeric input with TextField's commit-on-blur/Enter contract, mirroring the
- * registry's number semantics (settingsStore parse/clampNumberSetting): junk (empty/NaN) reverts
- * the draft to the current value without committing; a parseable number is CLAMPED into
- * [min, max] before it is committed and shown. `stepper` adds ± buttons (the Font Size control)
- * that step by one and disable at the bounds. */
+ * registry's number semantics (settingsStore parse/clampNumberSetting): INTEGERS ONLY (review
+ * R4 — the backend's config_write rejects fractional values, so committing one would diverge the
+ * UI/session from the file); junk (empty/NaN/fractional) reverts the draft to the current value
+ * without committing; an integer is CLAMPED into [min, max] before it is committed and shown.
+ * `stepper` adds ± buttons (the Font Size control) that step by one and disable at the bounds. */
 export function NumberField({
   value,
   min,
@@ -192,10 +193,11 @@ export function NumberField({
 
   const commit = () => {
     // Number("") === 0, so an empty/whitespace draft must be rejected before conversion
-    // (the same guard as the registry's parse — settingsStore.ts).
+    // (the same guard as the registry's parse — settingsStore.ts). Number.isInteger also
+    // rejects fractional drafts like "12.5" (review R4: integers only, per the backend).
     const n = draft.trim() === "" ? NaN : Number(draft);
-    if (!Number.isFinite(n)) {
-      setDraft(String(value)); // junk reverts to the current committed value
+    if (!Number.isInteger(n)) {
+      setDraft(String(value)); // junk (including fractions) reverts to the committed value
       return;
     }
     const clamped = clamp(n);

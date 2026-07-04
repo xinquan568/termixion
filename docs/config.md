@@ -59,6 +59,10 @@ The parser **never fails hard**:
 - A **wrong-typed or unknown enum value** falls back to that key's default and is reported with
   what was found and what was expected.
 - An **out-of-range number** (`scrollback_lines`, `font_size`) is clamped into range and reported.
+- Numbers are **integers only** — a fractional value (e.g. `12.5`) is invalid at every layer and is
+  **strictly rejected**, never rounded: the file parser treats it as a wrong-typed value (default +
+  warning), the settings UI's number fields refuse to commit it, and a programmatic write with a
+  fractional value is dropped whole (no file write, no live broadcast).
 - An **unknown theme id** falls back to the derived default (the theme catalog is validated by the
   app, not the core parser, so future user themes stay possible).
 

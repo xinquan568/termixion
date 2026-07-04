@@ -73,6 +73,10 @@ describe("applyScrollbackSettingsChange", () => {
     expect(
       applyScrollbackSettingsChange(terminal, { key: "terminal.scrollbackLines", value: NaN }),
     ).toBe(false);
+    // Integers only (trmx-80 review R4): a fractional cap never reaches the live terminal.
+    expect(
+      applyScrollbackSettingsChange(terminal, { key: "terminal.scrollbackLines", value: 100.5 }),
+    ).toBe(false);
     expect(applyScrollbackSettingsChange(terminal, null)).toBe(false);
     expect(applyScrollbackSettingsChange(terminal, "junk")).toBe(false);
     expect(terminal.options).toEqual({});

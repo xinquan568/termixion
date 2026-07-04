@@ -15,12 +15,14 @@ import {
   hydrateSettings,
   getConfigFilePath,
   getConfigWarnings,
+  onConfigWarningsChanged,
   __resetSettingsForTest,
   SETTING_KEYS,
   SETTING_DEFAULTS,
   SETTING_RANGES,
   SETTINGS_CHANGED_EVENT,
   CONFIG_WARNINGS_EVENT,
+  type ConfigWarningItem,
   type KeyValueStore,
   type SettingsBus,
   type SettingsListenBus,
@@ -194,6 +196,15 @@ describe("settingsStore defaults (legacy storage mode)", () => {
     );
     expect(low.get("terminal.scrollbackLines")).toBe(0);
     expect(low.get("terminal.fontSize")).toBe(6);
+    // Integers ONLY (the backend contract): a fractional value is invalid → the default.
+    const fractional = makeSettingsStore(
+      fakeStorage({
+        "termixion.terminal.scrollbackLines": "12.5",
+        "termixion.terminal.fontSize": "9.75",
+      }),
+    );
+    expect(fractional.get("terminal.scrollbackLines")).toBe(10_000);
+    expect(fractional.get("terminal.fontSize")).toBe(12);
   });
 
   it("parses only the boolean literals — explicit choices survive in either direction", () => {
@@ -385,6 +396,24 @@ describe("shared snapshot backend (trmx-80)", () => {
     ]);
   });
 
+  it("set REJECTS a non-integer for a number key: no snapshot change, no write, no broadcast", async () => {
+    // trmx-80 review R4 — STRICT REJECTION, matching the backend: config_write refuses fractional
+    // numbers, so committing one optimistically would diverge the UI/session from the file.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    const bus = fakeBus();
+    const store = makeSettingsStore(undefined, bus, "settings");
+    store.set("terminal.fontSize", 14);
+    bus.events.length = 0;
+    const writesBefore = backend.writes().length;
+    store.set("terminal.fontSize", 12.5);
+    expect(store.get("terminal.fontSize")).toBe(14); // the fractional value never landed
+    expect(backend.writes().length).toBe(writesBefore); // …never reached config_write
+    expect(bus.events).toEqual([]); // …and never broadcast
+    expect(warn).toHaveBeenCalled(); // the rejection is observable in the console
+  });
+
   it("a failing config_write never throws — the optimistic snapshot value stands (warned)", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } }, { failWrites: true });
@@ -566,6 +595,48 @@ describe("live snapshot updates over the bus (trmx-80)", () => {
     expect(store.get("terminal.fontSize")).toBe(18);
   });
 
+  it("an invalid config-file theme applies the DERIVED DEFAULT — client warning, no write", async () => {
+    // The backend cannot validate theme IDs (any string is a valid TOML Str) — only the client
+    // can. A broken live theme must serve the derived default so gets stay consistent with what
+    // a fresh parse of the file would yield, NOT the stale previous value.
+    const bus = fakeListenBus();
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "sepia" } });
+    await hydrateSettings({ invoke: backend.invoke, bus, storage: fakeStorage() });
+    const store = makeSettingsStore();
+    expect(store.get("appearance.theme")).toBe("sepia");
+    bus.fire(SETTINGS_CHANGED_EVENT, {
+      key: "appearance.theme",
+      value: "nihgt",
+      source: "config-file",
+    });
+    expect(store.get("appearance.theme")).toBe("night"); // jsdom derivation → night
+    expect(
+      getConfigWarnings().some(
+        (w) => w.source === "client" && w.message.includes("appearance.theme"),
+      ),
+    ).toBe(true);
+    // Nothing is written back — the user's (typo'd) file value stays theirs to fix.
+    expect(backend.writes().some((w) => w.key === "appearance.theme")).toBe(false);
+    // A NON-config-file source with an invalid theme stays inert (untrusted junk, no warning).
+    bus.fire(SETTINGS_CHANGED_EVENT, { key: "appearance.theme", value: "neon", source: "settings" });
+    expect(store.get("appearance.theme")).toBe("night");
+  });
+
+  it("a fractional number over the bus never reaches the snapshot (integers only)", async () => {
+    const bus = fakeListenBus();
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    await hydrateSettings({ invoke: backend.invoke, bus, storage: fakeStorage() });
+    const store = makeSettingsStore();
+    bus.fire(SETTINGS_CHANGED_EVENT, { key: "terminal.fontSize", value: 12.5, source: "settings" });
+    bus.fire(SETTINGS_CHANGED_EVENT, {
+      key: "terminal.scrollbackLines",
+      value: 100.5,
+      source: "config-file",
+    });
+    expect(store.get("terminal.fontSize")).toBe(12);
+    expect(store.get("terminal.scrollbackLines")).toBe(10_000);
+  });
+
   it("config:warnings broadcasts REPLACE the stored warnings (a re-parse supersedes older ones)", async () => {
     const bus = fakeListenBus();
     const backend = fakeConfigBackend({
@@ -578,6 +649,46 @@ describe("live snapshot updates over the bus (trmx-80)", () => {
     const messages = getConfigWarnings().map((w) => w.message).join();
     expect(messages).toContain("new.key");
     expect(messages).not.toContain("old.key");
+  });
+});
+
+// trmx-80 review R2: the store is the ONE warnings authority — the UI subscribes to it instead of
+// racing the raw config:warnings event, so it sees EVERY change: backend re-parses (including the
+// empty set that clears a stale banner) and client-authored warnings alike.
+describe("onConfigWarningsChanged (trmx-80)", () => {
+  it("notifies on a config:warnings broadcast INCLUDING an empty one (the banner-clear path)", async () => {
+    const bus = fakeListenBus();
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    await hydrateSettings({ invoke: backend.invoke, bus, storage: fakeStorage() });
+    const seen: ConfigWarningItem[][] = [];
+    const off = onConfigWarningsChanged((items) => void seen.push(items));
+    bus.fire(CONFIG_WARNINGS_EVENT, [{ type: "UnknownKey", key: "bad.key" }]);
+    expect(seen).toHaveLength(1);
+    expect(seen[0].map((w) => w.message).join()).toContain("bad.key");
+    // The user fixed the file: the EMPTY set still notifies, so the banner can clear.
+    bus.fire(CONFIG_WARNINGS_EVENT, []);
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).toEqual([]);
+    off();
+    bus.fire(CONFIG_WARNINGS_EVENT, [{ type: "UnknownKey", key: "later.key" }]);
+    expect(seen).toHaveLength(2); // unsubscribed — no further notifications
+  });
+
+  it("notifies when a CLIENT warning is authored (an invalid config-file value)", async () => {
+    const bus = fakeListenBus();
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    await hydrateSettings({ invoke: backend.invoke, bus, storage: fakeStorage() });
+    const seen: ConfigWarningItem[][] = [];
+    onConfigWarningsChanged((items) => void seen.push(items));
+    bus.fire(SETTINGS_CHANGED_EVENT, {
+      key: "terminal.fontSize",
+      value: "huge",
+      source: "config-file",
+    });
+    expect(seen).toHaveLength(1);
+    expect(
+      seen[0].some((w) => w.source === "client" && w.message.includes("terminal.fontSize")),
+    ).toBe(true);
   });
 });
 
@@ -664,5 +775,23 @@ describe("theme materialization at hydration (trmx-80, superseding get()-time tr
     ).resolves.toBeUndefined();
     expect(makeSettingsStore().get("appearance.theme")).toBe("night");
     expect(warn).toHaveBeenCalled();
+  });
+
+  it("theme PRESENT but invalid: serves the derived default, warns, and NEVER writes the file", async () => {
+    // Presence ≠ validity: a typo'd theme is the user's value to fix — materialization must not
+    // clobber it with a derived write-through (that is only for the truly-absent key).
+    const backend = fakeConfigBackend({
+      exists: true,
+      values: { "appearance.theme": "hotdog-stand" },
+    });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    expect(backend.writes().some((w) => w.key === "appearance.theme")).toBe(false);
+    // Reads serve the derived default for this session (jsdom derivation → night).
+    expect(makeSettingsStore().get("appearance.theme")).toBe("night");
+    expect(
+      getConfigWarnings().some(
+        (w) => w.source === "client" && w.message.includes("appearance.theme"),
+      ),
+    ).toBe(true);
   });
 });

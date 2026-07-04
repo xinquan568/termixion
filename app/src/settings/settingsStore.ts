@@ -152,8 +152,9 @@ const CURSOR_STYLES: readonly CursorStyle[] = ["bar", "block", "underline"];
 
 // trmx-55: booleans are default-aware — only the "true"/"false" literals parse; anything else
 // falls back to the key's default, matching the enums (and the registry contract: default when
-// unset, unparseable, or storage is unavailable). trmx-80 adds the number branch: junk (including
-// the empty string) → default; parseable numbers are CLAMPED into the registry range.
+// unset, unparseable, or storage is unavailable). trmx-80 adds the number branch: numbers are
+// INTEGERS ONLY (the backend's config_write contract) — junk, the empty string, and fractional
+// values all → default; integer values are CLAMPED into the registry range.
 function parse<K extends SettingKey>(key: K, raw: string): SettingsValues[K] {
   const fallback = SETTING_DEFAULTS[key];
   if (typeof fallback === "boolean") {
@@ -164,7 +165,8 @@ function parse<K extends SettingKey>(key: K, raw: string): SettingsValues[K] {
   if (typeof fallback === "number") {
     // Number("") === 0, so an empty/whitespace raw must be rejected before conversion.
     const n = raw.trim() === "" ? NaN : Number(raw);
-    if (!Number.isFinite(n)) return fallback as SettingsValues[K];
+    // Number.isInteger rejects NaN/±Infinity AND fractional values in one check.
+    if (!Number.isInteger(n)) return fallback as SettingsValues[K];
     return clampNumberSetting(key as NumberSettingKey, n) as SettingsValues[K];
   }
   if (key === "update.checkFrequency") {
@@ -185,9 +187,10 @@ function parse<K extends SettingKey>(key: K, raw: string): SettingsValues[K] {
 
 /**
  * Validate an UNTRUSTED typed value (config_read seeding, settings:changed payloads, set()):
- * booleans must be boolean, enums must be members, numbers finite (then CLAMPED), strings string.
- * Returns undefined when the value is unusable for the key — callers fall back to the default
- * (and, for config-origin values, record a client warning).
+ * booleans must be boolean, enums must be members, numbers INTEGERS (then CLAMPED — trmx-80
+ * review R4: the backend's config_write rejects fractional numbers, so they are invalid here
+ * too), strings string. Returns undefined when the value is unusable for the key — callers
+ * decide the fallback (reject the write, serve the default, record a client warning).
  */
 function coerce<K extends SettingKey>(key: K, value: unknown): SettingsValues[K] | undefined {
   const fallback = SETTING_DEFAULTS[key];
@@ -195,7 +198,8 @@ function coerce<K extends SettingKey>(key: K, value: unknown): SettingsValues[K]
     return typeof value === "boolean" ? (value as SettingsValues[K]) : undefined;
   }
   if (typeof fallback === "number") {
-    if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+    // Number.isInteger rejects NaN/±Infinity AND fractional values in one check.
+    if (typeof value !== "number" || !Number.isInteger(value)) return undefined;
     return clampNumberSetting(key as NumberSettingKey, value) as SettingsValues[K];
   }
   if (typeof value !== "string") return undefined;
@@ -294,6 +298,36 @@ export function getConfigWarnings(): ConfigWarningItem[] {
   return [...configWarnings];
 }
 
+// trmx-80 review R2: the store is the SINGLE warnings authority. The UI subscribes here rather
+// than to the raw config:warnings event, so it observes EVERY change: backend re-parses
+// (including the EMPTY set that clears a stale banner) and client-authored warnings (which no
+// backend event ever carries).
+const configWarningsListeners = new Set<(items: ConfigWarningItem[]) => void>();
+
+/**
+ * Subscribe to changes of the stored warnings array (backend `config:warnings` broadcasts —
+ * including empty ones — and client-authored warnings alike). The callback receives the fresh
+ * full set; the returned function unsubscribes.
+ */
+export function onConfigWarningsChanged(
+  cb: (items: ConfigWarningItem[]) => void,
+): () => void {
+  configWarningsListeners.add(cb);
+  return () => void configWarningsListeners.delete(cb);
+}
+
+/** Notify every subscriber that the stored warnings changed (defensive per-listener). */
+function publishConfigWarnings(): void {
+  const items = getConfigWarnings();
+  for (const listener of [...configWarningsListeners]) {
+    try {
+      listener(items);
+    } catch {
+      // A throwing subscriber must never break the store or its sibling subscribers.
+    }
+  }
+}
+
 /**
  * Reset ALL module state (snapshot, path, warnings, invoke, bus subscription) — test hygiene for
  * suites that hydrate or write through the shared snapshot. Production never calls this.
@@ -302,6 +336,7 @@ export function __resetSettingsForTest(): void {
   snapshot.clear();
   configPath = null;
   configWarnings = [];
+  configWarningsListeners.clear();
   configInvoke = realInvoke;
   busSubscribed = false;
   for (const unlisten of busUnlistens.splice(0)) {
@@ -373,7 +408,15 @@ function makeSnapshotStore(bus: SettingsBus | undefined, source: string): Settin
     },
     set(key, value) {
       // Validate/clamp even the typed path (events and JS callers are untrusted at runtime).
-      const effective = coerce(key, value) ?? defaultFor(key);
+      // STRICT REJECTION (trmx-80 review R4, matching the backend contract): an unusable value —
+      // wrong type, or a NON-INTEGER for a number key — is dropped whole. It never reaches the
+      // snapshot, the broadcast, or config_write (which would refuse it anyway), so the
+      // UI/session can never diverge from the file over an invalid write.
+      const effective = coerce(key, value);
+      if (effective === undefined) {
+        console.warn(`[termixion] ignoring invalid value for ${key}:`, value);
+        return;
+      }
       snapshot.set(key, effective);
       invokeSafely("config_write", { key, value: effective }).catch((err: unknown) => {
         // Fire-and-forget by contract: the optimistic snapshot value stands for this session;
@@ -568,6 +611,11 @@ export async function hydrateSettings(deps: HydrateSettingsDeps = {}): Promise<v
           source: "client",
           message: `Invalid value for "${key}" in the config file; using the default.`,
         });
+        // trmx-80 review R1: presence ≠ validity. A PRESENT-but-invalid theme must still occupy
+        // the snapshot (with the derived default) so the absence-driven materialization below
+        // cannot write a derived value over the user's (typo'd) file entry — the file value
+        // stays theirs to fix, and every read serves the derived default meanwhile.
+        if (key === "appearance.theme") snapshot.set(key, defaultThemeId());
       } else {
         snapshot.set(key, value);
       }
@@ -579,10 +627,11 @@ export async function hydrateSettings(deps: HydrateSettingsDeps = {}): Promise<v
       await migrateLegacySettings(storage);
     }
 
-    // Theme materialization ("derive once, then persist", trmx-53 — moved here from get()): when
-    // the file carried no theme and migration brought none, derive from the OS, seed the
-    // snapshot, and write through. A failed write keeps the derived value for this session (it
-    // re-derives next launch) and is NOT broadcast — nothing changed for other windows.
+    // Theme materialization ("derive once, then persist", trmx-53 — moved here from get()): ONLY
+    // when the file carried no theme AT ALL (truly absent — a present-but-invalid one was seeded
+    // above without a write) and migration brought none, derive from the OS, seed the snapshot,
+    // and write through. A failed write keeps the derived value for this session (it re-derives
+    // next launch) and is NOT broadcast — nothing changed for other windows.
     if (!snapshot.has("appearance.theme")) {
       const derived = defaultThemeId();
       snapshot.set("appearance.theme", derived);
@@ -592,6 +641,9 @@ export async function hydrateSettings(deps: HydrateSettingsDeps = {}): Promise<v
         console.warn("[termixion] theme materialization write failed", err);
       }
     }
+
+    // Hydration replaced/authored warnings above — publish once for any early subscriber.
+    publishConfigWarnings();
   }
 
   subscribeToBus(bus);
@@ -650,7 +702,11 @@ function subscribeToBus(bus: SettingsListenBus): void {
  * Keep the snapshot current for `settings:changed` broadcasts from other windows and from the
  * backend's config-file watcher (source "config-file", a hand-edited file). Payloads are
  * untrusted input: unknown keys and malformed values are inert, and an invalid config-file-origin
- * value additionally records a client warning (the UI surfaces it).
+ * value additionally records a client warning (the UI surfaces it). The theme is special (trmx-80
+ * review R1): the backend cannot validate theme IDs (any string is a valid TOML Str), so an
+ * invalid config-file theme applies the DERIVED default to the snapshot — matching what a fresh
+ * parse of the file would serve — instead of keeping a stale previous value. Snapshot-only:
+ * nothing is ever written back, the broken file value stays the user's to fix.
  */
 function applySettingsChangedToSnapshot(payload: unknown): void {
   if (typeof payload !== "object" || payload === null) return;
@@ -659,23 +715,34 @@ function applySettingsChangedToSnapshot(payload: unknown): void {
   const coerced = coerce(key as SettingKey, value);
   if (coerced === undefined) {
     if (source === "config-file") {
-      configWarnings.push({
-        source: "client",
-        message: `Invalid value for "${key}" from the config file; keeping the previous value.`,
-      });
+      if (key === "appearance.theme") {
+        snapshot.set(key, defaultThemeId());
+        configWarnings.push({
+          source: "client",
+          message: `Invalid value for "${key}" from the config file; using the default theme.`,
+        });
+      } else {
+        configWarnings.push({
+          source: "client",
+          message: `Invalid value for "${key}" from the config file; keeping the previous value.`,
+        });
+      }
+      publishConfigWarnings();
     }
     return;
   }
   snapshot.set(key as SettingKey, coerced);
 }
 
-/** A `config:warnings` broadcast is a fresh parse of the file — it supersedes ALL stored warnings. */
+/** A `config:warnings` broadcast is a fresh parse of the file — it supersedes ALL stored warnings
+ * (INCLUDING an empty set, which is how a fixed file clears the UI banner — trmx-80 review R2). */
 function replaceConfigWarnings(payload: unknown): void {
   if (!Array.isArray(payload)) return;
   configWarnings = payload.map((w) => ({
     source: "file" as const,
     message: renderConfigWarning(w),
   }));
+  publishConfigWarnings();
 }
 
 /** `localStorage` when present (browser/webview), else undefined (SSR / locked-down runtime). */

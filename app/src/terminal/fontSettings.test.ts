@@ -77,6 +77,8 @@ describe("applyFontSettingsChange", () => {
     expect(applyFontSettingsChange(terminal, { key: "terminal.fontFamily", value: 12 })).toBe(false);
     expect(applyFontSettingsChange(terminal, { key: "terminal.fontSize", value: "big" })).toBe(false);
     expect(applyFontSettingsChange(terminal, { key: "terminal.fontSize", value: NaN })).toBe(false);
+    // Integers only (trmx-80 review R4): a fractional size never reaches the live terminal.
+    expect(applyFontSettingsChange(terminal, { key: "terminal.fontSize", value: 12.5 })).toBe(false);
     expect(applyFontSettingsChange(terminal, null)).toBe(false);
     expect(applyFontSettingsChange(terminal, "junk")).toBe(false);
     expect(terminal.options).toEqual({});

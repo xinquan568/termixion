@@ -272,6 +272,39 @@ describe("SettingsApp config warnings banner (trmx-80)", () => {
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
   });
 
+  it("shows the client warning when a live config-file edit carries an invalid theme", async () => {
+    // trmx-80 review R1/R2: the backend cannot validate theme IDs, so the STORE authors the
+    // warning client-side — and the banner must surface it (the store is the warnings authority,
+    // not the raw config:warnings event, which never fires for client-authored warnings).
+    const bus = fakeListen();
+    await hydrateSettings({ invoke: fakeConfigInvoke([]), bus });
+    renderApp({ listen: bus.listen });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    bus.deliver("settings:changed", {
+      key: "appearance.theme",
+      value: "nihgt",
+      source: "config-file",
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain("appearance.theme"),
+    );
+  });
+
+  it("clears the banner once the user fixes the file (a clean reparse delivers ZERO warnings)", async () => {
+    const bus = fakeListen();
+    await hydrateSettings({
+      invoke: fakeConfigInvoke([{ type: "UnknownKey", key: "typo.key" }]),
+      bus,
+    });
+    renderApp({ listen: bus.listen });
+    expect(screen.getByRole("alert").textContent).toContain("typo.key");
+
+    // The watcher accepted the fixed file: an EMPTY warning set must clear the stale banner.
+    bus.deliver(CONFIG_WARNINGS_EVENT, []);
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+  });
+
   it("dismiss hides the banner until a new event arrives", async () => {
     const bus = fakeListen();
     await hydrateSettings({

@@ -207,7 +207,8 @@ export function AboutSettings({ update, appInfo, opener, settings }: AboutSettin
       {configPath ? (
         <SettingsGroup title="Configuration">
           <SettingRow label="Open config file" description={configPath}>
-            <Button variant="tertiary" onClick={() => void opener.openExternal(configPath)}>
+            {/* review R3: a filesystem path takes the PATH opener, never the URL opener. */}
+            <Button variant="tertiary" onClick={() => void opener.openPath(configPath)}>
               Open
             </Button>
           </SettingRow>

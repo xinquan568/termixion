@@ -261,6 +261,23 @@ fn settings_changed_payload(key: &str, value: &RegistryValue) -> JsonValue {
     JsonValue::Object(payload)
 }
 
+/// The (event, payload) broadcasts for one APPLIED watcher wake (pure — trmx-80 review R2): one
+/// `settings:changed` per changed pair, then ALWAYS one `config:warnings` carrying the fresh
+/// warning set — INCLUDING when it is empty. The emit decision is "applied ⇒ publish", not
+/// "warned ⇒ publish": once the user fixes a typo'd file, the empty set is what lets the
+/// frontend clear its stale warnings banner.
+fn emissions_for(application: &FileApplication) -> Vec<(&'static str, JsonValue)> {
+    let mut emissions: Vec<(&'static str, JsonValue)> = application
+        .changed
+        .iter()
+        .map(|(key, value)| ("settings:changed", settings_changed_payload(key, value)))
+        .collect();
+    let warnings = serde_json::to_value(&application.warnings)
+        .unwrap_or_else(|_| JsonValue::Array(Vec::new()));
+    emissions.push(("config:warnings", warnings));
+    emissions
+}
+
 /// What `config_read` returns to the webview.
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -470,18 +487,18 @@ fn on_config_file_event(app: &tauri::AppHandle, path: &Path) {
     let Some(application) = apply_file_text(&text, &inner.last, inner.last_write_hash) else {
         return; // self-echo of our own write (D6)
     };
+    // The pure decision, computed before `application.config` moves into the diff base.
+    let emissions = emissions_for(&application);
     inner.last = application.config;
     // An EXTERNAL edit was applied: clear the self-echo latch so a stale hash can never
     // suppress a later external edit that happens to restore our last-written bytes.
     inner.last_write_hash = None;
     drop(inner);
-    for (key, value) in &application.changed {
-        // Rides the trmx-51/53 live-apply plumbing — same event the settings registry
-        // broadcasts; best-effort like session:title-hint (a webview may be mid-teardown).
-        let _ = app.emit("settings:changed", settings_changed_payload(key, value));
-    }
-    if !application.warnings.is_empty() {
-        let _ = app.emit("config:warnings", &application.warnings);
+    // Rides the trmx-51/53 live-apply plumbing — settings:changed per changed pair, then the
+    // warning set EVEN WHEN EMPTY (emissions_for); best-effort like session:title-hint (a
+    // webview may be mid-teardown).
+    for (event, payload) in emissions {
+        let _ = app.emit(event, payload);
     }
 }
 
@@ -791,6 +808,42 @@ mod tests {
                 "values": {},
                 "warnings": [ { "type": "UnknownKey", "key": "terminal.font_sise" } ],
             })
+        );
+    }
+
+    // --- the emit decision for one applied wake (trmx-80 review R2) ---------------------------
+
+    #[test]
+    fn emissions_end_with_config_warnings_even_when_empty_so_a_fixed_file_clears_the_banner() {
+        // The user fixed their typo'd file: the applied clean reparse must still publish the
+        // (now empty) warning set — "applied ⇒ publish", not "warned ⇒ publish" — otherwise a
+        // stale warnings banner can never clear in the UI.
+        let application = apply_file_text("[terminal]\nfont_size = 14\n", &Config::default(), None)
+            .expect("applies");
+        let emissions = emissions_for(&application);
+        assert_eq!(
+            emissions,
+            vec![
+                (
+                    "settings:changed",
+                    json!({ "key": "terminal.fontSize", "value": 14, "source": "config-file" })
+                ),
+                ("config:warnings", json!([])),
+            ]
+        );
+    }
+
+    #[test]
+    fn emissions_carry_the_fresh_warning_set_after_the_changed_pairs() {
+        let application =
+            apply_file_text("[nope]\nx = 1\n", &Config::default(), None).expect("applies");
+        let emissions = emissions_for(&application);
+        assert_eq!(
+            emissions,
+            vec![(
+                "config:warnings",
+                json!([ { "type": "UnknownKey", "key": "nope" } ])
+            )]
         );
     }
 

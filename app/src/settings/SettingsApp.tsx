@@ -15,10 +15,11 @@
 //
 // trmx-80 (FR-13): the shell also surfaces the CONFIG-FILE WARNINGS (a hand-edited config.toml
 // with syntax errors / unknown keys / invalid values) as a dismissable banner at the top of the
-// content pane. State seeds from getConfigWarnings() at mount and re-reads on each
-// config:warnings event — the store's own subscription (hydrateSettings, which boot() awaits
-// before this window renders) re-parses the payload FIRST, so a re-read always sees the fresh
-// set; an empty re-parse clears the banner, and a fresh event un-dismisses it.
+// content pane. State seeds from getConfigWarnings() at mount and stays current through
+// onConfigWarningsChanged — the STORE is the single warnings authority (review R2): it notifies
+// on every backend re-parse (including the EMPTY set, which clears the banner once the user
+// fixes the file) AND on client-authored warnings (e.g. an invalid live theme), which no raw
+// config:warnings event ever carries. A fresh non-empty set un-dismisses the banner.
 import { useEffect, useState, type ReactNode } from "react";
 import { AboutSettings } from "./AboutSettings";
 import { AppearanceSettings } from "./AppearanceSettings";
@@ -29,8 +30,8 @@ import type { AppInfo } from "../update/appInfo";
 import type { Opener } from "../update/opener";
 import type { UseUpdate } from "../update/useUpdate";
 import {
-  CONFIG_WARNINGS_EVENT,
   getConfigWarnings,
+  onConfigWarningsChanged,
   SETTINGS_CHANGED_EVENT,
   type ConfigWarningItem,
   type SettingsStore,
@@ -82,6 +83,18 @@ export function SettingsApp({
     applyTxTheme(theme, document);
   }, [theme]);
 
+  // trmx-80 review R2: the ONE warnings path — the store notifies on every change (backend
+  // re-parse including the empty set, client-authored warnings) and un-dismissing here means a
+  // new problem is never hidden by an old dismissal (an empty set renders no banner anyway).
+  useEffect(
+    () =>
+      onConfigWarningsChanged((items) => {
+        setWarnings(items);
+        setWarningsDismissed(false);
+      }),
+    [],
+  );
+
   useEffect(() => {
     if (!listen) return;
     let live = true;
@@ -102,13 +115,6 @@ export function SettingsApp({
       if (typeof payload !== "object" || payload === null) return;
       const { key, value } = payload as { key?: unknown; value?: unknown };
       if (key === "appearance.theme" && isThemeId(value)) setTheme(value);
-    });
-    // trmx-80: the file watcher re-parsed the config — re-read the fresh warning set (the store's
-    // subscription, registered at boot BEFORE this one, already replaced it) and un-dismiss so a
-    // new problem is never hidden by an old dismissal. An empty set clears the banner.
-    subscribe(CONFIG_WARNINGS_EVENT, () => {
-      setWarnings(getConfigWarnings());
-      setWarningsDismissed(false);
     });
     return () => {
       live = false;

@@ -111,6 +111,22 @@ describe("NumberField (trmx-80)", () => {
     expect(input.value).toBe("10");
   });
 
+  it("reverts a FRACTIONAL draft like junk — integers only, nothing commits (trmx-80 review R4)", () => {
+    // The backend's config_write rejects non-integers; committing 12.5 optimistically would
+    // diverge the UI/session from the file, so the field refuses it at the source.
+    const onCommit = vi.fn();
+    render(<NumberField value={10} min={0} max={100} onCommit={onCommit} label="Scrollback" />);
+    const input = screen.getByRole("textbox", { name: "Scrollback" }) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "12.5" } });
+    fireEvent.blur(input);
+    expect(onCommit).not.toHaveBeenCalled();
+    expect(input.value).toBe("10");
+    fireEvent.change(input, { target: { value: "0.5" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onCommit).not.toHaveBeenCalled();
+    expect(input.value).toBe("10");
+  });
+
   it("skips a no-op commit (retyping the same value)", () => {
     const onCommit = vi.fn();
     render(<NumberField value={10} min={0} max={100} onCommit={onCommit} label="Scrollback" />);
