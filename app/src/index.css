@@ -132,7 +132,8 @@ body {
  * (txCssVars.ts writes them; settings.css's `:root` block is the static fallback, loaded in this
  * window's bundle): sunken bg for the bar, primary bg + accent inset line for the active tab.
  * Horizontal (top/bottom, the default): a fixed 34px flex row; tabs shrink from 180px down to
- * 60px before overflowing. `position: relative` anchors the trmx-81 drop indicator.
+ * 60px, then the strip scrolls on x (trmx-81 — `hidden` would strand the tail tabs with no way
+ * to reach them). `position: relative` anchors the trmx-81 drop indicator.
  */
 .tab-strip {
   flex: 0 0 34px;
@@ -140,7 +141,8 @@ body {
   position: relative;
   display: flex;
   align-items: stretch;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   background: var(--tx-bg-sunken);
   border-top: 1px solid var(--tx-border);
   font:

@@ -210,19 +210,33 @@ for (const position of POSITIONS) {
           await expect(tabs).toHaveCount(count);
         }
 
-        // The strip actually overflows on its scroll axis.
+        // The strip actually overflows on its scroll axis, AND that axis is user-scrollable
+        // (computed overflow auto/scroll — `hidden` would strand the tail tabs, trmx-81 review).
         const strip = page.getByTestId("tab-strip");
         if (vertical) {
           await expect
             .poll(() => strip.evaluate((el) => el.scrollHeight - el.clientHeight))
             .toBeGreaterThan(0);
+          expect(
+            await strip.evaluate((el) => getComputedStyle(el).overflowY),
+          ).toMatch(/auto|scroll/);
         } else {
           await expect
             .poll(() => strip.evaluate((el) => el.scrollWidth - el.clientWidth))
             .toBeGreaterThan(0);
+          expect(
+            await strip.evaluate((el) => getComputedStyle(el).overflowX),
+          ).toMatch(/auto|scroll/);
         }
 
-        // The LAST tab's close affordance still works once scrolled into view.
+        // A user-like wheel scroll moves the strip on its axis (no programmatic assist)…
+        await strip.hover();
+        await page.mouse.wheel(vertical ? 0 : 400, vertical ? 400 : 0);
+        await expect
+          .poll(() => strip.evaluate((el) => el.scrollLeft + el.scrollTop))
+          .toBeGreaterThan(0);
+
+        // …and the LAST tab's close affordance still works once scrolled into view.
         const lastClose = page.getByTestId("tab-close-12");
         await lastClose.scrollIntoViewIfNeeded();
         await lastClose.click();
