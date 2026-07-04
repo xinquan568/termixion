@@ -189,27 +189,31 @@ function walkRects(
     return;
   }
   if (node.dir === "row") {
-    const avail = Math.max(0, rect.width - divider);
+    // Cap the divider to the axis so a rect narrower than the divider still tiles (no overflow):
+    // firstW + gap + secondW == rect.width for any width ≥ 0.
+    const gap = Math.min(divider, rect.width);
+    const avail = rect.width - gap;
     const firstW = Math.round(avail * node.ratio);
     const secondW = avail - firstW;
     dividers.push({
       path,
       dir: node.dir,
-      rect: { x: rect.x + firstW, y: rect.y, width: divider, height: rect.height },
+      rect: { x: rect.x + firstW, y: rect.y, width: gap, height: rect.height },
     });
     walkRects(node.first, { x: rect.x, y: rect.y, width: firstW, height: rect.height }, [...path, "first"], divider, panes, dividers);
-    walkRects(node.second, { x: rect.x + firstW + divider, y: rect.y, width: secondW, height: rect.height }, [...path, "second"], divider, panes, dividers);
+    walkRects(node.second, { x: rect.x + firstW + gap, y: rect.y, width: secondW, height: rect.height }, [...path, "second"], divider, panes, dividers);
   } else {
-    const avail = Math.max(0, rect.height - divider);
+    const gap = Math.min(divider, rect.height);
+    const avail = rect.height - gap;
     const firstH = Math.round(avail * node.ratio);
     const secondH = avail - firstH;
     dividers.push({
       path,
       dir: node.dir,
-      rect: { x: rect.x, y: rect.y + firstH, width: rect.width, height: divider },
+      rect: { x: rect.x, y: rect.y + firstH, width: rect.width, height: gap },
     });
     walkRects(node.first, { x: rect.x, y: rect.y, width: rect.width, height: firstH }, [...path, "first"], divider, panes, dividers);
-    walkRects(node.second, { x: rect.x, y: rect.y + firstH + divider, width: rect.width, height: secondH }, [...path, "second"], divider, panes, dividers);
+    walkRects(node.second, { x: rect.x, y: rect.y + firstH + gap, width: rect.width, height: secondH }, [...path, "second"], divider, panes, dividers);
   }
 }
 

@@ -384,8 +384,13 @@ export function App({
     const tab = s.tabs.find((t) => t.tabId === tabId);
     if (!tab || tab.panes[paneId] === undefined) return;
     if (tabPaneIds(tab).length > 1) {
+      // A pane dying mid-rename (it is the focused/renamed pane) must clear the rename, or the input
+      // would survive and re-target the NEW focused pane on commit. The whole-tab branch clears it
+      // in closeTabInternal; the pane branch must do the same for the focused pane.
+      const wasRenamedPane = tab.focusedPaneId === paneId;
       dispatch({ kind: "closePane", tabId, paneId });
       disposePaneResources(paneId, opts);
+      if (wasRenamedPane) setRenamingTabId((current) => (current === tabId ? null : current));
     } else {
       closeTabInternal(tabId, opts);
     }

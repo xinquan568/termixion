@@ -230,6 +230,26 @@ describe("solveRects", () => {
     expect(solved.panes.find((p) => p.paneId === 1)!.rect.width).toBe(200); // 800*0.25
     expect(solved.panes.find((p) => p.paneId === 2)!.rect.width).toBe(600);
   });
+
+  it("tiles a rect NARROWER than the divider without overflowing (divider capped to the axis)", () => {
+    const narrow: Rect = { x: 10, y: 0, width: 3, height: 100 };
+    const solved = solveRects(rowOf(1, 2), narrow, 5); // divider (5) > width (3)
+    assertTiles(solved, narrow); // exact tiling, and NOTHING escapes the bounds
+    expect(solved.dividers[0].rect.width).toBeLessThanOrEqual(narrow.width);
+  });
+
+  it("tiles a rect SHORTER than the divider (column) without overflowing", () => {
+    const short: Rect = { x: 0, y: 5, width: 100, height: 2 };
+    const tree = splitLeaf(leafNode(1), 1, "column", 2);
+    const solved = solveRects(tree, short, 5);
+    assertTiles(solved, short);
+    expect(solved.dividers[0].rect.height).toBeLessThanOrEqual(short.height);
+  });
+
+  it("tiles a zero-size bound (degenerate) without overflow", () => {
+    const zero: Rect = { x: 0, y: 0, width: 0, height: 0 };
+    assertTiles(solveRects(rowOf(1, 2), zero, 1), zero);
+  });
 });
 
 describe("leaves / paneOrder / findLeaf", () => {

@@ -1000,4 +1000,55 @@ describe("App split panes (trmx-84)", () => {
     });
     expect(screen.getByTestId("tab-1")).toHaveTextContent("one");
   });
+
+  it("split cwd inheritance is FOCUSED-pane-scoped, not tab-scoped", async () => {
+    const { attach, calls } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 1, title: "one" });
+    recorder.mounts[0].cwdStore?.set("/home"); // pane 1's cwd
+    cmdD(); // split → pane 2 focused
+    await resolveAttach(calls[1], { sessionId: 2, title: "two" });
+    recorder.mounts[1].cwdStore?.set("/var"); // pane 2's cwd (currently focused)
+
+    // Focus pane 1, then split from it: the new pane inherits pane 1's cwd, NOT the last-focused one.
+    await act(async () => {
+      fireEvent.mouseDown(screen.getByTestId("pane-host-1"));
+    });
+    cmdD();
+    expect(attach).toHaveBeenCalledTimes(3);
+    expect(attach.mock.calls[2][1]).toEqual({ cwd: "/home" });
+  });
+
+  it("a pty:exited for ONE pane in a split tab closes only that pane (paneBySessionId routing)", async () => {
+    const { calls, closeSession, ptyExited } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 11, title: "one" });
+    cmdD(); // split → pane 2 focused
+    await resolveAttach(calls[1], { sessionId: 22, title: "two" });
+    const host1 = screen.getByTestId("pane-host-1");
+
+    await act(async () => ptyExited.fire(22)); // pane 2's shell exits
+
+    expect(screen.queryByTestId("pane-host-2")).not.toBeInTheDocument();
+    expect(screen.getByTestId("pane-host-1")).toBe(host1); // survivor host is identical
+    expect(screen.getByTestId("tab-1")).toBeInTheDocument(); // the tab (with pane 1) survives
+    expect(closeSession).not.toHaveBeenCalled(); // already exited — no redundant close_pty
+    expect(screen.getByTestId("pane-host-1").className).toContain("pane-host--focused");
+  });
+
+  it("a pane dying mid-rename (pty:exited) clears the rename so it can't re-target the survivor", async () => {
+    const { calls, tabsAction, ptyExited } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 11, title: "one" });
+    cmdD(); // split → pane 2 focused
+    await resolveAttach(calls[1], { sessionId: 22, title: "two" });
+
+    await act(async () => tabsAction.fire("rename")); // rename the focused pane (2)
+    expect(screen.getByTestId("tab-rename-input")).toBeInTheDocument();
+
+    await act(async () => ptyExited.fire(22)); // the renamed (focused) pane's shell exits
+
+    // The input died with its pane; rename state cleared, the survivor is focused (a stuck
+    // renamingTabId would let a later commit re-target the survivor).
+    expect(screen.queryByTestId("tab-rename-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("pane-host-2")).not.toBeInTheDocument();
+    expect(screen.getByTestId("pane-host-1").className).toContain("pane-host--focused");
+  });
 });
