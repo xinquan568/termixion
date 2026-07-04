@@ -18,7 +18,7 @@ pub mod session;
 
 pub use config::{
     CheckFrequency, Config, ConfigWarning, CursorStyle, DEFAULT_TEMPLATE, RegistryValue,
-    diff_configs, parse_config, parse_registry_pairs, toml_path_for,
+    TabBarPosition, TabsConfig, diff_configs, parse_config, parse_registry_pairs, toml_path_for,
 };
 pub use pty::{PtyBackend, PtyError, PtyFactory, PtyReader, PtySize, SessionSpec};
 pub use pump::pump;

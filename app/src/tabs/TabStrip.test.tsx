@@ -8,7 +8,7 @@
 // sequences (getBoundingClientRect mocked — jsdom has no layout).
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { TabStrip, hoverIndexFromPoint, DRAG_SLOP_PX } from "./TabStrip";
+import { TabStrip, hoverIndexFromPoint, hoverSlotFor, DRAG_SLOP_PX } from "./TabStrip";
 import type { Tab } from "./tabState";
 
 function tab(tabId: number, title: string): Tab {
@@ -45,6 +45,14 @@ function layOutTabs() {
   }
 }
 
+// trmx-81: the vertical rail — tab i spans [i*30, i*30+30) on Y, full 180px rail width.
+function layOutTabsVertically() {
+  for (const [i, id] of [1, 2, 3].entries()) {
+    screen.getByTestId(`tab-${id}`).getBoundingClientRect = () =>
+      ({ left: 0, width: 180, right: 180, top: i * 30, bottom: i * 30 + 30, height: 30, x: 0, y: i * 30, toJSON: () => ({}) }) as DOMRect;
+  }
+}
+
 describe("hoverIndexFromPoint", () => {
   const rects = [
     { left: 0, width: 100 },
@@ -69,6 +77,40 @@ describe("hoverIndexFromPoint", () => {
 
   it("is 0 for an empty strip (defensive)", () => {
     expect(hoverIndexFromPoint([], 123)).toBe(0);
+  });
+});
+
+// trmx-81: the axis-generalized slot math — midpoints on x for horizontal strips, on y for
+// vertical rails. hoverIndexFromPoint delegates here, so the x-axis semantics are ONE code path.
+describe("hoverSlotFor", () => {
+  // Three rects laid out BOTH ways at once (x: 100px columns, y: 30px rows) so each axis's pick
+  // provably reads only its own coordinates.
+  const rects = [
+    { left: 0, top: 0, width: 100, height: 30 },
+    { left: 100, top: 30, width: 100, height: 30 },
+    { left: 200, top: 60, width: 100, height: 30 },
+  ];
+
+  it("x axis: midpoint crossings and first/last boundaries (hoverIndexFromPoint semantics)", () => {
+    expect(hoverSlotFor(10, rects, "x")).toBe(0);
+    expect(hoverSlotFor(-50, rects, "x")).toBe(0); // before the first midpoint clamps to 0
+    expect(hoverSlotFor(49, rects, "x")).toBe(0); // just under mid(0)=50
+    expect(hoverSlotFor(60, rects, "x")).toBe(1); // past mid(0), before mid(1)=150
+    expect(hoverSlotFor(160, rects, "x")).toBe(2); // past mid(1), before mid(2)=250
+    expect(hoverSlotFor(9999, rects, "x")).toBe(2); // past the last midpoint clamps to last
+  });
+
+  it("y axis: midpoint crossings and first/last boundaries", () => {
+    expect(hoverSlotFor(10, rects, "y")).toBe(0); // before mid(0)=15
+    expect(hoverSlotFor(-5, rects, "y")).toBe(0);
+    expect(hoverSlotFor(20, rects, "y")).toBe(1); // past mid(0), before mid(1)=45
+    expect(hoverSlotFor(50, rects, "y")).toBe(2); // past mid(1), before mid(2)=75
+    expect(hoverSlotFor(9999, rects, "y")).toBe(2); // clamps to the last slot
+  });
+
+  it("is 0 for an empty strip on either axis (defensive)", () => {
+    expect(hoverSlotFor(123, [], "x")).toBe(0);
+    expect(hoverSlotFor(123, [], "y")).toBe(0);
   });
 });
 
@@ -168,6 +210,105 @@ describe("TabStrip", () => {
     fireEvent.pointerUp(el, { pointerId: 5, clientX: 260, clientY: 10 });
     expect(onMove).not.toHaveBeenCalled();
     expect(onActivate).not.toHaveBeenCalled();
+  });
+});
+
+// trmx-81 (FR-2.2): the vertical rail. `orientation="vertical"` flips the drag axis to Y (the
+// slop and capture semantics are unchanged) and adds the modifier class the side-rail CSS keys on.
+describe("TabStrip vertical orientation (trmx-81)", () => {
+  it("defaults to horizontal: no vertical modifier class without the prop", () => {
+    renderStrip();
+    expect(screen.getByTestId("tab-strip").className).toBe("tab-strip");
+  });
+
+  it("carries the vertical modifier class when orientation is vertical", () => {
+    renderStrip({ orientation: "vertical" });
+    expect(screen.getByTestId("tab-strip").className).toBe("tab-strip tab-strip--vertical");
+  });
+
+  it("a vertical pointer drag past a neighbor's Y midpoint commits ONE onMove (and no activate)", () => {
+    const { onActivate, onMove } = renderStrip({ orientation: "vertical" });
+    layOutTabsVertically();
+    const el = screen.getByTestId("tab-1"); // index 0, spans [0, 30) on Y
+    fireEvent.pointerDown(el, { pointerId: 9, clientX: 90, clientY: 15, button: 0 });
+    // Cross the slop on Y, then sweep to y=80 — past tab-3's midpoint (75) → hover slot 2.
+    fireEvent.pointerMove(el, { pointerId: 9, clientX: 90, clientY: 40 });
+    fireEvent.pointerMove(el, { pointerId: 9, clientX: 90, clientY: 80 });
+    fireEvent.pointerUp(el, { pointerId: 9, clientX: 90, clientY: 80 });
+    expect(onMove).toHaveBeenCalledExactlyOnceWith(0, 2);
+    expect(onActivate).not.toHaveBeenCalled();
+  });
+
+  it("a sub-slop vertical click still activates (the click-vs-drag contract holds on Y)", () => {
+    const { onActivate, onMove } = renderStrip({ orientation: "vertical" });
+    layOutTabsVertically();
+    const el = screen.getByTestId("tab-2");
+    fireEvent.pointerDown(el, { pointerId: 4, clientX: 90, clientY: 45, button: 0 });
+    fireEvent.pointerMove(el, { pointerId: 4, clientX: 90, clientY: 45 + DRAG_SLOP_PX - 1 });
+    fireEvent.pointerUp(el, { pointerId: 4, clientX: 90, clientY: 45 + DRAG_SLOP_PX - 1 });
+    expect(onActivate).toHaveBeenCalledExactlyOnceWith(2);
+    expect(onMove).not.toHaveBeenCalled();
+  });
+});
+
+// trmx-81 D2: the drop indicator — a rendered 2px accent line at the hover-slot boundary, visible
+// only mid-drag. On a horizontal strip it is a VERTICAL line at the slot's x; on a vertical rail
+// a HORIZONTAL line at the slot's y. Class-based (axis modifier) so tests/e2e can pin both.
+describe("TabStrip drop indicator (trmx-81 D2)", () => {
+  const indicator = () => screen.queryByTestId("tab-strip-indicator");
+
+  it("appears once a horizontal drag starts, at the hover slot's LEFT boundary, and clears on release", () => {
+    renderStrip();
+    layOutTabs();
+    const el = screen.getByTestId("tab-1");
+    fireEvent.pointerDown(el, { pointerId: 6, clientX: 50, clientY: 10, button: 0 });
+    expect(indicator()).toBeNull(); // not before the slop — a click renders nothing
+    fireEvent.pointerMove(el, { pointerId: 6, clientX: 260, clientY: 10 }); // hover slot 2
+    const line = indicator();
+    expect(line).not.toBeNull();
+    expect(line!.className).toContain("tab-strip__indicator");
+    expect(line!.className).toContain("tab-strip__indicator--horizontal");
+    expect(line!.style.left).toBe("200px"); // slot 2's boundary (rect.left), strip at x=0
+    fireEvent.pointerUp(el, { pointerId: 6, clientX: 260, clientY: 10 });
+    expect(indicator()).toBeNull(); // cleared on release
+  });
+
+  it("tracks the hover slot as the pointer sweeps", () => {
+    renderStrip();
+    layOutTabs();
+    const el = screen.getByTestId("tab-1");
+    fireEvent.pointerDown(el, { pointerId: 6, clientX: 50, clientY: 10, button: 0 });
+    fireEvent.pointerMove(el, { pointerId: 6, clientX: 160, clientY: 10 }); // hover slot 2
+    expect(indicator()!.style.left).toBe("200px");
+    fireEvent.pointerMove(el, { pointerId: 6, clientX: 120, clientY: 10 }); // back to slot 1
+    expect(indicator()!.style.left).toBe("100px");
+    fireEvent.pointerUp(el, { pointerId: 6, clientX: 120, clientY: 10 });
+  });
+
+  it("paints the vertical rail's indicator on the Y axis and clears it on pointercancel", () => {
+    renderStrip({ orientation: "vertical" });
+    layOutTabsVertically();
+    const el = screen.getByTestId("tab-1");
+    fireEvent.pointerDown(el, { pointerId: 8, clientX: 90, clientY: 15, button: 0 });
+    fireEvent.pointerMove(el, { pointerId: 8, clientX: 90, clientY: 80 }); // hover slot 2
+    const line = indicator();
+    expect(line).not.toBeNull();
+    expect(line!.className).toContain("tab-strip__indicator--vertical");
+    expect(line!.style.top).toBe("60px"); // slot 2's boundary (rect.top), strip at y=0
+    expect(line!.style.left).toBe(""); // the cross-axis stays CSS-owned
+    fireEvent.pointerCancel(el, { pointerId: 8 });
+    expect(indicator()).toBeNull(); // cancel clears too
+  });
+
+  it("never renders for a sub-slop click", () => {
+    renderStrip();
+    layOutTabs();
+    const el = screen.getByTestId("tab-2");
+    fireEvent.pointerDown(el, { pointerId: 3, clientX: 150, clientY: 10, button: 0 });
+    fireEvent.pointerMove(el, { pointerId: 3, clientX: 150 + DRAG_SLOP_PX - 1, clientY: 10 });
+    expect(indicator()).toBeNull();
+    fireEvent.pointerUp(el, { pointerId: 3, clientX: 150 + DRAG_SLOP_PX - 1, clientY: 10 });
+    expect(indicator()).toBeNull();
   });
 });
 

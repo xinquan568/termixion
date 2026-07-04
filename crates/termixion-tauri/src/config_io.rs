@@ -137,7 +137,8 @@ fn value_kind_for(registry_key: &str) -> Option<ValueKind> {
         "update.checkFrequency"
         | "terminal.cursorStyle"
         | "terminal.fontFamily"
-        | "appearance.theme" => Some(ValueKind::Str),
+        | "appearance.theme"
+        | "tabs.barPosition" => Some(ValueKind::Str),
         _ => None,
     }
 }
@@ -746,6 +747,7 @@ mod tests {
             ("terminal.fontFamily", ValueKind::Str),
             ("terminal.fontSize", ValueKind::Int),
             ("appearance.theme", ValueKind::Str),
+            ("tabs.barPosition", ValueKind::Str),
         ];
         for (key, kind) in keys {
             assert_eq!(value_kind_for(key), Some(kind), "for {key}");

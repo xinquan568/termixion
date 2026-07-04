@@ -34,9 +34,14 @@ body {
 }
 
 /*
- * trmx-74 — the app is now a column: the tab hosts fill the window, the tab strip is a fixed row at
- * the bottom (the vision default). `min-height: 0` lets the hosts area actually shrink below its
- * content so the strip never gets pushed out.
+ * trmx-74 — the app is now a flex shell: the tab hosts fill the window, the tab strip is a fixed
+ * bar along one edge (bottom is the vision default). `min-height: 0` / `min-width: 0` let the
+ * hosts area actually shrink below its content on EITHER axis so the strip never gets pushed out.
+ *
+ * trmx-81 (FR-2.2) — the bar's edge is configurable (tabs.barPosition). App's JSX order is fixed
+ * (hosts first, strip LAST); the `app--bar-<position>` class picks the flex direction that lands
+ * the LAST child on the requested edge (barLayout.ts): column → bottom, column-reverse → top,
+ * row → right, row-reverse → left.
  */
 .app {
   width: 100%;
@@ -44,11 +49,24 @@ body {
   display: flex;
   flex-direction: column;
 }
+.app--bar-bottom {
+  flex-direction: column;
+}
+.app--bar-top {
+  flex-direction: column-reverse;
+}
+.app--bar-right {
+  flex-direction: row;
+}
+.app--bar-left {
+  flex-direction: row-reverse;
+}
 
 .tab-hosts {
   flex: 1 1 auto;
   position: relative;
   min-height: 0;
+  min-width: 0;
 }
 
 /*
@@ -110,17 +128,21 @@ body {
 }
 
 /*
- * trmx-74 — the bottom tab strip (TabStrip.tsx). Themed ONLY via the existing `--tx-*` vars
+ * trmx-74 — the tab strip (TabStrip.tsx). Themed ONLY via the existing `--tx-*` vars
  * (txCssVars.ts writes them; settings.css's `:root` block is the static fallback, loaded in this
  * window's bundle): sunken bg for the bar, primary bg + accent inset line for the active tab.
- * The strip is a fixed 34px flex row; tabs shrink from 180px down to 60px before overflowing.
+ * Horizontal (top/bottom, the default): a fixed 34px flex row; tabs shrink from 180px down to
+ * 60px, then the strip scrolls on x (trmx-81 — `hidden` would strand the tail tabs with no way
+ * to reach them). `position: relative` anchors the trmx-81 drop indicator.
  */
 .tab-strip {
   flex: 0 0 34px;
   height: 34px;
+  position: relative;
   display: flex;
   align-items: stretch;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   background: var(--tx-bg-sunken);
   border-top: 1px solid var(--tx-border);
   font:
@@ -130,6 +152,33 @@ body {
     sans-serif;
   user-select: none;
   -webkit-user-select: none;
+}
+/* trmx-81 — a TOP bar's divider faces the terminal below it, not the window edge above it. */
+.app--bar-top .tab-strip {
+  border-top: none;
+  border-bottom: 1px solid var(--tx-border);
+}
+/*
+ * trmx-81 — the vertical rail (left/right bars): a fixed 180px-wide (content-box — the divider
+ * border sits outside the rail) full-height column. Tabs are full-width rows at natural height
+ * (no 60px shrink model); overflow scrolls vertically.
+ */
+.tab-strip--vertical {
+  flex: 0 0 auto;
+  width: 180px;
+  box-sizing: content-box;
+  height: auto;
+  flex-direction: column;
+  align-items: stretch;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border-top: none;
+}
+.app--bar-left .tab-strip--vertical {
+  border-right: 1px solid var(--tx-border);
+}
+.app--bar-right .tab-strip--vertical {
+  border-left: 1px solid var(--tx-border);
 }
 .tab-strip__tab {
   flex: 0 1 180px;
@@ -149,6 +198,21 @@ body {
   color: var(--tx-text);
   /* The active marker: an inset accent line along the tab's top edge. */
   box-shadow: inset 0 2px 0 var(--tx-primary);
+}
+/*
+ * trmx-81 — vertical-rail rows: full width at natural height (min 34px to keep the close/+ hit
+ * targets), stacked with a bottom divider; the active accent line moves to the leading edge.
+ */
+.tab-strip--vertical .tab-strip__tab {
+  flex: 0 0 auto;
+  min-width: 0;
+  width: auto;
+  min-height: 34px;
+  border-right: none;
+  border-bottom: 1px solid var(--tx-border);
+}
+.tab-strip--vertical .tab-strip__tab--active {
+  box-shadow: inset 2px 0 0 var(--tx-primary);
 }
 .tab-strip__title {
   flex: 1 1 auto;
@@ -212,6 +276,33 @@ body {
 .tab-strip__new:hover {
   background: var(--tx-bg-elev);
   color: var(--tx-text);
+}
+/* trmx-81 — on the vertical rail the + becomes a full-width 34px-tall row. */
+.tab-strip--vertical .tab-strip__new {
+  width: auto;
+  height: 34px;
+}
+/*
+ * trmx-81 D2 — the drop indicator: a 2px accent line at the drag's hover-slot boundary, painted
+ * only mid-drag (TabStrip renders it conditionally and positions the drag axis inline: `left` on
+ * horizontal strips, `top` on vertical rails; the cross-axis extent lives here). It is feedback,
+ * never a hit target. The axis modifier names the STRIP's orientation.
+ */
+.tab-strip__indicator {
+  position: absolute;
+  background: var(--tx-primary);
+  pointer-events: none;
+  z-index: 5;
+}
+.tab-strip__indicator--horizontal {
+  top: 0;
+  bottom: 0;
+  width: 2px;
+}
+.tab-strip__indicator--vertical {
+  left: 0;
+  right: 0;
+  height: 2px;
 }
 
 /*

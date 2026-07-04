@@ -308,7 +308,7 @@ describe("lastCheckAt bookkeeping (legacy storage mode)", () => {
 });
 
 describe("registry shape", () => {
-  it("exposes the enumerable user-visible key set (trmx-51 + theme trmx-53 + FR-13 trio trmx-80)", () => {
+  it("exposes the enumerable user-visible key set (trmx-51 + theme trmx-53 + FR-13 trio trmx-80 + tab bar trmx-81)", () => {
     expect([...SETTING_KEYS].sort()).toEqual(
       [
         "update.autoCheck",
@@ -320,6 +320,7 @@ describe("registry shape", () => {
         "terminal.fontFamily",
         "terminal.fontSize",
         "appearance.theme",
+        "tabs.barPosition",
       ].sort(),
     );
   });
@@ -332,6 +333,152 @@ describe("registry shape", () => {
   it("never uses vi timers or real Tauri — pure seams only", () => {
     // (documentation-by-test: makeSettingsStore takes only injected seams)
     expect(vi.isFakeTimers()).toBe(false);
+  });
+});
+
+// trmx-81 (FR-2.2): tabs.barPosition — the tab bar's window edge. A plain enum key exactly like
+// terminal.cursorStyle: default "bottom", only the four members parse, junk falls to the default.
+describe("tabs.barPosition (trmx-81)", () => {
+  it("defaults to \"bottom\" in both backends", () => {
+    expect(makeSettingsStore(fakeStorage()).get("tabs.barPosition")).toBe("bottom");
+    expect(makeSettingsStore().get("tabs.barPosition")).toBe("bottom"); // snapshot, pre-hydration
+  });
+
+  it("round-trips all four positions (legacy storage mode)", () => {
+    const store = makeSettingsStore(fakeStorage());
+    for (const position of ["top", "bottom", "left", "right"] as const) {
+      store.set("tabs.barPosition", position);
+      expect(store.get("tabs.barPosition")).toBe(position);
+    }
+  });
+
+  it("treats a junk persisted value as the default (enum parse-with-fallback)", () => {
+    const store = makeSettingsStore(fakeStorage({ "termixion.tabs.barPosition": "middle" }));
+    expect(store.get("tabs.barPosition")).toBe("bottom");
+  });
+
+  it("snapshot mode: set validates, writes through config_write, and broadcasts; junk is rejected", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    const bus = fakeBus();
+    const store = makeSettingsStore(undefined, bus, "settings");
+    store.set("tabs.barPosition", "left");
+    expect(store.get("tabs.barPosition")).toBe("left");
+    expect(backend.writes()).toContainEqual({ key: "tabs.barPosition", value: "left" });
+    expect(bus.events).toEqual([
+      {
+        event: SETTINGS_CHANGED_EVENT,
+        payload: { key: "tabs.barPosition", value: "left", source: "settings" },
+      },
+    ]);
+    // Junk (a bad cast at runtime) is dropped whole: no snapshot change, no write, no broadcast.
+    bus.events.length = 0;
+    const writesBefore = backend.writes().length;
+    store.set("tabs.barPosition", "middle" as never);
+    expect(store.get("tabs.barPosition")).toBe("left");
+    expect(backend.writes().length).toBe(writesBefore);
+    expect(bus.events).toEqual([]);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it("hydration seeds a valid file value; an invalid one falls to the default + client warning", async () => {
+    const backend = fakeConfigBackend({
+      values: { "tabs.barPosition": "top", "appearance.theme": "white" },
+    });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    expect(makeSettingsStore().get("tabs.barPosition")).toBe("top");
+
+    __resetSettingsForTest();
+    const junk = fakeConfigBackend({
+      values: { "tabs.barPosition": "diagonal", "appearance.theme": "white" },
+    });
+    await hydrateSettings({ invoke: junk.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    expect(makeSettingsStore().get("tabs.barPosition")).toBe("bottom");
+    expect(
+      getConfigWarnings().some(
+        (w) => w.source === "client" && w.message.includes("tabs.barPosition"),
+      ),
+    ).toBe(true);
+  });
+
+  it("live settings:changed applies a valid value; junk is inert (config-file junk warns)", async () => {
+    const bus = fakeListenBus();
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    await hydrateSettings({ invoke: backend.invoke, bus, storage: fakeStorage() });
+    const store = makeSettingsStore();
+    bus.fire(SETTINGS_CHANGED_EVENT, { key: "tabs.barPosition", value: "right", source: "config-file" });
+    expect(store.get("tabs.barPosition")).toBe("right");
+    bus.fire(SETTINGS_CHANGED_EVENT, { key: "tabs.barPosition", value: "middle", source: "config-file" });
+    expect(store.get("tabs.barPosition")).toBe("right"); // the junk value never landed
+    expect(
+      getConfigWarnings().some(
+        (w) => w.source === "client" && w.message.includes("tabs.barPosition"),
+      ),
+    ).toBe(true);
+  });
+});
+
+// trmx-81 D1: the dev/e2e query seed. ONLY when config_read REJECTS (no Tauri runtime at all —
+// `pnpm dev`, the Playwright e2e harness) may `?setting.tabs.barPosition=<v>` seed the snapshot;
+// a RESOLVED read of ANY shape means a backend is present and the query is ignored entirely. The
+// allowlist is exactly ONE key, and the value re-validates through the registry (junk → ignored).
+describe("D1 e2e query seed (trmx-81)", () => {
+  function setSearch(search: string) {
+    window.history.replaceState({}, "", `${window.location.pathname}${search}`);
+  }
+  afterEach(() => {
+    setSearch("");
+  });
+
+  it("REJECTED config_read (no backend): the allowlisted query seeds the snapshot", async () => {
+    setSearch("?setting.tabs.barPosition=top");
+    const backend = fakeConfigBackend({}, { failRead: true });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    expect(makeSettingsStore().get("tabs.barPosition")).toBe("top");
+    expect(backend.writes()).toEqual([]); // snapshot-only: the seed never writes a config file
+  });
+
+  it("RESOLVED config_read: the query is ignored entirely (a backend is present)", async () => {
+    setSearch("?setting.tabs.barPosition=top");
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    expect(makeSettingsStore().get("tabs.barPosition")).toBe("bottom");
+  });
+
+  it("RESOLVED-but-junk config_read still means a backend is present: query ignored", async () => {
+    setSearch("?setting.tabs.barPosition=top");
+    // A junk-shaped response (not even an object) still RESOLVED — the runtime exists.
+    const invoke = (cmd: string) =>
+      cmd === "config_read" ? Promise.resolve("garbage") : Promise.resolve(null);
+    await hydrateSettings({ invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    expect(makeSettingsStore().get("tabs.barPosition")).toBe("bottom");
+
+    // Same for a resolved read whose VALUES carry junk: backend present, query ignored.
+    __resetSettingsForTest();
+    setSearch("?setting.tabs.barPosition=top");
+    const junkValues = fakeConfigBackend({
+      values: { "tabs.barPosition": "diagonal", "appearance.theme": "white" },
+    });
+    await hydrateSettings({ invoke: junkValues.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    expect(makeSettingsStore().get("tabs.barPosition")).toBe("bottom");
+  });
+
+  it("a junk query value re-validates through the registry and is ignored", async () => {
+    setSearch("?setting.tabs.barPosition=middle");
+    const backend = fakeConfigBackend({}, { failRead: true });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    expect(makeSettingsStore().get("tabs.barPosition")).toBe("bottom");
+  });
+
+  it("a disallowed setting.* key never seeds (allowlist of exactly one key)", async () => {
+    // `sepia` (not the jsdom-derived default `night`) so a leak would be OBSERVABLE: if the
+    // allowlist let appearance.theme through, the read below would serve sepia, not night.
+    setSearch("?setting.appearance.theme=sepia&setting.terminal.fontSize=20");
+    const backend = fakeConfigBackend({}, { failRead: true });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    expect(makeSettingsStore().get("appearance.theme")).toBe("night"); // the derived default
+    expect(makeSettingsStore().get("terminal.fontSize")).toBe(12);
   });
 });
 

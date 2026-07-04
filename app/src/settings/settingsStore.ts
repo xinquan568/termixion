@@ -59,6 +59,8 @@ export interface SettingsChanged {
 
 export type CheckFrequency = "on-startup" | "daily" | "weekly" | "manual";
 export type CursorStyle = "bar" | "block" | "underline";
+/** trmx-81 (FR-2.2): the window edge the tab bar sits on. */
+export type TabBarPosition = "top" | "bottom" | "left" | "right";
 
 /** Every user-visible persisted setting and its type. */
 export interface SettingsValues {
@@ -74,6 +76,8 @@ export interface SettingsValues {
   /** trmx-80 (FR-13): terminal font size in points. */
   "terminal.fontSize": number;
   "appearance.theme": ThemeId;
+  /** trmx-81 (FR-2.2): where the tab bar lives (mirrors core's `tabs.bar_position`). */
+  "tabs.barPosition": TabBarPosition;
 }
 
 export type SettingKey = keyof SettingsValues;
@@ -115,6 +119,8 @@ export const SETTING_DEFAULTS: SettingsValues = {
   // trmx-53: static placeholder only — appearance.theme is the registry's one DYNAMIC default;
   // every real read goes through defaultFor(), which derives from the OS appearance instead.
   "appearance.theme": "white",
+  // trmx-81 (FR-2.2): the vision default — the bar sits along the window's bottom edge.
+  "tabs.barPosition": "bottom",
 };
 
 /**
@@ -139,6 +145,8 @@ const STORAGE_KEYS: Record<SettingKey, string> = {
   "terminal.fontFamily": "termixion.terminal.fontFamily",
   "terminal.fontSize": "termixion.terminal.fontSize",
   "appearance.theme": "termixion.appearance.theme",
+  // trmx-81: never existed pre-config-file, so the T3b migration finds nothing — harmless.
+  "tabs.barPosition": "termixion.tabs.barPosition",
 };
 
 // Internal scheduler bookkeeping (NOT a user-visible setting, NOT config-file material — see
@@ -149,6 +157,12 @@ export const SETTING_KEYS = Object.keys(SETTING_DEFAULTS) as SettingKey[];
 
 const FREQUENCIES: readonly CheckFrequency[] = ["on-startup", "daily", "weekly", "manual"];
 const CURSOR_STYLES: readonly CursorStyle[] = ["bar", "block", "underline"];
+const TAB_BAR_POSITIONS: readonly TabBarPosition[] = ["top", "bottom", "left", "right"];
+
+/** Type guard for tabs.barPosition values (trmx-81) — App's payload guard uses it too. */
+export function isTabBarPosition(value: unknown): value is TabBarPosition {
+  return typeof value === "string" && TAB_BAR_POSITIONS.includes(value as TabBarPosition);
+}
 
 // trmx-55: booleans are default-aware — only the "true"/"false" literals parse; anything else
 // falls back to the key's default, matching the enums (and the registry contract: default when
@@ -182,6 +196,10 @@ function parse<K extends SettingKey>(key: K, raw: string): SettingsValues[K] {
     // A free-form string: any value is a valid font stack ("" = platform default).
     return raw as SettingsValues[K];
   }
+  if (key === "tabs.barPosition") {
+    // trmx-81: enum parse-with-fallback, exactly like terminal.cursorStyle below.
+    return (isTabBarPosition(raw) ? raw : fallback) as SettingsValues[K];
+  }
   return (CURSOR_STYLES.includes(raw as CursorStyle) ? raw : fallback) as SettingsValues[K];
 }
 
@@ -210,6 +228,9 @@ function coerce<K extends SettingKey>(key: K, value: unknown): SettingsValues[K]
     return isThemeId(value) ? (value as SettingsValues[K]) : undefined;
   }
   if (key === "terminal.fontFamily") return value as SettingsValues[K];
+  if (key === "tabs.barPosition") {
+    return isTabBarPosition(value) ? (value as SettingsValues[K]) : undefined;
+  }
   return CURSOR_STYLES.includes(value as CursorStyle) ? (value as SettingsValues[K]) : undefined;
 }
 
@@ -604,6 +625,11 @@ export async function hydrateSettings(deps: HydrateSettingsDeps = {}): Promise<v
   } catch {
     // No backend (plain browser/jsdom): defaults, no migration — reads derive via defaultFor.
     read = null;
+    // trmx-81 D1: the dev/e2e seam — seed the snapshot from the URL query. ONLY here, on the
+    // REJECTION path: a resolved config_read of any shape (even junk) means a backend exists and
+    // owns the values, so the packaged app never reaches this line (config_read always resolves
+    // there) and the seam is inert outside `pnpm dev`/the Playwright harness.
+    seedSnapshotFromQuery();
   }
 
   if (read) {
@@ -662,6 +688,33 @@ export async function hydrateSettings(deps: HydrateSettingsDeps = {}): Promise<v
   }
 
   subscribeToBus(bus);
+}
+
+// trmx-81 D1: the ONLY key the query seed may touch. A deliberate allowlist of EXACTLY ONE entry —
+// widening it is a review decision per key, never a default (the query string is untrusted input
+// and the packaged app must stay driven by the config file alone).
+const QUERY_SEEDABLE_KEYS: readonly SettingKey[] = ["tabs.barPosition"];
+
+/**
+ * trmx-81 D1: seed the snapshot from `?setting.<key>=<value>` query params — the dev/e2e seam,
+ * called ONLY from hydrateSettings' no-backend fallback (config_read REJECTED). Values re-validate
+ * through the registry's own coercion (junk → ignored, never a fallback write); every other
+ * `setting.*` param is ignored. Snapshot-only: nothing is persisted or broadcast.
+ */
+function seedSnapshotFromQuery(): void {
+  if (typeof window === "undefined") return;
+  let params: URLSearchParams;
+  try {
+    params = new URLSearchParams(window.location.search);
+  } catch {
+    return; // a locked-down location must never break hydration
+  }
+  for (const key of QUERY_SEEDABLE_KEYS) {
+    const raw = params.get(`setting.${key}`);
+    if (raw === null) continue;
+    const value = coerce(key, raw);
+    if (value !== undefined) snapshot.set(key, value);
+  }
 }
 
 /**

@@ -4,9 +4,20 @@
 // trmx-48: the settings building-blocks spec — toggle/button interactions + progress width.
 // trmx-80: NumberField (commit-on-blur/Enter numeric input, clamped, optional stepper) and
 // TextField (commit-on-blur/Enter text input) for the FR-13 Terminal rows.
+// trmx-81: SegmentedControl (an N-way single-choice with radiogroup semantics) for the FR-2.2
+// Tab bar Position row.
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { Button, NumberField, ProgressBar, Select, SettingRow, TextField, Toggle } from "./components";
+import {
+  Button,
+  NumberField,
+  ProgressBar,
+  SegmentedControl,
+  Select,
+  SettingRow,
+  TextField,
+  Toggle,
+} from "./components";
 
 describe("Toggle", () => {
   it("reflects checked state and calls onChange with the negation", () => {
@@ -188,6 +199,81 @@ describe("TextField (trmx-80)", () => {
     const { rerender } = render(<TextField value="a" onCommit={vi.fn()} label="T" />);
     rerender(<TextField value="b" onCommit={vi.fn()} label="T" />);
     expect((screen.getByRole("textbox", { name: "T" }) as HTMLInputElement).value).toBe("b");
+  });
+});
+
+describe("SegmentedControl (trmx-81)", () => {
+  const OPTIONS = [
+    { value: "top", label: "Top" },
+    { value: "bottom", label: "Bottom" },
+    { value: "left", label: "Left" },
+    { value: "right", label: "Right" },
+  ] as const;
+
+  it("renders radiogroup semantics: a labeled group, one radio per option, aria-checked on the value", () => {
+    render(
+      <SegmentedControl value="bottom" options={OPTIONS} label="Position" onChange={vi.fn()} />,
+    );
+    const group = screen.getByRole("radiogroup", { name: "Position" });
+    const radios = screen.getAllByRole("radio");
+    expect(group).toBeInTheDocument();
+    expect(radios.map((r) => r.textContent)).toEqual(["Top", "Bottom", "Left", "Right"]);
+    expect(screen.getByRole("radio", { name: "Bottom" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("radio", { name: "Top" })).toHaveAttribute("aria-checked", "false");
+    // The active segment carries the styling modifier; the others don't.
+    expect(screen.getByRole("radio", { name: "Bottom" }).className).toContain(
+      "tx-segmented__segment--active",
+    );
+    expect(screen.getByRole("radio", { name: "Top" }).className).not.toContain(
+      "tx-segmented__segment--active",
+    );
+  });
+
+  it("reports a click on another segment and moves aria-checked when the value follows (controlled)", () => {
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <SegmentedControl value="bottom" options={OPTIONS} label="Position" onChange={onChange} />,
+    );
+    fireEvent.click(screen.getByRole("radio", { name: "Left" }));
+    expect(onChange).toHaveBeenCalledOnce();
+    expect(onChange).toHaveBeenCalledWith("left");
+    // Controlled: the checked state moves only when the owner feeds the new value back.
+    rerender(
+      <SegmentedControl value="left" options={OPTIONS} label="Position" onChange={onChange} />,
+    );
+    expect(screen.getByRole("radio", { name: "Left" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("radio", { name: "Bottom" })).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("clicking the already-selected segment is a NO-OP (no redundant write/broadcast)", () => {
+    const onChange = vi.fn();
+    render(
+      <SegmentedControl value="bottom" options={OPTIONS} label="Position" onChange={onChange} />,
+    );
+    fireEvent.click(screen.getByRole("radio", { name: "Bottom" }));
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("roves the tabindex: only the selected segment is tabbable", () => {
+    render(
+      <SegmentedControl value="bottom" options={OPTIONS} label="Position" onChange={vi.fn()} />,
+    );
+    expect(screen.getByRole("radio", { name: "Bottom" })).toHaveAttribute("tabindex", "0");
+    expect(screen.getByRole("radio", { name: "Top" })).toHaveAttribute("tabindex", "-1");
+  });
+
+  it("arrow keys step the selection (wrapping) and move focus with it", () => {
+    const onChange = vi.fn();
+    render(
+      <SegmentedControl value="right" options={OPTIONS} label="Position" onChange={onChange} />,
+    );
+    // ArrowRight from the LAST option wraps to the first.
+    fireEvent.keyDown(screen.getByRole("radio", { name: "Right" }), { key: "ArrowRight" });
+    expect(onChange).toHaveBeenCalledWith("top");
+    expect(screen.getByRole("radio", { name: "Top" })).toHaveFocus();
+    // ArrowLeft steps backwards.
+    fireEvent.keyDown(screen.getByRole("radio", { name: "Right" }), { key: "ArrowLeft" });
+    expect(onChange).toHaveBeenCalledWith("left");
   });
 });
 

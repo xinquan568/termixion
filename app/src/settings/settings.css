@@ -327,6 +327,37 @@
   cursor: default;
 }
 
+/* trmx-81 (FR-2.2) — the segmented single-choice control (the Tab bar Position row): a sunken
+ * frame of flat segments, the selected one elevated. Themed only via the --tx-* vars, like every
+ * control above (the visual-baseline consistency rule — no hardcoded colors). */
+.tx-segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--tx-border);
+  border-radius: 7px;
+  background: var(--tx-bg-sunken);
+}
+.tx-segmented__segment {
+  padding: 3px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--tx-text-2);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.tx-segmented__segment:hover {
+  color: var(--tx-text);
+}
+.tx-segmented__segment--active,
+.tx-segmented__segment--active:hover {
+  background: var(--tx-bg-elev);
+  color: var(--tx-text);
+}
+
 /* trmx-80 (FR-13) — the commit-on-blur/Enter fields (Terminal page's scrollback/font rows). */
 .tx-text,
 .tx-number {

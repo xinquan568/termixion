@@ -76,6 +76,38 @@ impl CursorStyle {
     }
 }
 
+/// Where the tab bar sits in the window (registry key `tabs.barPosition`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TabBarPosition {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+impl TabBarPosition {
+    /// The TOML/registry spelling of this value (lowercase, e.g. `"bottom"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Top => "top",
+            Self::Bottom => "bottom",
+            Self::Left => "left",
+            Self::Right => "right",
+        }
+    }
+
+    fn from_toml(s: &str) -> Option<Self> {
+        match s {
+            "top" => Some(Self::Top),
+            "bottom" => Some(Self::Bottom),
+            "left" => Some(Self::Left),
+            "right" => Some(Self::Right),
+            _ => None,
+        }
+    }
+}
+
 /// The `[update]` table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -135,6 +167,21 @@ impl Default for AppearanceConfig {
     }
 }
 
+/// The `[tabs]` table.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TabsConfig {
+    pub bar_position: TabBarPosition,
+}
+
+impl Default for TabsConfig {
+    fn default() -> Self {
+        Self {
+            bar_position: TabBarPosition::Bottom,
+        }
+    }
+}
+
 /// The fully-defaulted typed configuration model (one field per TOML table).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -142,6 +189,7 @@ pub struct Config {
     pub update: UpdateConfig,
     pub terminal: TerminalConfig,
     pub appearance: AppearanceConfig,
+    pub tabs: TabsConfig,
 }
 
 /// A value in the frontend settings registry's wire shape (untagged: `true`, `14`, `"night"`).
@@ -226,6 +274,9 @@ pub const DEFAULT_TEMPLATE: &str = r##"# Termixion configuration (TOML).
 
 # [appearance]
 # theme = "white"                 # a theme id from the theme catalog
+
+# [tabs]
+# bar_position = "bottom"         # "top" | "bottom" | "left" | "right"
 "##;
 
 /// Tolerantly parse `text` into a typed [`Config`]. Never panics, never hard-fails:
@@ -256,6 +307,7 @@ pub fn toml_path_for(registry_key: &str) -> Option<(&'static str, &'static str)>
         "terminal.fontFamily" => Some(("terminal", "font_family")),
         "terminal.fontSize" => Some(("terminal", "font_size")),
         "appearance.theme" => Some(("appearance", "theme")),
+        "tabs.barPosition" => Some(("tabs", "bar_position")),
         _ => None,
     }
 }
@@ -314,6 +366,11 @@ pub fn diff_configs(old: &Config, new: &Config) -> Vec<(String, RegistryValue)> 
         "appearance.theme",
         RegistryValue::Str(new.appearance.theme.clone()),
     );
+    push(
+        old.tabs.bar_position != new.tabs.bar_position,
+        "tabs.barPosition",
+        RegistryValue::Str(new.tabs.bar_position.as_str().to_string()),
+    );
     changed
 }
 
@@ -356,6 +413,7 @@ fn parse_full(text: &str) -> (Config, Vec<(String, RegistryValue)>, Vec<ConfigWa
             "update" => Some(walk_update),
             "terminal" => Some(walk_terminal),
             "appearance" => Some(walk_appearance),
+            "tabs" => Some(walk_tabs),
             _ => None,
         };
         match walk_table {
@@ -462,6 +520,25 @@ fn walk_appearance(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
             ),
             _ => sink.warnings.push(ConfigWarning::UnknownKey {
                 key: format!("appearance.{key}"),
+            }),
+        }
+    }
+}
+
+fn walk_tabs(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
+    for (key, value) in table {
+        match key.as_str() {
+            "bar_position" => read_enum(
+                value,
+                ("tabs.bar_position", "tabs.barPosition"),
+                TabBarPosition::from_toml,
+                TabBarPosition::as_str,
+                r#"one of "top", "bottom", "left", "right""#,
+                &mut config.tabs.bar_position,
+                sink,
+            ),
+            _ => sink.warnings.push(ConfigWarning::UnknownKey {
+                key: format!("tabs.{key}"),
             }),
         }
     }
@@ -584,8 +661,8 @@ fn describe_value(value: &toml::Value) -> String {
 mod tests {
     use super::*;
 
-    /// All 9 registry keys.
-    const REGISTRY_KEYS: [&str; 9] = [
+    /// All 10 registry keys.
+    const REGISTRY_KEYS: [&str; 10] = [
         "update.autoCheck",
         "update.checkFrequency",
         "update.autoDownload",
@@ -595,6 +672,7 @@ mod tests {
         "terminal.fontFamily",
         "terminal.fontSize",
         "appearance.theme",
+        "tabs.barPosition",
     ];
 
     fn value_for<'a>(pairs: &'a [(String, RegistryValue)], key: &str) -> Option<&'a RegistryValue> {
@@ -616,6 +694,9 @@ font_size = 14
 
 [appearance]
 theme = "night"
+
+[tabs]
+bar_position = "top"
 "#;
 
     // 1. Happy path: every key set to a non-default valid value.
@@ -641,15 +722,18 @@ theme = "night"
                 appearance: AppearanceConfig {
                     theme: "night".to_string(),
                 },
+                tabs: TabsConfig {
+                    bar_position: TabBarPosition::Top,
+                },
             }
         );
     }
 
     #[test]
-    fn full_file_yields_all_nine_registry_pairs() {
+    fn full_file_yields_all_ten_registry_pairs() {
         let (pairs, warnings) = parse_registry_pairs(FULL_NON_DEFAULT);
         assert_eq!(warnings, Vec::new());
-        assert_eq!(pairs.len(), 9);
+        assert_eq!(pairs.len(), 10);
         for key in REGISTRY_KEYS {
             assert!(value_for(&pairs, key).is_some(), "missing pair for {key}");
         }
@@ -689,6 +773,10 @@ theme = "night"
             value_for(&pairs, "appearance.theme"),
             Some(&RegistryValue::Str("night".to_string()))
         );
+        assert_eq!(
+            value_for(&pairs, "tabs.barPosition"),
+            Some(&RegistryValue::Str("top".to_string()))
+        );
     }
 
     // 2. Empty string → defaults, zero warnings, zero pairs.
@@ -706,6 +794,10 @@ theme = "night"
     #[test]
     fn default_template_parses_to_defaults_with_no_warnings_and_no_pairs() {
         assert!(DEFAULT_TEMPLATE.contains("docs/config.md"));
+        assert!(
+            DEFAULT_TEMPLATE.contains("# [tabs]"),
+            "the template must document the [tabs] table (commented out)"
+        );
         let (config, warnings) = parse_config(DEFAULT_TEMPLATE);
         assert_eq!(config, Config::default());
         assert_eq!(warnings, Vec::new());
@@ -812,6 +904,48 @@ theme = "night"
     }
 
     #[test]
+    fn tab_bar_position_parses_all_four_values() {
+        let cases = [
+            ("top", TabBarPosition::Top),
+            ("bottom", TabBarPosition::Bottom),
+            ("left", TabBarPosition::Left),
+            ("right", TabBarPosition::Right),
+        ];
+        for (spelling, expected) in cases {
+            let text = format!("[tabs]\nbar_position = \"{spelling}\"\n");
+            let (config, warnings) = parse_config(&text);
+            assert_eq!(warnings, Vec::new(), "for {spelling}");
+            assert_eq!(config.tabs.bar_position, expected, "for {spelling}");
+            let (pairs, _) = parse_registry_pairs(&text);
+            assert_eq!(
+                value_for(&pairs, "tabs.barPosition"),
+                Some(&RegistryValue::Str(spelling.to_string())),
+                "for {spelling}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_tab_bar_position_warns_with_valid_values_listed() {
+        let text = "[tabs]\nbar_position = \"middle\"\n";
+        let (config, warnings) = parse_config(text);
+        assert_eq!(config.tabs.bar_position, TabBarPosition::Bottom);
+        assert_eq!(warnings.len(), 1);
+        match &warnings[0] {
+            ConfigWarning::InvalidValue { key, got, expected } => {
+                assert_eq!(key, "tabs.bar_position");
+                assert!(got.contains("middle"));
+                for valid in ["top", "bottom", "left", "right"] {
+                    assert!(expected.contains(valid), "expected must list {valid}");
+                }
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+        let (pairs, _) = parse_registry_pairs(text);
+        assert!(value_for(&pairs, "tabs.barPosition").is_none());
+    }
+
+    #[test]
     fn unknown_check_frequency_warns_with_valid_values_listed() {
         let (config, warnings) = parse_config("[update]\ncheck_frequency = \"hourly\"\n");
         assert_eq!(config.update.check_frequency, CheckFrequency::OnStartup);
@@ -910,10 +1044,23 @@ theme = "night"
         );
     }
 
-    // 10. toml_path_for maps all 9 registry keys and rejects junk.
+    #[test]
+    fn present_only_pair_for_a_single_tabs_key_file() {
+        let (pairs, warnings) = parse_registry_pairs("[tabs]\nbar_position = \"left\"\n");
+        assert_eq!(warnings, Vec::new());
+        assert_eq!(
+            pairs,
+            vec![(
+                "tabs.barPosition".to_string(),
+                RegistryValue::Str("left".to_string())
+            )]
+        );
+    }
+
+    // 10. toml_path_for maps all 10 registry keys and rejects junk.
     #[test]
     fn toml_path_for_maps_every_registry_key() {
-        let expected: [(&str, (&str, &str)); 9] = [
+        let expected: [(&str, (&str, &str)); 10] = [
             ("update.autoCheck", ("update", "auto_check")),
             ("update.checkFrequency", ("update", "check_frequency")),
             ("update.autoDownload", ("update", "auto_download")),
@@ -923,6 +1070,7 @@ theme = "night"
             ("terminal.fontFamily", ("terminal", "font_family")),
             ("terminal.fontSize", ("terminal", "font_size")),
             ("appearance.theme", ("appearance", "theme")),
+            ("tabs.barPosition", ("tabs", "bar_position")),
         ];
         for (registry_key, path) in expected {
             assert_eq!(
@@ -940,7 +1088,7 @@ theme = "night"
     fn toml_path_for_round_trips_through_the_parser() {
         // A minimal file written at toml_path_for's answer must surface exactly
         // that registry key in the pairs.
-        let samples: [(&str, &str); 9] = [
+        let samples: [(&str, &str); 10] = [
             ("update.autoCheck", "false"),
             ("update.checkFrequency", "\"manual\""),
             ("update.autoDownload", "false"),
@@ -950,6 +1098,7 @@ theme = "night"
             ("terminal.fontFamily", "\"Menlo\""),
             ("terminal.fontSize", "20"),
             ("appearance.theme", "\"night\""),
+            ("tabs.barPosition", "\"right\""),
         ];
         for (registry_key, literal) in samples {
             let Some((table, key)) = toml_path_for(registry_key) else {
@@ -978,6 +1127,20 @@ theme = "night"
         assert_eq!(
             diff_configs(&old, &new),
             vec![("terminal.fontSize".to_string(), RegistryValue::Int(14))]
+        );
+    }
+
+    #[test]
+    fn diff_bar_position_change_yields_that_pair() {
+        let old = Config::default();
+        let mut new = Config::default();
+        new.tabs.bar_position = TabBarPosition::Top;
+        assert_eq!(
+            diff_configs(&old, &new),
+            vec![(
+                "tabs.barPosition".to_string(),
+                RegistryValue::Str("top".to_string())
+            )]
         );
     }
 

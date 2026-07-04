@@ -8,9 +8,22 @@
 // persists through the registry (which broadcasts settings:changed so the live terminal
 // re-themes) and notifies the shell via onThemeChange so the settings window restyles
 // immediately even without a bus (plain dev/jsdom). Presentational + injected store (R8).
-import { SettingsGroup } from "./components";
-import type { SettingsStore } from "./settingsStore";
+//
+// trmx-81 (FR-2.2): the "Tab bar" group below Theme — a Position row (SegmentedControl over
+// tabs.barPosition). Local state seeded from the injected store at mount, the TerminalSettings
+// row pattern; the write goes through settings.set, whose broadcast is what the main window's
+// App applies live (this window has no bar to move).
+import { useState } from "react";
+import { SegmentedControl, SettingRow, SettingsGroup } from "./components";
+import type { SettingsStore, TabBarPosition } from "./settingsStore";
 import { THEME_IDS, themeLabel, themes, type ThemeId } from "../theme/themes";
+
+const TAB_BAR_POSITION_OPTIONS: ReadonlyArray<{ value: TabBarPosition; label: string }> = [
+  { value: "top", label: "Top" },
+  { value: "bottom", label: "Bottom" },
+  { value: "left", label: "Left" },
+  { value: "right", label: "Right" },
+];
 
 export interface AppearanceSettingsProps {
   settings: SettingsStore;
@@ -21,6 +34,10 @@ export interface AppearanceSettingsProps {
 }
 
 export function AppearanceSettings({ settings, selected, onThemeChange }: AppearanceSettingsProps) {
+  const [barPosition, setBarPosition] = useState<TabBarPosition>(() =>
+    settings.get("tabs.barPosition"),
+  );
+
   return (
     <div className="tx-appearance-settings">
       <SettingsGroup title="Theme">
@@ -45,6 +62,19 @@ export function AppearanceSettings({ settings, selected, onThemeChange }: Appear
             </button>
           ))}
         </div>
+      </SettingsGroup>
+      <SettingsGroup title="Tab bar">
+        <SettingRow label="Position" description="Window edge the tab bar sits on">
+          <SegmentedControl
+            value={barPosition}
+            options={TAB_BAR_POSITION_OPTIONS}
+            label="Tab bar position"
+            onChange={(value) => {
+              setBarPosition(value);
+              settings.set("tabs.barPosition", value);
+            }}
+          />
+        </SettingRow>
       </SettingsGroup>
     </div>
   );
