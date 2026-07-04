@@ -112,6 +112,21 @@ describe("hoverSlotFor", () => {
     expect(hoverSlotFor(123, [], "x")).toBe(0);
     expect(hoverSlotFor(123, [], "y")).toBe(0);
   });
+
+  // trmx-82: vertical-label rails stack slim, VARYING-height tabs (natural height by label length
+  // between the min/max tokens) — the midpoint math must hold when heights differ per slot.
+  it("y axis with slim/tall varying-height rects (trmx-82 vertical-label rails)", () => {
+    const rects = [
+      { left: 0, top: 0, width: 44, height: 180 }, // a max-height tab — mid 90
+      { left: 0, top: 180, width: 44, height: 60 }, // a min-height tab — mid 210
+      { left: 0, top: 240, width: 44, height: 120 }, // in between — mid 300
+    ];
+    expect(hoverSlotFor(89, rects, "y")).toBe(0); // just under the tall tab's midpoint
+    expect(hoverSlotFor(91, rects, "y")).toBe(1); // past mid(0)=90, before mid(1)=210
+    expect(hoverSlotFor(209, rects, "y")).toBe(1);
+    expect(hoverSlotFor(211, rects, "y")).toBe(2); // past mid(1), before mid(2)=300
+    expect(hoverSlotFor(9999, rects, "y")).toBe(2); // clamps to the last slot
+  });
 });
 
 describe("TabStrip", () => {
@@ -414,5 +429,171 @@ describe("TabStrip rename (trmx-75)", () => {
     const { onRenameStart } = renderStrip({ renamingTabId: 2 });
     fireEvent.doubleClick(input());
     expect(onRenameStart).not.toHaveBeenCalled();
+  });
+});
+
+// trmx-82 (FR-2.3): vertical labels on the side rail. Vertical-label mode is the AND of
+// orientation="vertical" and labelOrientation="vertical": the root gains
+// `tab-strip--labels-vertical`, the label span the writing-mode class, the close × moves to the
+// tab's END (with the token hit target), and the rename input becomes a FIXED overlay anchored to
+// the renaming tab's rect (D4) — horizontal text, wider than the rail, still inside the tab's DOM
+// subtree with the trmx-75 commit/cancel/latch semantics untouched. jsdom has no layout, so the
+// geometry itself (writing-mode, min-width, fixed clipping) is pinned structurally: classes +
+// inline style props + the stubbed getBoundingClientRect coordinates.
+describe("TabStrip vertical labels (trmx-82)", () => {
+  it("adds the labels-vertical root class and the writing-mode label class; tooltips preserved", () => {
+    renderStrip({ orientation: "vertical", labelOrientation: "vertical" });
+    expect(screen.getByTestId("tab-strip").className).toBe(
+      "tab-strip tab-strip--vertical tab-strip--labels-vertical",
+    );
+    for (const title of ["Shell", "vim", "build"]) {
+      const label = screen.getByTitle(title); // the full-text tooltip survives the rotation
+      expect(label.className).toBe("tab-strip__title tab-strip__title--vertical");
+    }
+  });
+
+  // The D2 geometry ownership (review round): TabStrip — the one component that knows BOTH
+  // orientation and labelOrientation — writes the railGeometryFor tokens itself, so index.css can
+  // consume the vars with NO fallbacks (they can never be absent in vertical-label mode).
+  it("owns the D2 geometry: vertical-label mode writes all four token vars on the root", () => {
+    renderStrip({ orientation: "vertical", labelOrientation: "vertical" });
+    const strip = screen.getByTestId("tab-strip");
+    expect(strip.style.getPropertyValue("--tab-rail-width")).toBe("44px");
+    expect(strip.style.getPropertyValue("--tab-max-height")).toBe("180px");
+    expect(strip.style.getPropertyValue("--tab-min-height")).toBe("60px");
+    expect(strip.style.getPropertyValue("--tab-close-min")).toBe("24px");
+  });
+
+  it("writes NO geometry vars outside vertical-label mode (those layouts are CSS-owned)", () => {
+    const vars = ["--tab-rail-width", "--tab-max-height", "--tab-min-height", "--tab-close-min"];
+    const { view, ...props } = renderStrip({ orientation: "vertical" }); // horizontal labels
+    for (const name of vars) {
+      expect(screen.getByTestId("tab-strip").style.getPropertyValue(name)).toBe("");
+    }
+    // A vertical label setting on a HORIZONTAL strip is ignored — still no vars.
+    view.rerender(<TabStrip {...props} orientation="horizontal" labelOrientation="vertical" />);
+    for (const name of vars) {
+      expect(screen.getByTestId("tab-strip").style.getPropertyValue(name)).toBe("");
+    }
+  });
+
+  it("merges the caller's style prop UNDER the owned tokens (the style seam survives)", () => {
+    renderStrip({
+      orientation: "vertical",
+      labelOrientation: "vertical",
+      style: { opacity: 0.5 },
+    });
+    const strip = screen.getByTestId("tab-strip");
+    expect(strip.style.opacity).toBe("0.5"); // the caller's style still lands…
+    expect(strip.style.getPropertyValue("--tab-rail-width")).toBe("44px"); // …under the tokens
+  });
+
+  it("moves the close × to the tab's END with the hit-target class", () => {
+    renderStrip({ orientation: "vertical", labelOrientation: "vertical" });
+    const close = screen.getByTestId("tab-close-1");
+    expect(close.className).toBe("tab-strip__close tab-strip__close--end");
+    // Title first, × LAST in the tab's column — the CSS column direction lands it at the bottom.
+    expect(screen.getByTestId("tab-1").lastElementChild).toBe(close);
+  });
+
+  it("labelOrientation='vertical' on a HORIZONTAL strip is ignored (rendering unchanged)", () => {
+    renderStrip({ labelOrientation: "vertical" }); // orientation defaults to horizontal
+    expect(screen.getByTestId("tab-strip").className).toBe("tab-strip");
+    expect(screen.getByTitle("vim").className).toBe("tab-strip__title");
+    expect(screen.getByTestId("tab-close-2").className).toBe("tab-strip__close");
+  });
+
+  it("a vertical rail with the DEFAULT label orientation stays the trmx-81 status quo", () => {
+    renderStrip({ orientation: "vertical" });
+    expect(screen.getByTestId("tab-strip").className).toBe("tab-strip tab-strip--vertical");
+    expect(screen.getByTitle("vim").className).toBe("tab-strip__title");
+    expect(screen.getByTestId("tab-close-2").className).toBe("tab-strip__close");
+  });
+
+  it("renders CJK, emoji, and 40+-char path titles (presence + tooltip)", () => {
+    const longPath = "/Users/dev/projects/termixion/very/deep/dir"; // 43 chars
+    renderStrip({
+      orientation: "vertical",
+      labelOrientation: "vertical",
+      tabs: [tab(1, "终端会话"), tab(2, "🚀 deploy"), tab(3, longPath)],
+    });
+    for (const [id, title] of [
+      [1, "终端会话"],
+      [2, "🚀 deploy"],
+      [3, longPath],
+    ] as const) {
+      expect(screen.getByTestId(`tab-${id}`)).toHaveTextContent(title);
+      const label = screen.getByTitle(title);
+      expect(label.className).toContain("tab-strip__title--vertical");
+    }
+  });
+
+  it("D4: the rename input becomes a FIXED overlay anchored to the renaming tab's rect", () => {
+    const { view, ...props } = renderStrip({
+      orientation: "vertical",
+      labelOrientation: "vertical",
+    });
+    // Stub the renaming tab's viewport rect BEFORE the rename starts — the overlay measures it
+    // exactly once, at rename start (jsdom would otherwise report 0×0 at 0,0).
+    const tabEl = screen.getByTestId("tab-2");
+    tabEl.getBoundingClientRect = () =>
+      ({ left: 4, top: 130, width: 44, height: 120, right: 48, bottom: 250, x: 4, y: 130, toJSON: () => ({}) }) as DOMRect;
+    view.rerender(<TabStrip {...props} renamingTabId={2} />);
+
+    const input = screen.getByTestId("tab-rename-input") as HTMLInputElement;
+    // The overlay class carries position:fixed, the horizontal writing-mode reset, the z-index,
+    // and a min-width WIDER than the 44px rail (index.css) — so the input never renders rotated
+    // or clipped inside the slim tab.
+    expect(input.className).toBe("tab-strip__rename tab-strip__rename--overlay");
+    // Anchored at the tab's rect, in viewport coordinates (the strip has no transform).
+    expect(input.style.left).toBe("4px");
+    expect(input.style.top).toBe("130px");
+    // The input STAYS inside the tab's DOM subtree — the trmx-75 event isolation still applies.
+    expect(tabEl.contains(input)).toBe(true);
+    expect(input.value).toBe("vim");
+  });
+
+  it("D4: overlay rename keeps the commit/cancel/latch semantics (Enter once; Esc discards)", () => {
+    const { onRenameCommit, onRenameCancel, onActivate } = renderStrip({
+      orientation: "vertical",
+      labelOrientation: "vertical",
+      renamingTabId: 2,
+    });
+    const input = screen.getByTestId("tab-rename-input") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "构建 🚀" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onRenameCommit).toHaveBeenCalledExactlyOnceWith(2, "构建 🚀");
+    fireEvent.blur(input); // the latch: a following blur must not double-commit
+    expect(onRenameCommit).toHaveBeenCalledTimes(1);
+    expect(onRenameCancel).not.toHaveBeenCalled();
+    expect(onActivate).not.toHaveBeenCalled();
+  });
+
+  it("D4: the rename input is NOT an overlay outside vertical-label mode", () => {
+    renderStrip({ orientation: "vertical", renamingTabId: 2 }); // horizontal labels (default)
+    const input = screen.getByTestId("tab-rename-input") as HTMLInputElement;
+    expect(input.className).toBe("tab-strip__rename");
+    expect(input.style.left).toBe("");
+    expect(input.style.top).toBe("");
+  });
+
+  it("keeps the + button a full-width row (no per-tab slot) and dragging on Y unchanged", () => {
+    const { onMove } = renderStrip({ orientation: "vertical", labelOrientation: "vertical" });
+    // Slim/tall varying-height rows: tab-1 [0,180), tab-2 [180,240), tab-3 [240,360).
+    const heights = [180, 60, 120];
+    let top = 0;
+    for (const [i, id] of [1, 2, 3].entries()) {
+      const t = top;
+      const h = heights[i];
+      screen.getByTestId(`tab-${id}`).getBoundingClientRect = () =>
+        ({ left: 0, width: 44, right: 44, top: t, bottom: t + h, height: h, x: 0, y: t, toJSON: () => ({}) }) as DOMRect;
+      top += h;
+    }
+    expect(screen.getByTestId("tab-new")).not.toHaveAttribute("data-tabstrip-item");
+    const el = screen.getByTestId("tab-1");
+    fireEvent.pointerDown(el, { pointerId: 11, clientX: 20, clientY: 90, button: 0 });
+    fireEvent.pointerMove(el, { pointerId: 11, clientX: 20, clientY: 200 }); // past mid(0)=90, before mid(1)=210
+    fireEvent.pointerUp(el, { pointerId: 11, clientX: 20, clientY: 200 });
+    expect(onMove).toHaveBeenCalledExactlyOnceWith(0, 1);
   });
 });

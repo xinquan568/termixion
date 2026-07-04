@@ -255,28 +255,38 @@ export function NumberField({
  * already-selected segment is a NO-OP (a settings write is a deliberate act — no redundant config
  * writes/broadcasts, the TextField/NumberField contract). Keyboard follows the native radio-group
  * pattern: roving tabindex (only the selected segment is tabbable) and arrow keys step the
- * selection with wraparound, moving focus along. */
+ * selection with wraparound, moving focus along.
+ *
+ * trmx-82 (FR-2.3) adds `disabled` — the Orientation row while the bar sits top/bottom: the group
+ * stays PERCEIVABLE (aria-disabled on the frame and every segment, not the native `disabled`, so
+ * AT still announces the current value) but is fully inert — onChange never fires (clicks and
+ * arrow keys alike) and every segment leaves the tab order (tabindex -1). The enabled render is
+ * byte-identical to the trmx-81 control (no aria-disabled attribute at all). */
 export function SegmentedControl<T extends string>({
   value,
   options,
   onChange,
   label,
+  disabled,
 }: {
   value: T;
   options: ReadonlyArray<{ value: T; label: string }>;
   onChange: (value: T) => void;
   label?: string;
+  disabled?: boolean;
 }) {
   const groupRef = useRef<HTMLDivElement>(null);
 
   const select = (next: T) => {
+    if (disabled) return; // inert by contract — no report, no write, no broadcast
     if (next !== value) onChange(next);
   };
 
   // Arrow-key stepping: wrap around the option ring and carry focus to the new segment (the
-  // roving tabindex would otherwise strand focus on a now-untabbable button).
+  // roving tabindex would otherwise strand focus on a now-untabbable button). Disabled controls
+  // never step (select would refuse anyway, but focus must not move either).
   const step = (delta: number) => {
-    if (options.length === 0) return;
+    if (disabled || options.length === 0) return;
     const current = options.findIndex((opt) => opt.value === value);
     const next = ((current === -1 ? 0 : current) + delta + options.length) % options.length;
     select(options[next].value);
@@ -285,7 +295,13 @@ export function SegmentedControl<T extends string>({
   };
 
   return (
-    <div ref={groupRef} className="tx-segmented" role="radiogroup" aria-label={label}>
+    <div
+      ref={groupRef}
+      className="tx-segmented"
+      role="radiogroup"
+      aria-label={label}
+      aria-disabled={disabled ? true : undefined}
+    >
       {options.map((opt) => {
         const checked = opt.value === value;
         return (
@@ -294,7 +310,8 @@ export function SegmentedControl<T extends string>({
             type="button"
             role="radio"
             aria-checked={checked}
-            tabIndex={checked ? 0 : -1}
+            aria-disabled={disabled ? true : undefined}
+            tabIndex={disabled ? -1 : checked ? 0 : -1}
             className={`tx-segmented__segment${checked ? " tx-segmented__segment--active" : ""}`}
             onClick={() => select(opt.value)}
             onKeyDown={(e) => {

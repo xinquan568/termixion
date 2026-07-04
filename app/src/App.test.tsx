@@ -739,3 +739,117 @@ describe("App tab-bar position (trmx-81)", () => {
     expect(settingsChanged.teardown).toHaveBeenCalledTimes(1);
   });
 });
+
+// trmx-82 (FR-2.3): the side-bar label orientation. App reads tabs.sideLabelOrientation alongside
+// the bar position (ONE settings subscription, two keys), gates it through labelOrientationFor
+// (top/bottom force horizontal), and passes the strip its labelOrientation. The railGeometryFor
+// tokens are OWNED by TabStrip (it writes them on its root in vertical-label mode — unit-pinned in
+// TabStrip.test.tsx); here we assert they still arrive END-TO-END through App's render, and that
+// App writes none of its own (outside vertical-label mode the strip carries NO geometry vars —
+// those layouts are CSS-owned constants).
+describe("App side-bar label orientation (trmx-82)", () => {
+  const strip = () => screen.getByTestId("tab-strip");
+  const stripVar = (name: string) => strip().style.getPropertyValue(name);
+
+  // These tests touch the module-level shared snapshot — reset it so no state leaks across tests.
+  afterEach(() => {
+    __resetSettingsForTest();
+  });
+
+  it("side bar + vertical setting → labelOrientation reaches the strip; narrow-rail CSS vars", () => {
+    makeSettingsStore().set("tabs.barPosition", "left");
+    makeSettingsStore().set("tabs.sideLabelOrientation", "vertical");
+    renderApp();
+    expect(strip().className).toBe("tab-strip tab-strip--vertical tab-strip--labels-vertical");
+    // The railGeometryFor tokens, verbatim, END-TO-END: TabStrip owns them, App's render carries
+    // them onto the strip container.
+    expect(stripVar("--tab-rail-width")).toBe("44px");
+    expect(stripVar("--tab-max-height")).toBe("180px");
+    expect(stripVar("--tab-min-height")).toBe("60px");
+    expect(stripVar("--tab-close-min")).toBe("24px");
+  });
+
+  it("a top/bottom bar forces horizontal labels even when the setting is vertical", () => {
+    makeSettingsStore().set("tabs.sideLabelOrientation", "vertical"); // bar stays on the bottom
+    renderApp();
+    expect(strip().className).toBe("tab-strip");
+    // No geometry vars outside vertical-label mode — the horizontal strip is CSS-owned.
+    expect(stripVar("--tab-rail-width")).toBe("");
+    expect(stripVar("--tab-max-height")).toBe("");
+    expect(stripVar("--tab-min-height")).toBe("");
+    expect(stripVar("--tab-close-min")).toBe("");
+  });
+
+  it("a side bar with the DEFAULT setting keeps the trmx-81 rail (no vars, no label class)", () => {
+    makeSettingsStore().set("tabs.barPosition", "right");
+    renderApp();
+    expect(strip().className).toBe("tab-strip tab-strip--vertical");
+    // The horizontal-label rail's 180px width is a CSS-owned constant, not a token.
+    expect(stripVar("--tab-rail-width")).toBe("");
+  });
+
+  it("settings:changed flips the labels live over the ONE subscription, without remounting hosts", async () => {
+    makeSettingsStore().set("tabs.barPosition", "right");
+    const { calls, settingsChanged } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 1, title: "one" });
+    expect(settingsChanged.observe).toHaveBeenCalledTimes(1); // one subscription serves both keys
+    const host1 = screen.getByTestId("tab-host-1");
+    const unmountsBefore = recorder.unmounts;
+
+    await act(async () => {
+      settingsChanged.fire({
+        key: "tabs.sideLabelOrientation",
+        value: "vertical",
+        source: "settings-window",
+      });
+    });
+    expect(strip().className).toBe("tab-strip tab-strip--vertical tab-strip--labels-vertical");
+    expect(stripVar("--tab-rail-width")).toBe("44px");
+
+    await act(async () => {
+      settingsChanged.fire({
+        key: "tabs.sideLabelOrientation",
+        value: "horizontal",
+        source: "config-file",
+      });
+    });
+    expect(strip().className).toBe("tab-strip tab-strip--vertical");
+    expect(stripVar("--tab-rail-width")).toBe(""); // back to the CSS-owned 180px rail
+
+    // Keep-alive across both flips: same host node, zero TerminalView unmounts.
+    expect(screen.getByTestId("tab-host-1")).toBe(host1);
+    expect(recorder.unmounts).toBe(unmountsBefore);
+  });
+
+  it("junk settings:changed payloads for the new key are inert", async () => {
+    makeSettingsStore().set("tabs.barPosition", "left");
+    const { settingsChanged } = renderApp();
+    await act(async () => {
+      settingsChanged.fire({ key: "tabs.sideLabelOrientation", value: "diagonal", source: "config-file" });
+      settingsChanged.fire({ key: "tabs.sideLabelOrientation", value: 7, source: "config-file" });
+      settingsChanged.fire({ key: "appearance.theme", value: "vertical", source: "config-file" });
+    });
+    expect(strip().className).toBe("tab-strip tab-strip--vertical");
+    expect(stripVar("--tab-rail-width")).toBe("");
+  });
+
+  it("a live position change to top/bottom drops the vertical labels (the gate re-applies)", async () => {
+    makeSettingsStore().set("tabs.barPosition", "left");
+    makeSettingsStore().set("tabs.sideLabelOrientation", "vertical");
+    const { settingsChanged } = renderApp();
+    expect(strip().className).toBe("tab-strip tab-strip--vertical tab-strip--labels-vertical");
+
+    await act(async () => {
+      settingsChanged.fire({ key: "tabs.barPosition", value: "bottom", source: "settings-window" });
+    });
+    expect(strip().className).toBe("tab-strip");
+    expect(stripVar("--tab-rail-width")).toBe(""); // status quo (CSS-owned) — the setting stays latent
+
+    // Back to a side edge: the latent vertical setting re-engages without another broadcast.
+    await act(async () => {
+      settingsChanged.fire({ key: "tabs.barPosition", value: "right", source: "settings-window" });
+    });
+    expect(strip().className).toBe("tab-strip tab-strip--vertical tab-strip--labels-vertical");
+    expect(stripVar("--tab-rail-width")).toBe("44px");
+  });
+});

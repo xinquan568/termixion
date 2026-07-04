@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   makeSettingsStore,
   hydrateSettings,
+  isLabelOrientation,
   getConfigFilePath,
   getConfigWarnings,
   onConfigWarningsChanged,
@@ -308,7 +309,7 @@ describe("lastCheckAt bookkeeping (legacy storage mode)", () => {
 });
 
 describe("registry shape", () => {
-  it("exposes the enumerable user-visible key set (trmx-51 + theme trmx-53 + FR-13 trio trmx-80 + tab bar trmx-81)", () => {
+  it("exposes the enumerable user-visible key set (trmx-51 + theme trmx-53 + FR-13 trio trmx-80 + tab bar trmx-81/82)", () => {
     expect([...SETTING_KEYS].sort()).toEqual(
       [
         "update.autoCheck",
@@ -321,6 +322,7 @@ describe("registry shape", () => {
         "terminal.fontSize",
         "appearance.theme",
         "tabs.barPosition",
+        "tabs.sideLabelOrientation",
       ].sort(),
     );
   });
@@ -419,10 +421,116 @@ describe("tabs.barPosition (trmx-81)", () => {
   });
 });
 
-// trmx-81 D1: the dev/e2e query seed. ONLY when config_read REJECTS (no Tauri runtime at all —
-// `pnpm dev`, the Playwright e2e harness) may `?setting.tabs.barPosition=<v>` seed the snapshot;
-// a RESOLVED read of ANY shape means a backend is present and the query is ignored entirely. The
-// allowlist is exactly ONE key, and the value re-validates through the registry (junk → ignored).
+// trmx-82 (FR-2.3): tabs.sideLabelOrientation — how the side-rail tab labels run. A plain enum
+// key exactly like tabs.barPosition: default "horizontal", only the two members parse, junk falls
+// to the default. Only meaningful while the bar sits on a side edge (App gates via
+// labelOrientationFor) — the registry itself stores it unconditionally.
+describe("tabs.sideLabelOrientation (trmx-82)", () => {
+  it('defaults to "horizontal" in both backends', () => {
+    expect(makeSettingsStore(fakeStorage()).get("tabs.sideLabelOrientation")).toBe("horizontal");
+    expect(makeSettingsStore().get("tabs.sideLabelOrientation")).toBe("horizontal"); // snapshot, pre-hydration
+  });
+
+  it("round-trips both orientations (legacy storage mode)", () => {
+    const store = makeSettingsStore(fakeStorage());
+    for (const orientation of ["vertical", "horizontal"] as const) {
+      store.set("tabs.sideLabelOrientation", orientation);
+      expect(store.get("tabs.sideLabelOrientation")).toBe(orientation);
+    }
+  });
+
+  it("treats a junk persisted value as the default (enum parse-with-fallback)", () => {
+    const store = makeSettingsStore(
+      fakeStorage({ "termixion.tabs.sideLabelOrientation": "diagonal" }),
+    );
+    expect(store.get("tabs.sideLabelOrientation")).toBe("horizontal");
+  });
+
+  it("isLabelOrientation guards exactly the two members (App's payload guard uses it)", () => {
+    expect(isLabelOrientation("horizontal")).toBe(true);
+    expect(isLabelOrientation("vertical")).toBe(true);
+    expect(isLabelOrientation("diagonal")).toBe(false);
+    expect(isLabelOrientation("")).toBe(false);
+    expect(isLabelOrientation(7)).toBe(false);
+    expect(isLabelOrientation(null)).toBe(false);
+    expect(isLabelOrientation(undefined)).toBe(false);
+  });
+
+  it("snapshot mode: set validates, writes through config_write, and broadcasts; junk is rejected", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    const bus = fakeBus();
+    const store = makeSettingsStore(undefined, bus, "settings");
+    store.set("tabs.sideLabelOrientation", "vertical");
+    expect(store.get("tabs.sideLabelOrientation")).toBe("vertical");
+    expect(backend.writes()).toContainEqual({ key: "tabs.sideLabelOrientation", value: "vertical" });
+    expect(bus.events).toEqual([
+      {
+        event: SETTINGS_CHANGED_EVENT,
+        payload: { key: "tabs.sideLabelOrientation", value: "vertical", source: "settings" },
+      },
+    ]);
+    // Junk (a bad cast at runtime) is dropped whole: no snapshot change, no write, no broadcast.
+    bus.events.length = 0;
+    const writesBefore = backend.writes().length;
+    store.set("tabs.sideLabelOrientation", "diagonal" as never);
+    expect(store.get("tabs.sideLabelOrientation")).toBe("vertical");
+    expect(backend.writes().length).toBe(writesBefore);
+    expect(bus.events).toEqual([]);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it("hydration seeds a valid file value; an invalid one falls to the default + client warning", async () => {
+    const backend = fakeConfigBackend({
+      values: { "tabs.sideLabelOrientation": "vertical", "appearance.theme": "white" },
+    });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    expect(makeSettingsStore().get("tabs.sideLabelOrientation")).toBe("vertical");
+
+    __resetSettingsForTest();
+    const junk = fakeConfigBackend({
+      values: { "tabs.sideLabelOrientation": "diagonal", "appearance.theme": "white" },
+    });
+    await hydrateSettings({ invoke: junk.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    expect(makeSettingsStore().get("tabs.sideLabelOrientation")).toBe("horizontal");
+    expect(
+      getConfigWarnings().some(
+        (w) => w.source === "client" && w.message.includes("tabs.sideLabelOrientation"),
+      ),
+    ).toBe(true);
+  });
+
+  it("live settings:changed applies a valid value; junk is inert (config-file junk warns)", async () => {
+    const bus = fakeListenBus();
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    await hydrateSettings({ invoke: backend.invoke, bus, storage: fakeStorage() });
+    const store = makeSettingsStore();
+    bus.fire(SETTINGS_CHANGED_EVENT, {
+      key: "tabs.sideLabelOrientation",
+      value: "vertical",
+      source: "config-file",
+    });
+    expect(store.get("tabs.sideLabelOrientation")).toBe("vertical");
+    bus.fire(SETTINGS_CHANGED_EVENT, {
+      key: "tabs.sideLabelOrientation",
+      value: "diagonal",
+      source: "config-file",
+    });
+    expect(store.get("tabs.sideLabelOrientation")).toBe("vertical"); // the junk value never landed
+    expect(
+      getConfigWarnings().some(
+        (w) => w.source === "client" && w.message.includes("tabs.sideLabelOrientation"),
+      ),
+    ).toBe(true);
+  });
+});
+
+// trmx-81 D1 (widened by trmx-82): the dev/e2e query seed. ONLY when config_read REJECTS (no Tauri
+// runtime at all — `pnpm dev`, the Playwright e2e harness) may `?setting.<key>=<v>` seed the
+// snapshot; a RESOLVED read of ANY shape means a backend is present and the query is ignored
+// entirely. The allowlist is deliberate and reviewed per key (trmx-81: tabs.barPosition; trmx-82
+// adds tabs.sideLabelOrientation), and values re-validate through the registry (junk → ignored).
 describe("D1 e2e query seed (trmx-81)", () => {
   function setSearch(search: string) {
     window.history.replaceState({}, "", `${window.location.pathname}${search}`);
@@ -471,7 +579,7 @@ describe("D1 e2e query seed (trmx-81)", () => {
     expect(makeSettingsStore().get("tabs.barPosition")).toBe("bottom");
   });
 
-  it("a disallowed setting.* key never seeds (allowlist of exactly one key)", async () => {
+  it("a disallowed setting.* key never seeds (a deliberate per-key allowlist)", async () => {
     // `sepia` (not the jsdom-derived default `night`) so a leak would be OBSERVABLE: if the
     // allowlist let appearance.theme through, the read below would serve sepia, not night.
     setSearch("?setting.appearance.theme=sepia&setting.terminal.fontSize=20");
@@ -479,6 +587,38 @@ describe("D1 e2e query seed (trmx-81)", () => {
     await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
     expect(makeSettingsStore().get("appearance.theme")).toBe("night"); // the derived default
     expect(makeSettingsStore().get("terminal.fontSize")).toBe(12);
+  });
+
+  // trmx-82: the seam guards, duplicated for the widened allowlist key — the SAME
+  // resolved-read-wins semantics as tabs.barPosition.
+  it("trmx-82: REJECTED config_read seeds tabs.sideLabelOrientation from the query", async () => {
+    setSearch("?setting.tabs.sideLabelOrientation=vertical");
+    const backend = fakeConfigBackend({}, { failRead: true });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    expect(makeSettingsStore().get("tabs.sideLabelOrientation")).toBe("vertical");
+    expect(backend.writes()).toEqual([]); // snapshot-only: the seed never writes a config file
+  });
+
+  it("trmx-82: a RESOLVED config_read ignores the tabs.sideLabelOrientation query entirely", async () => {
+    setSearch("?setting.tabs.sideLabelOrientation=vertical");
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    expect(makeSettingsStore().get("tabs.sideLabelOrientation")).toBe("horizontal");
+  });
+
+  it("trmx-82: a junk tabs.sideLabelOrientation query value re-validates and is ignored", async () => {
+    setSearch("?setting.tabs.sideLabelOrientation=diagonal");
+    const backend = fakeConfigBackend({}, { failRead: true });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    expect(makeSettingsStore().get("tabs.sideLabelOrientation")).toBe("horizontal");
+  });
+
+  it("trmx-82: both allowlisted keys seed together on the rejection path", async () => {
+    setSearch("?setting.tabs.barPosition=left&setting.tabs.sideLabelOrientation=vertical");
+    const backend = fakeConfigBackend({}, { failRead: true });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    expect(makeSettingsStore().get("tabs.barPosition")).toBe("left");
+    expect(makeSettingsStore().get("tabs.sideLabelOrientation")).toBe("vertical");
   });
 });
 

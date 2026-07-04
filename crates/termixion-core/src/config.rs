@@ -108,6 +108,33 @@ impl TabBarPosition {
     }
 }
 
+/// How tab labels read when the bar sits on a side — left/right bars only
+/// (registry key `tabs.sideLabelOrientation`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LabelOrientation {
+    Horizontal,
+    Vertical,
+}
+
+impl LabelOrientation {
+    /// The TOML/registry spelling of this value (lowercase, e.g. `"vertical"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Horizontal => "horizontal",
+            Self::Vertical => "vertical",
+        }
+    }
+
+    fn from_toml(s: &str) -> Option<Self> {
+        match s {
+            "horizontal" => Some(Self::Horizontal),
+            "vertical" => Some(Self::Vertical),
+            _ => None,
+        }
+    }
+}
+
 /// The `[update]` table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -172,12 +199,14 @@ impl Default for AppearanceConfig {
 #[serde(default)]
 pub struct TabsConfig {
     pub bar_position: TabBarPosition,
+    pub side_label_orientation: LabelOrientation,
 }
 
 impl Default for TabsConfig {
     fn default() -> Self {
         Self {
             bar_position: TabBarPosition::Bottom,
+            side_label_orientation: LabelOrientation::Horizontal,
         }
     }
 }
@@ -277,6 +306,7 @@ pub const DEFAULT_TEMPLATE: &str = r##"# Termixion configuration (TOML).
 
 # [tabs]
 # bar_position = "bottom"         # "top" | "bottom" | "left" | "right"
+# side_label_orientation = "horizontal"   # "horizontal" | "vertical" (left/right bars only)
 "##;
 
 /// Tolerantly parse `text` into a typed [`Config`]. Never panics, never hard-fails:
@@ -308,6 +338,7 @@ pub fn toml_path_for(registry_key: &str) -> Option<(&'static str, &'static str)>
         "terminal.fontSize" => Some(("terminal", "font_size")),
         "appearance.theme" => Some(("appearance", "theme")),
         "tabs.barPosition" => Some(("tabs", "bar_position")),
+        "tabs.sideLabelOrientation" => Some(("tabs", "side_label_orientation")),
         _ => None,
     }
 }
@@ -370,6 +401,11 @@ pub fn diff_configs(old: &Config, new: &Config) -> Vec<(String, RegistryValue)> 
         old.tabs.bar_position != new.tabs.bar_position,
         "tabs.barPosition",
         RegistryValue::Str(new.tabs.bar_position.as_str().to_string()),
+    );
+    push(
+        old.tabs.side_label_orientation != new.tabs.side_label_orientation,
+        "tabs.sideLabelOrientation",
+        RegistryValue::Str(new.tabs.side_label_orientation.as_str().to_string()),
     );
     changed
 }
@@ -537,6 +573,15 @@ fn walk_tabs(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
                 &mut config.tabs.bar_position,
                 sink,
             ),
+            "side_label_orientation" => read_enum(
+                value,
+                ("tabs.side_label_orientation", "tabs.sideLabelOrientation"),
+                LabelOrientation::from_toml,
+                LabelOrientation::as_str,
+                r#"one of "horizontal", "vertical""#,
+                &mut config.tabs.side_label_orientation,
+                sink,
+            ),
             _ => sink.warnings.push(ConfigWarning::UnknownKey {
                 key: format!("tabs.{key}"),
             }),
@@ -661,8 +706,8 @@ fn describe_value(value: &toml::Value) -> String {
 mod tests {
     use super::*;
 
-    /// All 10 registry keys.
-    const REGISTRY_KEYS: [&str; 10] = [
+    /// All 11 registry keys.
+    const REGISTRY_KEYS: [&str; 11] = [
         "update.autoCheck",
         "update.checkFrequency",
         "update.autoDownload",
@@ -673,6 +718,7 @@ mod tests {
         "terminal.fontSize",
         "appearance.theme",
         "tabs.barPosition",
+        "tabs.sideLabelOrientation",
     ];
 
     fn value_for<'a>(pairs: &'a [(String, RegistryValue)], key: &str) -> Option<&'a RegistryValue> {
@@ -697,6 +743,7 @@ theme = "night"
 
 [tabs]
 bar_position = "top"
+side_label_orientation = "vertical"
 "#;
 
     // 1. Happy path: every key set to a non-default valid value.
@@ -724,16 +771,17 @@ bar_position = "top"
                 },
                 tabs: TabsConfig {
                     bar_position: TabBarPosition::Top,
+                    side_label_orientation: LabelOrientation::Vertical,
                 },
             }
         );
     }
 
     #[test]
-    fn full_file_yields_all_ten_registry_pairs() {
+    fn full_file_yields_all_eleven_registry_pairs() {
         let (pairs, warnings) = parse_registry_pairs(FULL_NON_DEFAULT);
         assert_eq!(warnings, Vec::new());
-        assert_eq!(pairs.len(), 10);
+        assert_eq!(pairs.len(), 11);
         for key in REGISTRY_KEYS {
             assert!(value_for(&pairs, key).is_some(), "missing pair for {key}");
         }
@@ -777,6 +825,10 @@ bar_position = "top"
             value_for(&pairs, "tabs.barPosition"),
             Some(&RegistryValue::Str("top".to_string()))
         );
+        assert_eq!(
+            value_for(&pairs, "tabs.sideLabelOrientation"),
+            Some(&RegistryValue::Str("vertical".to_string()))
+        );
     }
 
     // 2. Empty string → defaults, zero warnings, zero pairs.
@@ -797,6 +849,10 @@ bar_position = "top"
         assert!(
             DEFAULT_TEMPLATE.contains("# [tabs]"),
             "the template must document the [tabs] table (commented out)"
+        );
+        assert!(
+            DEFAULT_TEMPLATE.contains("# side_label_orientation = \"horizontal\""),
+            "the template must document tabs.side_label_orientation (commented out)"
         );
         let (config, warnings) = parse_config(DEFAULT_TEMPLATE);
         assert_eq!(config, Config::default());
@@ -946,6 +1002,52 @@ bar_position = "top"
     }
 
     #[test]
+    fn label_orientation_parses_both_values() {
+        let cases = [
+            ("horizontal", LabelOrientation::Horizontal),
+            ("vertical", LabelOrientation::Vertical),
+        ];
+        for (spelling, expected) in cases {
+            let text = format!("[tabs]\nside_label_orientation = \"{spelling}\"\n");
+            let (config, warnings) = parse_config(&text);
+            assert_eq!(warnings, Vec::new(), "for {spelling}");
+            assert_eq!(
+                config.tabs.side_label_orientation, expected,
+                "for {spelling}"
+            );
+            let (pairs, _) = parse_registry_pairs(&text);
+            assert_eq!(
+                value_for(&pairs, "tabs.sideLabelOrientation"),
+                Some(&RegistryValue::Str(spelling.to_string())),
+                "for {spelling}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_label_orientation_warns_with_valid_values_listed() {
+        let text = "[tabs]\nside_label_orientation = \"diagonal\"\n";
+        let (config, warnings) = parse_config(text);
+        assert_eq!(
+            config.tabs.side_label_orientation,
+            LabelOrientation::Horizontal
+        );
+        assert_eq!(warnings.len(), 1);
+        match &warnings[0] {
+            ConfigWarning::InvalidValue { key, got, expected } => {
+                assert_eq!(key, "tabs.side_label_orientation");
+                assert!(got.contains("diagonal"));
+                for valid in ["horizontal", "vertical"] {
+                    assert!(expected.contains(valid), "expected must list {valid}");
+                }
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+        let (pairs, _) = parse_registry_pairs(text);
+        assert!(value_for(&pairs, "tabs.sideLabelOrientation").is_none());
+    }
+
+    #[test]
     fn unknown_check_frequency_warns_with_valid_values_listed() {
         let (config, warnings) = parse_config("[update]\ncheck_frequency = \"hourly\"\n");
         assert_eq!(config.update.check_frequency, CheckFrequency::OnStartup);
@@ -1057,10 +1159,24 @@ bar_position = "top"
         );
     }
 
-    // 10. toml_path_for maps all 10 registry keys and rejects junk.
+    #[test]
+    fn present_only_pair_for_a_single_side_label_orientation_key_file() {
+        let (pairs, warnings) =
+            parse_registry_pairs("[tabs]\nside_label_orientation = \"vertical\"\n");
+        assert_eq!(warnings, Vec::new());
+        assert_eq!(
+            pairs,
+            vec![(
+                "tabs.sideLabelOrientation".to_string(),
+                RegistryValue::Str("vertical".to_string())
+            )]
+        );
+    }
+
+    // 10. toml_path_for maps all 11 registry keys and rejects junk.
     #[test]
     fn toml_path_for_maps_every_registry_key() {
-        let expected: [(&str, (&str, &str)); 10] = [
+        let expected: [(&str, (&str, &str)); 11] = [
             ("update.autoCheck", ("update", "auto_check")),
             ("update.checkFrequency", ("update", "check_frequency")),
             ("update.autoDownload", ("update", "auto_download")),
@@ -1071,6 +1187,10 @@ bar_position = "top"
             ("terminal.fontSize", ("terminal", "font_size")),
             ("appearance.theme", ("appearance", "theme")),
             ("tabs.barPosition", ("tabs", "bar_position")),
+            (
+                "tabs.sideLabelOrientation",
+                ("tabs", "side_label_orientation"),
+            ),
         ];
         for (registry_key, path) in expected {
             assert_eq!(
@@ -1088,7 +1208,7 @@ bar_position = "top"
     fn toml_path_for_round_trips_through_the_parser() {
         // A minimal file written at toml_path_for's answer must surface exactly
         // that registry key in the pairs.
-        let samples: [(&str, &str); 10] = [
+        let samples: [(&str, &str); 11] = [
             ("update.autoCheck", "false"),
             ("update.checkFrequency", "\"manual\""),
             ("update.autoDownload", "false"),
@@ -1099,6 +1219,7 @@ bar_position = "top"
             ("terminal.fontSize", "20"),
             ("appearance.theme", "\"night\""),
             ("tabs.barPosition", "\"right\""),
+            ("tabs.sideLabelOrientation", "\"vertical\""),
         ];
         for (registry_key, literal) in samples {
             let Some((table, key)) = toml_path_for(registry_key) else {
@@ -1140,6 +1261,20 @@ bar_position = "top"
             vec![(
                 "tabs.barPosition".to_string(),
                 RegistryValue::Str("top".to_string())
+            )]
+        );
+    }
+
+    #[test]
+    fn diff_side_label_orientation_change_yields_that_pair() {
+        let old = Config::default();
+        let mut new = Config::default();
+        new.tabs.side_label_orientation = LabelOrientation::Vertical;
+        assert_eq!(
+            diff_configs(&old, &new),
+            vec![(
+                "tabs.sideLabelOrientation".to_string(),
+                RegistryValue::Str("vertical".to_string())
             )]
         );
     }

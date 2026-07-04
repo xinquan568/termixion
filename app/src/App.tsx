@@ -40,19 +40,27 @@
 // as an `app--bar-<position>` class on main.app. The JSX order NEVER changes (hosts first, strip
 // LAST): barLayoutFor's flex direction moves the bar to the edge, so the keyed hosts — and their
 // keep-alive terminals — are untouched by a position switch (the trmx-74 remount lesson).
+//
+// trmx-82 (FR-2.3): App reads tabs.sideLabelOrientation alongside the position (the SAME ONE
+// settings subscription guards both keys) and gates it through labelOrientationFor (top/bottom
+// bars force horizontal labels). The railGeometryFor CSS custom properties are NOT App's job:
+// TabStrip owns and writes them on its own root in vertical-label mode (the trmx-82 review-round
+// ownership fix — the vars can never be absent where index.css consumes them without fallbacks).
 import { useEffect, useReducer, useRef, useState } from "react";
 import { TerminalView, type SettingsObservation } from "./terminal/TerminalView";
 import { TabStrip } from "./tabs/TabStrip";
-import { barLayoutFor } from "./tabs/barLayout";
+import { barLayoutFor, labelOrientationFor } from "./tabs/barLayout";
 import {
   initialTabsState,
   reduceTabs,
   tabBySessionId,
 } from "./tabs/tabState";
 import {
+  isLabelOrientation,
   isTabBarPosition,
   makeSettingsStore,
   SETTINGS_CHANGED_EVENT,
+  type LabelOrientation,
   type TabBarPosition,
 } from "./settings/settingsStore";
 import { describeTarget, tabKeyAction } from "./tabs/tabKeymap";
@@ -195,6 +203,11 @@ export function App({
   // mount, main.tsx boot order) — the lazy initializer reads it exactly once per App lifetime.
   const [barPosition, setBarPosition] = useState<TabBarPosition>(() =>
     makeSettingsStore().get("tabs.barPosition"),
+  );
+  // trmx-82: the side-rail label orientation SETTING (the raw registry value; the EFFECTIVE
+  // orientation is gated through labelOrientationFor below, so it stays latent on top/bottom bars).
+  const [sideLabelOrientation, setSideLabelOrientation] = useState<LabelOrientation>(() =>
+    makeSettingsStore().get("tabs.sideLabelOrientation"),
   );
 
   // Mirror of the reducer state for callbacks that fire OUTSIDE the render cycle (attach
@@ -418,12 +431,17 @@ export function App({
   // hand edit, a reset's default broadcast). Its OWN effect, dep'd only on the stable observation
   // seam — it must never re-run with the tab-state effects (no effect-dep churn; every identity
   // App passes to TerminalView stays untouched by a position change). Payloads are untrusted
-  // input: only a well-formed tabs.barPosition with a registry-valid value updates state.
+  // input: only a well-formed key with a registry-valid value updates state.
+  // trmx-82: the ONE subscription now guards TWO keys — the label orientation rides the same
+  // payload guard (junk values inert, exactly like the position's).
   useEffect(() => {
     const stopSettings = observeSettings((payload) => {
       if (typeof payload !== "object" || payload === null) return;
       const { key, value } = payload as { key?: unknown; value?: unknown };
       if (key === "tabs.barPosition" && isTabBarPosition(value)) setBarPosition(value);
+      else if (key === "tabs.sideLabelOrientation" && isLabelOrientation(value)) {
+        setSideLabelOrientation(value);
+      }
     });
     return stopSettings;
   }, [observeSettings]);
@@ -487,6 +505,10 @@ export function App({
   // trmx-81: the position class + the strip's axis, both from the pure layout engine. The class
   // drives index.css's flex-direction variants; the JSX below keeps hosts-then-strip order ALWAYS.
   const barLayout = barLayoutFor(barPosition);
+  // trmx-82: the EFFECTIVE label orientation (top/bottom force horizontal). The rail-geometry
+  // CSS custom properties are TabStrip's own concern — it derives railGeometryFor from the same
+  // two props and writes the vars on its root in vertical-label mode, so App passes no style.
+  const labelOrientation = labelOrientationFor(barPosition, sideLabelOrientation);
 
   return (
     <main className={`app app--bar-${barPosition}`}>
@@ -513,6 +535,7 @@ export function App({
         activeTabId={state.activeTabId}
         renamingTabId={renamingTabId}
         orientation={barLayout.orientation}
+        labelOrientation={labelOrientation}
         onActivate={(tabId) => dispatch({ kind: "activateTab", tabId })}
         onClose={requestCloseTab}
         onNew={requestNewTab}

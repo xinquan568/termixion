@@ -20,6 +20,13 @@
 // on every backend re-parse (including the EMPTY set, which clears the banner once the user
 // fixes the file) AND on client-authored warnings (e.g. an invalid live theme), which no raw
 // config:warnings event ever carries. A fresh non-empty set un-dismisses the banner.
+//
+// trmx-82 (FR-2.3, D5): the shell also owns the LIVE tabs.barPosition — seeded from the injected
+// store, kept current by the SAME payload-guarded settings:changed subscription the theme rides
+// (cross-window writes, config-file edits, About-page resets) — and hands it to the Appearance
+// page, whose Orientation row it gates (top/bottom bars disable it). The theme pattern exactly:
+// AppearanceSettings stays controlled, its onBarPositionChange feeds a local click back here so
+// the gate flips instantly even without a bus (plain dev/jsdom).
 import { useEffect, useState, type ReactNode } from "react";
 import { AboutSettings } from "./AboutSettings";
 import { AppearanceSettings } from "./AppearanceSettings";
@@ -31,10 +38,12 @@ import type { Opener } from "../update/opener";
 import type { UseUpdate } from "../update/useUpdate";
 import {
   getConfigWarnings,
+  isTabBarPosition,
   onConfigWarningsChanged,
   SETTINGS_CHANGED_EVENT,
   type ConfigWarningItem,
   type SettingsStore,
+  type TabBarPosition,
 } from "./settingsStore";
 import { isThemeId, type ThemeId } from "../theme/themes";
 import { applyTxTheme } from "../theme/txCssVars";
@@ -74,6 +83,10 @@ export function SettingsApp({
   const [query, setQuery] = useState("");
   // trmx-53: the window's active theme; initial read materializes the first-run default.
   const [theme, setTheme] = useState<ThemeId>(() => settings.get("appearance.theme"));
+  // trmx-82 (D5): the LIVE bar position for the Appearance page's Orientation gate.
+  const [barPosition, setBarPosition] = useState<TabBarPosition>(() =>
+    settings.get("tabs.barPosition"),
+  );
   // trmx-80: the config-file warnings banner, seeded from the hydrated module state.
   const [warnings, setWarnings] = useState<ConfigWarningItem[]>(() => getConfigWarnings());
   const [warningsDismissed, setWarningsDismissed] = useState(false);
@@ -111,10 +124,13 @@ export function SettingsApp({
     });
     // trmx-53: About-page resets and cross-window writes restyle this window live. Payloads are
     // untrusted; junk is inert. Same-window echoes just re-apply identical values.
+    // trmx-82: the ONE subscription now guards TWO keys — the bar position rides the same
+    // payload guard (junk values inert, exactly like the theme's).
     subscribe(SETTINGS_CHANGED_EVENT, (payload) => {
       if (typeof payload !== "object" || payload === null) return;
       const { key, value } = payload as { key?: unknown; value?: unknown };
       if (key === "appearance.theme" && isThemeId(value)) setTheme(value);
+      else if (key === "tabs.barPosition" && isTabBarPosition(value)) setBarPosition(value);
     });
     return () => {
       live = false;
@@ -178,7 +194,13 @@ export function SettingsApp({
         ) : null}
         <div className="tx-settings__page">
           {section === "appearance" ? (
-            <AppearanceSettings settings={settings} selected={theme} onThemeChange={setTheme} />
+            <AppearanceSettings
+              settings={settings}
+              selected={theme}
+              onThemeChange={setTheme}
+              barPosition={barPosition}
+              onBarPositionChange={setBarPosition}
+            />
           ) : section === "terminal" ? (
             <TerminalSettings settings={settings} />
           ) : (

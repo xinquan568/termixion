@@ -153,6 +153,18 @@ the packaged app — deliberately NOT a CI artifact, per the no-pixel-diff rule 
 coverage (edge class, rail geometry, tab flows per position) is CI-gated instead, in
 `app/e2e/tab-position.spec.ts` and the tabState/barLayout/TabStrip unit suites.
 
+**Side-rail label orientation (trmx-82).** FR-2.3 adds `tabs.sideLabelOrientation`
+(horizontal / vertical; horizontal stays the default, so the shots above are unchanged).
+Vertical-label mode restyles the side rail into a slim 44px column of tall tabs — rotated
+`writing-mode` labels, an end-anchored close ×, the fixed rename overlay — again a new *layout*
+over the same `--tx-*` tokens (no new color literals; the §2 consistency rule holds). Its review
+evidence extends this set with a **left-bar-VERTICAL six-theme row (same 1280×800 window, same
+§5 protocol)** captured by the **operator's visual-review pass** from the packaged app —
+deliberately NOT a CI artifact, per the no-pixel-diff rule. Functional coverage (the modifier
+classes, the 44px rail token, rotated labels, tab flows, the scrolled-rail rename overlay, and
+the Settings-page gating) is CI-gated instead, in `app/e2e/label-orientation.spec.ts` plus the
+barLayout/TabStrip/AppearanceSettings/SettingsApp unit suites.
+
 ## 6. The forward rule (v0.0.6 / v0.0.7)
 
 - **Splits (v0.0.6):** pane chrome (dividers, focus dim, indicators) consumes existing tokens
