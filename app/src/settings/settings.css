@@ -145,6 +145,43 @@
   overflow: auto;
   padding: 0 28px 28px;
 }
+
+/* trmx-80 (FR-13) — the config-file warnings banner at the top of the content pane. */
+.tx-settings__warnings {
+  position: relative;
+  flex-shrink: 0;
+  margin: 0 28px 12px;
+  padding: 10px 36px 10px 14px;
+  border: 1px solid var(--tx-border);
+  border-radius: 10px;
+  background: var(--tx-bg-elev);
+  font-size: 12px;
+}
+.tx-settings__warnings-title {
+  margin-bottom: 4px;
+  font-weight: 600;
+  color: var(--tx-error);
+}
+.tx-settings__warnings-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--tx-text-2);
+}
+.tx-settings__warnings-dismiss {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  padding: 2px 6px;
+  border: none;
+  background: transparent;
+  color: var(--tx-text-2);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.tx-settings__warnings-dismiss:hover {
+  color: var(--tx-text);
+}
 .tx-settings__page > * {
   max-width: 640px;
   margin: 0 auto;
@@ -286,6 +323,57 @@
   cursor: pointer;
 }
 .tx-select:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* trmx-80 (FR-13) — the commit-on-blur/Enter fields (Terminal page's scrollback/font rows). */
+.tx-text,
+.tx-number {
+  padding: 4px 10px;
+  border: 1px solid var(--tx-border);
+  border-radius: 7px;
+  background-color: var(--tx-bg-sunken);
+  color: var(--tx-text);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+.tx-text:focus,
+.tx-number:focus {
+  border-color: var(--tx-primary);
+}
+.tx-text {
+  width: 220px;
+}
+.tx-text::placeholder {
+  color: var(--tx-text-3);
+}
+.tx-number {
+  width: 72px;
+  text-align: right;
+}
+.tx-number-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.tx-stepper-btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--tx-border);
+  border-radius: 7px;
+  background: var(--tx-bg-sunken);
+  color: var(--tx-text);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.tx-stepper-btn:hover {
+  border-color: var(--tx-text-3);
+}
+.tx-stepper-btn:disabled {
   opacity: 0.5;
   cursor: default;
 }

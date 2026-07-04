@@ -8,6 +8,9 @@
 // every persisted setting behind an inline confirmation. Presentational: it takes an already-wired
 // `update` (authority or mirror), plus injected `appInfo`/`opener`/`settings` seams, so it is
 // unit-tested with fakes and the real Tauri edge stays out of the test path.
+// trmx-80 (FR-13): a Configuration group with "Open config file" — the row's description shows
+// where config.toml lives (getConfigFilePath, hydrated at boot) and the button opens it through
+// the opener seam. A plain browser has no config file (null path), so the group hides entirely.
 import { useEffect, useState } from "react";
 import { Button, ProgressBar, Select, SettingRow, SettingsGroup, StatusPill, Toggle } from "./components";
 import { GitHubIcon, GlobeIcon } from "./icons";
@@ -16,6 +19,7 @@ import type { Opener } from "../update/opener";
 import type { UseUpdate } from "../update/useUpdate";
 import { isCardVisible, progressPercent, type UpdateState } from "../update/updateState";
 import {
+  getConfigFilePath,
   SETTING_DEFAULTS,
   type CheckFrequency,
   type SettingsStore,
@@ -42,6 +46,8 @@ export interface AboutSettingsProps {
 
 export function AboutSettings({ update, appInfo, opener, settings }: AboutSettingsProps) {
   const { state } = update;
+  // Hydrated before any window renders (main.tsx boot order); null in a plain browser.
+  const configPath = getConfigFilePath();
   const [version, setVersion] = useState<string>("");
   const [frequency, setFrequency] = useState<CheckFrequency>(() =>
     settings.get("update.checkFrequency"),
@@ -197,6 +203,17 @@ export function AboutSettings({ update, appInfo, opener, settings }: AboutSettin
           </div>
         </SettingRow>
       </SettingsGroup>
+
+      {configPath ? (
+        <SettingsGroup title="Configuration">
+          <SettingRow label="Open config file" description={configPath}>
+            {/* review R3: a filesystem path takes the PATH opener, never the URL opener. */}
+            <Button variant="tertiary" onClick={() => void opener.openPath(configPath)}>
+              Open
+            </Button>
+          </SettingRow>
+        </SettingsGroup>
+      ) : null}
 
       <SettingsGroup title="Reset">
         <SettingRow

@@ -2,21 +2,27 @@
 // Copyright (c) 2026 Eric Y. Liu
 //
 // trmx-53: the pre-first-paint theme application (vmark's recipe: static CSS defaults + a
-// runtime override before render). Static CSS cannot know the PERSISTED theme, so main.tsx
-// calls this synchronously at module evaluation — before boot()'s first await (plan D7; guarded
-// by main.order.test.ts) — reading the theme through the registry (which materializes the
-// first-run derivation: dark OS → Night, light → White) and painting the body. The settings
-// surface additionally gets its --tx-* vars so the window's first frame is already themed.
-// Defensive on every edge: no document (headless) → no-op; junk/absent storage → derived default.
-import { makeSettingsStore, type KeyValueStore } from "../settings/settingsStore";
+// runtime override before render). Static CSS cannot know the PERSISTED theme, so main.tsx calls
+// this from boot() — since trmx-80 (FR-13) immediately AFTER `await hydrateSettings()`, because
+// the theme now lives in the backend's config file and needs one IPC read before the themed first
+// paint (ordering guarded by main.order.test.ts). It reads through the snapshot-backed settings
+// registry (hydration already materialized the first-run derivation: dark OS → Night, light →
+// White) and paints the body. The settings surface additionally gets its --tx-* vars so the
+// window's first frame is already themed. Defensive on every edge: no document (headless) →
+// no-op; an unhydrated snapshot (plain browser) → the derived default.
+import { makeSettingsStore, type SettingsStore } from "../settings/settingsStore";
 import { resolveSurface } from "../surface";
 import { themes } from "./themes";
 import { applyTxTheme } from "./txCssVars";
 
 export interface StartupThemeOptions {
-  /** Injection seams for tests; default to the real document/localStorage/location. */
+  /** Injection seams for tests; default to the real document/location. */
   doc?: Document;
-  storage?: KeyValueStore;
+  /**
+   * The settings store to read appearance.theme through; defaults to a snapshot-backed store
+   * (trmx-80 — the old `storage` seam died with the localStorage value backend).
+   */
+  settings?: SettingsStore;
   search?: string;
 }
 
@@ -26,8 +32,7 @@ export function applyStartupTheme(opts: StartupThemeOptions = {}): void {
   if (!doc) return;
   const search = opts.search ?? doc.defaultView?.location.search ?? "";
 
-  // makeSettingsStore(undefined) falls back to the real localStorage (its default parameter).
-  const id = makeSettingsStore(opts.storage).get("appearance.theme");
+  const id = (opts.settings ?? makeSettingsStore()).get("appearance.theme");
 
   if (resolveSurface(search).kind === "settings") {
     applyTxTheme(id, doc); // vars + body

@@ -9,3 +9,6 @@ authors.workspace = true
 
 [dependencies]
 # (B-1 adds the domain model; no platform deps here.)
+# trmx-80 (FR-13): the pure config module — serde + toml only, both platform-agnostic.
+serde = { version = "1.0.228", features = ["derive"] }
+toml = "1.1.2"

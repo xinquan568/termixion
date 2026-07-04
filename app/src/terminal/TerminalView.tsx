@@ -25,7 +25,16 @@ import {
 import { makeResizeCoalescer, type FrameSchedule } from "./resizeCoalescer";
 import { initialAppearanceFromWindow, iterm2TerminalOptions } from "./iterm2Theme";
 import { emulationTerminalOptions } from "./emulationOptions";
-import { scrollbackTerminalOptions } from "./scrollbackSettings";
+import {
+  applyScrollbackSettingsChange,
+  scrollbackTerminalOptions,
+  type ScrollbackOptionsSink,
+} from "./scrollbackSettings";
+import {
+  applyFontSettingsChange,
+  fontTerminalOptions,
+  type FontOptionsSink,
+} from "./fontSettings";
 import {
   attachClipboardGuards,
   clipboardTerminalOptions,
@@ -72,15 +81,19 @@ function supportsWebgl2(): boolean {
 // appearance.theme (first-run-derived from the OS: dark → Night, light → White) overrides the iTerm2
 // palette at this chokepoint; live theme switching arrives over settings:changed in the effect below.
 // trmx-51: the persisted cursor settings (default underline + no blink since trmx-55) overlay last.
+// trmx-80 (FR-13): the settings store reads the file-backed SHARED SNAPSHOT (hydrated in boot());
+// the persisted FONT (family/size) and SCROLLBACK capacity are settings-fed here — the font slice
+// spreads AFTER iterm2TerminalOptions so a persisted font overrides the profile constants.
 export const realDeps: MountDeps = {
   createTerminal: () => {
     const settings = makeSettingsStore();
     return new Terminal({
       ...iterm2TerminalOptions(initialAppearanceFromWindow()),
       ...themeTerminalOptions(settings),
+      ...fontTerminalOptions(settings),
       ...cursorTerminalOptions(settings),
-      // trmx-65: scrollback capacity + smooth discrete scrolling (10k cap until FR-13 config).
-      ...scrollbackTerminalOptions(),
+      // trmx-65: scrollback capacity + smooth discrete scrolling (a user setting since trmx-80).
+      ...scrollbackTerminalOptions(settings),
       // trmx-66: Option-drag selection while an app owns the mouse (iTerm2 convention).
       ...clipboardTerminalOptions(),
       // trmx-64: the emulation-semantics slice (convertEol:false — VT-correct LF handling) spreads
@@ -314,8 +327,21 @@ export function TerminalView({
     // a theme change (trmx-53, superseding trmx-44's live OS-following) reassigns options.theme
     // wholesale, then syncs the host/body background (the inset + sub-cell remainder) and
     // recomputes the scrollbar (its colors derive from the theme's scrollbarSlider* tokens).
+    // trmx-80 (FR-13): scrollback reassigns options.scrollback (xterm truncates on shrink —
+    // accepted, documented in scrollbackSettings.ts); a FONT change alters the cell metrics, so
+    // it re-fits the grid and recomputes the scrollbar over the fresh rows/cols. Since trmx-80
+    // these broadcasts also arrive from the backend's config-file watcher (source "config-file").
     const stopObservingSettings = observeSettings((payload) => {
       applyCursorSettingsChange(handle.terminal as unknown as CursorOptionsSink, payload);
+      applyScrollbackSettingsChange(handle.terminal as unknown as ScrollbackOptionsSink, payload);
+      const appliedFont = applyFontSettingsChange(
+        handle.terminal as unknown as FontOptionsSink,
+        payload,
+      );
+      if (appliedFont) {
+        handle.fit();
+        scrollbar.recompute();
+      }
       const appliedTheme = applyThemeSettingsChange(
         handle.terminal as unknown as ThemeOptionsSink,
         payload,

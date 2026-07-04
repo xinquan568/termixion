@@ -14,10 +14,11 @@
 // the content under test, and pin the carve-out itself explicitly. The half of the acceptance the
 // emulator delegates to the shell — the prompt line re-rendering after a resize — is not
 // observable headless and lives in the e2e/manual tier.
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import { Terminal } from "@xterm/headless";
 import { scrollbackTerminalOptions, SCROLLBACK_LINES } from "./scrollbackSettings";
 import { emulationTerminalOptions } from "./emulationOptions";
+import { makeSettingsStore, __resetSettingsForTest } from "../settings/settingsStore";
 
 const ROWS = 24;
 const WIDE = 80;
@@ -58,13 +59,18 @@ function logicalLines(term: Terminal): string[] {
 
 describe("resize reflow + viewport stability (trmx-67)", () => {
   const terms: Terminal[] = [];
+  beforeEach(() => {
+    // trmx-80: the slice reads terminal.scrollbackLines from the shared snapshot; an empty
+    // snapshot serves the registry default (= SCROLLBACK_LINES), which the at-cap test pins.
+    __resetSettingsForTest();
+  });
   afterEach(() => {
     while (terms.length) terms.pop()?.dispose();
   });
 
   function openTerm(): Terminal {
     const term = new Terminal({
-      ...scrollbackTerminalOptions(),
+      ...scrollbackTerminalOptions(makeSettingsStore()),
       ...emulationTerminalOptions(),
       cols: WIDE,
       rows: ROWS,

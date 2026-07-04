@@ -26,10 +26,14 @@ test("?window=settings renders the settings surface with the vmark chrome", asyn
   const dragRegions = page.locator("[data-tauri-drag-region]");
   await expect(dragRegions).toHaveCount(3);
 
-  // Default landing: the Terminal page with exactly the two boxed rows.
+  // Default landing: the Terminal page with exactly the five boxed rows (trmx-80 added
+  // Scrollback / Font Family / Font Size below the two cursor rows).
   await expect(page.getByText("Cursor Style", { exact: true })).toBeVisible();
   await expect(page.getByText("Cursor Blink", { exact: true })).toBeVisible();
-  await expect(page.locator(".tx-setting-row")).toHaveCount(2);
+  await expect(page.getByText("Scrollback", { exact: true })).toBeVisible();
+  await expect(page.getByText("Font Family", { exact: true })).toBeVisible();
+  await expect(page.getByText("Font Size", { exact: true })).toBeVisible();
+  await expect(page.locator(".tx-setting-row")).toHaveCount(5);
 });
 
 test("?window=settings&section=about lands on the vmark-parity About page", async ({ page }) => {
@@ -45,7 +49,7 @@ test("?window=settings&section=about lands on the vmark-parity About page", asyn
   await expect(page.getByRole("button", { name: "GitHub" })).toBeVisible();
 });
 
-test("?window=settings&section=appearance shows the Theme row; a swatch click re-themes the window live and persists (trmx-53)", async ({
+test("?window=settings&section=appearance shows the Theme row; a swatch click re-themes the window live (trmx-53)", async ({
   page,
 }) => {
   await page.goto("/?window=settings&section=appearance");
@@ -66,10 +70,11 @@ test("?window=settings&section=appearance shows the Theme row; a swatch click re
   await page.getByRole("radio", { name: "Night" }).click();
   await expect(page.locator(".tx-settings")).toHaveCSS("background-color", "rgb(35, 38, 43)");
 
-  // Persists across a reload (the pre-first-paint startup path reads the stored choice).
-  await page.reload();
-  await expect(page.locator(".tx-settings")).toHaveCSS("background-color", "rgb(35, 38, 43)");
-  await expect(page.getByRole("radio", { name: "Night" })).toHaveAttribute("aria-checked", "true");
+  // NOTE (trmx-80): persistence-across-reload is no longer observable in the plain-browser dev
+  // server. Settings now persist to the TOML config file through the Tauri backend; without a
+  // runtime the store deliberately falls back to defaults (the issue's inert-degradation
+  // contract), so a reload re-derives the OS default theme. Persistence is covered by the
+  // settingsStore hydration/write unit tests and the packaged-app checklist.
 });
 
 test("the plain root still boots the terminal surface", async ({ page }) => {

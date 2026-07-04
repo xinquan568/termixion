@@ -10,6 +10,8 @@
 //! effective title. The session domain logic lives in `termixion-core`; this file is runtime glue
 //! (validated by the C-3 packaged `--smoke` and `cargo tauri dev`) — the pure pieces
 //! (`program_title`, [`poll_tick`], the payload wire shapes, the gate's park/wake) are unit-tested.
+//! trmx-80 (FR-13) adds the `config_io` module: the `termixion.toml` read/write/reset commands and
+//! the debounced config-file watcher that live-applies external edits as `settings:changed`.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -23,6 +25,7 @@ use tauri::{Emitter, Manager, State, WindowEvent};
 use termixion_core::{PtySize, SessionRegistry, SessionSpec};
 use termixion_platform::{MacosPtyFactory, foreground_process};
 
+mod config_io;
 mod menu;
 mod window_manager;
 
@@ -760,6 +763,9 @@ fn main() -> ExitCode {
         .plugin(tauri_plugin_opener::init())
         .manage(PtyState::default())
         .manage(SpecialLaunch { smoke, perf })
+        // trmx-80 (FR-13): the config backbone's state — the file-watch diff base + the
+        // self-echo latch for our own writes.
+        .manage(config_io::ConfigState::default())
         // trmx-48/trmx-51: install the app menu; "About Termixion" / "Settings…" open the
         // standalone Settings window (About lands on the About page). trmx-74 adds the Shell
         // submenu + Window tab-cycling items; trmx-75 adds Rename Tab… and spawns the
@@ -772,6 +778,10 @@ fn main() -> ExitCode {
             let gate = Arc::clone(&state.poller_gate);
             let poller_app = app.handle().clone();
             std::thread::spawn(move || run_title_poller(poller_app, registry, gate));
+            // trmx-80 (FR-13): watch the config file's parent directory for external edits
+            // (editors save via rename-replace) and live-apply them as `settings:changed`.
+            let config_app = app.handle().clone();
+            std::thread::spawn(move || config_io::run_config_watcher(config_app));
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -812,7 +822,10 @@ fn main() -> ExitCode {
             smoke_config,
             smoke_done,
             perf_config,
-            perf_done
+            perf_done,
+            config_io::config_read,
+            config_io::config_write,
+            config_io::config_reset_all
         ])
         .on_window_event(|window, event| {
             // trmx-51: only the MAIN window owns the PTY sessions — closing the settings window

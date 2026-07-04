@@ -12,6 +12,14 @@
 // vars (documentElement — see txCssVars.ts for the cascade contract); the Appearance page's
 // onThemeChange restyles instantly without a bus, and the settings:changed subscription restyles
 // on About-page resets / cross-window writes (payload-guarded; echoes are idempotent re-applies).
+//
+// trmx-80 (FR-13): the shell also surfaces the CONFIG-FILE WARNINGS (a hand-edited config.toml
+// with syntax errors / unknown keys / invalid values) as a dismissable banner at the top of the
+// content pane. State seeds from getConfigWarnings() at mount and stays current through
+// onConfigWarningsChanged — the STORE is the single warnings authority (review R2): it notifies
+// on every backend re-parse (including the EMPTY set, which clears the banner once the user
+// fixes the file) AND on client-authored warnings (e.g. an invalid live theme), which no raw
+// config:warnings event ever carries. A fresh non-empty set un-dismisses the banner.
 import { useEffect, useState, type ReactNode } from "react";
 import { AboutSettings } from "./AboutSettings";
 import { AppearanceSettings } from "./AppearanceSettings";
@@ -21,7 +29,13 @@ import { isSection, type SettingsSection } from "../surface";
 import type { AppInfo } from "../update/appInfo";
 import type { Opener } from "../update/opener";
 import type { UseUpdate } from "../update/useUpdate";
-import { SETTINGS_CHANGED_EVENT, type SettingsStore } from "./settingsStore";
+import {
+  getConfigWarnings,
+  onConfigWarningsChanged,
+  SETTINGS_CHANGED_EVENT,
+  type ConfigWarningItem,
+  type SettingsStore,
+} from "./settingsStore";
 import { isThemeId, type ThemeId } from "../theme/themes";
 import { applyTxTheme } from "../theme/txCssVars";
 import "./settings.css";
@@ -60,11 +74,26 @@ export function SettingsApp({
   const [query, setQuery] = useState("");
   // trmx-53: the window's active theme; initial read materializes the first-run default.
   const [theme, setTheme] = useState<ThemeId>(() => settings.get("appearance.theme"));
+  // trmx-80: the config-file warnings banner, seeded from the hydrated module state.
+  const [warnings, setWarnings] = useState<ConfigWarningItem[]>(() => getConfigWarnings());
+  const [warningsDismissed, setWarningsDismissed] = useState(false);
 
   // Re-derive the window's CSS vars whenever the theme changes (and once on mount).
   useEffect(() => {
     applyTxTheme(theme, document);
   }, [theme]);
+
+  // trmx-80 review R2: the ONE warnings path — the store notifies on every change (backend
+  // re-parse including the empty set, client-authored warnings) and un-dismissing here means a
+  // new problem is never hidden by an old dismissal (an empty set renders no banner anyway).
+  useEffect(
+    () =>
+      onConfigWarningsChanged((items) => {
+        setWarnings(items);
+        setWarningsDismissed(false);
+      }),
+    [],
+  );
 
   useEffect(() => {
     if (!listen) return;
@@ -129,6 +158,24 @@ export function SettingsApp({
 
       <div className="tx-settings__content">
         <div className="tx-settings__drag" data-tauri-drag-region />
+        {warnings.length > 0 && !warningsDismissed ? (
+          <div className="tx-settings__warnings" role="alert">
+            <div className="tx-settings__warnings-title">Config file warnings</div>
+            <ul className="tx-settings__warnings-list">
+              {warnings.map((w, i) => (
+                <li key={i}>{w.message}</li>
+              ))}
+            </ul>
+            <button
+              type="button"
+              className="tx-settings__warnings-dismiss"
+              aria-label="Dismiss config warnings"
+              onClick={() => setWarningsDismissed(true)}
+            >
+              ×
+            </button>
+          </div>
+        ) : null}
         <div className="tx-settings__page">
           {section === "appearance" ? (
             <AppearanceSettings settings={settings} selected={theme} onThemeChange={setTheme} />
