@@ -357,6 +357,21 @@
   background: var(--tx-bg-elev);
   color: var(--tx-text);
 }
+/* trmx-82 (FR-2.3) — the disabled control (the Orientation row while the bar sits top/bottom):
+ * the same dimmed affordance as .tx-btn:disabled / .tx-select:disabled (opacity 0.5, default
+ * cursor). Keyed off aria-disabled — the segments stay real buttons so the group remains
+ * perceivable to AT; hover must not light a segment up, but the ACTIVE one keeps its selected
+ * look under the dim. */
+.tx-segmented[aria-disabled="true"] {
+  opacity: 0.5;
+}
+.tx-segmented[aria-disabled="true"] .tx-segmented__segment {
+  cursor: default;
+}
+.tx-segmented[aria-disabled="true"]
+  .tx-segmented__segment:not(.tx-segmented__segment--active):hover {
+  color: var(--tx-text-2);
+}
 
 /* trmx-80 (FR-13) — the commit-on-blur/Enter fields (Terminal page's scrollback/font rows). */
 .tx-text,

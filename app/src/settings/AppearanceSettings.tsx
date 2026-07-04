@@ -10,12 +10,19 @@
 // immediately even without a bus (plain dev/jsdom). Presentational + injected store (R8).
 //
 // trmx-81 (FR-2.2): the "Tab bar" group below Theme — a Position row (SegmentedControl over
-// tabs.barPosition). Local state seeded from the injected store at mount, the TerminalSettings
-// row pattern; the write goes through settings.set, whose broadcast is what the main window's
-// App applies live (this window has no bar to move).
+// tabs.barPosition). The write goes through settings.set, whose broadcast is what the main
+// window's App applies live (this window has no bar to move).
+//
+// trmx-82 (FR-2.3): the Position row is now CONTROLLED by the shell (the D5 lift — `barPosition`
+// prop + onBarPositionChange, the exact theme pattern), because the new Orientation row below it
+// needs the LIVE position: tabs.sideLabelOrientation only ever takes effect on left/right rails
+// (barLayout's labelOrientationFor gate), so on top/bottom bars the row renders DISABLED with a
+// hint line and never writes. The gate derives PURELY from the prop — no subscription here; the
+// shell keeps it current — via the same barLayoutFor the main window's layout runs on.
 import { useState } from "react";
 import { SegmentedControl, SettingRow, SettingsGroup } from "./components";
-import type { SettingsStore, TabBarPosition } from "./settingsStore";
+import type { LabelOrientation, SettingsStore, TabBarPosition } from "./settingsStore";
+import { barLayoutFor } from "../tabs/barLayout";
 import { THEME_IDS, themeLabel, themes, type ThemeId } from "../theme/themes";
 
 const TAB_BAR_POSITION_OPTIONS: ReadonlyArray<{ value: TabBarPosition; label: string }> = [
@@ -25,18 +32,42 @@ const TAB_BAR_POSITION_OPTIONS: ReadonlyArray<{ value: TabBarPosition; label: st
   { value: "right", label: "Right" },
 ];
 
+const LABEL_ORIENTATION_OPTIONS: ReadonlyArray<{ value: LabelOrientation; label: string }> = [
+  { value: "horizontal", label: "Horizontal" },
+  { value: "vertical", label: "Vertical" },
+];
+
+/** The Orientation row's why-is-this-off hint (shown only while the row is disabled). */
+const ORIENTATION_HINT = "Only applies when the tab bar is on the left or right.";
+
 export interface AppearanceSettingsProps {
   settings: SettingsStore;
   /** The active theme (SettingsApp's state) — the single selection source. */
   selected: ThemeId;
   /** Shell hook: re-derive the window's CSS vars for the new theme (SettingsApp). */
   onThemeChange?: (id: ThemeId) => void;
+  /** The LIVE bar position (SettingsApp's state, trmx-82 D5) — selects the Position segment and
+   * gates the Orientation row (only left/right rails can rotate labels). */
+  barPosition: TabBarPosition;
+  /** Shell hook: keep SettingsApp's barPosition current on a local click (the busless path). */
+  onBarPositionChange?: (position: TabBarPosition) => void;
 }
 
-export function AppearanceSettings({ settings, selected, onThemeChange }: AppearanceSettingsProps) {
-  const [barPosition, setBarPosition] = useState<TabBarPosition>(() =>
-    settings.get("tabs.barPosition"),
+export function AppearanceSettings({
+  settings,
+  selected,
+  onThemeChange,
+  barPosition,
+  onBarPositionChange,
+}: AppearanceSettingsProps) {
+  // trmx-82: the ORIENTATION value stays local (seeded from the injected store at mount, the
+  // TerminalSettings row pattern) — only its ENABLEMENT is shell-driven, via the prop.
+  const [sideLabelOrientation, setSideLabelOrientation] = useState<LabelOrientation>(() =>
+    settings.get("tabs.sideLabelOrientation"),
   );
+  // Derived PURELY from the prop through the same layout engine App runs on: the setting can
+  // only take effect on a vertical rail, so anywhere else the row is disabled (value preserved).
+  const orientationApplies = barLayoutFor(barPosition).orientation === "vertical";
 
   return (
     <div className="tx-appearance-settings">
@@ -70,8 +101,25 @@ export function AppearanceSettings({ settings, selected, onThemeChange }: Appear
             options={TAB_BAR_POSITION_OPTIONS}
             label="Tab bar position"
             onChange={(value) => {
-              setBarPosition(value);
               settings.set("tabs.barPosition", value);
+              onBarPositionChange?.(value);
+            }}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Orientation"
+          description={orientationApplies ? undefined : ORIENTATION_HINT}
+        >
+          <SegmentedControl
+            value={sideLabelOrientation}
+            options={LABEL_ORIENTATION_OPTIONS}
+            label="Tab label orientation"
+            disabled={!orientationApplies}
+            onChange={(value) => {
+              // Unreachable while disabled (the SegmentedControl contract): the persisted value
+              // is never touched by a click on a gated-off row.
+              setSideLabelOrientation(value);
+              settings.set("tabs.sideLabelOrientation", value);
             }}
           />
         </SettingRow>

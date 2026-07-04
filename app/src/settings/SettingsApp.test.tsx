@@ -8,7 +8,7 @@
 // trmx-80 (FR-13): the config-warnings banner — seeded from getConfigWarnings() at mount, kept
 // current by config:warnings events (the store's subscription re-parses first — hydrateSettings
 // subscribes before the shell renders, exactly the production boot order), dismissable.
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsApp, SETTINGS_NAVIGATE_EVENT } from "./SettingsApp";
 import { makeFakeAppInfo } from "../update/appInfo";
@@ -23,8 +23,8 @@ import {
 import { initialUpdateState } from "../update/updateState";
 import type { UseUpdate } from "../update/useUpdate";
 
-function fakeStorage(): KeyValueStore {
-  const data = new Map<string, string>();
+function fakeStorage(initial: Record<string, string> = {}): KeyValueStore {
+  const data = new Map(Object.entries(initial));
   return {
     getItem: (k) => (data.has(k) ? data.get(k)! : null),
     setItem: (k, v) => void data.set(k, v),
@@ -48,6 +48,7 @@ type Handler = (payload: unknown) => void;
 function fakeListen(): {
   listen: (event: string, handler: Handler) => Promise<() => void>;
   deliver: (event: string, payload: unknown) => void;
+  count: (event: string) => number;
 } {
   const handlers = new Map<string, Set<Handler>>();
   return {
@@ -60,6 +61,7 @@ function fakeListen(): {
     deliver(event, payload) {
       for (const h of [...(handlers.get(event) ?? [])]) h(payload);
     },
+    count: (event) => handlers.get(event)?.size ?? 0,
   };
 }
 
@@ -204,6 +206,86 @@ describe("SettingsApp shell", () => {
     expect(screen.getByText("Settings")).toBeInTheDocument();
     const dragRegions = container.querySelectorAll("[data-tauri-drag-region]");
     expect(dragRegions.length).toBeGreaterThanOrEqual(3); // sidebar strip, content strip, title overlay
+  });
+});
+
+// trmx-82 (FR-2.3, test-first): the D5 lift — the shell owns a live `barPosition` state (seeded
+// from the injected store, kept current by the SAME payload-guarded settings:changed subscription
+// the theme uses) and hands it to AppearanceSettings, whose Orientation row it gates.
+describe("SettingsApp — live barPosition for the Appearance page (trmx-82, D5)", () => {
+  const ORIENTATION_GROUP = { name: "Tab label orientation" } as const;
+
+  it("seeds barPosition from the injected store: a persisted 'left' selects Left and enables Orientation", () => {
+    const settings = makeSettingsStore(fakeStorage({ "termixion.tabs.barPosition": "left" }));
+    render(
+      <SettingsApp
+        update={fakeUpdate()}
+        appInfo={makeFakeAppInfo("0.0.1")}
+        opener={makeFakeOpener()}
+        settings={settings}
+        initialSection="appearance"
+      />,
+    );
+    expect(screen.getByRole("radio", { name: "Left" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("radiogroup", ORIENTATION_GROUP)).not.toHaveAttribute(
+      "aria-disabled",
+    );
+  });
+
+  it("re-renders the page when an EXTERNAL settings:changed moves the bar; junk is inert", async () => {
+    const bus = fakeListen();
+    renderApp({ listen: bus.listen, initialSection: "appearance" });
+    // The registry default (bottom) gates the Orientation row off.
+    expect(screen.getByRole("radiogroup", ORIENTATION_GROUP)).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    await waitFor(() => expect(bus.count("settings:changed")).toBeGreaterThan(0));
+
+    // A cross-window write / config-file edit moves the bar: the page follows live.
+    bus.deliver("settings:changed", { key: "tabs.barPosition", value: "left", source: "main" });
+    await waitFor(() => {
+      expect(screen.getByRole("radio", { name: "Left" })).toHaveAttribute("aria-checked", "true");
+      expect(screen.getByRole("radiogroup", ORIENTATION_GROUP)).not.toHaveAttribute(
+        "aria-disabled",
+      );
+    });
+
+    // Junk values and junk payloads are inert (untrusted input).
+    bus.deliver("settings:changed", { key: "tabs.barPosition", value: "middle", source: "main" });
+    bus.deliver("settings:changed", "garbage");
+    bus.deliver("settings:changed", { key: "tabs.barPosition" });
+    await waitFor(() =>
+      expect(screen.getByRole("radio", { name: "Left" })).toHaveAttribute("aria-checked", "true"),
+    );
+  });
+
+  it("a local Position click flips the Orientation gate live (the busless onBarPositionChange path)", () => {
+    renderApp({ initialSection: "appearance" });
+    expect(screen.getByRole("radiogroup", ORIENTATION_GROUP)).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    fireEvent.click(
+      within(screen.getByRole("radiogroup", { name: "Tab bar position" })).getByRole("radio", {
+        name: "Left",
+      }),
+    );
+    expect(screen.getByRole("radiogroup", ORIENTATION_GROUP)).not.toHaveAttribute(
+      "aria-disabled",
+    );
+  });
+
+  it("tears the subscription down on unmount (a late delivery reaches no handler)", async () => {
+    const bus = fakeListen();
+    const { unmount } = renderApp({ listen: bus.listen, initialSection: "appearance" });
+    await waitFor(() => expect(bus.count("settings:changed")).toBeGreaterThan(0));
+
+    unmount();
+    expect(bus.count("settings:changed")).toBe(0);
+    expect(bus.count(SETTINGS_NAVIGATE_EVENT)).toBe(0);
+    // A post-unmount delivery must be inert — nothing left to receive it, nothing throws.
+    bus.deliver("settings:changed", { key: "tabs.barPosition", value: "left", source: "main" });
   });
 });
 

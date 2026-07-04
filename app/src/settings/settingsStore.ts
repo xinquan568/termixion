@@ -61,6 +61,8 @@ export type CheckFrequency = "on-startup" | "daily" | "weekly" | "manual";
 export type CursorStyle = "bar" | "block" | "underline";
 /** trmx-81 (FR-2.2): the window edge the tab bar sits on. */
 export type TabBarPosition = "top" | "bottom" | "left" | "right";
+/** trmx-82 (FR-2.3): how the side-rail tab labels run (only meaningful on left/right bars). */
+export type LabelOrientation = "horizontal" | "vertical";
 
 /** Every user-visible persisted setting and its type. */
 export interface SettingsValues {
@@ -78,6 +80,11 @@ export interface SettingsValues {
   "appearance.theme": ThemeId;
   /** trmx-81 (FR-2.2): where the tab bar lives (mirrors core's `tabs.bar_position`). */
   "tabs.barPosition": TabBarPosition;
+  /**
+   * trmx-82 (FR-2.3): side-rail label orientation (mirrors core's `tabs.side_label_orientation`).
+   * Registry-stored unconditionally; App gates the EFFECT to left/right bars (labelOrientationFor).
+   */
+  "tabs.sideLabelOrientation": LabelOrientation;
 }
 
 export type SettingKey = keyof SettingsValues;
@@ -121,6 +128,8 @@ export const SETTING_DEFAULTS: SettingsValues = {
   "appearance.theme": "white",
   // trmx-81 (FR-2.2): the vision default — the bar sits along the window's bottom edge.
   "tabs.barPosition": "bottom",
+  // trmx-82 (FR-2.3): side-rail labels stay readable by default; rotation is an opt-in.
+  "tabs.sideLabelOrientation": "horizontal",
 };
 
 /**
@@ -145,8 +154,9 @@ const STORAGE_KEYS: Record<SettingKey, string> = {
   "terminal.fontFamily": "termixion.terminal.fontFamily",
   "terminal.fontSize": "termixion.terminal.fontSize",
   "appearance.theme": "termixion.appearance.theme",
-  // trmx-81: never existed pre-config-file, so the T3b migration finds nothing — harmless.
+  // trmx-81/82: never existed pre-config-file, so the T3b migration finds nothing — harmless.
   "tabs.barPosition": "termixion.tabs.barPosition",
+  "tabs.sideLabelOrientation": "termixion.tabs.sideLabelOrientation",
 };
 
 // Internal scheduler bookkeeping (NOT a user-visible setting, NOT config-file material — see
@@ -158,10 +168,16 @@ export const SETTING_KEYS = Object.keys(SETTING_DEFAULTS) as SettingKey[];
 const FREQUENCIES: readonly CheckFrequency[] = ["on-startup", "daily", "weekly", "manual"];
 const CURSOR_STYLES: readonly CursorStyle[] = ["bar", "block", "underline"];
 const TAB_BAR_POSITIONS: readonly TabBarPosition[] = ["top", "bottom", "left", "right"];
+const LABEL_ORIENTATIONS: readonly LabelOrientation[] = ["horizontal", "vertical"];
 
 /** Type guard for tabs.barPosition values (trmx-81) — App's payload guard uses it too. */
 export function isTabBarPosition(value: unknown): value is TabBarPosition {
   return typeof value === "string" && TAB_BAR_POSITIONS.includes(value as TabBarPosition);
+}
+
+/** Type guard for tabs.sideLabelOrientation values (trmx-82) — App's payload guard uses it too. */
+export function isLabelOrientation(value: unknown): value is LabelOrientation {
+  return typeof value === "string" && LABEL_ORIENTATIONS.includes(value as LabelOrientation);
 }
 
 // trmx-55: booleans are default-aware — only the "true"/"false" literals parse; anything else
@@ -200,6 +216,10 @@ function parse<K extends SettingKey>(key: K, raw: string): SettingsValues[K] {
     // trmx-81: enum parse-with-fallback, exactly like terminal.cursorStyle below.
     return (isTabBarPosition(raw) ? raw : fallback) as SettingsValues[K];
   }
+  if (key === "tabs.sideLabelOrientation") {
+    // trmx-82: enum parse-with-fallback, mirroring tabs.barPosition above.
+    return (isLabelOrientation(raw) ? raw : fallback) as SettingsValues[K];
+  }
   return (CURSOR_STYLES.includes(raw as CursorStyle) ? raw : fallback) as SettingsValues[K];
 }
 
@@ -230,6 +250,9 @@ function coerce<K extends SettingKey>(key: K, value: unknown): SettingsValues[K]
   if (key === "terminal.fontFamily") return value as SettingsValues[K];
   if (key === "tabs.barPosition") {
     return isTabBarPosition(value) ? (value as SettingsValues[K]) : undefined;
+  }
+  if (key === "tabs.sideLabelOrientation") {
+    return isLabelOrientation(value) ? (value as SettingsValues[K]) : undefined;
   }
   return CURSOR_STYLES.includes(value as CursorStyle) ? (value as SettingsValues[K]) : undefined;
 }
@@ -690,10 +713,11 @@ export async function hydrateSettings(deps: HydrateSettingsDeps = {}): Promise<v
   subscribeToBus(bus);
 }
 
-// trmx-81 D1: the ONLY key the query seed may touch. A deliberate allowlist of EXACTLY ONE entry —
-// widening it is a review decision per key, never a default (the query string is untrusted input
-// and the packaged app must stay driven by the config file alone).
-const QUERY_SEEDABLE_KEYS: readonly SettingKey[] = ["tabs.barPosition"];
+// trmx-81 D1: the ONLY keys the query seed may touch. A deliberate allowlist — widening it is a
+// review decision per key, never a default (the query string is untrusted input and the packaged
+// app must stay driven by the config file alone). trmx-82 adds tabs.sideLabelOrientation with the
+// same resolved-read-wins semantics.
+const QUERY_SEEDABLE_KEYS: readonly SettingKey[] = ["tabs.barPosition", "tabs.sideLabelOrientation"];
 
 /**
  * trmx-81 D1: seed the snapshot from `?setting.<key>=<value>` query params — the dev/e2e seam,

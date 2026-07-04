@@ -277,6 +277,114 @@ describe("SegmentedControl (trmx-81)", () => {
   });
 });
 
+describe("SegmentedControl disabled (trmx-82)", () => {
+  const OPTIONS = [
+    { value: "horizontal", label: "Horizontal" },
+    { value: "vertical", label: "Vertical" },
+  ] as const;
+
+  it("renders aria-disabled on the radiogroup AND every segment", () => {
+    render(
+      <SegmentedControl
+        value="horizontal"
+        options={OPTIONS}
+        label="Orientation"
+        onChange={vi.fn()}
+        disabled
+      />,
+    );
+    expect(screen.getByRole("radiogroup", { name: "Orientation" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    for (const radio of screen.getAllByRole("radio")) {
+      expect(radio).toHaveAttribute("aria-disabled", "true");
+    }
+  });
+
+  it("the ENABLED render carries no aria-disabled anywhere (the enabled path is unchanged)", () => {
+    render(
+      <SegmentedControl
+        value="horizontal"
+        options={OPTIONS}
+        label="Orientation"
+        onChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("radiogroup", { name: "Orientation" })).not.toHaveAttribute(
+      "aria-disabled",
+    );
+    for (const radio of screen.getAllByRole("radio")) {
+      expect(radio).not.toHaveAttribute("aria-disabled");
+    }
+  });
+
+  it("never fires onChange while disabled: clicks and arrow keys are inert", () => {
+    const onChange = vi.fn();
+    render(
+      <SegmentedControl
+        value="horizontal"
+        options={OPTIONS}
+        label="Orientation"
+        onChange={onChange}
+        disabled
+      />,
+    );
+    fireEvent.click(screen.getByRole("radio", { name: "Vertical" }));
+    fireEvent.keyDown(screen.getByRole("radio", { name: "Horizontal" }), { key: "ArrowRight" });
+    fireEvent.keyDown(screen.getByRole("radio", { name: "Horizontal" }), { key: "ArrowLeft" });
+    expect(onChange).not.toHaveBeenCalled();
+    // The selection never moved either — still the controlled value.
+    expect(screen.getByRole("radio", { name: "Horizontal" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+  });
+
+  it("removes EVERY segment from the tab order while disabled (even the selected one)", () => {
+    render(
+      <SegmentedControl
+        value="horizontal"
+        options={OPTIONS}
+        label="Orientation"
+        onChange={vi.fn()}
+        disabled
+      />,
+    );
+    expect(screen.getByRole("radio", { name: "Horizontal" })).toHaveAttribute("tabindex", "-1");
+    expect(screen.getByRole("radio", { name: "Vertical" })).toHaveAttribute("tabindex", "-1");
+  });
+
+  it("re-enables cleanly: the roving tabindex returns and changes report again", () => {
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <SegmentedControl
+        value="horizontal"
+        options={OPTIONS}
+        label="Orientation"
+        onChange={onChange}
+        disabled
+      />,
+    );
+    rerender(
+      <SegmentedControl
+        value="horizontal"
+        options={OPTIONS}
+        label="Orientation"
+        onChange={onChange}
+      />,
+    );
+    expect(screen.getByRole("radiogroup", { name: "Orientation" })).not.toHaveAttribute(
+      "aria-disabled",
+    );
+    expect(screen.getByRole("radio", { name: "Horizontal" })).toHaveAttribute("tabindex", "0");
+    expect(screen.getByRole("radio", { name: "Vertical" })).toHaveAttribute("tabindex", "-1");
+    fireEvent.click(screen.getByRole("radio", { name: "Vertical" }));
+    expect(onChange).toHaveBeenCalledOnce();
+    expect(onChange).toHaveBeenCalledWith("vertical");
+  });
+});
+
 describe("SettingRow", () => {
   it("renders label, optional description, and control", () => {
     render(

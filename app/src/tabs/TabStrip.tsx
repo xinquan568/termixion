@@ -27,10 +27,22 @@
 // indicator is RENDERED drag feedback (hover state used to live only in dragRef): a 2px accent
 // line at the hover slot's leading boundary — vertical at the slot's x on horizontal strips,
 // horizontal at the slot's y on vertical rails — present only mid-drag, cleared on release/cancel.
+//
+// trmx-82 (FR-2.3): `labelOrientation` — vertical-label mode is the AND of orientation="vertical"
+// and labelOrientation="vertical" (a vertical value on a horizontal strip is IGNORED — App gates
+// via labelOrientationFor, but the component is safe standalone). It adds
+// `tab-strip--labels-vertical` on the root, the writing-mode class on the label span, and the
+// end-position class on the close ×; all GEOMETRY comes from the railGeometryFor CSS custom
+// properties App writes through `style`. Drag logic is untouched (the axis is already Y). The
+// rename input becomes the D4 FIXED OVERLAY: anchored to the renaming tab's viewport rect
+// (measured once, at rename start), horizontal text, wider than the slim rail — while STAYING in
+// the tab's DOM subtree so the trmx-75 commit/cancel/latch + stopPropagation wiring is untouched.
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
@@ -46,6 +58,18 @@ export interface TabStripProps {
    * (left/right rails). App derives it from barLayoutFor(tabs.barPosition).
    */
   orientation?: "horizontal" | "vertical";
+  /**
+   * How the labels run (trmx-82): only meaningful when orientation="vertical" — App derives it
+   * via labelOrientationFor, and a "vertical" value on a horizontal strip is ignored here too
+   * (the horizontal strip renders unchanged).
+   */
+  labelOrientation?: "horizontal" | "vertical";
+  /**
+   * The strip container's inline style (trmx-82): App writes the railGeometryFor tokens through
+   * it as CSS custom properties (--tab-rail-width / --tab-max-height / --tab-min-height /
+   * --tab-close-min); index.css consumes only the variables.
+   */
+  style?: CSSProperties;
   onActivate: (tabId: number) => void;
   onClose: (tabId: number) => void;
   onNew: () => void;
@@ -129,19 +153,45 @@ function capturePointer(el: Element, pointerId: number): void {
  * title. `done` latches on the FIRST commit/cancel: Enter commits and the input then unmounts —
  * if the resulting blur (or the unmount's) still lands, it must not commit a second time, and a
  * blur after Esc must not resurrect the cancelled edit.
+ *
+ * trmx-82 D4: with `overlay` (vertical-label mode) the input renders as a FIXED overlay — the
+ * `tab-strip__rename--overlay` class (position:fixed, horizontal writing-mode reset, z-index,
+ * min-width wider than the slim rail; index.css) plus inline left/top measured ONCE at rename
+ * start from the renaming tab's getBoundingClientRect() (viewport coordinates — valid because the
+ * strip has no transform, see the pinning comment beside the rail CSS). The input stays in the
+ * tab's DOM subtree, so every trmx-75 event-isolation and commit/cancel/latch behavior above is
+ * untouched.
  */
 function TabRenameInput({
   initial,
+  overlay = false,
   onCommit,
   onCancel,
 }: {
   initial: string;
+  overlay?: boolean;
   onCommit: (value: string) => void;
   onCancel: () => void;
 }) {
   const [value, setValue] = useState(initial);
   const inputRef = useRef<HTMLInputElement>(null);
   const doneRef = useRef(false);
+  // D4: the overlay's anchor — the renaming tab's viewport rect, measured once per rename start.
+  const [overlayPos, setOverlayPos] = useState<{ left: number; top: number } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!overlay) {
+      setOverlayPos(null);
+      return;
+    }
+    // The input sits inside the tab div (data-tabstrip-item) — anchor to THAT rect. Measured in a
+    // layout effect (before paint), so the overlay never flashes at 0,0. The input itself is
+    // already position:fixed (out of flow) here, which cannot move the tab's left/top.
+    const tabEl = inputRef.current?.closest("[data-tabstrip-item]");
+    if (!tabEl) return;
+    const rect = tabEl.getBoundingClientRect();
+    setOverlayPos({ left: rect.left, top: rect.top });
+  }, [overlay]);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -163,7 +213,8 @@ function TabRenameInput({
     <input
       ref={inputRef}
       data-testid="tab-rename-input"
-      className="tab-strip__rename"
+      className={`tab-strip__rename${overlay ? " tab-strip__rename--overlay" : ""}`}
+      style={overlay && overlayPos ? { left: overlayPos.left, top: overlayPos.top } : undefined}
       aria-label="Rename tab"
       value={value}
       onChange={(e) => setValue(e.target.value)}
@@ -196,6 +247,8 @@ export function TabStrip({
   activeTabId,
   renamingTabId,
   orientation = "horizontal",
+  labelOrientation = "horizontal",
+  style,
   onActivate,
   onClose,
   onNew,
@@ -210,6 +263,9 @@ export function TabStrip({
   // offset within the strip (left for horizontal, top for vertical), or null when not dragging.
   const [indicatorOffset, setIndicatorOffset] = useState<number | null>(null);
   const axis: StripAxis = orientation === "vertical" ? "y" : "x";
+  // trmx-82: vertical-label mode is the AND — a vertical labelOrientation handed to a HORIZONTAL
+  // strip is ignored (the strip renders exactly as before).
+  const labelsVertical = orientation === "vertical" && labelOrientation === "vertical";
 
   const onTabPointerDown =
     (tab: Tab, index: number) => (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -275,7 +331,10 @@ export function TabStrip({
 
   return (
     <div
-      className={`tab-strip${orientation === "vertical" ? " tab-strip--vertical" : ""}`}
+      className={`tab-strip${orientation === "vertical" ? " tab-strip--vertical" : ""}${
+        labelsVertical ? " tab-strip--labels-vertical" : ""
+      }`}
+      style={style}
       data-testid="tab-strip"
       role="tablist"
       aria-label="Tabs"
@@ -313,11 +372,17 @@ export function TabStrip({
             {tab.tabId === renamingTabId ? (
               <TabRenameInput
                 initial={tab.title}
+                overlay={labelsVertical}
                 onCommit={(value) => onRenameCommit(tab.tabId, value)}
                 onCancel={onRenameCancel}
               />
             ) : (
-              <span className="tab-strip__title" title={tab.title}>
+              // trmx-82: the writing-mode class rotates the label; the full-text tooltip stays,
+              // and CSS ellipsis still triggers — the inline axis is just vertical now.
+              <span
+                className={`tab-strip__title${labelsVertical ? " tab-strip__title--vertical" : ""}`}
+                title={tab.title}
+              >
                 {tab.title}
               </span>
             )}
@@ -325,7 +390,9 @@ export function TabStrip({
                 click stop at the button so closing never drags/activates the tab under it. */}
             <button
               type="button"
-              className="tab-strip__close"
+              // trmx-82: in vertical-label mode the × sits at the tab's END (the column's bottom)
+              // with the ≥24px token hit target — the modifier class keys both (index.css).
+              className={`tab-strip__close${labelsVertical ? " tab-strip__close--end" : ""}`}
               data-testid={`tab-close-${tab.tabId}`}
               aria-label={`Close ${tab.title}`}
               onPointerDown={(e) => e.stopPropagation()}

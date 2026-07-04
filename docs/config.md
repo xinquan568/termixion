@@ -40,6 +40,7 @@ tables; internally each maps 1:1 to a camelCase registry key (the mapping is own
 | `terminal.font_size` | `terminal.fontSize` | integer | `12` | `6`–`72` (clamped) | immediate (re-measure + refit) |
 | `appearance.theme` | `appearance.theme` | string | derived³ | a theme id from the built-in catalog | immediate |
 | `tabs.bar_position` | `tabs.barPosition` | string | `"bottom"` | `top` · `bottom` · `left` · `right` | immediate (the tab bar repositions live; terminals keep running) |
+| `tabs.side_label_orientation` | `tabs.sideLabelOrientation` | string | `"horizontal"` | `horizontal` · `vertical` | immediate (applies only when the bar is `left`/`right`; the value persists across moves and re-applies) |
 
 ¹ Shrinking `scrollback_lines` truncates the existing scrollback buffer (xterm behavior) — history
 beyond the new cap is discarded at apply time.

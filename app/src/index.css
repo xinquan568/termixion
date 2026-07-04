@@ -159,13 +159,22 @@ body {
   border-bottom: 1px solid var(--tx-border);
 }
 /*
- * trmx-81 — the vertical rail (left/right bars): a fixed 180px-wide (content-box — the divider
- * border sits outside the rail) full-height column. Tabs are full-width rows at natural height
- * (no 60px shrink model); overflow scrolls vertically.
+ * trmx-81 — the vertical rail (left/right bars): a full-height column, 180px wide by default
+ * (content-box — the divider border sits outside the rail). Tabs are full-width rows at natural
+ * height (no 60px shrink model); overflow scrolls vertically.
+ *
+ * trmx-82 — the width now comes from --tab-rail-width (App writes the railGeometryFor tokens on
+ * the strip's inline style: 180px for horizontal-label rails — the status quo, also the var()
+ * fallback — and 44px for vertical-label rails).
+ *
+ * PINNING (trmx-82 D4): the rename overlay below is `position: fixed`, anchored to the renaming
+ * tab's getBoundingClientRect() in VIEWPORT coordinates. That is valid only while neither the
+ * strip nor any ancestor establishes a fixed-positioning containing block — no transform, filter,
+ * perspective, contain:paint, etc. Keep the rail (and .app above it) free of those properties.
  */
 .tab-strip--vertical {
   flex: 0 0 auto;
-  width: 180px;
+  width: var(--tab-rail-width, 180px);
   box-sizing: content-box;
   height: auto;
   flex-direction: column;
@@ -303,6 +312,54 @@ body {
   left: 0;
   right: 0;
   height: 2px;
+}
+/*
+ * trmx-82 (FR-2.3) — vertical labels on the side rail (`tab-strip--labels-vertical`, only ever
+ * set together with --vertical). ALL geometry comes from the railGeometryFor CSS custom
+ * properties App writes on the strip's inline style (the var() fallbacks mirror the same
+ * tokens): --tab-rail-width 44px, --tab-max-height 180px, --tab-min-height 60px,
+ * --tab-close-min 24px. Tabs become tall-and-narrow columns: natural height by label length
+ * between the min/max tokens, the label rotated via writing-mode, the close × at the column's
+ * END (bottom). The + button needs no override — it is already a full-width rail row.
+ */
+.tab-strip--labels-vertical .tab-strip__tab {
+  flex-direction: column;
+  min-height: var(--tab-min-height, 60px);
+  max-height: var(--tab-max-height, 180px);
+  padding: 8px 0;
+}
+/*
+ * The rotated label: with `writing-mode: vertical-rl` the INLINE axis runs down the tab, so the
+ * base rule's white-space/overflow/text-overflow now truncate with an ellipsis against the tab's
+ * height budget (the max token) — and the full-text `title` tooltip is untouched.
+ */
+.tab-strip__title--vertical {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+}
+/* The close × at the tab's END (the column's bottom), grown to the ≥24px token hit target. */
+.tab-strip__close--end {
+  margin-top: auto;
+  width: auto;
+  height: auto;
+  min-width: var(--tab-close-min, 24px);
+  min-height: var(--tab-close-min, 24px);
+}
+/*
+ * trmx-82 D4 — the rename overlay: a slim 44px tab cannot host a usable text field, so in
+ * vertical-label mode the input goes `position: fixed` at the renaming tab's viewport rect
+ * (TabStrip measures left/top ONCE at rename start; valid because nothing above the strip
+ * creates a fixed-positioning containing block — see the pinning comment on the rail). It stays
+ * in the tab's DOM subtree (trmx-75 event isolation), types HORIZONTALLY (the writing mode must
+ * not inherit the label rotation), sits above the strip, and is wider than the rail so the edit
+ * is never clipped.
+ */
+.tab-strip__rename--overlay {
+  position: fixed;
+  writing-mode: horizontal-tb;
+  z-index: 30;
+  min-width: 180px;
+  flex: none;
 }
 
 /*
