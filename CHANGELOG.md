@@ -5,6 +5,13 @@ The user-facing changes to Termixion are documented here. The format follows
 [Semantic Versioning](https://semver.org). Auto-generated from Conventional Commits by git-cliff;
 internal changes (build / CI / tests / refactors / docs) live in the git history and the linked issues.
 
+## [0.0.5] - 2026-07-04
+
+### Added
+- Schema-validated TOML settings backbone — file-backed store, live hand-edit apply, scrollback/font options (trmx-80) (#111)
+- Configurable tab-bar position — top/bottom/left/right, live from Settings or termixion.toml (trmx-81) (#112)
+- Side-bar tab label orientation — horizontal/vertical for left/right rails (trmx-82) (#113)
+
 ## [0.0.4] - 2026-07-03
 
 ### Added
