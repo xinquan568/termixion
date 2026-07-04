@@ -853,3 +853,202 @@ describe("App side-bar label orientation (trmx-82)", () => {
     expect(stripVar("--tab-rail-width")).toBe("44px");
   });
 });
+
+// trmx-84 (FR-3.1/3.2): split panes. A tab owns a pane TREE; App renders each leaf as an
+// absolutely-positioned, paneId-keyed sibling host. The load-bearing invariant: a split/close only
+// re-lays-out (mutates style) — it never remounts a SURVIVING pane's terminal (recorder.unmounts
+// stays put for survivors), so PTY sessions live across re-layout. ⌘D/⇧⌘D and the split-right/
+// split-below menu verbs both drive it; ⌘W is pane → tab → window.
+describe("App split panes (trmx-84)", () => {
+  const cmdD = (shift = false) =>
+    fireEvent.keyDown(document.body, { key: "d", metaKey: true, shiftKey: shift });
+
+  it("⌘D splits the focused pane WITHOUT remounting the existing pane (keep-alive)", async () => {
+    const { attach, calls } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 1, title: "one" });
+    const host1 = screen.getByTestId("pane-host-1");
+    expect(recorder.mounts).toHaveLength(1);
+
+    cmdD(); // Split Right
+
+    // Two pane hosts now; the ORIGINAL pane host is the SAME DOM node (never reparented).
+    expect(screen.getByTestId("pane-host-1")).toBe(host1);
+    expect(screen.getByTestId("pane-host-2")).toBeInTheDocument();
+    expect(recorder.unmounts).toBe(0); // the survivor never unmounted
+    expect(recorder.mounts).toHaveLength(2); // the new pane mounted once
+    expect(attach).toHaveBeenCalledTimes(2); // the new pane opened its own PTY
+    // A row split renders a (static) vertical divider.
+    expect(screen.getByTestId("pane-divider-root")).toBeInTheDocument();
+    // The new pane takes focus.
+    expect(screen.getByTestId("pane-host-2").className).toContain("pane-host--focused");
+    expect(screen.getByTestId("pane-host-1").className).not.toContain("pane-host--focused");
+  });
+
+  it("drives split from the split-right / split-below menu verbs (tabs:action)", async () => {
+    const { calls, tabsAction } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 1, title: "one" });
+
+    await act(async () => tabsAction.fire("split-right"));
+    expect(screen.getByTestId("pane-host-2")).toBeInTheDocument();
+    expect(screen.getByTestId("pane-divider-root").className).toContain("pane-divider--row");
+
+    // split-below nests under the now-focused pane 2 → a column divider appears.
+    await act(async () => tabsAction.fire("split-below"));
+    expect(screen.getByTestId("pane-host-3")).toBeInTheDocument();
+    expect(recorder.unmounts).toBe(0); // still zero across a second re-layout
+    const dividers = screen.getAllByTestId(/^pane-divider-/);
+    expect(dividers.some((d) => d.className.includes("pane-divider--column"))).toBe(true);
+  });
+
+  it("a new pane inherits the FOCUSED pane's OSC-7 cwd", () => {
+    const { attach } = renderApp();
+    // Prime the boot (focused) pane's cwd the way an OSC 7 report would.
+    recorder.mounts[0].cwdStore?.set("/tmp");
+
+    cmdD(); // split — the new pane opens with the focused pane's cwd
+
+    expect(attach).toHaveBeenCalledTimes(2);
+    expect(attach.mock.calls[0][1]).toEqual({ cwd: undefined }); // boot pane inherited nothing
+    expect(attach.mock.calls[1][1]).toEqual({ cwd: "/tmp" }); // the split pane did
+    // Each pane got its OWN store (per-pane isolation).
+    expect(recorder.mounts[1].cwdStore).toBeDefined();
+    expect(recorder.mounts[1].cwdStore).not.toBe(recorder.mounts[0].cwdStore);
+  });
+
+  it("closing the focused pane (⌘W) disposes ONLY its PTY; the sibling never remounts", async () => {
+    const { calls, closeSession, tabsAction } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 11, title: "one" });
+    cmdD(); // split → pane 2 focused
+    await resolveAttach(calls[1], { sessionId: 22, title: "two" });
+    const host1 = screen.getByTestId("pane-host-1");
+    const unmountsBefore = recorder.unmounts;
+
+    await act(async () => tabsAction.fire("close")); // ⌘W closes the focused pane (2)
+
+    expect(closeSession).toHaveBeenCalledExactlyOnceWith(22); // only the closed pane's session
+    expect(screen.queryByTestId("pane-host-2")).not.toBeInTheDocument();
+    expect(screen.getByTestId("pane-host-1")).toBe(host1); // survivor's host node unchanged
+    expect(recorder.unmounts).toBe(unmountsBefore + 1); // exactly the closed pane unmounted
+    expect(screen.getByTestId("tab-1")).toBeInTheDocument(); // the tab survives (still 1 pane)
+    // Focus fell back to the surviving pane.
+    expect(screen.getByTestId("pane-host-1").className).toContain("pane-host--focused");
+  });
+
+  it("⌘W precedence is pane → tab → window", async () => {
+    const { calls, closeWindow, tabsAction } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 11, title: "one" });
+    cmdD(); // one tab, two panes (1 | 2), focus 2
+
+    // 1) pane: closing the focused pane leaves the tab open.
+    await act(async () => tabsAction.fire("close"));
+    expect(screen.getByTestId("tab-1")).toBeInTheDocument();
+    expect(screen.queryByTestId("pane-host-2")).not.toBeInTheDocument();
+    expect(closeWindow).not.toHaveBeenCalled();
+
+    // 2) tab → window: now the tab has one pane and is the only tab, so ⌘W closes the WINDOW.
+    await act(async () => tabsAction.fire("close"));
+    expect(closeWindow).toHaveBeenCalledTimes(1);
+  });
+
+  it("the tab label + window title follow the FOCUSED pane; a background pane is isolated", async () => {
+    const { calls, setWindowTitle } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 11, title: "one" });
+    cmdD(); // split → pane 2 focused
+    await resolveAttach(calls[1], { sessionId: 22, title: "two" });
+    expect(screen.getByTestId("tab-1")).toHaveTextContent("two"); // focused pane 2
+    expect(setWindowTitle).toHaveBeenLastCalledWith("two");
+
+    // Pane 1 is in the background: its OSC title updates its own state but NOT the tab/window title.
+    await act(async () => recorder.mounts[0].onOscTitle?.("vim"));
+    expect(screen.getByTestId("tab-1")).toHaveTextContent("two");
+    expect(setWindowTitle).not.toHaveBeenLastCalledWith("vim");
+
+    // Click-to-focus pane 1 → the label + window title switch to its title.
+    await act(async () => {
+      fireEvent.mouseDown(screen.getByTestId("pane-host-1"));
+    });
+    expect(screen.getByTestId("pane-host-1").className).toContain("pane-host--focused");
+    expect(screen.getByTestId("tab-1")).toHaveTextContent("vim");
+    expect(setWindowTitle).toHaveBeenLastCalledWith("vim");
+  });
+
+  it("⇧⌘D splits below (a column divider)", async () => {
+    const { calls } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 1, title: "one" });
+    cmdD(true); // Split Below
+    expect(screen.getByTestId("pane-host-2")).toBeInTheDocument();
+    expect(screen.getByTestId("pane-divider-root").className).toContain("pane-divider--column");
+  });
+
+  it("rename targets the FOCUSED pane's manual title (multi-pane)", async () => {
+    const { calls, mirrorTitle, tabsAction } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 11, title: "one" });
+    cmdD(); // split → pane 2 focused
+    await resolveAttach(calls[1], { sessionId: 22, title: "two" });
+
+    await act(async () => tabsAction.fire("rename"));
+    const input = screen.getByTestId("tab-rename-input") as HTMLInputElement;
+    expect(input.value).toBe("two"); // the focused pane's title
+    fireEvent.change(input, { target: { value: "deploy" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(screen.getByTestId("tab-1")).toHaveTextContent("deploy");
+    expect(mirrorTitle).toHaveBeenCalledWith(22, "deploy"); // mirrored to the FOCUSED pane's session
+    // Focus a different pane → its (unrenamed) title shows, proving the rename was pane-scoped.
+    await act(async () => {
+      fireEvent.mouseDown(screen.getByTestId("pane-host-1"));
+    });
+    expect(screen.getByTestId("tab-1")).toHaveTextContent("one");
+  });
+
+  it("split cwd inheritance is FOCUSED-pane-scoped, not tab-scoped", async () => {
+    const { attach, calls } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 1, title: "one" });
+    recorder.mounts[0].cwdStore?.set("/home"); // pane 1's cwd
+    cmdD(); // split → pane 2 focused
+    await resolveAttach(calls[1], { sessionId: 2, title: "two" });
+    recorder.mounts[1].cwdStore?.set("/var"); // pane 2's cwd (currently focused)
+
+    // Focus pane 1, then split from it: the new pane inherits pane 1's cwd, NOT the last-focused one.
+    await act(async () => {
+      fireEvent.mouseDown(screen.getByTestId("pane-host-1"));
+    });
+    cmdD();
+    expect(attach).toHaveBeenCalledTimes(3);
+    expect(attach.mock.calls[2][1]).toEqual({ cwd: "/home" });
+  });
+
+  it("a pty:exited for ONE pane in a split tab closes only that pane (paneBySessionId routing)", async () => {
+    const { calls, closeSession, ptyExited } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 11, title: "one" });
+    cmdD(); // split → pane 2 focused
+    await resolveAttach(calls[1], { sessionId: 22, title: "two" });
+    const host1 = screen.getByTestId("pane-host-1");
+
+    await act(async () => ptyExited.fire(22)); // pane 2's shell exits
+
+    expect(screen.queryByTestId("pane-host-2")).not.toBeInTheDocument();
+    expect(screen.getByTestId("pane-host-1")).toBe(host1); // survivor host is identical
+    expect(screen.getByTestId("tab-1")).toBeInTheDocument(); // the tab (with pane 1) survives
+    expect(closeSession).not.toHaveBeenCalled(); // already exited — no redundant close_pty
+    expect(screen.getByTestId("pane-host-1").className).toContain("pane-host--focused");
+  });
+
+  it("a pane dying mid-rename (pty:exited) clears the rename so it can't re-target the survivor", async () => {
+    const { calls, tabsAction, ptyExited } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 11, title: "one" });
+    cmdD(); // split → pane 2 focused
+    await resolveAttach(calls[1], { sessionId: 22, title: "two" });
+
+    await act(async () => tabsAction.fire("rename")); // rename the focused pane (2)
+    expect(screen.getByTestId("tab-rename-input")).toBeInTheDocument();
+
+    await act(async () => ptyExited.fire(22)); // the renamed (focused) pane's shell exits
+
+    // The input died with its pane; rename state cleared, the survivor is focused (a stuck
+    // renamingTabId would let a later commit re-target the survivor).
+    expect(screen.queryByTestId("tab-rename-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("pane-host-2")).not.toBeInTheDocument();
+    expect(screen.getByTestId("pane-host-1").className).toContain("pane-host--focused");
+  });
+});

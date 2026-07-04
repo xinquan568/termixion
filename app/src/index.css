@@ -79,6 +79,31 @@ body {
   position: relative;
 }
 
+/*
+ * trmx-84 — split panes. A tab host contains one absolutely-positioned pane host per leaf, laid out
+ * from layoutTree.solveRects (App.tsx sets each host's left/top/width/height inline). A re-layout
+ * only mutates that inline geometry — the hosts (and their keep-alive terminals) are never
+ * reparented ("move, don't recreate"). These rules own only the box + the static divider chrome.
+ */
+.pane-host {
+  overflow: hidden;
+}
+.pane-host .terminal-host {
+  width: 100%;
+  height: 100%;
+}
+
+/*
+ * trmx-84 — the divider between two panes: a plain 1px `--tx-border` line. It is non-interactive
+ * here (FR-3.3 makes it draggable, FR-3.6 gives it active/focus chrome), so it never steals a
+ * pointer event meant for a pane.
+ */
+.pane-divider {
+  background: var(--tx-border);
+  pointer-events: none;
+  z-index: 1;
+}
+
 .terminal-host {
   width: 100%;
   height: 100%;

@@ -10,11 +10,19 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { TabStrip, hoverIndexFromPoint, hoverSlotFor, DRAG_SLOP_PX } from "./TabStrip";
 import type { Tab } from "./tabState";
+import { leafNode } from "../panes/layoutTree";
 
 function tab(tabId: number, title: string): Tab {
-  // trmx-75: `Tab` carries its title sources; the strip renders `title` only, so seeding the
-  // fallback from it keeps these fixtures shape-valid without changing what is exercised.
-  return { tabId, title, titleSources: { fallback: title }, pane: { sessionId: null } };
+  // trmx-84: a `Tab` owns a pane tree; the strip is presentational and renders `title` only, so a
+  // single-leaf tab with one pane seeded from the title keeps these fixtures shape-valid without
+  // changing what is exercised. (Pane id = tabId here — arbitrary; the strip never reads it.)
+  return {
+    tabId,
+    title,
+    tree: leafNode(tabId),
+    focusedPaneId: tabId,
+    panes: { [tabId]: { sessionId: null, titleSources: { fallback: title }, title } },
+  };
 }
 
 function renderStrip(overrides: Partial<Parameters<typeof TabStrip>[0]> = {}) {

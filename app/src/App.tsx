@@ -8,53 +8,38 @@
 // trmx-51: Settings lives in its own window (main.tsx's surface routing); the main window mounts
 // the headless UpdateAuthorityHost — automatic update checks + serving the settings window.
 //
-// trmx-74: App is the TAB MANAGER — a `useReducer` shell over the pure tab model (tabState.ts)
-// composing the strip (TabStrip.tsx), the keymap (tabKeymap.ts), and the session-scoped backend:
-// - KEEP-ALIVE: every tab renders a persistent sibling host (inactive ones display:none); a
-//   terminal unmounts only when its tab CLOSES, so scrollback/processes survive switches.
-// - Attach is async (open_pty): a tab is born session-less, binds on resolution — and if it died
-//   mid-flight, the ORPHAN session is disposed (the reducer never resurrects, App never leaks).
-// - Each tab gets its OWN OSC 7 CwdStore from mount, so a new tab inherits the ACTIVE tab's cwd
-//   (captured at request time into pendingCwd — works even mid-attach).
-// - `pty:exited` closes the dead session's tab (no redundant close_pty); the menu's `tabs:action`
-//   broadcasts (⌘T/⌘W/⇧⌘[/⇧⌘]) drive new/close/next/prev; ⌘1..⌘9 select by index (capture-phase
-//   window keydown via tabKeymap).
-// - Closing the LAST tab closes the WINDOW (the backend's CloseRequested kill_all owns cleanup).
-// Every runtime edge is an injectable seam prop with a real default (the TerminalView pattern),
-// so App.test.tsx drives all of it headless with fakes.
-//
-// trmx-75 (FR-2.4): App is also the TITLE ROUTER over the layered sources (tabTitle.ts):
-// - Each tab's OSC 0/2 titles arrive over a per-tab cached `onOscTitle` callback (identity-stable
-//   like `readyFor` — an unstable one would remount the terminal) → the reducer's `osc` slot.
-// - The poller's `session:title-hint` broadcasts route by sessionId → the `process` slot
-//   (unknown sessions inert — a hint can race a close).
-// - The NATIVE window title mirrors only the ACTIVE tab's effective title (background isolation).
-// - The core mirror writes each tab's EFFECTIVE title into its attached session
-//   (`set_session_title` — App is the SOLE core-title writer; hints never reach the core raw).
-// - Rename UI: `renamingTabId` lives here; menu "rename" targets the active tab, a label
-//   double-click activates + renames; while renaming, focus-follows-activation is SUPPRESSED so
-//   the input keeps the keyboard, and commit/cancel hands focus back to the terminal.
-//
-// trmx-81 (FR-2.2): App also OWNS the tab-bar position — seeded from the shared settings snapshot
-// (tabs.barPosition), kept live over settings:changed (payload-guarded; junk inert), and applied
-// as an `app--bar-<position>` class on main.app. The JSX order NEVER changes (hosts first, strip
-// LAST): barLayoutFor's flex direction moves the bar to the edge, so the keyed hosts — and their
-// keep-alive terminals — are untouched by a position switch (the trmx-74 remount lesson).
-//
-// trmx-82 (FR-2.3): App reads tabs.sideLabelOrientation alongside the position (the SAME ONE
-// settings subscription guards both keys) and gates it through labelOrientationFor (top/bottom
-// bars force horizontal labels). The railGeometryFor CSS custom properties are NOT App's job:
-// TabStrip owns and writes them on its own root in vertical-label mode (the trmx-82 review-round
-// ownership fix — the vars can never be absent where index.css consumes them without fallbacks).
+// trmx-74/75/81/82: App is the TAB MANAGER — a `useReducer` shell over the pure tab model.
+// trmx-84 (FR-3.1/3.2): App is now also the PANE MANAGER. A tab owns a pure layout TREE
+// (panes/layoutTree.ts) of one-or-more panes; App renders each leaf as an ABSOLUTELY-POSITIONED,
+// paneId-keyed SIBLING div styled from `solveRects` — never nested DOM. A split/close/resize only
+// mutates `style.left/top/width/height` on stable keyed hosts, so xterm's canvases and the running
+// PTY are NEVER reparented or remounted ("move, don't recreate"). All the trmx-74/75 per-surface
+// plumbing (cwd store, terminal handle, session id, attach epoch, onReady/onOscTitle callbacks,
+// title mirror) moves from tabId keying to **paneId** keying — a pane is exactly what a tab's single
+// surface was. Pane ids are global + monotonic so those maps never alias across tabs.
+// - KEEP-ALIVE: every pane host stays mounted (keyed by the never-reused paneId); an inactive tab
+//   host is display:none; a terminal unmounts ONLY when its PANE closes. Pane ORDER always comes
+//   from the tree (solveRects/leaves), never Object.keys(panes).
+// - Creation (⌘D / ⇧⌘D or the split-right/split-below menu verbs): the new pane inherits the FOCUSED
+//   pane's OSC-7 cwd, takes focus; a split that can't fit the min pane size is a soft no-op.
+// - Closing (⌘W): pane → tab → window. Close the focused pane (close_pty); if it was the last pane
+//   the tab closes; if the last tab, the window. A pane's `pty:exited` closes just that pane. The
+//   tab-strip × closes the WHOLE tab (loops close_pty over its panes — no core bulk-close).
+// - Titles (trmx-75, now per pane): the tab label + native window title follow the ACTIVE tab's
+//   FOCUSED pane title; a background pane's OSC/hint updates its own state only. Rename targets the
+//   focused pane's manual title.
 import { useEffect, useReducer, useRef, useState } from "react";
 import { TerminalView, type SettingsObservation } from "./terminal/TerminalView";
 import { TabStrip } from "./tabs/TabStrip";
 import { barLayoutFor, labelOrientationFor } from "./tabs/barLayout";
 import {
+  canSplitFocused,
   initialTabsState,
+  paneBySessionId,
   reduceTabs,
-  tabBySessionId,
+  tabPaneIds,
 } from "./tabs/tabState";
+import { solveRects, type PaneId, type Rect, type SplitDir } from "./panes/layoutTree";
 import {
   isLabelOrientation,
   isTabBarPosition,
@@ -78,8 +63,14 @@ import { realSetWindowTitle } from "./terminal/windowTitle";
 import type { TerminalHandle } from "./terminal/mountTerminal";
 import { UpdateAuthorityHost } from "./update/UpdateAuthorityHost";
 
-/** The menu's tab-intent broadcast (main.rs emits "new"/"close"/"next"/"prev", trmx-74). */
+/** The menu's tab-intent broadcast (main.rs emits "new"/"close"/"next"/"prev"/split verbs). */
 export const TABS_ACTION_EVENT = "tabs:action";
+
+/** The usability floor on "unlimited" splitting: a pane may not shrink below this (px). */
+const MIN_PANE = { width: 80, height: 60 };
+
+/** The default content bounds before the real ResizeObserver measures the pane area (px). */
+const DEFAULT_BOUNDS: Rect = { x: 0, y: 0, width: 800, height: 600 };
 
 /** Wire a mounted terminal to a live PTY session; resolves the session's identity (useBackend). */
 export type AttachFn = (
@@ -196,226 +187,305 @@ export function App({
   const attachFn = attach ?? attachTerminal;
 
   const [state, dispatch] = useReducer(reduceTabs, undefined, initialTabsState);
-  // trmx-75: the tab whose label is an inline rename input (null = not renaming). While non-null,
-  // focus-follows-activation is suppressed so the input keeps the keyboard.
+  // trmx-75: the tab whose label is an inline rename input (null = not renaming). Rename targets
+  // that tab's FOCUSED pane's manual title. While non-null, focus-follows-activation is suppressed.
   const [renamingTabId, setRenamingTabId] = useState<number | null>(null);
-  // trmx-81: the tab bar's window edge, seeded from the shared settings snapshot (hydrated before
-  // mount, main.tsx boot order) — the lazy initializer reads it exactly once per App lifetime.
+  // trmx-81/82: the tab bar's window edge + side-label orientation, seeded from the shared settings
+  // snapshot (hydrated before mount), kept live over settings:changed.
   const [barPosition, setBarPosition] = useState<TabBarPosition>(() =>
     makeSettingsStore().get("tabs.barPosition"),
   );
-  // trmx-82: the side-rail label orientation SETTING (the raw registry value; the EFFECTIVE
-  // orientation is gated through labelOrientationFor below, so it stays latent on top/bottom bars).
   const [sideLabelOrientation, setSideLabelOrientation] = useState<LabelOrientation>(() =>
     makeSettingsStore().get("tabs.sideLabelOrientation"),
   );
+  // trmx-84: the measured pane content area — `solveRects` bounds. Seeded to a usable default so a
+  // headless render (jsdom, pre-layout) still lays panes out; the ResizeObserver below refreshes it
+  // once the window has a real size (a 0×0 reading is ignored so it never clobbers the default).
+  const [bounds, setBounds] = useState<Rect>(DEFAULT_BOUNDS);
 
   // Mirror of the reducer state for callbacks that fire OUTSIDE the render cycle (attach
   // resolutions, event subscriptions) — kept current by the effect below.
   const stateRef = useRef(state);
-  // Per-tab plumbing, all keyed by tabId (ids are never reused, tabState.ts):
-  const storesRef = useRef(new Map<number, CwdStore>()); // OSC 7 cwd, one store per tab
-  const handlesRef = useRef(new Map<number, TerminalHandle>()); // mounted terminals
-  const sessionsRef = useRef(new Map<number, number>()); // attached backend sessionIds
-  const pendingCwdRef = useRef(new Map<number, string | undefined>()); // cwd to seed the open with
-  const readyCbsRef = useRef(new Map<number, (handle: TerminalHandle) => void>()); // stable onReady per tab
-  const oscTitleCbsRef = useRef(new Map<number, (title: string) => void>()); // stable onOscTitle per tab (trmx-75)
-  const mirroredRef = useRef(new Map<number, string>()); // last title mirrored to the core, per tab (trmx-75)
-  // Attach epoch per tab: each onReady invocation bumps it, and a resolution whose epoch is no
-  // longer current is STALE. StrictMode's dev mount→unmount→remount fires onReady twice for the
-  // same live tab, opening two PTYs — only the epoch that matches keeps its session; the stale
-  // one is closed no matter which order the two open_pty calls resolve in (trmx-74 review).
-  const attachEpochRef = useRef(new Map<number, number>());
+  // trmx-84: per-PANE plumbing, all keyed by the never-reused, GLOBAL paneId:
+  const contentRef = useRef<HTMLDivElement | null>(null); // the measured pane content area
+  const boundsRef = useRef(bounds); // latest bounds for out-of-render split guards
+  const storesRef = useRef(new Map<PaneId, CwdStore>()); // OSC 7 cwd, one store per pane
+  const handlesRef = useRef(new Map<PaneId, TerminalHandle>()); // mounted terminals
+  const sessionsRef = useRef(new Map<PaneId, number>()); // attached backend sessionIds
+  const pendingCwdRef = useRef(new Map<PaneId, string | undefined>()); // cwd to seed the open with
+  const readyCbsRef = useRef(new Map<PaneId, (handle: TerminalHandle) => void>()); // stable onReady per pane
+  const oscTitleCbsRef = useRef(new Map<PaneId, (title: string) => void>()); // stable onOscTitle per pane
+  const mirroredRef = useRef(new Map<PaneId, string>()); // last title mirrored to the core, per pane
+  // Attach epoch per pane: each onReady bumps it; a resolution whose epoch is no longer current is
+  // STALE (StrictMode's dev remount opens two PTYs — only the current epoch keeps its session).
+  const attachEpochRef = useRef(new Map<PaneId, number>());
+  const renamingRef = useRef(renamingTabId); // out-of-render read for the onReady focus guard
   const bootedRef = useRef(false);
 
-  // Latest-seam ref: the cached per-tab onReady callbacks (stable identity — an inline arrow
-  // would remount the terminal via TerminalView's effect deps) read the CURRENT seams through it.
+  // Latest-seam ref: the cached per-pane callbacks (stable identity — an inline arrow would remount
+  // the terminal via TerminalView's effect deps) read the CURRENT seams through it.
   const seamsRef = useRef({ attach: attachFn, closeWindow, closeSession, setWindowTitle, mirrorTitle });
   seamsRef.current = { attach: attachFn, closeWindow, closeSession, setWindowTitle, mirrorTitle };
+  boundsRef.current = bounds;
+  renamingRef.current = renamingTabId;
 
+  // Keep stateRef pointed at the latest COMMITTED state for the out-of-render callbacks (attach
+  // resolutions, event subscriptions) — an effect, not a render assignment, so a discarded render
+  // never leaves it pointing at uncommitted state (the trmx-74 pattern).
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
 
-  // Boot: exactly ONE initial tab. The ref guards StrictMode's double effect-invocation — the
-  // state check alone can't (the second run may observe the pre-dispatch state).
+  // Boot: exactly ONE initial tab (one pane). The ref guards StrictMode's double effect-invocation.
   useEffect(() => {
     if (bootedRef.current) return;
     bootedRef.current = true;
     if (stateRef.current.tabs.length === 0) dispatch({ kind: "openTab" });
   }, []);
 
-  // This tab's cwd store, created lazily at RENDER time — so it exists from the terminal's mount
+  // trmx-84: measure the pane content area for solveRects. Guarded for jsdom (no ResizeObserver) and
+  // 0×0 readings, so tests keep the usable default bounds and real runtime tracks the window size.
+  useEffect(() => {
+    const el = contentRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => {
+      const r = entries[entries.length - 1]?.contentRect;
+      if (r && r.width > 0 && r.height > 0) {
+        setBounds({ x: 0, y: 0, width: Math.round(r.width), height: Math.round(r.height) });
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // This pane's cwd store, created lazily at RENDER time — so it exists from the terminal's mount
   // and an OSC 7 report (or a cwd-inheritance capture) can land before the session attaches.
-  const storeFor = (tabId: number): CwdStore => {
-    let store = storesRef.current.get(tabId);
+  const storeFor = (paneId: PaneId): CwdStore => {
+    let store = storesRef.current.get(paneId);
     if (!store) {
       store = makeCwdStore();
-      storesRef.current.set(tabId, store);
+      storesRef.current.set(paneId, store);
     }
     return store;
   };
 
-  // This tab's onReady, cached so its identity never changes across App re-renders (keep-alive:
-  // TerminalView's effect must not re-run on a tab switch). It wires the mounted terminal to a
-  // live session; if the tab died while open_pty was in flight, the resolved session is an
-  // ORPHAN — dispose it (the reducer's attachSession would no-op anyway; the resource is ours).
-  const readyFor = (tabId: number): ((handle: TerminalHandle) => void) => {
-    let cb = readyCbsRef.current.get(tabId);
+  // Whether (tabId, paneId) is still live — the orphan guard's test at attach-resolution time.
+  const paneAlive = (tabId: number, paneId: PaneId): boolean => {
+    const tab = stateRef.current.tabs.find((t) => t.tabId === tabId);
+    return tab !== undefined && tab.panes[paneId] !== undefined;
+  };
+
+  // This pane's onReady, cached so its identity never changes across App re-renders (keep-alive:
+  // TerminalView's effect must not re-run on a tab switch or a sibling re-layout). It wires the
+  // mounted terminal to a live session; if the pane/tab died while open_pty was in flight (OR a
+  // StrictMode remount superseded this mount's epoch), the resolved session is an ORPHAN — dispose
+  // it. A freshly-mounted pane that IS the active tab's focused pane grabs the keyboard (so a split
+  // focuses its new pane the moment it mounts).
+  const readyFor = (tabId: number, paneId: PaneId): ((handle: TerminalHandle) => void) => {
+    let cb = readyCbsRef.current.get(paneId);
     if (!cb) {
       cb = (handle) => {
-        handlesRef.current.set(tabId, handle);
-        const epoch = (attachEpochRef.current.get(tabId) ?? 0) + 1;
-        attachEpochRef.current.set(tabId, epoch);
+        handlesRef.current.set(paneId, handle);
+        const s = stateRef.current;
+        const activeTab = s.tabs.find((t) => t.tabId === s.activeTabId);
+        if (activeTab && activeTab.focusedPaneId === paneId && renamingRef.current === null) {
+          (handle.terminal as unknown as { focus?: () => void } | undefined)?.focus?.();
+        }
+        const epoch = (attachEpochRef.current.get(paneId) ?? 0) + 1;
+        attachEpochRef.current.set(paneId, epoch);
         seamsRef.current
-          .attach(handle, { cwd: pendingCwdRef.current.get(tabId) })
+          .attach(handle, { cwd: pendingCwdRef.current.get(paneId) })
           .then((info) => {
-            const tabAlive = stateRef.current.tabs.some((t) => t.tabId === tabId);
-            const epochCurrent = attachEpochRef.current.get(tabId) === epoch;
-            if (tabAlive && epochCurrent) {
-              sessionsRef.current.set(tabId, info.sessionId);
-              dispatch({
-                kind: "attachSession",
-                tabId,
-                sessionId: info.sessionId,
-                title: info.title,
-              });
+            const epochCurrent = attachEpochRef.current.get(paneId) === epoch;
+            if (paneAlive(tabId, paneId) && epochCurrent) {
+              sessionsRef.current.set(paneId, info.sessionId);
+              dispatch({ kind: "attachSession", tabId, paneId, sessionId: info.sessionId, title: info.title });
             } else {
-              // ORPHAN GUARD: the tab closed mid-attach, OR this resolution is from a superseded
-              // mount (StrictMode remount bumped the epoch) — kill the session it will never show.
+              // ORPHAN GUARD: the pane/tab closed mid-attach, OR this is a superseded (StrictMode)
+              // mount — kill the session it will never show.
               seamsRef.current.closeSession(info.sessionId).catch((err: unknown) => {
                 console.error("[termixion] orphan session close failed", err);
               });
             }
           })
           .catch((err: unknown) => {
-            // Open failed (no backend in `pnpm dev`, or a real spawn error): the tab stays on its
-            // placeholder title with a dead pane — do not crash the shell.
-            console.error("[termixion] tab attach failed", err);
+            // Open failed (no backend in `pnpm dev`, or a real spawn error): the pane keeps its
+            // placeholder title with a dead session — do not crash the shell.
+            console.error("[termixion] pane attach failed", err);
           });
       };
-      readyCbsRef.current.set(tabId, cb);
+      readyCbsRef.current.set(paneId, cb);
     }
     return cb;
   };
 
-  // This tab's onOscTitle, cached like `readyFor` (an unstable identity would remount the
-  // terminal via TerminalView's effect deps — keep-alive). A program's OSC 0/2 title lands in
-  // the reducer's `osc` slot; the EMPTY string is the escape sequence's reset (printf '\e]2;\a')
-  // and clears the slot (trmx-75 empty-OSC-clears rule). Sanitization lives in the reducer.
-  const oscTitleFor = (tabId: number): ((title: string) => void) => {
-    let cb = oscTitleCbsRef.current.get(tabId);
+  // This pane's onOscTitle, cached like `readyFor`. A program's OSC 0/2 title lands in the pane's
+  // `osc` slot; the EMPTY string is the escape's reset (printf '\e]2;\a') and clears the slot.
+  const oscTitleFor = (tabId: number, paneId: PaneId): ((title: string) => void) => {
+    let cb = oscTitleCbsRef.current.get(paneId);
     if (!cb) {
       cb = (title) => {
         dispatch({
           kind: "setTitleSource",
           tabId,
+          paneId,
           source: "osc",
           value: title === "" ? null : title,
         });
       };
-      oscTitleCbsRef.current.set(tabId, cb);
+      oscTitleCbsRef.current.set(paneId, cb);
     }
     return cb;
   };
 
-  // Open a new tab inheriting the ACTIVE tab's cwd: capture it NOW (the user's intent is "where I
-  // am"), keyed by the id the reducer WILL allocate (nextTabId — read before dispatch, mirroring
-  // the reducer's own allocation). The active tab's store exists from mount, so this works even
-  // while that tab is itself still mid-attach.
-  const requestNewTab = () => {
-    const s = stateRef.current;
-    const upcomingTabId = s.nextTabId;
-    const activeStore = s.activeTabId !== null ? storesRef.current.get(s.activeTabId) : undefined;
-    pendingCwdRef.current.set(upcomingTabId, activeStore?.get() ?? undefined);
-    dispatch({ kind: "openTab" });
+  // Dispose one pane's resources: drop all its paneId-keyed maps and close its PTY (unless the
+  // shell already exited). Shared by pane-close, pty:exited, and whole-tab close — one path, no leak.
+  const disposePaneResources = (paneId: PaneId, opts?: { alreadyExited?: boolean }) => {
+    const sessionId = sessionsRef.current.get(paneId);
+    sessionsRef.current.delete(paneId);
+    handlesRef.current.delete(paneId);
+    storesRef.current.delete(paneId);
+    pendingCwdRef.current.delete(paneId);
+    readyCbsRef.current.delete(paneId);
+    oscTitleCbsRef.current.delete(paneId);
+    mirroredRef.current.delete(paneId);
+    attachEpochRef.current.delete(paneId);
+    if (sessionId !== undefined && !opts?.alreadyExited) {
+      seamsRef.current.closeSession(sessionId).catch((err: unknown) => {
+        console.error("[termixion] close pty failed", err);
+      });
+    }
   };
 
-  // Close one tab. The LAST tab closes the WINDOW instead — no dispatch, no per-session close:
-  // the backend's CloseRequested handler kill_all's everything. Otherwise the reducer drops the
-  // tab (activating the iTerm2 neighbor) and the attached session is closed best-effort — unless
-  // it `alreadyExited` (the pty:exited path), where a close_pty would be redundant noise.
+  // Close a whole tab (all its panes) — the tab-strip × and the last-pane fallthrough. The LAST tab
+  // closes the WINDOW instead (no dispatch, no per-session close — the backend's CloseRequested
+  // kill_all owns cleanup). Otherwise drop the tab and dispose every pane's resources.
   const closeTabInternal = (tabId: number, opts?: { alreadyExited?: boolean }) => {
     const s = stateRef.current;
-    if (!s.tabs.some((t) => t.tabId === tabId)) return;
+    const tab = s.tabs.find((t) => t.tabId === tabId);
+    if (!tab) return;
     if (s.tabs.length <= 1) {
       seamsRef.current.closeWindow();
       return;
     }
+    const paneIds = tabPaneIds(tab);
     dispatch({ kind: "closeTab", tabId });
-    const sessionId = sessionsRef.current.get(tabId);
-    sessionsRef.current.delete(tabId);
-    handlesRef.current.delete(tabId);
-    storesRef.current.delete(tabId);
-    pendingCwdRef.current.delete(tabId);
-    readyCbsRef.current.delete(tabId);
-    oscTitleCbsRef.current.delete(tabId);
-    mirroredRef.current.delete(tabId);
-    // trmx-75: a tab dying MID-RENAME (e.g. its shell exited) must clear the rename state, or a
-    // stuck non-null renamingTabId would suppress focus-follows-activation forever. Functional
-    // update — this callback runs outside the render cycle and must not read stale state.
+    for (const paneId of paneIds) disposePaneResources(paneId, opts);
+    // A tab dying MID-RENAME must clear the rename state, or a stuck renamingTabId would suppress
+    // focus-follows-activation forever.
     setRenamingTabId((current) => (current === tabId ? null : current));
-    if (sessionId !== undefined && !opts?.alreadyExited) {
-      closeSessionOf(sessionId);
+  };
+
+  // Close one pane with the ⌘W precedence: pane → tab → window. More than one pane → drop just that
+  // pane (its sibling re-lays out, sessions untouched). The LAST pane of a tab closes the whole tab
+  // (which may be the last tab → the window).
+  const closePaneInternal = (tabId: number, paneId: PaneId, opts?: { alreadyExited?: boolean }) => {
+    const s = stateRef.current;
+    const tab = s.tabs.find((t) => t.tabId === tabId);
+    if (!tab || tab.panes[paneId] === undefined) return;
+    if (tabPaneIds(tab).length > 1) {
+      // A pane dying mid-rename (it is the focused/renamed pane) must clear the rename, or the input
+      // would survive and re-target the NEW focused pane on commit. The whole-tab branch clears it
+      // in closeTabInternal; the pane branch must do the same for the focused pane.
+      const wasRenamedPane = tab.focusedPaneId === paneId;
+      dispatch({ kind: "closePane", tabId, paneId });
+      disposePaneResources(paneId, opts);
+      if (wasRenamedPane) setRenamingTabId((current) => (current === tabId ? null : current));
+    } else {
+      closeTabInternal(tabId, opts);
     }
   };
 
-  const closeSessionOf = (sessionId: number) => {
-    seamsRef.current.closeSession(sessionId).catch((err: unknown) => {
-      console.error("[termixion] close pty failed", err);
-    });
+  // Open a new tab inheriting the ACTIVE tab's FOCUSED pane cwd: capture it NOW, keyed by the pane
+  // id the reducer WILL allocate for the new tab's single pane (nextPaneId).
+  const requestNewTab = () => {
+    const s = stateRef.current;
+    const upcomingPaneId = s.nextPaneId;
+    const activeTab =
+      s.activeTabId !== null ? s.tabs.find((t) => t.tabId === s.activeTabId) : undefined;
+    const activeStore = activeTab ? storesRef.current.get(activeTab.focusedPaneId) : undefined;
+    pendingCwdRef.current.set(upcomingPaneId, activeStore?.get() ?? undefined);
+    dispatch({ kind: "openTab" });
   };
 
+  // trmx-84: split the active tab's focused pane. `right` → a row split (side by side), `below` → a
+  // column split (stacked). Refused (soft no-op) when the result would go below the min pane size.
+  // The new pane inherits the focused pane's cwd and takes focus (readyFor focuses it on mount).
+  const requestSplit = (dir: "right" | "below") => {
+    const s = stateRef.current;
+    if (s.activeTabId === null) return;
+    const tab = s.tabs.find((t) => t.tabId === s.activeTabId);
+    if (!tab) return;
+    const treeDir: SplitDir = dir === "right" ? "row" : "column";
+    if (!canSplitFocused(tab, treeDir, boundsRef.current, MIN_PANE)) return; // won't fit — no-op
+    const upcomingPaneId = s.nextPaneId;
+    const focusedStore = storesRef.current.get(tab.focusedPaneId);
+    pendingCwdRef.current.set(upcomingPaneId, focusedStore?.get() ?? undefined);
+    dispatch({ kind: "splitPane", tabId: tab.tabId, dir: treeDir });
+  };
+
+  // ⌘W / menu "close": close the active tab's FOCUSED pane (pane → tab → window).
+  const requestCloseActive = () => {
+    const s = stateRef.current;
+    if (s.activeTabId === null) return;
+    const tab = s.tabs.find((t) => t.tabId === s.activeTabId);
+    if (!tab) return;
+    closePaneInternal(tab.tabId, tab.focusedPaneId);
+  };
+
+  // The tab-strip × closes the WHOLE tab (all its panes), distinct from the ⌘W pane precedence.
   const requestCloseTab = (tabId: number) => closeTabInternal(tabId);
 
-  // trmx-75: the rename intents. Start = activate + flip into rename (the double-click path — a
-  // background tab's label must both surface its terminal AND open the editor); commit maps an
-  // empty-after-trim value to null, the reducer's clear-to-auto (the osc/process/fallback layers
-  // resurface); cancel just drops the edit. Commit/cancel clearing `renamingTabId` re-runs the
-  // focus effect below, handing the keyboard back to the active tab's terminal.
+  // trmx-75: the rename intents. Start = activate + flip into rename; commit writes the FOCUSED
+  // pane's manual title (empty → clear-to-auto); cancel drops the edit. Commit/cancel clearing
+  // `renamingTabId` re-runs the focus effect, handing the keyboard back to the focused pane.
   const startRename = (tabId: number) => {
     dispatch({ kind: "activateTab", tabId });
     setRenamingTabId(tabId);
   };
   const commitRename = (tabId: number, value: string) => {
-    dispatch({
-      kind: "setTitleSource",
-      tabId,
-      source: "manual",
-      value: value.trim() === "" ? null : value,
-    });
+    const tab = stateRef.current.tabs.find((t) => t.tabId === tabId);
+    if (tab) {
+      dispatch({
+        kind: "setTitleSource",
+        tabId,
+        paneId: tab.focusedPaneId,
+        source: "manual",
+        value: value.trim() === "" ? null : value,
+      });
+    }
     setRenamingTabId(null);
   };
   const cancelRename = () => setRenamingTabId(null);
 
-  // Subscriptions: the backend's pty:exited (a shell exited → its tab closes, session already
-  // dead), the poller's session:title-hint (trmx-75 — route by sessionId into the `process`
-  // title slot; a hint for a session no tab owns raced a close and is inert), and the menu's
-  // tabs:action intents. One effect, teardown-safe; the handlers reach state through stateRef
-  // only, so the first render's closures never go stale.
+  // Subscriptions: pty:exited (a pane's shell exited → close just that pane), session:title-hint
+  // (route by sessionId into the owning PANE's `process` slot), and the menu's tabs:action intents.
   useEffect(() => {
     const stopExited = observePtyExited((sessionId) => {
-      const tab = tabBySessionId(stateRef.current, sessionId);
-      if (tab) closeTabInternal(tab.tabId, { alreadyExited: true });
+      const hit = paneBySessionId(stateRef.current, sessionId);
+      if (hit) closePaneInternal(hit.tab.tabId, hit.paneId, { alreadyExited: true });
     });
     const stopTitleHints = observeTitleHint((sessionId, name) => {
-      const tab = tabBySessionId(stateRef.current, sessionId);
-      if (tab) {
-        dispatch({ kind: "setTitleSource", tabId: tab.tabId, source: "process", value: name });
+      const hit = paneBySessionId(stateRef.current, sessionId);
+      if (hit) {
+        dispatch({
+          kind: "setTitleSource",
+          tabId: hit.tab.tabId,
+          paneId: hit.paneId,
+          source: "process",
+          value: name,
+        });
       }
     });
     const stopTabsAction = observeTabsAction((payload) => {
-      // Events are untrusted input (cf. onPtyExited's payload guard): only the exact verb
-      // strings act; junk is inert.
+      // Events are untrusted input: only the exact verb strings act; junk is inert.
       if (payload === "new") requestNewTab();
-      else if (payload === "close") {
-        const active = stateRef.current.activeTabId;
-        if (active !== null) closeTabInternal(active);
-      } else if (payload === "next") dispatch({ kind: "nextTab" });
+      else if (payload === "close") requestCloseActive();
+      else if (payload === "next") dispatch({ kind: "nextTab" });
       else if (payload === "prev") dispatch({ kind: "prevTab" });
+      else if (payload === "split-right") requestSplit("right");
+      else if (payload === "split-below") requestSplit("below");
       else if (payload === "rename") {
-        // trmx-75: the Shell ▸ Rename Tab… menu item targets the ACTIVE tab (guard: only when
-        // a tab actually exists — activeTabId is null exactly when the strip is empty).
         const active = stateRef.current.activeTabId;
         if (active !== null) setRenamingTabId(active);
       }
@@ -427,13 +497,9 @@ export function App({
     };
   }, [observePtyExited, observeTitleHint, observeTabsAction]);
 
-  // trmx-81: keep the bar position live over settings:changed (the settings window, a config-file
-  // hand edit, a reset's default broadcast). Its OWN effect, dep'd only on the stable observation
-  // seam — it must never re-run with the tab-state effects (no effect-dep churn; every identity
-  // App passes to TerminalView stays untouched by a position change). Payloads are untrusted
-  // input: only a well-formed key with a registry-valid value updates state.
-  // trmx-82: the ONE subscription now guards TWO keys — the label orientation rides the same
-  // payload guard (junk values inert, exactly like the position's).
+  // trmx-81/82: keep the bar position + side-label orientation live over settings:changed. Its OWN
+  // effect, dep'd only on the stable observation seam — payloads are untrusted (only a well-formed
+  // key with a registry-valid value updates state).
   useEffect(() => {
     const stopSettings = observeSettings((payload) => {
       if (typeof payload !== "object" || payload === null) return;
@@ -446,89 +512,127 @@ export function App({
     return stopSettings;
   }, [observeSettings]);
 
-  // ⌘1..⌘9 select a tab by index (⌘9 = last, the reducer's rule). Capture phase on window so the
-  // chord wins even while xterm's helper textarea has focus; tabKeymap vetoes non-terminal
-  // editables and foreign chords, so nothing else is ever intercepted.
+  // ⌘1..⌘9 select a tab; ⌘D / ⇧⌘D split the focused pane (trmx-84). Capture phase on window so the
+  // chord wins even while xterm's helper textarea has focus; tabKeymap vetoes non-terminal editables
+  // and foreign chords, so nothing else is intercepted.
   useEffect(() => {
     const onKeyDown = (ev: KeyboardEvent) => {
       const action = tabKeyAction(ev, describeTarget(ev.target));
-      if (action) {
-        ev.preventDefault();
-        dispatch({ kind: "selectIndex", index: action.index });
-      }
+      if (!action) return;
+      ev.preventDefault();
+      if (action.kind === "select-index") dispatch({ kind: "selectIndex", index: action.index });
+      else requestSplit(action.dir);
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, []);
 
-  // Focus follows activation: the newly active tab's terminal takes the keyboard. `focus()` is
-  // on the real xterm Terminal but outside TerminalLike's deliberate narrowness — the localized
-  // adapter cast (cf. useBackend's rows/cols read); bare test fakes may omit it.
-  // trmx-75 focus discipline: SUPPRESSED while a rename is in flight — the double-click path
-  // activates the tab in the same batch that opens the input, and stealing focus back to the
-  // terminal would kill the edit. When renamingTabId returns to null (commit/cancel/tab-death),
-  // the dep change re-runs this effect and the active tab's terminal takes the keyboard back.
+  // Focus follows activation / focus change: the active tab's FOCUSED pane's terminal takes the
+  // keyboard. SUPPRESSED while a rename is in flight (the input keeps focus). Re-runs when the active
+  // tab OR its focused pane changes (click-to-focus a sibling pane).
+  const activeTab = state.tabs.find((t) => t.tabId === state.activeTabId);
+  const activeFocusedPaneId = activeTab?.focusedPaneId ?? null;
   useEffect(() => {
     if (renamingTabId !== null) return;
-    if (state.activeTabId === null) return;
-    const terminal = handlesRef.current.get(state.activeTabId)?.terminal;
+    if (activeFocusedPaneId === null) return;
+    const terminal = handlesRef.current.get(activeFocusedPaneId)?.terminal;
     (terminal as unknown as { focus?: () => void } | undefined)?.focus?.();
-  }, [state.activeTabId, renamingTabId]);
+  }, [state.activeTabId, activeFocusedPaneId, renamingTabId]);
 
-  // trmx-75: the NATIVE window title is the ACTIVE tab's effective title — background tabs never
-  // reach it (their OSC titles stop at their strip labels), and a switch re-fires because the
-  // rendered `activeTitle` changes. Undefined = no tabs yet (boot) — leave the window alone.
-  const activeTitle = state.tabs.find((t) => t.tabId === state.activeTabId)?.title;
+  // trmx-75: the NATIVE window title is the ACTIVE tab's (focused pane) effective title — background
+  // tabs/panes never reach it. Undefined = no tabs yet (boot) — leave the window alone.
+  const activeTitle = activeTab?.title;
   useEffect(() => {
     if (activeTitle === undefined) return;
     seamsRef.current.setWindowTitle(activeTitle);
   }, [activeTitle]);
 
-  // trmx-75: the core mirror — every ATTACHED tab's effective title is written into its session
+  // trmx-75/84: the core mirror — every ATTACHED pane's effective title is written into its session
   // (set_session_title) whenever it changes, so core `Session::title` always matches the UI. The
-  // per-tab dedup map is load-bearing twice over: it bounds the invoke stream to real changes,
-  // and it is WHY a raw hint can never leak into the core — a process hint under a manual/OSC
-  // title leaves `tab.title` unchanged, so nothing is written. Fire-and-forget with a catch: a
-  // lost race against a closing session must not crash the shell.
+  // per-pane dedup map bounds the invoke stream to real changes and is WHY a raw hint never leaks
+  // into the core (a hint under a manual/OSC title leaves the pane title unchanged → nothing writes).
   useEffect(() => {
     for (const tab of state.tabs) {
-      const sessionId = sessionsRef.current.get(tab.tabId);
-      if (sessionId === undefined) continue; // not attached yet — nothing to mirror into
-      if (mirroredRef.current.get(tab.tabId) === tab.title) continue;
-      mirroredRef.current.set(tab.tabId, tab.title);
-      seamsRef.current.mirrorTitle(sessionId, tab.title).catch((err: unknown) => {
-        console.error("[termixion] title mirror failed", err);
-      });
+      for (const paneId of tabPaneIds(tab)) {
+        const sessionId = sessionsRef.current.get(paneId);
+        if (sessionId === undefined) continue; // not attached yet
+        const title = tab.panes[paneId].title;
+        if (mirroredRef.current.get(paneId) === title) continue;
+        mirroredRef.current.set(paneId, title);
+        seamsRef.current.mirrorTitle(sessionId, title).catch((err: unknown) => {
+          console.error("[termixion] title mirror failed", err);
+        });
+      }
     }
   }, [state.tabs]);
 
-  // trmx-81: the position class + the strip's axis, both from the pure layout engine. The class
-  // drives index.css's flex-direction variants; the JSX below keeps hosts-then-strip order ALWAYS.
+  // trmx-81: the position class + the strip's axis. The JSX order NEVER changes (hosts first, strip
+  // LAST): barLayoutFor's flex direction moves the bar; the keyed pane hosts stay put (keep-alive).
   const barLayout = barLayoutFor(barPosition);
-  // trmx-82: the EFFECTIVE label orientation (top/bottom force horizontal). The rail-geometry
-  // CSS custom properties are TabStrip's own concern — it derives railGeometryFor from the same
-  // two props and writes the vars on its root in vertical-label mode, so App passes no style.
   const labelOrientation = labelOrientationFor(barPosition, sideLabelOrientation);
 
   return (
     <main className={`app app--bar-${barPosition}`}>
-      <div className="tab-hosts">
-        {state.tabs.map((tab) => (
-          // KEEP-ALIVE: every tab's host stays mounted (keyed by the never-reused tabId);
-          // switching only toggles visibility. A terminal unmounts ONLY when its tab closes.
-          <div
-            key={tab.tabId}
-            className="tab-host"
-            data-testid={`tab-host-${tab.tabId}`}
-            style={{ display: tab.tabId === state.activeTabId ? undefined : "none" }}
-          >
-            <TerminalView
-              onReady={readyFor(tab.tabId)}
-              cwdStore={storeFor(tab.tabId)}
-              onOscTitle={oscTitleFor(tab.tabId)}
-            />
-          </div>
-        ))}
+      <div className="tab-hosts" ref={contentRef}>
+        {state.tabs.map((tab) => {
+          // KEEP-ALIVE: every tab's host stays mounted (keyed by the never-reused tabId); switching
+          // only toggles visibility. trmx-84: within it, each pane is an absolutely-positioned
+          // sibling keyed by paneId, laid out from solveRects — a re-layout mutates only style.
+          const solved = solveRects(tab.tree, bounds);
+          return (
+            <div
+              key={tab.tabId}
+              className="tab-host"
+              data-testid={`tab-host-${tab.tabId}`}
+              style={{ display: tab.tabId === state.activeTabId ? undefined : "none" }}
+            >
+              {solved.panes.map(({ paneId, rect }) => (
+                <div
+                  key={paneId}
+                  className={
+                    paneId === tab.focusedPaneId ? "pane-host pane-host--focused" : "pane-host"
+                  }
+                  data-testid={`pane-host-${paneId}`}
+                  style={{
+                    position: "absolute",
+                    left: rect.x,
+                    top: rect.y,
+                    width: rect.width,
+                    height: rect.height,
+                  }}
+                  // Click-to-focus: capture phase so a click anywhere in the pane focuses it, WITHOUT
+                  // preventDefault — xterm still starts its text selection on the same mousedown.
+                  onMouseDownCapture={() => {
+                    if (tab.focusedPaneId !== paneId) {
+                      dispatch({ kind: "focusPane", tabId: tab.tabId, paneId });
+                    }
+                  }}
+                >
+                  <TerminalView
+                    onReady={readyFor(tab.tabId, paneId)}
+                    cwdStore={storeFor(paneId)}
+                    onOscTitle={oscTitleFor(tab.tabId, paneId)}
+                  />
+                </div>
+              ))}
+              {solved.dividers.map((d) => (
+                // Static 1px divider lines (trmx-84). Drag-resize is FR-3.3; chrome is FR-3.6.
+                <div
+                  key={`divider-${d.path.join("-") || "root"}`}
+                  className={`pane-divider pane-divider--${d.dir}`}
+                  data-testid={`pane-divider-${d.path.join("-") || "root"}`}
+                  style={{
+                    position: "absolute",
+                    left: d.rect.x,
+                    top: d.rect.y,
+                    width: d.rect.width,
+                    height: d.rect.height,
+                  }}
+                />
+              ))}
+            </div>
+          );
+        })}
       </div>
       <TabStrip
         tabs={state.tabs}

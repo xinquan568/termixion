@@ -73,6 +73,36 @@ describe("tabKeyAction", () => {
   );
 });
 
+describe("tabKeyAction — split (trmx-84 FR-3.2)", () => {
+  it.each(["d", "D"])("⌘%s → split right", (key) => {
+    expect(tabKeyAction(cmd(key), PAGE)).toEqual({ kind: "split", dir: "right" });
+    expect(tabKeyAction(cmd(key), TERMINAL)).toEqual({ kind: "split", dir: "right" });
+  });
+
+  it.each(["d", "D"])("⇧⌘%s → split below", (key) => {
+    expect(tabKeyAction(cmd(key, { shiftKey: true }), PAGE)).toEqual({
+      kind: "split",
+      dir: "below",
+    });
+    expect(tabKeyAction(cmd(key, { shiftKey: true }), TERMINAL)).toEqual({
+      kind: "split",
+      dir: "below",
+    });
+  });
+
+  it("split fires on the terminal target but is inert on a NON-terminal editable", () => {
+    expect(tabKeyAction(cmd("d"), TERMINAL)).toEqual({ kind: "split", dir: "right" });
+    expect(tabKeyAction(cmd("d"), EDITABLE)).toBeNull();
+    expect(tabKeyAction(cmd("d", { shiftKey: true }), EDITABLE)).toBeNull();
+  });
+
+  it("requires exactly meta(+shift): ⌘⌃D / ⌘⌥D and bare D pass through", () => {
+    expect(tabKeyAction(cmd("d", { ctrlKey: true }), PAGE)).toBeNull();
+    expect(tabKeyAction(cmd("d", { altKey: true }), PAGE)).toBeNull();
+    expect(tabKeyAction(ev("d"), PAGE)).toBeNull();
+  });
+});
+
 describe("describeTarget", () => {
   it("detects xterm's helper textarea inside .terminal-host as a terminal target", () => {
     // Build the real DOM shape: TerminalView renders <div class="terminal-host"> and xterm
