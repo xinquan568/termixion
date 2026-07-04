@@ -5,12 +5,21 @@
 // entries), page switching (nav clicks, initial section, settings:navigate events), the centered
 // "Settings" title, and the data-tauri-drag-region chrome that makes an Overlay-titlebar window
 // draggable. R8: written before the shell exists.
+// trmx-80 (FR-13): the config-warnings banner — seeded from getConfigWarnings() at mount, kept
+// current by config:warnings events (the store's subscription re-parses first — hydrateSettings
+// subscribes before the shell renders, exactly the production boot order), dismissable.
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsApp, SETTINGS_NAVIGATE_EVENT } from "./SettingsApp";
 import { makeFakeAppInfo } from "../update/appInfo";
 import { makeFakeOpener } from "../update/opener";
-import { makeSettingsStore, type KeyValueStore } from "./settingsStore";
+import {
+  __resetSettingsForTest,
+  CONFIG_WARNINGS_EVENT,
+  hydrateSettings,
+  makeSettingsStore,
+  type KeyValueStore,
+} from "./settingsStore";
 import { initialUpdateState } from "../update/updateState";
 import type { UseUpdate } from "../update/useUpdate";
 
@@ -195,5 +204,88 @@ describe("SettingsApp shell", () => {
     expect(screen.getByText("Settings")).toBeInTheDocument();
     const dragRegions = container.querySelectorAll("[data-tauri-drag-region]");
     expect(dragRegions.length).toBeGreaterThanOrEqual(3); // sidebar strip, content strip, title overlay
+  });
+});
+
+// trmx-80 (FR-13): the config-warnings banner. These tests hydrate the module snapshot with a
+// fake backend FIRST (the production boot order: hydrateSettings subscribes the store to the bus
+// before the shell renders and subscribes), so delivering config:warnings updates the store's
+// state before the shell's handler re-reads it.
+describe("SettingsApp config warnings banner (trmx-80)", () => {
+  beforeEach(() => __resetSettingsForTest());
+  afterEach(() => __resetSettingsForTest());
+
+  /** A T2 backend whose config_read carries `warnings`; every other command resolves null. */
+  function fakeConfigInvoke(warnings: unknown[]) {
+    return (cmd: string): Promise<unknown> => {
+      if (cmd === "config_read") {
+        return Promise.resolve({
+          exists: true,
+          path: "/tmp/termixion/config.toml",
+          values: { "appearance.theme": "night" },
+          warnings,
+        });
+      }
+      return Promise.resolve(null);
+    };
+  }
+
+  it("shows each hydration warning in a banner at the top of the window", async () => {
+    const bus = fakeListen();
+    await hydrateSettings({
+      invoke: fakeConfigInvoke([
+        { type: "UnknownKey", key: "terminal.zoom" },
+        { type: "OutOfRange", key: "terminal.fontSize", got: 99, clamped_to: 72 },
+      ]),
+      bus,
+    });
+    renderApp({ listen: bus.listen });
+    const banner = screen.getByRole("alert");
+    expect(banner.textContent).toContain("Config file warnings");
+    expect(banner.textContent).toContain('Unknown setting "terminal.zoom" in the config file');
+    expect(banner.textContent).toContain("clamped to 72");
+  });
+
+  it("renders no banner when there are no warnings", () => {
+    renderApp();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("replaces the banner on a config:warnings event and CLEARS on an empty one", async () => {
+    const bus = fakeListen();
+    await hydrateSettings({
+      invoke: fakeConfigInvoke([{ type: "UnknownKey", key: "old.key" }]),
+      bus,
+    });
+    renderApp({ listen: bus.listen });
+    expect(screen.getByRole("alert").textContent).toContain("old.key");
+
+    // The file watcher re-parsed: the new set supersedes the old one wholesale.
+    bus.deliver(CONFIG_WARNINGS_EVENT, [{ type: "UnknownKey", key: "new.key" }]);
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toContain("new.key");
+      expect(screen.getByRole("alert").textContent).not.toContain("old.key");
+    });
+
+    // A clean re-parse (zero warnings) clears the banner.
+    bus.deliver(CONFIG_WARNINGS_EVENT, []);
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+  });
+
+  it("dismiss hides the banner until a new event arrives", async () => {
+    const bus = fakeListen();
+    await hydrateSettings({
+      invoke: fakeConfigInvoke([{ type: "SyntaxError", message: "expected `=` at line 3" }]),
+      bus,
+    });
+    renderApp({ listen: bus.listen });
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss config warnings" }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    // A fresh re-parse with warnings resurfaces the banner.
+    bus.deliver(CONFIG_WARNINGS_EVENT, [{ type: "UnknownKey", key: "fresh.key" }]);
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("fresh.key"));
   });
 });

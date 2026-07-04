@@ -9,12 +9,17 @@
 //! Invariants enforced by `scripts/check-core-seam.sh` (D-1): no platform crates, no
 //! `cfg(target_os | …)` / bare `cfg(unix)` / `cfg(windows)`, and no `std::os::` in this crate.
 
+pub mod config;
 pub mod fake;
 pub mod pty;
 pub mod pump;
 pub mod registry;
 pub mod session;
 
+pub use config::{
+    CheckFrequency, Config, ConfigWarning, CursorStyle, DEFAULT_TEMPLATE, RegistryValue,
+    diff_configs, parse_config, parse_registry_pairs, toml_path_for,
+};
 pub use pty::{PtyBackend, PtyError, PtyFactory, PtyReader, PtySize, SessionSpec};
 pub use pump::pump;
 pub use registry::SessionRegistry;

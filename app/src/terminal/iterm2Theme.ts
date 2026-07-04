@@ -88,6 +88,8 @@ export function initialAppearanceFromWindow(
 // the CSS generic that resolves to the platform's system monospaced font — SF Mono on macOS in WKWebView —
 // so it tracks whatever the OS ships; "SF Mono", Menlo, and monospace are explicit fallbacks. Only the font
 // diverges from the iTerm2 default; the size, spacing, cursor, and colors below still mirror that profile.
+// trmx-80 (FR-13): these two are now the DEFAULTS behind the user settings terminal.fontFamily (empty =
+// this stack) / terminal.fontSize — fontSettings.ts overlays the persisted values at the chokepoint.
 export const ITERM2_FONT_FAMILY = 'ui-monospace, "SF Mono", Menlo, monospace';
 export const ITERM2_FONT_SIZE = 12;
 

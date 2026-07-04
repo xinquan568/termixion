@@ -8,21 +8,28 @@ import { resolveSurface } from "./surface";
 import { realInvoke } from "./ipc/backend";
 import { runPerf, realPerfDeps, type PerfLaunchConfig } from "./perf/runPerf";
 import { runSmoke, realSmokeDeps } from "./smoke/runSmoke";
+import { hydrateSettings } from "./settings/settingsStore";
 import { applyStartupTheme } from "./theme/applyStartupTheme";
 import "./index.css";
 
-// trmx-53: paint the PERSISTED theme before anything else — synchronously at module evaluation,
-// strictly before boot()'s smoke_config await opens an async gap in which index.css's static
-// fallback would show (no-flash startup; ordering guarded by main.order.test.ts). Harmless on a
-// --smoke launch (no UI renders).
-applyStartupTheme();
-
-// On boot, ask the backend whether this is a `--smoke` launch (C-3). If so, drive the deterministic
-// sentinel sequence over the production channel and let the backend exit 0/1 — no UI. Otherwise render
-// the surface this window is for (trmx-51): the shell opens the settings window at
-// `?window=settings[&section=…]`; everything else — the main window, `pnpm dev` in a plain browser —
-// is the terminal. A plain browser has no backend, so smoke_config rejects → app.
+// The pinned startup order (trmx-80, guarded by main.order.test.ts): hydrate → theme → gates →
+// mount — ONE code path for all launches. Settings are file-backed (FR-13), so exactly one
+// config_read must land before the themed first paint: hydrateSettings seeds the shared settings
+// snapshot (and runs the one-time legacy-localStorage migration), then applyStartupTheme paints
+// the persisted theme from it, superseding trmx-53's module-evaluation paint (which could read
+// localStorage synchronously — a file-backed theme cannot be read without the IPC round-trip).
+// index.css's static fallback covers the hydrate await; hydrateSettings never throws (a plain
+// browser falls back to the registry defaults).
+//
+// After the paint, boot() asks the backend whether this is a `--smoke` launch (C-3). If so, drive
+// the deterministic sentinel sequence over the production channel and let the backend exit 0/1 —
+// no UI. Otherwise render the surface this window is for (trmx-51): the shell opens the settings
+// window at `?window=settings[&section=…]`; everything else — the main window, `pnpm dev` in a
+// plain browser — is the terminal. A plain browser has no backend, so smoke_config rejects → app.
 async function boot() {
+  await hydrateSettings();
+  applyStartupTheme();
+
   let smokeDir: string | null = null;
   try {
     smokeDir = (await realInvoke("smoke_config")) as string | null;

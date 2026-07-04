@@ -737,6 +737,75 @@ describe("TerminalView", () => {
     expect(attachOscAbsent.mock.calls[0][2]).toBeUndefined();
   });
 
+  it("applies scrollback + font broadcasts live; a FONT change re-fits and recomputes (trmx-80)", () => {
+    // A terminal whose options can be reassigned at runtime (xterm applies on assignment).
+    const terminal = {
+      options: {} as { scrollback?: number; fontFamily?: string; fontSize?: number },
+    };
+    const fit = vi.fn();
+    const handle: TerminalHandle = {
+      terminal: terminal as never,
+      renderer: "webgl",
+      fit,
+      dispose: vi.fn(),
+    };
+    const mount = vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(
+      () => handle,
+    );
+
+    let fireSettings: ((payload: unknown) => void) | undefined;
+    const observeSettings = vi.fn((onChange: (payload: unknown) => void) => {
+      fireSettings = onChange;
+      return () => {};
+    });
+
+    const recompute = vi.fn();
+    const attachScrollbar = vi.fn<AttachScrollbar>(() => ({
+      recompute,
+      dispose: vi.fn(),
+    }));
+
+    render(
+      <TerminalView
+        mount={mount}
+        observeResize={noopObserve}
+        attachScrollbar={attachScrollbar}
+        observeSettings={observeSettings}
+        attachOscIntegrations={noopAttachOsc}
+        attachClipboard={noopAttachClipboard}
+      />,
+    );
+
+    // A scrollback change reassigns options.scrollback — a capacity change does NOT alter the
+    // grid metrics, so no refit/recompute. (xterm truncates the buffer when the cap shrinks —
+    // accepted, documented behavior, scrollbackSettings.ts.)
+    fireSettings?.({ key: "terminal.scrollbackLines", value: 20_000, source: "settings" });
+    expect(terminal.options.scrollback).toBe(20_000);
+    expect(fit).not.toHaveBeenCalled();
+    expect(recompute).not.toHaveBeenCalled();
+
+    // A font change alters the CELL METRICS: after applying it the view must re-fit the grid and
+    // recompute the scrollbar geometry over the fresh rows/cols.
+    fireSettings?.({ key: "terminal.fontSize", value: 14, source: "settings" });
+    expect(terminal.options.fontSize).toBe(14);
+    expect(fit).toHaveBeenCalledTimes(1);
+    expect(recompute).toHaveBeenCalledTimes(1);
+
+    fireSettings?.({ key: "terminal.fontFamily", value: "Menlo", source: "settings" });
+    expect(terminal.options.fontFamily).toBe("Menlo");
+    expect(fit).toHaveBeenCalledTimes(2);
+    expect(recompute).toHaveBeenCalledTimes(2);
+
+    // Junk payloads are inert: no reassignment, no refit, no recompute.
+    fireSettings?.({ key: "terminal.fontSize", value: "big", source: "settings" });
+    fireSettings?.({ key: "terminal.scrollbackLines", value: "lots", source: "settings" });
+    fireSettings?.("garbage");
+    expect(terminal.options.scrollback).toBe(20_000);
+    expect(terminal.options.fontSize).toBe(14);
+    expect(fit).toHaveBeenCalledTimes(2);
+    expect(recompute).toHaveBeenCalledTimes(2);
+  });
+
   it("binds the clipboard guards to the host + terminal and unbinds on unmount (trmx-66)", () => {
     const teardown = vi.fn();
     const handle: TerminalHandle = {

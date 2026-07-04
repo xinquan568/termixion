@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: ISC
 // Copyright (c) 2026 Eric Y. Liu
 //
-// trmx-51: the Terminal settings page spec — exactly the two red-boxed rows from the vmark
-// screenshot (Cursor Style + Cursor Blink), vmark's option labels with cursor glyphs, the registry
-// defaults (Underline; blink off since trmx-55), persistence through the settings store, and the
+// trmx-51: the Terminal settings page spec — the two red-boxed rows from the vmark screenshot
+// (Cursor Style + Cursor Blink), vmark's option labels with cursor glyphs, the registry defaults
+// (Underline; blink off since trmx-55), persistence through the settings store, and the
 // settings:changed broadcast the live terminal consumes. R8: written before the page exists.
+// trmx-80 (FR-13) adds the scrollback/font trio below them: Scrollback (clamped numeric field),
+// Font Family (empty = the platform default stack, named in the placeholder), Font Size (stepper).
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { TerminalSettings } from "./TerminalSettings";
+import { ITERM2_FONT_FAMILY } from "../terminal/iterm2Theme";
 import {
   makeSettingsStore,
   SETTINGS_CHANGED_EVENT,
@@ -30,15 +33,23 @@ function fakeBus(): SettingsBus & { events: Array<{ event: string; payload: unkn
 }
 
 describe("TerminalSettings", () => {
-  it("renders exactly the two boxed rows — Cursor Style and Cursor Blink", () => {
+  it("renders the cursor rows plus the FR-13 trio — Scrollback, Font Family, Font Size", () => {
     const store = makeSettingsStore(fakeStorage());
     const { container } = render(<TerminalSettings settings={store} />);
     expect(screen.getByText("Cursor Style")).toBeInTheDocument();
     expect(screen.getByText("Shape of the terminal cursor")).toBeInTheDocument();
     expect(screen.getByText("Cursor Blink")).toBeInTheDocument();
     expect(screen.getByText("Whether the terminal cursor blinks")).toBeInTheDocument();
-    // ONLY these two rows for now (no Shell / Panel / Font Size / Line Height).
-    expect(container.querySelectorAll(".tx-setting-row")).toHaveLength(2);
+    // trmx-80: the scrollback/font trio, BELOW the two cursor rows.
+    expect(screen.getByText("Scrollback")).toBeInTheDocument();
+    expect(screen.getByText("Lines of history kept per terminal")).toBeInTheDocument();
+    expect(screen.getByText("Font Family")).toBeInTheDocument();
+    expect(screen.getByText("Font Size")).toBeInTheDocument();
+    // EXACTLY these five rows (no Shell / Panel / Line Height).
+    const rows = container.querySelectorAll(".tx-setting-row");
+    expect(rows).toHaveLength(5);
+    const labels = [...rows].map((r) => r.querySelector(".tx-setting-row__label")?.textContent);
+    expect(labels).toEqual(["Cursor Style", "Cursor Blink", "Scrollback", "Font Family", "Font Size"]);
   });
 
   it("offers vmark's glyphed options and defaults to Underline", () => {
@@ -100,6 +111,115 @@ describe("TerminalSettings", () => {
     expect(screen.getByRole("switch", { name: "Cursor Blink" })).toHaveAttribute(
       "aria-checked",
       "true",
+    );
+  });
+});
+
+// trmx-80 (FR-13): the scrollback/font trio below the cursor rows.
+describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
+  it("shows the registry defaults: 10000 lines, empty family, 12 pt", () => {
+    render(<TerminalSettings settings={makeSettingsStore(fakeStorage())} />);
+    expect((screen.getByRole("textbox", { name: "Scrollback" }) as HTMLInputElement).value).toBe(
+      "10000",
+    );
+    expect((screen.getByRole("textbox", { name: "Font Family" }) as HTMLInputElement).value).toBe(
+      "",
+    );
+    expect((screen.getByRole("textbox", { name: "Font Size" }) as HTMLInputElement).value).toBe(
+      "12",
+    );
+  });
+
+  it("names the platform default stack in the Font Family placeholder", () => {
+    render(<TerminalSettings settings={makeSettingsStore(fakeStorage())} />);
+    const input = screen.getByRole("textbox", { name: "Font Family" }) as HTMLInputElement;
+    expect(input.placeholder).toBe(ITERM2_FONT_FAMILY);
+  });
+
+  it("commits a scrollback change on blur, CLAMPED into the registry range, and broadcasts", () => {
+    const bus = fakeBus();
+    const store = makeSettingsStore(fakeStorage(), bus, "settings-window");
+    render(<TerminalSettings settings={store} />);
+    const input = screen.getByRole("textbox", { name: "Scrollback" }) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "999999" } }); // above the 200000 max
+    fireEvent.blur(input);
+    expect(input.value).toBe("200000");
+    expect(store.get("terminal.scrollbackLines")).toBe(200_000);
+    expect(bus.events).toContainEqual({
+      event: SETTINGS_CHANGED_EVENT,
+      payload: { key: "terminal.scrollbackLines", value: 200_000, source: "settings-window" },
+    });
+  });
+
+  it("reverts junk scrollback input to the current value without persisting", () => {
+    const bus = fakeBus();
+    const store = makeSettingsStore(fakeStorage(), bus, "settings-window");
+    render(<TerminalSettings settings={store} />);
+    const input = screen.getByRole("textbox", { name: "Scrollback" }) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "lots" } });
+    fireEvent.blur(input);
+    expect(input.value).toBe("10000");
+    expect(store.get("terminal.scrollbackLines")).toBe(10_000);
+    expect(bus.events).toHaveLength(0);
+  });
+
+  it("commits a font family on Enter; clearing it commits '' (= the platform default)", () => {
+    const bus = fakeBus();
+    const store = makeSettingsStore(fakeStorage(), bus, "settings-window");
+    render(<TerminalSettings settings={store} />);
+    const input = screen.getByRole("textbox", { name: "Font Family" }) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "JetBrains Mono" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(store.get("terminal.fontFamily")).toBe("JetBrains Mono");
+    expect(bus.events).toContainEqual({
+      event: SETTINGS_CHANGED_EVENT,
+      payload: { key: "terminal.fontFamily", value: "JetBrains Mono", source: "settings-window" },
+    });
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.blur(input);
+    expect(store.get("terminal.fontFamily")).toBe("");
+  });
+
+  it("steps the font size with the ± stepper, persisting each step", () => {
+    const store = makeSettingsStore(fakeStorage());
+    render(<TerminalSettings settings={store} />);
+    fireEvent.click(screen.getByRole("button", { name: "Increase Font Size" }));
+    expect(store.get("terminal.fontSize")).toBe(13);
+    fireEvent.click(screen.getByRole("button", { name: "Decrease Font Size" }));
+    fireEvent.click(screen.getByRole("button", { name: "Decrease Font Size" }));
+    expect(store.get("terminal.fontSize")).toBe(11);
+    expect((screen.getByRole("textbox", { name: "Font Size" }) as HTMLInputElement).value).toBe(
+      "11",
+    );
+  });
+
+  it("disables the stepper at the registry bounds (6–72)", () => {
+    render(
+      <TerminalSettings
+        settings={makeSettingsStore(fakeStorage({ "termixion.terminal.fontSize": "72" }))}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Increase Font Size" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Decrease Font Size" })).not.toBeDisabled();
+  });
+
+  it("reflects persisted values on mount", () => {
+    const store = makeSettingsStore(
+      fakeStorage({
+        "termixion.terminal.scrollbackLines": "50000",
+        "termixion.terminal.fontFamily": "Menlo",
+        "termixion.terminal.fontSize": "16",
+      }),
+    );
+    render(<TerminalSettings settings={store} />);
+    expect((screen.getByRole("textbox", { name: "Scrollback" }) as HTMLInputElement).value).toBe(
+      "50000",
+    );
+    expect((screen.getByRole("textbox", { name: "Font Family" }) as HTMLInputElement).value).toBe(
+      "Menlo",
+    );
+    expect((screen.getByRole("textbox", { name: "Font Size" }) as HTMLInputElement).value).toBe(
+      "16",
     );
   });
 });

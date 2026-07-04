@@ -5,11 +5,12 @@
 // it, over a REAL emulator built from the production scrollback + emulation slices (the same
 // build-from-the-slice discipline the trmx-64 conformance harness and oscIntegration regression
 // use — a test-added option here would hide a production divergence).
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import { Terminal } from "@xterm/headless";
 import { scrollbackTerminalOptions, SCROLLBACK_LINES } from "./scrollbackSettings";
 import { emulationTerminalOptions } from "./emulationOptions";
 import { computeScrollbar } from "./scrollbar";
+import { makeSettingsStore, __resetSettingsForTest } from "../settings/settingsStore";
 
 const ROWS = 24;
 
@@ -26,13 +27,18 @@ function lines(from: number, count: number): string {
 
 describe("scrollback cap + viewport semantics (trmx-65)", () => {
   const terms: Terminal[] = [];
+  beforeEach(() => {
+    // trmx-80: the slice reads terminal.scrollbackLines from the shared snapshot; an empty
+    // snapshot serves the registry default (= SCROLLBACK_LINES), which these cap tests pin.
+    __resetSettingsForTest();
+  });
   afterEach(() => {
     while (terms.length) terms.pop()?.dispose();
   });
 
   function openTerm(): Terminal {
     const term = new Terminal({
-      ...scrollbackTerminalOptions(),
+      ...scrollbackTerminalOptions(makeSettingsStore()),
       ...emulationTerminalOptions(),
       cols: 80,
       rows: ROWS,

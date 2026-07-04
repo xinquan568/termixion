@@ -6,7 +6,9 @@
 // framework — so the About page reads as a clean, consistent settings panel.
 // trmx-51 adds the vmark-style Select (a styled native <select> with an inline chevron) and the
 // danger button variant the Reset section uses.
-import type { ReactNode } from "react";
+// trmx-80 (FR-13) adds the commit-on-blur/Enter fields the Terminal page's scrollback/font rows
+// use: NumberField (clamped into [min, max], junk reverts, optional ± stepper) and TextField.
+import { useEffect, useState, type ReactNode } from "react";
 
 /** A titled group of setting rows (title omitted when empty). */
 export function SettingsGroup({ title, children }: { title?: string; children: ReactNode }) {
@@ -121,6 +123,124 @@ export function Select<T extends string>({
           </option>
         ))}
       </select>
+    </span>
+  );
+}
+
+/** trmx-80: a text input that COMMITS on blur/Enter (not per keystroke — settings writes persist
+ * to the config file and broadcast to the live terminal, so a commit is a deliberate act). The
+ * draft tracks typing; an external `value` change (reset, cross-window broadcast) resyncs it.
+ * A no-op commit (the unchanged value) is skipped so redundant config writes never happen. */
+export function TextField({
+  value,
+  onCommit,
+  placeholder,
+  label,
+}: {
+  value: string;
+  onCommit: (value: string) => void;
+  placeholder?: string;
+  label?: string;
+}) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+
+  const commit = () => {
+    if (draft !== value) onCommit(draft);
+  };
+
+  return (
+    <input
+      type="text"
+      className="tx-text"
+      value={draft}
+      placeholder={placeholder}
+      aria-label={label}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") commit();
+      }}
+    />
+  );
+}
+
+/** trmx-80: a numeric input with TextField's commit-on-blur/Enter contract, mirroring the
+ * registry's number semantics (settingsStore parse/clampNumberSetting): junk (empty/NaN) reverts
+ * the draft to the current value without committing; a parseable number is CLAMPED into
+ * [min, max] before it is committed and shown. `stepper` adds ± buttons (the Font Size control)
+ * that step by one and disable at the bounds. */
+export function NumberField({
+  value,
+  min,
+  max,
+  onCommit,
+  label,
+  stepper,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  onCommit: (value: number) => void;
+  label?: string;
+  stepper?: boolean;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => setDraft(String(value)), [value]);
+
+  const clamp = (n: number) => Math.min(max, Math.max(min, n));
+
+  const commit = () => {
+    // Number("") === 0, so an empty/whitespace draft must be rejected before conversion
+    // (the same guard as the registry's parse — settingsStore.ts).
+    const n = draft.trim() === "" ? NaN : Number(draft);
+    if (!Number.isFinite(n)) {
+      setDraft(String(value)); // junk reverts to the current committed value
+      return;
+    }
+    const clamped = clamp(n);
+    setDraft(String(clamped));
+    if (clamped !== value) onCommit(clamped);
+  };
+
+  const step = (delta: number) => onCommit(clamp(value + delta));
+
+  return (
+    <span className="tx-number-wrap">
+      {stepper ? (
+        <button
+          type="button"
+          className="tx-stepper-btn"
+          aria-label={`Decrease ${label ?? "value"}`}
+          disabled={value <= min}
+          onClick={() => step(-1)}
+        >
+          −
+        </button>
+      ) : null}
+      <input
+        type="text"
+        inputMode="numeric"
+        className="tx-number"
+        value={draft}
+        aria-label={label}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+        }}
+      />
+      {stepper ? (
+        <button
+          type="button"
+          className="tx-stepper-btn"
+          aria-label={`Increase ${label ?? "value"}`}
+          disabled={value >= max}
+          onClick={() => step(1)}
+        >
+          +
+        </button>
+      ) : null}
     </span>
   );
 }

@@ -6,8 +6,10 @@
 // actually feeds them into `new Terminal`. Since trmx-53 the COLORS come from the theme catalog
 // (the persisted appearance.theme, first-run-derived from the OS: dark → Night, light → White),
 // overlaying iTerm2's non-color profile facts (font/spacing, trmx-44/46) and the trmx-51 cursor.
-// We mock the xterm classes so the constructor is a spy, stub `matchMedia`, and assert the
-// captured constructor argument.
+// trmx-80 (FR-13): settings are file-backed — persisted values are seeded through
+// hydrateSettings into the SHARED SNAPSHOT (no more localStorage), and the scrollback + font
+// slices are settings-fed at this same chokepoint. We mock the xterm classes so the constructor
+// is a spy, stub `matchMedia`, and assert the captured constructor argument.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Hoisted by Vitest above the imports below, so `realDeps` sees these mocks at module load.
@@ -20,8 +22,10 @@ import { realDeps } from "./TerminalView";
 import { iterm2TerminalOptions } from "./iterm2Theme";
 import { emulationTerminalOptions } from "./emulationOptions";
 import { scrollbackTerminalOptions } from "./scrollbackSettings";
+import { fontTerminalOptions } from "./fontSettings";
 import { clipboardTerminalOptions } from "./clipboard";
 import { buildXtermTheme } from "../theme/buildXtermTheme";
+import { hydrateSettings, makeSettingsStore, __resetSettingsForTest } from "../settings/settingsStore";
 
 // The registry cursor defaults: trmx-51's underline, with blink turned off by trmx-55 (iTerm2
 // parity — only the style still supersedes the iTerm2 block cursor).
@@ -44,23 +48,37 @@ function stubMatchMedia(prefersDark: boolean) {
   });
 }
 
+/** Seed the shared settings snapshot the way boot() does: one faked config_read (trmx-80). */
+async function seedSettings(values: Record<string, unknown>): Promise<void> {
+  await hydrateSettings({
+    invoke: (cmd) =>
+      cmd === "config_read"
+        ? Promise.resolve({ exists: true, path: "/tmp/config.toml", values, warnings: [] })
+        : Promise.resolve(null),
+    bus: { listen: () => Promise.resolve(() => {}) },
+    storage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+  });
+}
+
 describe("realDeps.createTerminal (the display chokepoint)", () => {
   beforeEach(() => {
     vi.mocked(Terminal).mockClear();
-    // The first-run derivation MATERIALIZES (trmx-53): each test must start unpersisted, or a
-    // prior test's derived value would shadow this test's stubbed OS appearance.
-    localStorage.removeItem("termixion.appearance.theme");
+    // Each test starts from an EMPTY shared snapshot (trmx-80), or a prior test's seeded values
+    // would shadow this test's stubbed OS appearance / seeded settings.
+    __resetSettingsForTest();
   });
 
   it("constructs xterm with the NIGHT catalog theme (first-run derivation) when the system prefers dark", () => {
     stubMatchMedia(true);
     realDeps.createTerminal();
+    const defaults = makeSettingsStore(); // unseeded snapshot store — the registry defaults
     expect(Terminal).toHaveBeenCalledTimes(1);
     expect(vi.mocked(Terminal).mock.calls[0][0]).toEqual({
       ...iterm2TerminalOptions("dark"),
       theme: buildXtermTheme("night"),
+      ...fontTerminalOptions(defaults),
       ...TRMX51_CURSOR,
-      ...scrollbackTerminalOptions(),
+      ...scrollbackTerminalOptions(defaults),
       ...emulationTerminalOptions(),
       ...clipboardTerminalOptions(),
       linkHandler: expect.anything(),
@@ -70,27 +88,25 @@ describe("realDeps.createTerminal (the display chokepoint)", () => {
   it("constructs xterm with the WHITE catalog theme (first-run derivation) when the system prefers light", () => {
     stubMatchMedia(false);
     realDeps.createTerminal();
+    const defaults = makeSettingsStore();
     expect(vi.mocked(Terminal).mock.calls[0][0]).toEqual({
       ...iterm2TerminalOptions("light"),
       theme: buildXtermTheme("white"),
+      ...fontTerminalOptions(defaults),
       ...TRMX51_CURSOR,
-      ...scrollbackTerminalOptions(),
+      ...scrollbackTerminalOptions(defaults),
       ...emulationTerminalOptions(),
       ...clipboardTerminalOptions(),
       linkHandler: expect.anything(),
     });
   });
 
-  it("uses the PERSISTED theme regardless of the OS appearance (no live OS-following, trmx-53)", () => {
+  it("uses the PERSISTED theme regardless of the OS appearance (no live OS-following, trmx-53)", async () => {
     stubMatchMedia(true);
-    localStorage.setItem("termixion.appearance.theme", "sepia");
-    try {
-      realDeps.createTerminal();
-      const opts = vi.mocked(Terminal).mock.calls[0][0];
-      expect(opts?.theme).toEqual(buildXtermTheme("sepia"));
-    } finally {
-      localStorage.removeItem("termixion.appearance.theme");
-    }
+    await seedSettings({ "appearance.theme": "sepia" });
+    realDeps.createTerminal();
+    const opts = vi.mocked(Terminal).mock.calls[0][0];
+    expect(opts?.theme).toEqual(buildXtermTheme("sepia"));
   });
 
   it("keeps the iTerm2 non-color profile facts and the trmx-51 cursor at the chokepoint", () => {
@@ -119,9 +135,9 @@ describe("realDeps.createTerminal (the display chokepoint)", () => {
     expect(opts?.allowProposedApi).toBe(true);
   });
 
-  it("feeds the scrollback slice into xterm: 10k cap + smooth discrete scrolling (trmx-65)", () => {
-    // FR-1.3: the cap is OUR constant (not xterm's silent 1000) until FR-13 makes it a setting;
-    // smoothScrollDuration animates discrete scrolls (wheel steps, Shift+PageUp/PageDown).
+  it("feeds the scrollback slice into xterm: 10k default cap + smooth discrete scrolling (trmx-65)", () => {
+    // FR-1.3: the cap is OUR default (not xterm's silent 1000); since trmx-80 it is a SETTING
+    // (terminal.scrollbackLines) — the unseeded snapshot serves the registry default here.
     stubMatchMedia(true);
     realDeps.createTerminal();
     const opts = vi.mocked(Terminal).mock.calls[0][0];
@@ -129,6 +145,29 @@ describe("realDeps.createTerminal (the display chokepoint)", () => {
     expect(opts?.smoothScrollDuration).toBe(120);
     // xterm's scroll-on-user-input default (typing snaps to bottom) must not be disabled.
     expect(opts?.scrollOnUserInput).not.toBe(false);
+  });
+
+  it("feeds the PERSISTED scrollback + font settings into xterm (trmx-80 FR-13)", async () => {
+    stubMatchMedia(true);
+    await seedSettings({
+      "terminal.scrollbackLines": 5_000,
+      "terminal.fontFamily": "JetBrains Mono",
+      "terminal.fontSize": 16,
+    });
+    realDeps.createTerminal();
+    const opts = vi.mocked(Terminal).mock.calls[0][0];
+    expect(opts?.scrollback).toBe(5_000);
+    // The persisted font OVERRIDES the iTerm2 constants (the slice spreads after them).
+    expect(opts?.fontFamily).toBe("JetBrains Mono");
+    expect(opts?.fontSize).toBe(16);
+  });
+
+  it("an EMPTY persisted fontFamily means the platform default stack (trmx-80)", async () => {
+    stubMatchMedia(true);
+    await seedSettings({ "terminal.fontFamily": "" });
+    realDeps.createTerminal();
+    const opts = vi.mocked(Terminal).mock.calls[0][0];
+    expect(opts?.fontFamily).toBe(iterm2TerminalOptions("dark").fontFamily);
   });
 
   it("enables Option-drag selection at the chokepoint (trmx-66)", () => {
@@ -149,18 +188,12 @@ describe("realDeps.createTerminal (the display chokepoint)", () => {
     expect(typeof opts?.linkHandler?.activate).toBe("function");
   });
 
-  it("persisted cursor settings override the defaults at the chokepoint", () => {
+  it("persisted cursor settings override the defaults at the chokepoint", async () => {
     stubMatchMedia(true);
-    localStorage.setItem("termixion.terminal.cursorStyle", "block");
-    localStorage.setItem("termixion.terminal.cursorBlink", "true");
-    try {
-      realDeps.createTerminal();
-      const opts = vi.mocked(Terminal).mock.calls[0][0];
-      expect(opts?.cursorStyle).toBe("block");
-      expect(opts?.cursorBlink).toBe(true);
-    } finally {
-      localStorage.removeItem("termixion.terminal.cursorStyle");
-      localStorage.removeItem("termixion.terminal.cursorBlink");
-    }
+    await seedSettings({ "terminal.cursorStyle": "block", "terminal.cursorBlink": true });
+    realDeps.createTerminal();
+    const opts = vi.mocked(Terminal).mock.calls[0][0];
+    expect(opts?.cursorStyle).toBe("block");
+    expect(opts?.cursorBlink).toBe(true);
   });
 });

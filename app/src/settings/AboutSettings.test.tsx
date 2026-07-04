@@ -6,14 +6,22 @@
 // trmx-51: vmark-0.8.18 parity — icon-led stacked links, the four Updates rows (Automatic updates,
 // Check frequency, Download updates automatically, Check for updates), and the Reset section with an
 // inline confirmation driving resetAllSettings.
+// trmx-80 (FR-13): the Configuration group — "Open config file" opens the hydrated config path
+// through the opener seam and shows the path as secondary text; a plain browser (null path) hides it.
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AboutSettings } from "./AboutSettings";
 import { makeFakeAppInfo } from "../update/appInfo";
 import { makeFakeOpener } from "../update/opener";
 import type { UseUpdate } from "../update/useUpdate";
 import { initialUpdateState, type UpdateState } from "../update/updateState";
-import { makeSettingsStore, type KeyValueStore, type SettingsStore } from "./settingsStore";
+import {
+  __resetSettingsForTest,
+  hydrateSettings,
+  makeSettingsStore,
+  type KeyValueStore,
+  type SettingsStore,
+} from "./settingsStore";
 
 const GITHUB_URL = "https://github.com/xinquan568/termixion";
 
@@ -216,5 +224,48 @@ describe("AboutSettings Reset section", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(resetAll).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Reset to Defaults" })).toBeInTheDocument();
+  });
+});
+
+// trmx-80 (FR-13): the "Open config file" affordance, driven by the hydrated module state
+// (getConfigFilePath) — so these tests hydrate with a fake backend, or don't (plain browser).
+describe("AboutSettings config file (trmx-80)", () => {
+  beforeEach(() => __resetSettingsForTest());
+  afterEach(() => __resetSettingsForTest());
+
+  const CONFIG_PATH = "/Users/me/Library/Application Support/termixion/config.toml";
+
+  /** The minimal T2 backend: config_read resolves the path; everything else resolves null. */
+  function fakeConfigInvoke(path: string) {
+    return (cmd: string): Promise<unknown> => {
+      if (cmd === "config_read") {
+        return Promise.resolve({
+          exists: true,
+          path,
+          values: { "appearance.theme": "night" },
+          warnings: [],
+        });
+      }
+      return Promise.resolve(null);
+    };
+  }
+
+  it("shows the config path and opens the file through the opener", async () => {
+    await hydrateSettings({
+      invoke: fakeConfigInvoke(CONFIG_PATH),
+      bus: { listen: () => Promise.resolve(() => {}) },
+    });
+    const opener = renderAbout(fakeUpdate());
+    expect(screen.getByText("Open config file")).toBeInTheDocument();
+    // The path shows as the row's secondary text so the user can see where the file lives.
+    expect(screen.getByText(CONFIG_PATH)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    expect(opener.opened).toEqual([CONFIG_PATH]);
+  });
+
+  it("hides the affordance when there is no config path (plain browser)", () => {
+    renderAbout(fakeUpdate());
+    expect(screen.queryByText("Open config file")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open" })).not.toBeInTheDocument();
   });
 });
