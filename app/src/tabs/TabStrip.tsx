@@ -9,10 +9,11 @@
 //
 // Drag-to-reorder is pointer-events + setPointerCapture on the tab element: pointerdown records
 // the start slot, a move past the 4px slop makes it a drag (under the slop it stays a click →
-// activate), each move maps the pointer x onto a hover slot via sibling boundingRect MIDPOINTS
-// (`hoverIndexFromPoint` — exported pure math, unit-tested headless like the reducer), and
-// pointerup commits at most ONE `onMove(startIndex, hoverIndex)`. Capture keeps the stream on the
-// tab while the pointer roams; jsdom lacks the capture API, so taking it is best-effort.
+// activate), each move maps the pointer's DRAG-AXIS coordinate onto a hover slot via sibling
+// boundingRect MIDPOINTS (`hoverSlotFor` — exported pure math, unit-tested headless like the
+// reducer; `hoverIndexFromPoint` is its x-axis pre-trmx-81 alias), and pointerup commits at most
+// ONE `onMove(startIndex, hoverIndex)`. Capture keeps the stream on the tab while the pointer
+// roams; jsdom lacks the capture API, so taking it is best-effort.
 //
 // trmx-75 (FR-2.4): inline rename. Rename STATE lives in App (`renamingTabId` — the strip stays
 // presentational); while a tab is renaming, its label is replaced by a seeded, select-all-focused
@@ -20,6 +21,12 @@
 // strip: pointerdown/up/click/dblclick/keydown all stopPropagation, so Space types a space, a
 // click places the caret without activating, a text-selection drag never engages the reorder
 // machinery, and a double-click inside the input never restarts rename.
+//
+// trmx-81 (FR-2.2): `orientation` — horizontal (default, top/bottom bars: drag on X) or vertical
+// (left/right rails: drag on Y, `tab-strip--vertical` keys the side-rail CSS). The D2 drop
+// indicator is RENDERED drag feedback (hover state used to live only in dragRef): a 2px accent
+// line at the hover slot's leading boundary — vertical at the slot's x on horizontal strips,
+// horizontal at the slot's y on vertical rails — present only mid-drag, cleared on release/cancel.
 import {
   useEffect,
   useRef,
@@ -34,6 +41,11 @@ export interface TabStripProps {
   activeTabId: number | null;
   /** The tab whose label is currently an inline rename input, or null (trmx-75). */
   renamingTabId: number | null;
+  /**
+   * The strip's axis (trmx-81): "horizontal" (default — top/bottom bars) or "vertical"
+   * (left/right rails). App derives it from barLayoutFor(tabs.barPosition).
+   */
+  orientation?: "horizontal" | "vertical";
   onActivate: (tabId: number) => void;
   onClose: (tabId: number) => void;
   onNew: () => void;
@@ -49,20 +61,42 @@ export interface TabStripProps {
 /** Movement (in px, straight-line) a pointer may make and still count as a click, not a drag. */
 export const DRAG_SLOP_PX = 4;
 
+/** The drag axis (trmx-81): "x" on horizontal strips, "y" on vertical rails. */
+export type StripAxis = "x" | "y";
+
 /**
- * The slot a dragged tab hovers over: the first slot whose horizontal MIDPOINT still lies right
- * of `x`, clamping past the last midpoint to the last slot (0 for an empty strip — defensive; the
- * reducer clamps again). Pure math over `{left, width}` rects so it is unit-testable without
+ * The slot a dragged tab hovers over (trmx-81, generalizing hoverIndexFromPoint): the first slot
+ * whose MIDPOINT on the drag axis still lies past `pointerCoord` (x-midpoints for axis "x",
+ * y-midpoints for "y"), clamping past the last midpoint to the last slot (0 for an empty strip —
+ * defensive; the reducer clamps again). Pure math over rect slices so it is unit-testable without
  * layout.
+ */
+export function hoverSlotFor(
+  pointerCoord: number,
+  rects: ReadonlyArray<{ left: number; top: number; width: number; height: number }>,
+  axis: StripAxis,
+): number {
+  for (let i = 0; i < rects.length; i++) {
+    const mid =
+      axis === "x" ? rects[i].left + rects[i].width / 2 : rects[i].top + rects[i].height / 2;
+    if (pointerCoord < mid) return i;
+  }
+  return Math.max(rects.length - 1, 0);
+}
+
+/**
+ * The pre-trmx-81 x-axis form, kept as a thin delegate so the horizontal slot semantics are one
+ * code path (and the trmx-74 unit tests keep pinning them under the original name).
  */
 export function hoverIndexFromPoint(
   rects: ReadonlyArray<{ left: number; width: number }>,
   x: number,
 ): number {
-  for (let i = 0; i < rects.length; i++) {
-    if (x < rects[i].left + rects[i].width / 2) return i;
-  }
-  return Math.max(rects.length - 1, 0);
+  return hoverSlotFor(
+    x,
+    rects.map((r) => ({ left: r.left, width: r.width, top: 0, height: 0 })),
+    "x",
+  );
 }
 
 // One in-flight pointer interaction on a tab. `dragging` flips once the slop is exceeded and
@@ -161,6 +195,7 @@ export function TabStrip({
   tabs,
   activeTabId,
   renamingTabId,
+  orientation = "horizontal",
   onActivate,
   onClose,
   onNew,
@@ -170,6 +205,11 @@ export function TabStrip({
   onRenameCancel,
 }: TabStripProps) {
   const dragRef = useRef<DragTracking | null>(null);
+  // trmx-81 D2: the RENDERED drag feedback. dragRef mutations never re-render (deliberately — the
+  // hot pointermove path), so the indicator gets its own state: the hover slot's leading-boundary
+  // offset within the strip (left for horizontal, top for vertical), or null when not dragging.
+  const [indicatorOffset, setIndicatorOffset] = useState<number | null>(null);
+  const axis: StripAxis = orientation === "vertical" ? "y" : "x";
 
   const onTabPointerDown =
     (tab: Tab, index: number) => (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -200,13 +240,26 @@ export function TabStrip({
     const rects = Array.from(strip.querySelectorAll("[data-tabstrip-item]"), (el) =>
       el.getBoundingClientRect(),
     );
-    drag.hoverIndex = hoverIndexFromPoint(rects, e.clientX);
+    drag.hoverIndex = hoverSlotFor(axis === "x" ? e.clientX : e.clientY, rects, axis);
+    // D2: paint the indicator at the hover slot's leading boundary, in strip-local coordinates
+    // (client rect minus the strip's own origin, plus its scroll offset — a scrolled vertical
+    // rail must not shift the line).
+    const slotRect = rects[drag.hoverIndex];
+    if (slotRect) {
+      const stripRect = strip.getBoundingClientRect();
+      setIndicatorOffset(
+        axis === "x"
+          ? slotRect.left - stripRect.left + strip.scrollLeft
+          : slotRect.top - stripRect.top + strip.scrollTop,
+      );
+    }
   };
 
   const onTabPointerUp = (e: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== e.pointerId) return;
     dragRef.current = null;
+    setIndicatorOffset(null); // release always clears the D2 indicator
     if (drag.dragging) {
       // Commit the reorder exactly once, and only if the tab actually left its slot.
       if (drag.hoverIndex !== drag.startIndex) onMove(drag.startIndex, drag.hoverIndex);
@@ -217,10 +270,16 @@ export function TabStrip({
 
   const onTabPointerCancel = () => {
     dragRef.current = null;
+    setIndicatorOffset(null); // cancel clears the D2 indicator too
   };
 
   return (
-    <div className="tab-strip" data-testid="tab-strip" role="tablist" aria-label="Tabs">
+    <div
+      className={`tab-strip${orientation === "vertical" ? " tab-strip--vertical" : ""}`}
+      data-testid="tab-strip"
+      role="tablist"
+      aria-label="Tabs"
+    >
       {tabs.map((tab, index) => {
         const active = tab.tabId === activeTabId;
         return (
@@ -292,6 +351,17 @@ export function TabStrip({
       >
         +
       </button>
+      {/* trmx-81 D2: the drop indicator — only mid-drag. The axis modifier names the STRIP's
+          orientation; the line itself runs across it (a vertical 2px line at `left` on a
+          horizontal strip, a horizontal one at `top` on a vertical rail — the cross-axis extent
+          is CSS-owned). No data-tabstrip-item: it must never count as a drag slot. */}
+      {indicatorOffset !== null && (
+        <div
+          className={`tab-strip__indicator tab-strip__indicator--${orientation}`}
+          data-testid="tab-strip-indicator"
+          style={axis === "x" ? { left: indicatorOffset } : { top: indicatorOffset }}
+        />
+      )}
     </div>
   );
 }

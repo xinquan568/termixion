@@ -9,7 +9,7 @@
 // mimics the real contract: onReady(handle) once per MOUNT, a cleanup counter to pin keep-alive.
 // Every runtime edge (attach / closeWindow / closePty / event subscriptions) is injected via
 // App's seam props, so this runs headless with controllable SessionInfo promises.
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import { StrictMode } from "react";
 import type { SessionInfo } from "./ipc/backend";
@@ -74,6 +74,7 @@ vi.mock("./update/UpdateAuthorityHost", () => ({
 }));
 
 import { App, type AppProps } from "./App";
+import { makeSettingsStore, __resetSettingsForTest } from "./settings/settingsStore";
 
 interface AttachCall {
   handle: unknown;
@@ -128,6 +129,7 @@ function renderApp(opts: { strict?: boolean } = {}) {
   const tabsAction = makeObservation<unknown>();
   const ptyExited = makeObservation<number>();
   const titleHint = makeHintObservation();
+  const settingsChanged = makeObservation<unknown>(); // trmx-81: settings:changed broadcasts
   const setWindowTitle = vi.fn();
   const mirrorTitle = vi.fn(() => Promise.resolve());
   const props: AppProps = {
@@ -137,6 +139,7 @@ function renderApp(opts: { strict?: boolean } = {}) {
     observeTabsAction: tabsAction.observe,
     observePtyExited: ptyExited.observe,
     observeTitleHint: titleHint.observe,
+    observeSettings: settingsChanged.observe,
     setWindowTitle,
     mirrorTitle,
   };
@@ -157,6 +160,7 @@ function renderApp(opts: { strict?: boolean } = {}) {
     tabsAction,
     ptyExited,
     titleHint,
+    settingsChanged,
     setWindowTitle,
     mirrorTitle,
   };
@@ -654,5 +658,84 @@ describe("App rename (trmx-75)", () => {
     expect(screen.queryByTestId("tab-rename-input")).not.toBeInTheDocument();
     expect(screen.getByTestId("tab-1").className).toContain(activeClass);
     expect(tab1Focus.mock.calls.length).toBe(focusCallsBefore + 1);
+  });
+});
+
+// trmx-81 (FR-2.2): the tab-bar position. App seeds it from the shared settings snapshot, applies
+// it as an `app--bar-<position>` class on main.app (JSX order NEVER changes — flex direction does
+// the moving, barLayout.ts), keeps it live over settings:changed, and passes the strip its
+// orientation. A position switch must never remount a tab host (the trmx-74 keep-alive lesson).
+describe("App tab-bar position (trmx-81)", () => {
+  const mainEl = (view: ReturnType<typeof renderApp>["view"]) =>
+    view.container.querySelector("main.app")!;
+
+  // These tests touch the module-level shared snapshot — reset it so no state leaks across tests.
+  afterEach(() => {
+    __resetSettingsForTest();
+  });
+
+  it("defaults to the bottom bar: app--bar-bottom and a horizontal strip", () => {
+    const { view } = renderApp();
+    expect(mainEl(view).className).toBe("app app--bar-bottom");
+    expect(screen.getByTestId("tab-strip").className).toBe("tab-strip");
+  });
+
+  it("seeds the position from the settings store snapshot", () => {
+    makeSettingsStore().set("tabs.barPosition", "left"); // the shared snapshot, as hydration would
+    const { view } = renderApp();
+    expect(mainEl(view).className).toBe("app app--bar-left");
+    // A side position renders the strip as a vertical rail.
+    expect(screen.getByTestId("tab-strip").className).toBe("tab-strip tab-strip--vertical");
+  });
+
+  it("a settings:changed for tabs.barPosition switches the class WITHOUT remounting tab hosts", async () => {
+    const { view, calls, settingsChanged } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 1, title: "one" });
+    fireEvent.click(screen.getByTestId("tab-new"));
+    await resolveAttach(calls[1], { sessionId: 2, title: "two" });
+
+    // Capture the host DOM nodes BEFORE the switch — their identity must survive it.
+    const host1 = screen.getByTestId("tab-host-1");
+    const host2 = screen.getByTestId("tab-host-2");
+    const unmountsBefore = recorder.unmounts;
+
+    await act(async () => {
+      settingsChanged.fire({ key: "tabs.barPosition", value: "right", source: "config-file" });
+    });
+
+    expect(mainEl(view).className).toBe("app app--bar-right");
+    expect(screen.getByTestId("tab-strip").className).toBe("tab-strip tab-strip--vertical");
+    // Keep-alive across the layout flip: same DOM nodes, zero TerminalView unmounts.
+    expect(screen.getByTestId("tab-host-1")).toBe(host1);
+    expect(screen.getByTestId("tab-host-2")).toBe(host2);
+    expect(recorder.unmounts).toBe(unmountsBefore);
+
+    // And back to a horizontal edge.
+    await act(async () => {
+      settingsChanged.fire({ key: "tabs.barPosition", value: "top", source: "settings-window" });
+    });
+    expect(mainEl(view).className).toBe("app app--bar-top");
+    expect(screen.getByTestId("tab-strip").className).toBe("tab-strip");
+    expect(screen.getByTestId("tab-host-1")).toBe(host1);
+    expect(recorder.unmounts).toBe(unmountsBefore);
+  });
+
+  it("junk settings:changed payloads are inert (wrong shape, wrong key, invalid value)", async () => {
+    const { view, settingsChanged } = renderApp();
+    await act(async () => {
+      settingsChanged.fire("garbage");
+      settingsChanged.fire(42);
+      settingsChanged.fire({ key: "tabs.barPosition", value: "middle", source: "config-file" });
+      settingsChanged.fire({ key: "tabs.barPosition", value: 7, source: "config-file" });
+      settingsChanged.fire({ key: "appearance.theme", value: "left", source: "config-file" });
+    });
+    expect(mainEl(view).className).toBe("app app--bar-bottom");
+  });
+
+  it("tears the settings subscription down on unmount", () => {
+    const { view, settingsChanged } = renderApp();
+    expect(settingsChanged.observe).toHaveBeenCalledTimes(1);
+    view.unmount();
+    expect(settingsChanged.teardown).toHaveBeenCalledTimes(1);
   });
 });

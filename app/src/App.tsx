@@ -34,14 +34,27 @@
 // - Rename UI: `renamingTabId` lives here; menu "rename" targets the active tab, a label
 //   double-click activates + renames; while renaming, focus-follows-activation is SUPPRESSED so
 //   the input keeps the keyboard, and commit/cancel hands focus back to the terminal.
+//
+// trmx-81 (FR-2.2): App also OWNS the tab-bar position — seeded from the shared settings snapshot
+// (tabs.barPosition), kept live over settings:changed (payload-guarded; junk inert), and applied
+// as an `app--bar-<position>` class on main.app. The JSX order NEVER changes (hosts first, strip
+// LAST): barLayoutFor's flex direction moves the bar to the edge, so the keyed hosts — and their
+// keep-alive terminals — are untouched by a position switch (the trmx-74 remount lesson).
 import { useEffect, useReducer, useRef, useState } from "react";
-import { TerminalView } from "./terminal/TerminalView";
+import { TerminalView, type SettingsObservation } from "./terminal/TerminalView";
 import { TabStrip } from "./tabs/TabStrip";
+import { barLayoutFor } from "./tabs/barLayout";
 import {
   initialTabsState,
   reduceTabs,
   tabBySessionId,
 } from "./tabs/tabState";
+import {
+  isTabBarPosition,
+  makeSettingsStore,
+  SETTINGS_CHANGED_EVENT,
+  type TabBarPosition,
+} from "./settings/settingsStore";
 import { describeTarget, tabKeyAction } from "./tabs/tabKeymap";
 import { useBackend } from "./ipc/useBackend";
 import {
@@ -115,6 +128,30 @@ const realObserveTabsAction: TabsActionObservation = (onAction) => {
   };
 };
 
+// trmx-81: observe settings:changed for the tab-bar position — the same teardown-before-resolve
+// pattern as realObserveTabsAction above (TerminalView's realObserveSettings). A module-level
+// const, NOT an inline arrow: it is an effect dep, and a fresh identity every render would
+// re-subscribe on every App re-render.
+const realObserveAppSettings: SettingsObservation = (onChange) => {
+  let live = true;
+  let unlisten: (() => void) | undefined;
+  realEventBus
+    .listen(SETTINGS_CHANGED_EVENT, (payload) => {
+      if (live) onChange(payload);
+    })
+    .then((u) => {
+      if (live) unlisten = u;
+      else u();
+    })
+    .catch(() => {
+      // No Tauri runtime — the bar stays where hydration seeded it for this session.
+    });
+  return () => {
+    live = false;
+    unlisten?.();
+  };
+};
+
 export interface AppProps {
   /** Injection seam for tests; defaults to useBackend's attachTerminal (the live PTY wiring). */
   attach?: AttachFn;
@@ -128,6 +165,8 @@ export interface AppProps {
   observePtyExited?: PtyExitedObservation;
   /** Injection seam for tests; defaults to the real `session:title-hint` subscription (trmx-75). */
   observeTitleHint?: TitleHintObservation;
+  /** Injection seam for tests; defaults to the real `settings:changed` subscription (trmx-81). */
+  observeSettings?: SettingsObservation;
   /** Injection seam for tests; defaults to retitling the native window (trmx-75). */
   setWindowTitle?: (title: string) => void;
   /** Injection seam for tests; defaults to the real `set_session_title` core mirror (trmx-75). */
@@ -141,6 +180,7 @@ export function App({
   observeTabsAction = realObserveTabsAction,
   observePtyExited = onPtyExited,
   observeTitleHint = onTitleHint,
+  observeSettings = realObserveAppSettings,
   setWindowTitle = realSetWindowTitle,
   mirrorTitle = setSessionTitle,
 }: AppProps = {}) {
@@ -151,6 +191,11 @@ export function App({
   // trmx-75: the tab whose label is an inline rename input (null = not renaming). While non-null,
   // focus-follows-activation is suppressed so the input keeps the keyboard.
   const [renamingTabId, setRenamingTabId] = useState<number | null>(null);
+  // trmx-81: the tab bar's window edge, seeded from the shared settings snapshot (hydrated before
+  // mount, main.tsx boot order) — the lazy initializer reads it exactly once per App lifetime.
+  const [barPosition, setBarPosition] = useState<TabBarPosition>(() =>
+    makeSettingsStore().get("tabs.barPosition"),
+  );
 
   // Mirror of the reducer state for callbacks that fire OUTSIDE the render cycle (attach
   // resolutions, event subscriptions) — kept current by the effect below.
@@ -369,6 +414,20 @@ export function App({
     };
   }, [observePtyExited, observeTitleHint, observeTabsAction]);
 
+  // trmx-81: keep the bar position live over settings:changed (the settings window, a config-file
+  // hand edit, a reset's default broadcast). Its OWN effect, dep'd only on the stable observation
+  // seam — it must never re-run with the tab-state effects (no effect-dep churn; every identity
+  // App passes to TerminalView stays untouched by a position change). Payloads are untrusted
+  // input: only a well-formed tabs.barPosition with a registry-valid value updates state.
+  useEffect(() => {
+    const stopSettings = observeSettings((payload) => {
+      if (typeof payload !== "object" || payload === null) return;
+      const { key, value } = payload as { key?: unknown; value?: unknown };
+      if (key === "tabs.barPosition" && isTabBarPosition(value)) setBarPosition(value);
+    });
+    return stopSettings;
+  }, [observeSettings]);
+
   // ⌘1..⌘9 select a tab by index (⌘9 = last, the reducer's rule). Capture phase on window so the
   // chord wins even while xterm's helper textarea has focus; tabKeymap vetoes non-terminal
   // editables and foreign chords, so nothing else is ever intercepted.
@@ -425,8 +484,12 @@ export function App({
     }
   }, [state.tabs]);
 
+  // trmx-81: the position class + the strip's axis, both from the pure layout engine. The class
+  // drives index.css's flex-direction variants; the JSX below keeps hosts-then-strip order ALWAYS.
+  const barLayout = barLayoutFor(barPosition);
+
   return (
-    <main className="app">
+    <main className={`app app--bar-${barPosition}`}>
       <div className="tab-hosts">
         {state.tabs.map((tab) => (
           // KEEP-ALIVE: every tab's host stays mounted (keyed by the never-reused tabId);
@@ -449,6 +512,7 @@ export function App({
         tabs={state.tabs}
         activeTabId={state.activeTabId}
         renamingTabId={renamingTabId}
+        orientation={barLayout.orientation}
         onActivate={(tabId) => dispatch({ kind: "activateTab", tabId })}
         onClose={requestCloseTab}
         onNew={requestNewTab}

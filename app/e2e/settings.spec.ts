@@ -58,10 +58,21 @@ test("?window=settings&section=appearance shows the Theme row; a swatch click re
   await expect(page.locator(".tx-nav-item").first()).toHaveText("Appearance");
   await expect(page.locator(".tx-nav-item--active")).toHaveText("Appearance");
 
-  // The Theme row: six labeled swatches in the issue's order.
-  const swatches = page.getByRole("radio");
+  // The Theme row: six labeled swatches in the issue's order (scoped to the Theme radiogroup —
+  // trmx-81 adds the Tab bar Position radiogroup below it).
+  const swatches = page.getByRole("radiogroup", { name: "Theme" }).getByRole("radio");
   await expect(swatches).toHaveCount(6);
   await expect(swatches).toHaveText(["White", "Paper", "Mint", "Sepia", "Night", "Solarized"]);
+
+  // trmx-81 (FR-2.2): the Tab bar group below Theme — the four-way Position segmented control,
+  // Bottom (the registry default) selected. The live application is covered by
+  // tab-position.spec.ts; the write-through/broadcast by the AppearanceSettings unit suite.
+  const positions = page.getByRole("radiogroup", { name: "Tab bar position" }).getByRole("radio");
+  await expect(positions).toHaveText(["Top", "Bottom", "Left", "Right"]);
+  await expect(page.getByRole("radio", { name: "Bottom" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
 
   // The COMPUTED background of an element inside .tx-settings follows the selection instantly —
   // the runtime documentElement vars must beat the :root fallback (plan D4).

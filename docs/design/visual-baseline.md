@@ -141,6 +141,18 @@ under `docs/design/visual-baseline/` when size allows, else linked from the lock
 **No pixel-diff CI gate** — font rendering makes it flaky; the gate is this protocol + the PR
 screenshot review (the issue's explicit call).
 
+### Tab-bar positions (trmx-81)
+
+FR-2.2 makes the tab bar's window edge configurable (`tabs.barPosition`: top / bottom / left /
+right; bottom stays the vision default, so the §5 six-shot set is unchanged). The strip consumes
+the same `--tx-*` tokens on every edge (no new color literals — the §2 consistency rule holds);
+the vertical left/right rails are a new *layout*, not a new palette. Their review evidence is a
+**six-theme side-bar screenshot set (bottom + left minimum, same 1280×800 window, same §5
+protocol)** captured by the **operator's visual-review pass** (`scripts/visual-review.sh`) from
+the packaged app — deliberately NOT a CI artifact, per the no-pixel-diff rule above. Functional
+coverage (edge class, rail geometry, tab flows per position) is CI-gated instead, in
+`app/e2e/tab-position.spec.ts` and the tabState/barLayout/TabStrip unit suites.
+
 ## 6. The forward rule (v0.0.6 / v0.0.7)
 
 - **Splits (v0.0.6):** pane chrome (dividers, focus dim, indicators) consumes existing tokens

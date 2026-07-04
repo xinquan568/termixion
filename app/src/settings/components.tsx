@@ -8,7 +8,9 @@
 // danger button variant the Reset section uses.
 // trmx-80 (FR-13) adds the commit-on-blur/Enter fields the Terminal page's scrollback/font rows
 // use: NumberField (clamped into [min, max], junk reverts, optional ± stepper) and TextField.
-import { useEffect, useState, type ReactNode } from "react";
+// trmx-81 (FR-2.2) adds SegmentedControl — the N-way single-choice control the Appearance page's
+// Tab bar Position row uses (radiogroup semantics, roving tabindex, arrow-key stepping).
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 /** A titled group of setting rows (title omitted when empty). */
 export function SettingsGroup({ title, children }: { title?: string; children: ReactNode }) {
@@ -244,6 +246,72 @@ export function NumberField({
         </button>
       ) : null}
     </span>
+  );
+}
+
+/** trmx-81 (FR-2.2): an N-way single-choice control (the macOS segmented look) with radiogroup
+ * semantics — role="radiogroup" on the frame, role="radio" + aria-checked per segment. CONTROLLED:
+ * the checked segment follows `value`; a click reports through onChange, and clicking the
+ * already-selected segment is a NO-OP (a settings write is a deliberate act — no redundant config
+ * writes/broadcasts, the TextField/NumberField contract). Keyboard follows the native radio-group
+ * pattern: roving tabindex (only the selected segment is tabbable) and arrow keys step the
+ * selection with wraparound, moving focus along. */
+export function SegmentedControl<T extends string>({
+  value,
+  options,
+  onChange,
+  label,
+}: {
+  value: T;
+  options: ReadonlyArray<{ value: T; label: string }>;
+  onChange: (value: T) => void;
+  label?: string;
+}) {
+  const groupRef = useRef<HTMLDivElement>(null);
+
+  const select = (next: T) => {
+    if (next !== value) onChange(next);
+  };
+
+  // Arrow-key stepping: wrap around the option ring and carry focus to the new segment (the
+  // roving tabindex would otherwise strand focus on a now-untabbable button).
+  const step = (delta: number) => {
+    if (options.length === 0) return;
+    const current = options.findIndex((opt) => opt.value === value);
+    const next = ((current === -1 ? 0 : current) + delta + options.length) % options.length;
+    select(options[next].value);
+    const segments = groupRef.current?.querySelectorAll<HTMLButtonElement>("[role='radio']");
+    segments?.[next]?.focus();
+  };
+
+  return (
+    <div ref={groupRef} className="tx-segmented" role="radiogroup" aria-label={label}>
+      {options.map((opt) => {
+        const checked = opt.value === value;
+        return (
+          <button
+            key={opt.value}
+            type="button"
+            role="radio"
+            aria-checked={checked}
+            tabIndex={checked ? 0 : -1}
+            className={`tx-segmented__segment${checked ? " tx-segmented__segment--active" : ""}`}
+            onClick={() => select(opt.value)}
+            onKeyDown={(e) => {
+              if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+                e.preventDefault();
+                step(1);
+              } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+                e.preventDefault();
+                step(-1);
+              }
+            }}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

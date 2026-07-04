@@ -448,6 +448,37 @@ describe("moveTab", () => {
   });
 });
 
+// trmx-81 (FR-2.2): AXIS-FREEDOM — moveTab is pure splice semantics over the tab ORDER. The
+// reducer never sees an axis: whether TabStrip mapped the pointer's X (horizontal bar) or Y
+// (vertical rail) onto the slots, the same {from, to} yields the same state. These tests document
+// that contract for the vertical case — deliberately NO reducer change ships with them.
+describe("moveTab axis-freedom (trmx-81)", () => {
+  it("a vertical drag's slots reorder identically to a horizontal drag's (same splice)", () => {
+    const state = withTabs(3); // [1, 2, 3] — rendered as a vertical rail, slots top-to-bottom
+    // Dragging the TOP tab past the bottom tab's Y midpoint = {from: 0, to: 2}, exactly what a
+    // rightward drag on a horizontal strip produces.
+    const down = reduceTabs(state, { kind: "moveTab", from: 0, to: 2 });
+    expect(tabIds(down)).toEqual([2, 3, 1]);
+    // And the BOTTOM tab dragged up to the top slot.
+    const up = reduceTabs(state, { kind: "moveTab", from: 2, to: 0 });
+    expect(tabIds(up)).toEqual([3, 1, 2]);
+  });
+
+  it("vertical no-ops match horizontal no-ops: a same-slot drop is the identical state (===)", () => {
+    const state = withTabs(3);
+    // A vertical drag that returns to its own row commits nothing…
+    expect(reduceTabs(state, { kind: "moveTab", from: 1, to: 1 })).toBe(state);
+    // …and a drag past the rail's end clamps onto the last slot (same clamp as horizontal).
+    expect(tabIds(reduceTabs(state, { kind: "moveTab", from: 0, to: 99 }))).toEqual([2, 3, 1]);
+  });
+
+  it("activation identity survives a vertical reorder (identity, not row index)", () => {
+    const state = reduceTabs(withTabs(3), { kind: "activateTab", tabId: 1 });
+    const next = reduceTabs(state, { kind: "moveTab", from: 0, to: 2 });
+    expect(next.activeTabId).toBe(1); // still tab 1, now the bottom row
+  });
+});
+
 describe("tabBySessionId", () => {
   it("finds the tab bound to a session", () => {
     const state = run(
