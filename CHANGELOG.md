@@ -5,6 +5,13 @@ The user-facing changes to Termixion are documented here. The format follows
 [Semantic Versioning](https://semver.org). Auto-generated from Conventional Commits by git-cliff;
 internal changes (build / CI / tests / refactors / docs) live in the git history and the linked issues.
 
+## [0.0.7] - 2026-07-05
+
+### Added
+- User theme files with tolerant validation, hot reload, duplicate-a-builtin (trmx-89) (#120)
+- Per-pane badges via ⇧⌘B and OSC 1337 SetBadgeFormat (trmx-90) (#121)
+- Basic activity indicator — green line while a command runs (trmx-91) (#122)
+
 ## [0.0.6] - 2026-07-05
 
 ### Added
