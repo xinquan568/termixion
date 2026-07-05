@@ -496,6 +496,79 @@ describe("SettingsApp — user themes hydration (trmx-89, 4b)", () => {
     );
   });
 
+  // trmx-89 review-1: the highest-risk integration path — a user theme surfaced by themes_read, once
+  // selected, actually APPLIES its colors end-to-end (service -> registry -> picker -> apply). "Cool"
+  // is spec(true,"#000000","#ffffff"), so its derived --tx-bg is #000000.
+  it("selecting a hydrated user theme applies its colors to the settings surface", async () => {
+    const bus = fakeListen();
+    const invoke = vi
+      .fn<InvokeFn>()
+      .mockImplementation((cmd) =>
+        Promise.resolve(cmd === "themes_read" ? [validUserEntry("user:cool")] : null),
+      );
+    renderWithThemes(invoke, bus.listen);
+
+    const swatch = await screen.findByRole("radio", { name: "Cool" });
+    fireEvent.click(swatch);
+    // The shell's applyTxTheme(theme) effect painted the user theme's background onto documentElement.
+    await waitFor(() =>
+      expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#000000"),
+    );
+  });
+
+  // An INVALID user theme from themes_read is LISTED but inert — no radio role, an "invalid" badge.
+  it("lists an invalid user theme as inert with an invalid badge (not selectable)", async () => {
+    const bus = fakeListen();
+    const invoke = vi.fn<InvokeFn>().mockImplementation((cmd) =>
+      Promise.resolve(
+        cmd === "themes_read"
+          ? [
+              {
+                id: "user:broken",
+                source: "user",
+                valid: false,
+                spec: null,
+                warnings: [{ type: "MissingRequired", key: "color.text.primary" }],
+              },
+            ]
+          : null,
+      ),
+    );
+    renderWithThemes(invoke, bus.listen);
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("themes_read"));
+    // It shows up (an "invalid" badge is rendered) but NOT as a selectable radio.
+    await waitFor(() => expect(screen.getByText("invalid")).toBeInTheDocument());
+    expect(screen.queryByRole("radio", { name: "Broken" })).toBeNull();
+  });
+
+  // Duplicate-a-builtin writes a full-token TOML body (themes_write) that carries the parser's grammar
+  // — the zero-warning round-trip itself is pinned by the core golden/example tests + the serializer's
+  // shape-parity test; here we verify the integration wiring calls themes_write with a real body.
+  it("Duplicate on a built-in writes a full-token TOML body via themes_write", async () => {
+    const bus = fakeListen();
+    const writes: Array<{ stem: unknown; text: unknown }> = [];
+    const invoke = vi.fn<InvokeFn>().mockImplementation((cmd, args) => {
+      if (cmd === "themes_read") return Promise.resolve([]);
+      if (cmd === "themes_write") {
+        writes.push(args as { stem: unknown; text: unknown });
+        return Promise.resolve(`/themes/${(args as { stem: string }).stem}.toml`);
+      }
+      return Promise.resolve(null);
+    });
+    renderWithThemes(invoke, bus.listen);
+
+    const dupNight = await screen.findByRole("button", { name: "Duplicate Night" });
+    fireEvent.click(dupNight);
+
+    await waitFor(() => expect(writes.length).toBe(1));
+    expect(writes[0].stem).toBe("night-copy");
+    const body = writes[0].text as string;
+    expect(body).toContain("is_dark = true");
+    expect(body).toContain("[terminal.ansi]");
+    expect(body).toContain("[color.bg]");
+  });
+
   it("re-hydrates on a themes:changed event (invoke reads themes_read again)", async () => {
     const bus = fakeListen();
     const invoke = vi.fn<InvokeFn>().mockResolvedValue([]);
