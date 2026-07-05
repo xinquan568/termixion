@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import { StrictMode } from "react";
 import type { SessionInfo } from "./ipc/backend";
+import type { FrameSchedule } from "./terminal/resizeCoalescer";
 import type { TerminalHandle } from "./terminal/mountTerminal";
 
 // Hoisted recorder shared with the TerminalView stub (vi.mock factories run before the test
@@ -122,8 +123,35 @@ function makeHintObservation() {
   };
 }
 
+// A controllable frame schedule for the divider-drag rAF coalescing (trmx-85): the test flushes the
+// pending frame deterministically and `scheduleCalls` proves coalescing (many moves → one frame).
+function makeFrameSchedule() {
+  let pending: (() => void) | null = null;
+  let scheduleCalls = 0;
+  const schedule: FrameSchedule = (cb) => {
+    scheduleCalls += 1;
+    pending = cb;
+    return () => {
+      pending = null;
+    };
+  };
+  return {
+    schedule,
+    flush() {
+      const cb = pending;
+      pending = null;
+      cb?.();
+    },
+    hasPending: () => pending !== null,
+    get scheduleCalls() {
+      return scheduleCalls;
+    },
+  };
+}
+
 function renderApp(opts: { strict?: boolean } = {}) {
   const { attach, calls } = makeAttach();
+  const frame = makeFrameSchedule();
   const closeWindow = vi.fn();
   const closeSession = vi.fn(() => Promise.resolve());
   const tabsAction = makeObservation<unknown>();
@@ -142,6 +170,7 @@ function renderApp(opts: { strict?: boolean } = {}) {
     observeSettings: settingsChanged.observe,
     setWindowTitle,
     mirrorTitle,
+    dragSchedule: frame.schedule,
   };
   const ui = opts.strict ? (
     <StrictMode>
@@ -163,6 +192,7 @@ function renderApp(opts: { strict?: boolean } = {}) {
     settingsChanged,
     setWindowTitle,
     mirrorTitle,
+    frame,
   };
 }
 
@@ -1050,5 +1080,152 @@ describe("App split panes (trmx-84)", () => {
     expect(screen.queryByTestId("tab-rename-input")).not.toBeInTheDocument();
     expect(screen.queryByTestId("pane-host-2")).not.toBeInTheDocument();
     expect(screen.getByTestId("pane-host-1").className).toContain("pane-host--focused");
+  });
+});
+
+// trmx-85 (FR-3.3): divider drag-resize. Dragging a divider maps the pointer → a clamped ratio for
+// that split (dividerDrag.ts), dispatched one setPaneRatio per animation frame; a drag overlay +
+// setPointerCapture shield the terminals; double-click resets to 50/50. Geometry: an 800px content
+// area split once puts the divider leading edge at x=400 (pane 1 = 400px wide).
+describe("App divider drag (trmx-85)", () => {
+  const cmdD = () => fireEvent.keyDown(document.body, { key: "d", metaKey: true });
+  const paneW = (id: number) => Number.parseInt(screen.getByTestId(`pane-host-${id}`).style.width, 10);
+
+  async function splitOnce(ctx: ReturnType<typeof renderApp>) {
+    await resolveAttach(ctx.calls[0], { sessionId: 1, title: "one" });
+    cmdD(); // pane 1 | pane 2; divider "root" at x≈400
+    return screen.getByTestId("pane-divider-root");
+  }
+
+  it("drag resizes the split, coalesced to one dispatch per frame, keep-alive held", async () => {
+    const ctx = renderApp();
+    const divider = await splitOnce(ctx);
+    expect(paneW(1)).toBe(400);
+
+    fireEvent.pointerDown(divider, { pointerId: 1, clientX: 400, clientY: 300, button: 0 });
+    fireEvent.pointerMove(divider, { pointerId: 1, clientX: 300, clientY: 300 });
+    fireEvent.pointerMove(divider, { pointerId: 1, clientX: 200, clientY: 300 }); // same frame
+    expect(ctx.frame.scheduleCalls).toBe(1); // two moves coalesced into ONE frame
+    await act(async () => ctx.frame.flush());
+
+    expect(paneW(1)).toBeLessThanOrEqual(210); // followed the pointer to ~200
+    expect(paneW(2)).toBeGreaterThan(400); // the sibling grew
+    expect(recorder.unmounts).toBe(0); // no terminal remounted across the drag
+    fireEvent.pointerUp(divider, { pointerId: 1, clientX: 200, clientY: 300 });
+  });
+
+  it("does NOT jump the divider when the grab landed beside the 1px line (grab offset)", async () => {
+    const ctx = renderApp();
+    const divider = await splitOnce(ctx);
+    // Grab 3px to the right of the visual line (still inside the widened hit area).
+    fireEvent.pointerDown(divider, { pointerId: 1, clientX: 403, clientY: 300, button: 0 });
+    // A move with the pointer STILL at 403 must keep the divider at 400 (no snap to 403).
+    fireEvent.pointerMove(divider, { pointerId: 1, clientX: 403, clientY: 300 });
+    await act(async () => ctx.frame.flush());
+    expect(paneW(1)).toBe(400); // unchanged — no jump
+    fireEvent.pointerUp(divider, { pointerId: 1, clientX: 403, clientY: 300 });
+  });
+
+  it("shows the drag overlay only during a drag, with the right cursor class", async () => {
+    const ctx = renderApp();
+    const divider = await splitOnce(ctx);
+    expect(screen.queryByTestId("pane-drag-overlay")).not.toBeInTheDocument();
+
+    fireEvent.pointerDown(divider, { pointerId: 1, clientX: 400, clientY: 300, button: 0 });
+    expect(screen.getByTestId("pane-drag-overlay").className).toContain("pane-drag-overlay--row");
+
+    fireEvent.pointerUp(divider, { pointerId: 1, clientX: 400, clientY: 300 });
+    expect(screen.queryByTestId("pane-drag-overlay")).not.toBeInTheDocument();
+  });
+
+  it("double-click resets the split to 50/50", async () => {
+    const ctx = renderApp();
+    const divider = await splitOnce(ctx);
+    fireEvent.pointerDown(divider, { pointerId: 1, clientX: 400, clientY: 300, button: 0 });
+    fireEvent.pointerMove(divider, { pointerId: 1, clientX: 200, clientY: 300 });
+    await act(async () => ctx.frame.flush());
+    fireEvent.pointerUp(divider, { pointerId: 1, clientX: 200, clientY: 300 });
+    expect(paneW(1)).toBeLessThan(300);
+
+    await act(async () => fireEvent.doubleClick(screen.getByTestId("pane-divider-root")));
+    expect(paneW(1)).toBe(400); // back to half
+  });
+
+  it("pointerup COMMITS the final drag position even if the frame never fired (no lost release)", async () => {
+    const ctx = renderApp();
+    const divider = await splitOnce(ctx);
+    fireEvent.pointerDown(divider, { pointerId: 1, clientX: 400, clientY: 300, button: 0 });
+    fireEvent.pointerMove(divider, { pointerId: 1, clientX: 200, clientY: 300 }); // queues a frame
+    // Release BEFORE flushing the frame — a quick drag-and-release must STILL apply the final position.
+    await act(async () => {
+      fireEvent.pointerUp(divider, { pointerId: 1, clientX: 200, clientY: 300 });
+    });
+    expect(ctx.frame.hasPending()).toBe(false); // the frame was cancelled (no double dispatch)
+    expect(paneW(1)).toBeLessThanOrEqual(210); // the drag to ~200 WAS committed on release
+    await act(async () => ctx.frame.flush()); // a later flush is a no-op
+    expect(paneW(1)).toBeLessThanOrEqual(210);
+  });
+
+  it("pointercancel ABORTS the drag (no commit) and removes the overlay", async () => {
+    const ctx = renderApp();
+    const divider = await splitOnce(ctx);
+    fireEvent.pointerDown(divider, { pointerId: 1, clientX: 400, clientY: 300, button: 0 });
+    fireEvent.pointerMove(divider, { pointerId: 1, clientX: 200, clientY: 300 }); // would move to ~200
+    expect(screen.getByTestId("pane-drag-overlay")).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.pointerCancel(divider, { pointerId: 1, clientX: 200, clientY: 300 });
+    });
+    expect(screen.queryByTestId("pane-drag-overlay")).not.toBeInTheDocument();
+    expect(ctx.frame.hasPending()).toBe(false);
+    expect(paneW(1)).toBe(400); // aborted — the pending position was NOT committed
+  });
+
+  it("lostpointercapture aborts the drag; a nested/column divider drags its own split; content offset respected", async () => {
+    const ctx = renderApp();
+    const divider = await splitOnce(ctx); // panes 1 | 2 (row divider "root")
+    // lostpointercapture aborts like pointercancel.
+    fireEvent.pointerDown(divider, { pointerId: 1, clientX: 400, clientY: 300, button: 0 });
+    fireEvent.pointerMove(divider, { pointerId: 1, clientX: 250, clientY: 300 });
+    fireEvent.lostPointerCapture(divider, { pointerId: 1 });
+    expect(ctx.frame.hasPending()).toBe(false);
+    expect(paneW(1)).toBe(400); // aborted
+
+    // Split pane 2 BELOW → a nested column divider; dragging it must change only that split.
+    fireEvent.keyDown(document.body, { key: "d", metaKey: true, shiftKey: true }); // ⇧⌘D on focused pane 2
+    const p1Before = paneW(1);
+    const colDivider = screen.getByTestId("pane-divider-second"); // the nested split under the root's "second"
+    fireEvent.pointerDown(colDivider, { pointerId: 2, clientX: 600, clientY: 300, button: 0 });
+    fireEvent.pointerMove(colDivider, { pointerId: 2, clientX: 600, clientY: 150 }); // drag the column divider up
+    await act(async () => ctx.frame.flush());
+    fireEvent.pointerUp(colDivider, { pointerId: 2, clientX: 600, clientY: 150 });
+    // Pane 1 (in the ROOT split, untouched by the nested column drag) keeps its width.
+    expect(paneW(1)).toBe(p1Before);
+  });
+
+  it("maps the pointer through a NON-ZERO content-area offset (subtracts contentRect.left)", async () => {
+    const ctx = renderApp();
+    const divider = await splitOnce(ctx);
+    // Place the content area (.tab-hosts) at viewport (100,50): a content-x of 400 is viewport-x 500.
+    const hosts = ctx.view.container.querySelector(".tab-hosts")!;
+    hosts.getBoundingClientRect = () =>
+      ({ left: 100, top: 50, right: 900, bottom: 650, width: 800, height: 600, x: 100, y: 50, toJSON: () => ({}) }) as DOMRect;
+    // Grab the divider (viewport 500 = content 400, offset 0), drag to viewport 300 (= content 200).
+    fireEvent.pointerDown(divider, { pointerId: 1, clientX: 500, clientY: 350, button: 0 });
+    fireEvent.pointerMove(divider, { pointerId: 1, clientX: 300, clientY: 350 });
+    await act(async () => ctx.frame.flush());
+    // If the offset were NOT subtracted, content-x would be 300 (pane ~300); it is 200 (pane ~200).
+    expect(paneW(1)).toBeLessThanOrEqual(210);
+    fireEvent.pointerUp(divider, { pointerId: 1, clientX: 300, clientY: 350 });
+  });
+
+  it("unmounting mid-drag cancels the pending frame (no dispatch into a dead reducer)", async () => {
+    const ctx = renderApp();
+    const divider = await splitOnce(ctx);
+    fireEvent.pointerDown(divider, { pointerId: 1, clientX: 400, clientY: 300, button: 0 });
+    fireEvent.pointerMove(divider, { pointerId: 1, clientX: 200, clientY: 300 }); // queues a frame
+    expect(ctx.frame.hasPending()).toBe(true);
+    ctx.view.unmount();
+    expect(ctx.frame.hasPending()).toBe(false); // the unmount cleanup cancelled it
+    expect(() => ctx.frame.flush()).not.toThrow(); // flushing after unmount is a safe no-op
   });
 });

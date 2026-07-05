@@ -28,7 +28,14 @@
 // - Titles (trmx-75, now per pane): the tab label + native window title follow the ACTIVE tab's
 //   FOCUSED pane title; a background pane's OSC/hint updates its own state only. Rename targets the
 //   focused pane's manual title.
-import { useEffect, useReducer, useRef, useState } from "react";
+import {
+  useEffect,
+  useReducer,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { TerminalView, type SettingsObservation } from "./terminal/TerminalView";
 import { TabStrip } from "./tabs/TabStrip";
 import { barLayoutFor, labelOrientationFor } from "./tabs/barLayout";
@@ -39,7 +46,16 @@ import {
   reduceTabs,
   tabPaneIds,
 } from "./tabs/tabState";
-import { solveRects, type PaneId, type Rect, type SplitDir } from "./panes/layoutTree";
+import {
+  MIN_PANE_PX,
+  solveRects,
+  type DividerRect,
+  type PaneId,
+  type Rect,
+  type SplitDir,
+} from "./panes/layoutTree";
+import { grabOffsetOf, ratioForDrag, RESET_RATIO } from "./panes/dividerDrag";
+import { type FrameSchedule } from "./terminal/resizeCoalescer";
 import {
   isLabelOrientation,
   isTabBarPosition,
@@ -66,8 +82,16 @@ import { UpdateAuthorityHost } from "./update/UpdateAuthorityHost";
 /** The menu's tab-intent broadcast (main.rs emits "new"/"close"/"next"/"prev"/split verbs). */
 export const TABS_ACTION_EVENT = "tabs:action";
 
-/** The usability floor on "unlimited" splitting: a pane may not shrink below this (px). */
-const MIN_PANE = { width: 80, height: 60 };
+// trmx-85: the drag rAF schedule (one setPaneRatio per frame, the trmx-67 coalescer idiom). A
+// module-level const — NOT an inline arrow — and injectable via AppProps for deterministic tests.
+const realFrameSchedule: FrameSchedule = (cb) => {
+  if (typeof requestAnimationFrame === "undefined") {
+    const t = setTimeout(cb, 16);
+    return () => clearTimeout(t);
+  }
+  const id = requestAnimationFrame(cb);
+  return () => cancelAnimationFrame(id);
+};
 
 /** The default content bounds before the real ResizeObserver measures the pane area (px). */
 const DEFAULT_BOUNDS: Rect = { x: 0, y: 0, width: 800, height: 600 };
@@ -170,6 +194,8 @@ export interface AppProps {
   setWindowTitle?: (title: string) => void;
   /** Injection seam for tests; defaults to the real `set_session_title` core mirror (trmx-75). */
   mirrorTitle?: (sessionId: number, title: string) => Promise<void>;
+  /** Injection seam for tests; the frame schedule that throttles divider-drag dispatches (trmx-85). */
+  dragSchedule?: FrameSchedule;
 }
 
 export function App({
@@ -182,6 +208,7 @@ export function App({
   observeSettings = realObserveAppSettings,
   setWindowTitle = realSetWindowTitle,
   mirrorTitle = setSessionTitle,
+  dragSchedule = realFrameSchedule,
 }: AppProps = {}) {
   const { attachTerminal } = useBackend();
   const attachFn = attach ?? attachTerminal;
@@ -417,7 +444,7 @@ export function App({
     const tab = s.tabs.find((t) => t.tabId === s.activeTabId);
     if (!tab) return;
     const treeDir: SplitDir = dir === "right" ? "row" : "column";
-    if (!canSplitFocused(tab, treeDir, boundsRef.current, MIN_PANE)) return; // won't fit — no-op
+    if (!canSplitFocused(tab, treeDir, boundsRef.current, MIN_PANE_PX)) return; // won't fit — no-op
     const upcomingPaneId = s.nextPaneId;
     const focusedStore = storesRef.current.get(tab.focusedPaneId);
     pendingCwdRef.current.set(upcomingPaneId, focusedStore?.get() ?? undefined);
@@ -566,6 +593,116 @@ export function App({
     }
   }, [state.tabs]);
 
+  // trmx-85 (FR-3.3): divider drag-resize. A pointer drag on a divider maps the pointer (converted to
+  // content-area coords, matching solveRects' space) → a clamped ratio for that split (dividerDrag.ts),
+  // dispatched at most ONCE per animation frame (coalesced, the trmx-67 idiom). `setPointerCapture` +
+  // a drag overlay shield the terminals so xterm sees no stray pointer events mid-drag; double-click
+  // resets a divider to 50/50. All drag state is refs (out-of-render); `dragDir` drives the overlay.
+  const dragScheduleRef = useRef(dragSchedule);
+  dragScheduleRef.current = dragSchedule;
+  const [dragDir, setDragDir] = useState<SplitDir | null>(null);
+  const dragRef = useRef<{
+    pointerId: number;
+    tabId: number;
+    path: DividerRect["path"];
+    dir: SplitDir;
+    bounds: Rect;
+    grabOffset: number;
+    contentLeft: number;
+    contentTop: number;
+  } | null>(null);
+  const pendingRatioRef = useRef<number | null>(null);
+  const frameCancelRef = useRef<(() => void) | null>(null);
+
+  // Dispatch the latest dragged ratio at most once per frame (coalesce raw pointermoves).
+  const scheduleRatioFlush = () => {
+    if (frameCancelRef.current) return; // a frame is already pending — coalesce into it
+    frameCancelRef.current = dragScheduleRef.current(() => {
+      frameCancelRef.current = null;
+      const d = dragRef.current;
+      const ratio = pendingRatioRef.current;
+      if (d && ratio !== null) dispatch({ kind: "setPaneRatio", tabId: d.tabId, path: d.path, ratio });
+    });
+  };
+
+  // End the drag. `commit` (pointerup) APPLIES the latest pending ratio synchronously first — a quick
+  // drag-and-release within a single animation frame must not be lost — whereas the abort paths
+  // (pointercancel / lostpointercapture / unmount) skip the commit. Either way the pending frame is
+  // cancelled and state cleared, so no dispatch ever lands after the drag has ended.
+  const endDrag = (commit: boolean) => {
+    if (commit) {
+      const d = dragRef.current;
+      const ratio = pendingRatioRef.current;
+      if (d && ratio !== null) dispatch({ kind: "setPaneRatio", tabId: d.tabId, path: d.path, ratio });
+    }
+    if (frameCancelRef.current) {
+      frameCancelRef.current();
+      frameCancelRef.current = null;
+    }
+    pendingRatioRef.current = null;
+    dragRef.current = null;
+    setDragDir(null);
+  };
+
+  const pointerMainOf = (e: ReactPointerEvent, dir: SplitDir, left: number, top: number) =>
+    dir === "row" ? e.clientX - left : e.clientY - top;
+
+  // pointerdown records the grab offset (pointer − the visual line's leading edge) so the divider does
+  // not jump to the cursor when the grab landed beside the 1px line inside the widened hit area.
+  const onDividerPointerDown = (tabId: number, d: DividerRect) => (e: ReactPointerEvent) => {
+    if (e.button !== 0) return;
+    e.stopPropagation(); // a divider grab must never focus a pane
+    const contentRect = contentRef.current?.getBoundingClientRect();
+    const contentLeft = contentRect?.left ?? 0;
+    const contentTop = contentRect?.top ?? 0;
+    const pointerMain = pointerMainOf(e, d.dir, contentLeft, contentTop);
+    const leadingEdge = d.dir === "row" ? d.rect.x : d.rect.y;
+    dragRef.current = {
+      pointerId: e.pointerId,
+      tabId,
+      path: d.path,
+      dir: d.dir,
+      bounds: d.bounds,
+      grabOffset: grabOffsetOf(pointerMain, leadingEdge),
+      contentLeft,
+      contentTop,
+    };
+    (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+    setDragDir(d.dir);
+  };
+
+  const onDividerPointerMove = (e: ReactPointerEvent) => {
+    const d = dragRef.current;
+    if (!d || d.pointerId !== e.pointerId) return;
+    e.stopPropagation();
+    const pointerMain = pointerMainOf(e, d.dir, d.contentLeft, d.contentTop);
+    pendingRatioRef.current = ratioForDrag({ pointerMain, grabOffset: d.grabOffset, bounds: d.bounds, dir: d.dir });
+    scheduleRatioFlush();
+  };
+
+  const onDividerPointerUp = (e: ReactPointerEvent) => {
+    const d = dragRef.current;
+    if (!d || d.pointerId !== e.pointerId) return;
+    e.stopPropagation();
+    (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
+    endDrag(true); // commit the final drag position
+  };
+
+  // pointercancel / lostpointercapture ABORT the drag (no commit) — no stuck overlay / stale frame.
+  const onDividerPointerCancel = () => endDrag(false);
+
+  const onDividerDoubleClick = (tabId: number, path: DividerRect["path"]) => (e: ReactMouseEvent) => {
+    e.stopPropagation();
+    dispatch({ kind: "setPaneRatio", tabId, path, ratio: RESET_RATIO });
+  };
+
+  // Cleanup on unmount: a mid-drag unmount must not leave a queued frame to dispatch into a dead reducer.
+  useEffect(() => {
+    return () => {
+      if (frameCancelRef.current) frameCancelRef.current();
+    };
+  }, []);
+
   // trmx-81: the position class + the strip's axis. The JSX order NEVER changes (hosts first, strip
   // LAST): barLayoutFor's flex direction moves the bar; the keyed pane hosts stay put (keep-alive).
   const barLayout = barLayoutFor(barPosition);
@@ -616,7 +753,9 @@ export function App({
                 </div>
               ))}
               {solved.dividers.map((d) => (
-                // Static 1px divider lines (trmx-84). Drag-resize is FR-3.3; chrome is FR-3.6.
+                // trmx-85: 1px visual line + a widened (~7px) hit area (index.css) that drag-resizes the
+                // split. Pointer handlers stopPropagation so a grab never focuses a pane; double-click
+                // resets to 50/50. Chrome/styling is FR-3.6.
                 <div
                   key={`divider-${d.path.join("-") || "root"}`}
                   className={`pane-divider pane-divider--${d.dir}`}
@@ -628,11 +767,25 @@ export function App({
                     width: d.rect.width,
                     height: d.rect.height,
                   }}
+                  onPointerDown={onDividerPointerDown(tab.tabId, d)}
+                  onPointerMove={onDividerPointerMove}
+                  onPointerUp={onDividerPointerUp}
+                  onPointerCancel={onDividerPointerCancel}
+                  onLostPointerCapture={onDividerPointerCancel}
+                  onDoubleClick={onDividerDoubleClick(tab.tabId, d.path)}
                 />
               ))}
             </div>
           );
         })}
+        {/* trmx-85: while dragging a divider, a transparent overlay owns the pointer (with the resize
+            cursor) so xterm receives no stray mouse events. Removed on every drag-end path (endDrag). */}
+        {dragDir !== null && (
+          <div
+            className={`pane-drag-overlay pane-drag-overlay--${dragDir}`}
+            data-testid="pane-drag-overlay"
+          />
+        )}
       </div>
       <TabStrip
         tabs={state.tabs}

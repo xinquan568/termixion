@@ -193,6 +193,8 @@ describe("solveRects", () => {
     expect(p2.width).toBe(399);
     expect(solved.dividers[0].rect).toEqual({ x: 399, y: 0, width: 2, height: 600 });
     expect(solved.dividers[0].dir).toBe("row");
+    // trmx-85: the divider carries the ENCLOSING rect it subdivides (the whole bounds for the root).
+    expect(solved.dividers[0].bounds).toEqual(BOUNDS);
     assertTiles(solved, BOUNDS);
   });
 
@@ -216,6 +218,23 @@ describe("solveRects", () => {
     const solved = solveRects(tree, BOUNDS, 1);
     expect(solved.panes.map((p) => p.paneId).sort()).toEqual([1, 2, 3]);
     assertTiles(solved, BOUNDS);
+  });
+
+  it("a nested divider's bounds is its enclosing SUB-rect, not the whole bounds (trmx-85)", () => {
+    // ( 1 | ( 2 / 3 ) ) — the inner column divider subdivides only the root's right child.
+    let tree = rowOf(1, 2);
+    tree = splitLeaf(tree, 2, "column", 3);
+    const solved = solveRects(tree, BOUNDS, 1);
+    const inner = solved.dividers.find((d) => d.dir === "column")!;
+    const p2 = solved.panes.find((p) => p.paneId === 2)!.rect;
+    const p3 = solved.panes.find((p) => p.paneId === 3)!.rect;
+    // The inner bounds spans exactly pane2 + its divider + pane3 (the enclosing sub-rect).
+    expect(inner.bounds.x).toBe(p2.x);
+    expect(inner.bounds.width).toBe(p2.width);
+    expect(inner.bounds.y).toBe(p2.y);
+    expect(inner.bounds.height).toBe(p2.height + inner.rect.height + p3.height);
+    // ...and NOT the whole bounds (it starts to the right of pane 1).
+    expect(inner.bounds.width).toBeLessThan(BOUNDS.width);
   });
 
   it("is deterministic (same input -> equal output)", () => {

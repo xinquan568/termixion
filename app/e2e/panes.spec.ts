@@ -69,3 +69,32 @@ test("panes stay within one tab; a new tab boots to a single pane again", async 
   await expect(page.getByTestId("tab-host-1")).toBeHidden();
   await expect(page.getByTestId("pane-host-1")).toBeAttached();
 });
+
+test("dragging a divider resizes the two panes (keep-alive); double-click resets to ~50/50", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await split(page); // panes 1 | 2 with a vertical (row) divider
+  const divider = page.locator(".pane-divider--row").first();
+  await expect(divider).toBeVisible();
+
+  const p1 = page.getByTestId("pane-host-1");
+  const beforeWidth = (await p1.boundingBox())!.width;
+  const box = (await divider.boundingBox())!;
+
+  // Grab the divider and drag it left; pane 1 must shrink and both panes stay attached (keep-alive).
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x - 150, box.y + box.height / 2, { steps: 8 });
+  await page.mouse.up();
+
+  const afterWidth = (await p1.boundingBox())!.width;
+  expect(afterWidth).toBeLessThan(beforeWidth - 20);
+  await expect(page.getByTestId("pane-host-1")).toBeAttached();
+  await expect(page.getByTestId("pane-host-2")).toBeAttached();
+
+  // Double-click the divider resets the split back to roughly half.
+  await divider.dblclick();
+  const resetWidth = (await p1.boundingBox())!.width;
+  expect(Math.abs(resetWidth - beforeWidth)).toBeLessThan(8);
+});
