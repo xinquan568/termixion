@@ -14,26 +14,38 @@ import { describe, expect, it } from "vitest";
 // executed here (it boots the real app), and no node:fs types are needed under the app tsconfig.
 import source from "./main.tsx?raw";
 
-describe("main.tsx startup ordering (trmx-80: hydrate → theme → gates → mount)", () => {
+describe("main.tsx startup ordering (trmx-80/89: hydrate → hydrateUserThemes → theme → gates → mount)", () => {
   const bootStart = source.indexOf("async function boot");
   const bootInvoke = source.indexOf("void boot()");
   const hydrateIndex = source.indexOf("hydrateSettings(");
+  // trmx-89: the user-theme registry hydration, between the settings read and the themed paint.
+  const hydrateThemesIndex = source.indexOf("hydrateUserThemes(");
   const themeIndex = source.indexOf("applyStartupTheme(");
   const smokeIndex = source.indexOf('realInvoke("smoke_config")');
   const perfIndex = source.indexOf('realInvoke("perf_config")');
   const mountIndex = source.indexOf("createRoot(");
 
   it("has boot() and every pinned step present", () => {
-    for (const index of [bootStart, bootInvoke, hydrateIndex, themeIndex, smokeIndex, perfIndex, mountIndex]) {
+    for (const index of [bootStart, bootInvoke, hydrateIndex, hydrateThemesIndex, themeIndex, smokeIndex, perfIndex, mountIndex]) {
       expect(index).toBeGreaterThan(-1);
     }
   });
 
-  it("awaits hydrateSettings FIRST inside boot(), before the theme paint", () => {
+  it("awaits hydrateSettings FIRST inside boot(), before the theme registry and the theme paint", () => {
     expect(hydrateIndex).toBeGreaterThan(bootStart);
     expect(hydrateIndex).toBeLessThan(bootInvoke);
     expect(source.slice(hydrateIndex - 20, hydrateIndex)).toContain("await ");
+    expect(hydrateIndex).toBeLessThan(hydrateThemesIndex);
     expect(hydrateIndex).toBeLessThan(themeIndex);
+  });
+
+  it("awaits hydrateUserThemes AFTER settings and BEFORE the theme paint (trmx-89: a user:<stem> id must resolve)", () => {
+    expect(hydrateThemesIndex).toBeGreaterThan(bootStart);
+    expect(hydrateThemesIndex).toBeLessThan(bootInvoke);
+    // It is awaited — the registry must be populated before applyStartupTheme resolves the id.
+    expect(source.slice(hydrateThemesIndex - 20, hydrateThemesIndex)).toContain("await ");
+    expect(hydrateThemesIndex).toBeGreaterThan(hydrateIndex);
+    expect(hydrateThemesIndex).toBeLessThan(themeIndex);
   });
 
   it("paints the theme INSIDE boot(), after hydration and before the smoke/perf gates", () => {

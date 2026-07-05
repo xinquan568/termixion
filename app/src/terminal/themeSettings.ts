@@ -8,7 +8,8 @@
 // be inert. Supersedes trmx-44's OS-appearance-driven palette selection.
 import type { ITheme } from "@xterm/xterm";
 import { buildXtermTheme } from "../theme/buildXtermTheme";
-import { isThemeId, type ThemeId } from "../theme/themes";
+import { isRegisteredThemeId } from "../theme/registry";
+import type { ThemeId } from "../theme/themes";
 import type { SettingsStore } from "../settings/settingsStore";
 
 /** The persisted (or first-run-derived) theme's xterm options for construction. */
@@ -32,7 +33,8 @@ export function applyThemeSettingsChange(
 ): ThemeId | null {
   if (typeof payload !== "object" || payload === null) return null;
   const { key, value } = payload as { key?: unknown; value?: unknown };
-  if (key !== "appearance.theme" || !isThemeId(value)) return null;
+  // trmx-89 (D): registry-aware — accepts a built-in OR a registered user id; junk stays inert.
+  if (key !== "appearance.theme" || !isRegisteredThemeId(value)) return null;
   terminal.options.theme = buildXtermTheme(value);
   return value;
 }

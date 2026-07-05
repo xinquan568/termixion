@@ -9,6 +9,7 @@ import { realInvoke } from "./ipc/backend";
 import { runPerf, realPerfDeps, type PerfLaunchConfig } from "./perf/runPerf";
 import { runSmoke, realSmokeDeps } from "./smoke/runSmoke";
 import { hydrateSettings } from "./settings/settingsStore";
+import { hydrateUserThemes } from "./theme/themesBackend";
 import { applyStartupTheme } from "./theme/applyStartupTheme";
 import "./index.css";
 
@@ -28,6 +29,12 @@ import "./index.css";
 // plain browser — is the terminal. A plain browser has no backend, so smoke_config rejects → app.
 async function boot() {
   await hydrateSettings();
+  // trmx-89: the persisted `appearance.theme` can be a `user:<stem>` id, so the runtime theme
+  // registry must be populated (themes_read → registerUserThemes) BEFORE the startup theme paint
+  // resolves that id — otherwise resolveTheme can't find a valid persisted user theme yet and it
+  // paints as the White fallback on the very first frame. A no-op without a backend (the read
+  // rejects and nothing registers), so it stays safe on every launch surface.
+  await hydrateUserThemes();
   applyStartupTheme();
 
   let smokeDir: string | null = null;

@@ -27,6 +27,7 @@ use termixion_platform::{MacosPtyFactory, foreground_process};
 
 mod config_io;
 mod menu;
+mod themes_io;
 mod window_manager;
 
 /// The live terminal sessions (trmx-74): one per tab, keyed by the registry's monotonic
@@ -782,6 +783,10 @@ fn main() -> ExitCode {
             // (editors save via rename-replace) and live-apply them as `settings:changed`.
             let config_app = app.handle().clone();
             std::thread::spawn(move || config_io::run_config_watcher(config_app));
+            // trmx-89 (FR-6): watch the themes directory for `*.toml` edits and signal the
+            // frontend to re-read the user theme catalog via `themes:changed`.
+            let themes_app = app.handle().clone();
+            std::thread::spawn(move || themes_io::run_themes_watcher(themes_app));
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -825,7 +830,10 @@ fn main() -> ExitCode {
             perf_done,
             config_io::config_read,
             config_io::config_write,
-            config_io::config_reset_all
+            config_io::config_reset_all,
+            themes_io::themes_read,
+            themes_io::themes_write,
+            themes_io::themes_open_dir
         ])
         .on_window_event(|window, event| {
             // trmx-51: only the MAIN window owns the PTY sessions — closing the settings window

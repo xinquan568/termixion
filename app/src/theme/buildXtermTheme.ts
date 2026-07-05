@@ -10,7 +10,7 @@
 // ride `terminal.options.theme` purely so the Kitty-style overlay (trmx-41) can read its colors
 // off the live terminal with no extra plumbing (plan D3). Pure module: type-only xterm import.
 import type { ITheme } from "@xterm/xterm";
-import { themes, type ThemeId } from "./themes";
+import { resolveTheme } from "./registry";
 
 /** xterm's `ITheme` plus Termixion's scrollbar-token transport (consumed by scrollbar.ts). */
 export interface TerminalTheme extends ITheme {
@@ -20,12 +20,13 @@ export interface TerminalTheme extends ITheme {
 }
 
 /**
- * Build the complete xterm theme for a catalog id. Junk ids (corrupted storage reaching past the
- * registry's parse, `"__proto__"`, …) fall back to White — `hasOwnProperty`, not `themes[id] ??`,
- * so prototype keys cannot skip the guard (vmark's defense).
+ * Build the complete xterm theme for any theme id (built-in or `user:<stem>`). trmx-89 (D):
+ * resolution + the White fallback for junk ids (corrupted storage past the registry's parse,
+ * `"__proto__"`, an unregistered user id) live in `resolveTheme` now — one hasOwnProperty-guarded
+ * White fallback shared with every other consumer.
  */
-export function buildXtermTheme(id: ThemeId): TerminalTheme {
-  const theme = Object.prototype.hasOwnProperty.call(themes, id) ? themes[id] : themes.white;
+export function buildXtermTheme(id: string): TerminalTheme {
+  const theme = resolveTheme(id);
   const { color, terminal } = theme;
   const { ansi } = terminal;
 

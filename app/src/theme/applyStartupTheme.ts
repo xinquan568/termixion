@@ -12,7 +12,7 @@
 // no-op; an unhydrated snapshot (plain browser) → the derived default.
 import { makeSettingsStore, type SettingsStore } from "../settings/settingsStore";
 import { resolveSurface } from "../surface";
-import { themes } from "./themes";
+import { resolveTheme } from "./registry";
 import { applyTxTheme } from "./txCssVars";
 
 export interface StartupThemeOptions {
@@ -37,6 +37,7 @@ export function applyStartupTheme(opts: StartupThemeOptions = {}): void {
   if (resolveSurface(search).kind === "settings") {
     applyTxTheme(id, doc); // vars + body
   } else {
-    doc.body.style.background = themes[id].color.bg.primary;
+    // trmx-89 (D): resolve via the registry (built-in or user id), White fallback for junk.
+    doc.body.style.background = resolveTheme(id).color.bg.primary;
   }
 }

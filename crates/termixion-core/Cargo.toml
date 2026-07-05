@@ -12,3 +12,7 @@ authors.workspace = true
 # trmx-80 (FR-13): the pure config module — serde + toml only, both platform-agnostic.
 serde = { version = "1.0.228", features = ["derive"] }
 toml = "1.1.2"
+
+[dev-dependencies]
+# trmx-89 (FR-6): the theme-spec↔TS wire-shape golden test serializes ThemeSpec to JSON.
+serde_json = "1.0.150"

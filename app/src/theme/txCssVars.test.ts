@@ -12,6 +12,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { contrastRatio, pickReadableOn } from "./contrast";
+import { clearUserThemes, registerUserThemes } from "./registry";
 import { THEME_IDS, themes } from "./themes";
 import { applyTxTheme, txCssVars } from "./txCssVars";
 
@@ -103,6 +104,43 @@ describe("applyTxTheme — runtime delivery (plan D4)", () => {
     expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe(
       themes.white.color.bg.primary,
     );
+  });
+
+  // trmx-89 review-1: a valid user theme may use rgb()/rgba()/8-hex colors (all accepted by
+  // parse_theme). applyTxTheme derives the --tx-on-* roles via pickReadableOn, which previously THREW
+  // on a non-#rrggbb color and crashed the settings theme apply. This pins that it no longer throws.
+  it("applies a user theme with rgb()/rgba()/8-hex colors without throwing (crash regression)", () => {
+    registerUserThemes([
+      {
+        id: "user:rgbtheme",
+        source: "user",
+        valid: true,
+        warnings: [],
+        spec: {
+          isDark: false,
+          color: {
+            bg: { primary: "rgb(255, 255, 255)" },
+            text: { primary: "#1a1a1aff" },
+            accent: {},
+            semantic: {},
+          },
+          terminal: {
+            ansi: {
+              black: "#000000", red: "rgb(255,0,0)", green: "#00ff00", yellow: "#ffff00",
+              blue: "rgb(0, 102, 204)", magenta: "#ff00ff", cyan: "#00ffff", white: "#ffffff",
+              brightBlack: "#808080", brightRed: "#ff8080", brightGreen: "#80ff80", brightYellow: "#ffff80",
+              brightBlue: "#8080ff", brightMagenta: "#ff80ff", brightCyan: "#80ffff", brightWhite: "#f0f6fc",
+            },
+            scrollbar: {},
+            pane: {},
+          },
+        },
+      },
+    ]);
+    expect(() => applyTxTheme("user:rgbtheme", document)).not.toThrow();
+    // The accent-derived --tx-on-* readable-text roles were computed (the pickReadableOn path ran).
+    expect(document.documentElement.style.getPropertyValue("--tx-on-accent")).not.toBe("");
+    clearUserThemes();
   });
 });
 

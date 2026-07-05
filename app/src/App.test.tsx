@@ -160,6 +160,10 @@ function renderApp(opts: { strict?: boolean } = {}) {
   const settingsChanged = makeObservation<unknown>(); // trmx-81: settings:changed broadcasts
   const setWindowTitle = vi.fn();
   const mirrorTitle = vi.fn(() => Promise.resolve());
+  // trmx-89: the themes hot-reload installer seam — a no-op returning a teardown spy keeps these
+  // tests backend-free (the real installer subscribes to the Tauri themes:changed bus).
+  const hotReloadTeardown = vi.fn();
+  const installHotReload = vi.fn().mockReturnValue(hotReloadTeardown);
   const props: AppProps = {
     attach,
     closeWindow,
@@ -171,6 +175,7 @@ function renderApp(opts: { strict?: boolean } = {}) {
     setWindowTitle,
     mirrorTitle,
     dragSchedule: frame.schedule,
+    installHotReload,
   };
   const ui = opts.strict ? (
     <StrictMode>
@@ -193,6 +198,8 @@ function renderApp(opts: { strict?: boolean } = {}) {
     setWindowTitle,
     mirrorTitle,
     frame,
+    installHotReload,
+    hotReloadTeardown,
   };
 }
 
@@ -1343,5 +1350,20 @@ describe("App multi-pane chrome (trmx-87)", () => {
     expect(screen.queryByTestId("pane-divider-root")).not.toBeInTheDocument();
     // The dim is CSS `.pane-host:not(.pane-host--focused)`; the only pane is focused, so it is never dimmed.
     expect(screen.getByTestId("pane-host-1").className).toContain("pane-host--focused");
+  });
+});
+
+// trmx-89 (FR-6): the MAIN window owns the theme hot-reload machine (it hosts the live terminals),
+// so App installs it once with a settings store and tears it down on unmount. The installer is an
+// injected seam so this stays backend-free — its own state machine is covered by themeHotReload.test.ts.
+describe("App theme hot-reload wiring (trmx-89)", () => {
+  it("installs the hot-reload once (with a settings store) and tears it down on unmount", () => {
+    const { view, installHotReload, hotReloadTeardown } = renderApp();
+    expect(installHotReload).toHaveBeenCalledTimes(1);
+    expect(installHotReload).toHaveBeenCalledWith(
+      expect.objectContaining({ settings: expect.anything() }),
+    );
+    view.unmount();
+    expect(hotReloadTeardown).toHaveBeenCalledTimes(1);
   });
 });

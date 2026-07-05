@@ -27,7 +27,13 @@
 // page, whose Orientation row it gates (top/bottom bars disable it). The theme pattern exactly:
 // AppearanceSettings stays controlled, its onBarPositionChange feeds a local click back here so
 // the gate flips instantly even without a bus (plain dev/jsdom).
-import { useEffect, useState, type ReactNode } from "react";
+//
+// trmx-89 (4b): the settings window has its OWN theme-registry instance, so the shell HYDRATES the
+// user themes on mount (populating the registry that the Appearance picker lists from) and keeps it
+// live via `onThemesChanged` — a dropped/edited/removed theme file re-hydrates the registry and
+// bumps a counter to re-render the picker. The `invoke` seam (default realInvoke) is threaded into
+// both the hydration and the Appearance page's themes-dir actions; tests inject a fake backend.
+import { useEffect, useReducer, useState, type ReactNode } from "react";
 import { AboutSettings } from "./AboutSettings";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { TerminalSettings } from "./TerminalSettings";
@@ -45,8 +51,12 @@ import {
   type SettingsStore,
   type TabBarPosition,
 } from "./settingsStore";
-import { isThemeId, type ThemeId } from "../theme/themes";
+import { isRegisteredThemeId } from "../theme/registry";
+import { hydrateUserThemes, onThemesChanged } from "../theme/themesBackend";
+import type { ThemeId } from "../theme/themes";
 import { applyTxTheme } from "../theme/txCssVars";
+import { realInvoke, type InvokeFn } from "../ipc/backend";
+import type { EventBus } from "../ipc/eventBus";
 import "./settings.css";
 
 /** Emitted by the shell (window_manager.rs) to switch an already-open window's page. */
@@ -62,6 +72,9 @@ export interface SettingsAppProps {
   settings: SettingsStore;
   /** Subscription seam for settings:navigate + settings:changed; absent in tests/dev browser is fine. */
   listen?: ListenFn;
+  /** trmx-89 (4b): the backend edge for the theme registry (hydrate + the Appearance themes-dir
+   * actions). Injected so tests drive a fake; the packaged app uses the real Tauri invoke. */
+  invoke?: InvokeFn;
 }
 
 // trmx-53: Appearance leads the nav (the issue's "new first section"), like vmark.
@@ -78,8 +91,11 @@ export function SettingsApp({
   opener,
   settings,
   listen,
+  invoke = realInvoke,
 }: SettingsAppProps) {
   const [section, setSection] = useState<SettingsSection>(initialSection ?? "terminal");
+  // trmx-89 (4b): a bump counter re-renders the Appearance picker after the registry re-hydrates.
+  const [, bumpThemes] = useReducer((n: number) => n + 1, 0);
   const [query, setQuery] = useState("");
   // trmx-53: the window's active theme; initial read materializes the first-run default.
   const [theme, setTheme] = useState<ThemeId>(() => settings.get("appearance.theme"));
@@ -108,6 +124,29 @@ export function SettingsApp({
     [],
   );
 
+  // trmx-89 (4b): populate THIS window's registry with the user themes on mount (the picker lists
+  // from it), and keep it live — a `themes:changed` file-watch signal re-reads + re-registers, then
+  // bumps to re-render the picker. hydrateUserThemes swallows the no-runtime rejection (plain
+  // dev/jsdom) and the bump is guarded past unmount. onThemesChanged rides the injected `listen`
+  // seam (as an EventBus) so tests deliver the event; without one it falls back to the real bus.
+  useEffect(() => {
+    let live = true;
+    const rehydrate = () => {
+      hydrateUserThemes(invoke).then(() => {
+        if (live) bumpThemes();
+      });
+    };
+    rehydrate();
+    const themesBus: EventBus | undefined = listen
+      ? { emit: () => {}, listen }
+      : undefined;
+    const unsubscribe = onThemesChanged(rehydrate, themesBus);
+    return () => {
+      live = false;
+      unsubscribe();
+    };
+  }, [invoke, listen]);
+
   useEffect(() => {
     if (!listen) return;
     let live = true;
@@ -129,7 +168,8 @@ export function SettingsApp({
     subscribe(SETTINGS_CHANGED_EVENT, (payload) => {
       if (typeof payload !== "object" || payload === null) return;
       const { key, value } = payload as { key?: unknown; value?: unknown };
-      if (key === "appearance.theme" && isThemeId(value)) setTheme(value);
+      // trmx-89 (D): registry-aware guard — a built-in OR a registered user theme id re-styles.
+      if (key === "appearance.theme" && isRegisteredThemeId(value)) setTheme(value);
       else if (key === "tabs.barPosition" && isTabBarPosition(value)) setBarPosition(value);
     });
     return () => {
@@ -200,6 +240,7 @@ export function SettingsApp({
               onThemeChange={setTheme}
               barPosition={barPosition}
               onBarPositionChange={setBarPosition}
+              invoke={invoke}
             />
           ) : section === "terminal" ? (
             <TerminalSettings settings={settings} />

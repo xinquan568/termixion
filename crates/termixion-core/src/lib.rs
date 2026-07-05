@@ -15,6 +15,7 @@ pub mod pty;
 pub mod pump;
 pub mod registry;
 pub mod session;
+pub mod theme;
 
 pub use config::{
     CheckFrequency, Config, ConfigWarning, CursorStyle, DEFAULT_TEMPLATE, LabelOrientation,
@@ -25,6 +26,10 @@ pub use pty::{PtyBackend, PtyError, PtyFactory, PtyReader, PtySize, SessionSpec}
 pub use pump::pump;
 pub use registry::SessionRegistry;
 pub use session::{Session, SessionId};
+pub use theme::{
+    AccentSpec, AnsiSpec, BgSpec, ColorSpec, PaneSpec, ScrollbarSpec, SemanticSpec, TerminalSpec,
+    TextSpec, ThemeSpec, ThemeWarning, parse_theme, user_theme_id,
+};
 
 /// Crate version, surfaced for the shell/CLI to report.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
