@@ -37,6 +37,11 @@ export function TerminalSettings({ settings }: TerminalSettingsProps) {
   const [cursorBlink, setCursorBlink] = useState<boolean>(() =>
     settings.get("terminal.cursorBlink"),
   );
+  // trmx-91: the FR-7a activity indicator on/off (default on) — App shows/hides the per-pane green
+  // line live when this broadcasts settings:changed.
+  const [activityIndicator, setActivityIndicator] = useState<boolean>(() =>
+    settings.get("terminal.activityIndicator"),
+  );
   const [scrollback, setScrollback] = useState<number>(() =>
     settings.get("terminal.scrollbackLines"),
   );
@@ -66,6 +71,19 @@ export function TerminalSettings({ settings }: TerminalSettingsProps) {
             onChange={(value) => {
               setCursorBlink(value);
               settings.set("terminal.cursorBlink", value);
+            }}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Activity Indicator"
+          description="Show a green line while a command is running"
+        >
+          <Toggle
+            checked={activityIndicator}
+            label="Activity Indicator"
+            onChange={(value) => {
+              setActivityIndicator(value);
+              settings.set("terminal.activityIndicator", value);
             }}
           />
         </SettingRow>
