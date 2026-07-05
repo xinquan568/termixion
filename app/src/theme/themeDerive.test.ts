@@ -72,6 +72,7 @@ describe("deriveTheme", () => {
         cursor: "#cccccc",
         cursorAccent: "#808080",
         selectionBackground: "rgba(0, 0, 255, 0.22)",
+        badge: "rgba(204, 204, 204, 0.12)", // trmx-90: withAlpha(text.primary #cccccc, 0.12)
         scrollbar: {
           idle: "rgba(255, 255, 255, 0.12)",
           hover: "rgba(255, 255, 255, 0.2)",
@@ -97,7 +98,7 @@ describe("deriveTheme", () => {
       new Set(["error", "errorBg", "success"]),
     );
     expect(new Set(Object.keys(t.terminal))).toEqual(
-      new Set(["ansi", "cursor", "cursorAccent", "selectionBackground", "scrollbar", "pane"]),
+      new Set(["ansi", "cursor", "cursorAccent", "selectionBackground", "badge", "scrollbar", "pane"]),
     );
     expect(Object.keys(t.terminal.ansi)).toHaveLength(16);
     expect(new Set(Object.keys(t.terminal.scrollbar))).toEqual(
@@ -137,6 +138,17 @@ describe("deriveTheme", () => {
     const t = deriveTheme(spec);
     expect(t.color.border).toBe("#123456"); // survives, not the mix()-derived border
     expect(t.terminal.pane.inactiveBorder).toBe("#123456"); // the resolved border flows to the pane line
+  });
+
+  it("derives terminal.badge as a 0.12-alpha watermark of text.primary; a spec badge wins (trmx-90)", () => {
+    // No badge in a minimal spec → withAlpha(text.primary, 0.12): a subtle, deterministic watermark.
+    const derived = deriveTheme(minimalSpec(true)); // text.primary = #cccccc
+    expect(derived.terminal.badge).toBe(withAlpha("#cccccc", 0.12));
+    expect(derived.terminal.badge).toBe("rgba(204, 204, 204, 0.12)"); // pins the chosen 0.12 alpha
+    // An author-provided badge beats the formula.
+    const spec = minimalSpec(true);
+    spec.terminal.badge = "rgba(1, 2, 3, 0.5)";
+    expect(deriveTheme(spec).terminal.badge).toBe("rgba(1, 2, 3, 0.5)");
   });
 
   describe("colorMath helpers", () => {

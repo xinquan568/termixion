@@ -36,6 +36,8 @@ export interface ThemeSpec {
     cursor?: string;
     cursorAccent?: string;
     selectionBackground?: string;
+    /** trmx-90 (sub-task B): the per-pane badge watermark — OMITTED when the author didn't set it. */
+    badge?: string;
   };
 }
 
@@ -91,6 +93,9 @@ export function deriveTheme(spec: ThemeSpec): ThemeTokens {
       cursor: spec.terminal.cursor ?? textPrimary,
       cursorAccent: spec.terminal.cursorAccent ?? bgPrimary,
       selectionBackground: spec.terminal.selectionBackground ?? withAlpha(accentPrimary, 0.22),
+      // trmx-90 (sub-task B): a subtle per-pane watermark. Default = text.primary at 0.12 alpha (a
+      // faint tint that reads without harming legibility); a spec-provided badge wins.
+      badge: spec.terminal.badge ?? withAlpha(textPrimary, 0.12),
       scrollbar: {
         idle: spec.terminal.scrollbar.idle ?? withAlpha(base, 0.12),
         hover: spec.terminal.scrollbar.hover ?? withAlpha(base, 0.2),

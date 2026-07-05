@@ -90,7 +90,8 @@ pub struct SemanticSpec {
     pub success: Option<String>,
 }
 
-/// The `[terminal]` slice: the required 16-color ANSI palette plus optional cursor/selection tints.
+/// The `[terminal]` slice: the required 16-color ANSI palette plus optional cursor/selection/badge
+/// tints.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalSpec {
@@ -101,6 +102,10 @@ pub struct TerminalSpec {
     pub cursor_accent: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selection_background: Option<String>,
+    /// The translucent per-pane badge/watermark color (iTerm2-style overlay). A single-word key, so
+    /// the TOML `badge` and JSON `badge` spellings match with no serde rename.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub badge: Option<String>,
     pub scrollbar: ScrollbarSpec,
     pub pane: PaneSpec,
 }
@@ -284,6 +289,7 @@ struct Draft {
     cursor: Option<String>,
     cursor_accent: Option<String>,
     selection_background: Option<String>,
+    badge: Option<String>,
     scrollbar_idle: Option<String>,
     scrollbar_hover: Option<String>,
     scrollbar_active: Option<String>,
@@ -342,6 +348,7 @@ impl Draft {
                     cursor: self.cursor,
                     cursor_accent: self.cursor_accent,
                     selection_background: self.selection_background,
+                    badge: self.badge,
                     scrollbar: ScrollbarSpec {
                         idle: self.scrollbar_idle,
                         hover: self.scrollbar_hover,
@@ -488,6 +495,7 @@ fn walk_terminal(value: &toml::Value, draft: &mut Draft, sink: &mut Sink) {
                 &mut draft.selection_background,
                 sink,
             ),
+            "badge" => read_color(value, "terminal.badge", &mut draft.badge, sink),
             _ => sink.warnings.push(ThemeWarning::UnknownKey {
                 key: format!("terminal.{key}"),
             }),
@@ -853,6 +861,7 @@ inactive_border = "#3a3f46"
         assert_eq!(spec.terminal.cursor, None);
         assert_eq!(spec.terminal.cursor_accent, None);
         assert_eq!(spec.terminal.selection_background, None);
+        assert_eq!(spec.terminal.badge, None);
         assert_eq!(spec.terminal.scrollbar.idle, None);
         assert_eq!(spec.terminal.scrollbar.hover, None);
         assert_eq!(spec.terminal.scrollbar.active, None);
@@ -978,6 +987,41 @@ inactive_border = "#3a3f46"
             warnings.iter().any(|w| matches!(
                 w,
                 ThemeWarning::InvalidColor { key, .. } if key == "terminal.scrollbar.idle"
+            )),
+            "warnings: {warnings:?}"
+        );
+    }
+
+    // 6a. An optional badge, present and valid → Some(spec), the field Some, zero warnings.
+    #[test]
+    fn badge_present_and_valid_parses_to_some_with_no_warnings() {
+        let text = MINIMAL.replace(
+            "[terminal.ansi]",
+            "[terminal]\nbadge = \"rgba(255, 255, 255, 0.08)\"\n\n[terminal.ansi]",
+        );
+        let (spec, warnings) = parse_theme(&text);
+        assert_eq!(warnings, Vec::new(), "a valid badge produces no warnings");
+        let spec = spec.expect("a valid badge must not invalidate the theme");
+        assert_eq!(
+            spec.terminal.badge,
+            Some("rgba(255, 255, 255, 0.08)".to_string())
+        );
+    }
+
+    // 6b. An invalid badge color → still Some(spec) + InvalidColor, and the field None (non-fatal).
+    #[test]
+    fn invalid_badge_color_warns_but_theme_stays_valid() {
+        let text = MINIMAL.replace(
+            "[terminal.ansi]",
+            "[terminal]\nbadge = \"nope\"\n\n[terminal.ansi]",
+        );
+        let (spec, warnings) = parse_theme(&text);
+        let spec = spec.expect("a bad optional badge must not invalidate the theme");
+        assert_eq!(spec.terminal.badge, None);
+        assert!(
+            warnings.iter().any(|w| matches!(
+                w,
+                ThemeWarning::InvalidColor { key, .. } if key == "terminal.badge"
             )),
             "warnings: {warnings:?}"
         );

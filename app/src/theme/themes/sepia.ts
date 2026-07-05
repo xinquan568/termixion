@@ -39,6 +39,8 @@ export const sepia: ThemeTokens = {
     cursor: "#5c4b37",
     cursorAccent: "#F9F0DB",
     selectionBackground: "rgba(0,102,204,0.25)",
+    // trmx-90: per-pane badge watermark — translucent brown (text #5c4b37) on the warm sepia background.
+    badge: "rgba(92, 75, 55, 0.06)",
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
   },
 };

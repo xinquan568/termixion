@@ -38,6 +38,7 @@ describe("theme-golden fixture (mirrors the core parse_theme fixture)", () => {
     expect(t.color.selection).toBe(spec.color.selection);
     expect(t.terminal.scrollbar.hover).toBe(spec.terminal.scrollbar.hover);
     expect(t.terminal.pane.activeBorder).toBe(spec.terminal.pane.activeBorder);
+    expect(t.terminal.badge).toBe(spec.terminal.badge); // trmx-90: the fixture's badge is a provided optional
   });
 
   it("deriveTheme fills optionals the fixture omits (stripped projection)", () => {

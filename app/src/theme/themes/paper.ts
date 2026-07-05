@@ -39,6 +39,8 @@ export const paper: ThemeTokens = {
     cursor: "#1a1a1a",
     cursorAccent: "#EEEDED",
     selectionBackground: "rgba(0,102,204,0.25)",
+    // trmx-90: per-pane badge watermark — translucent dark (text #1a1a1a) on the warm paper background.
+    badge: "rgba(26, 26, 26, 0.05)",
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
   },
 };
