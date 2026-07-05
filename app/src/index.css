@@ -94,14 +94,49 @@ body {
 }
 
 /*
- * trmx-84 — the divider between two panes: a plain 1px `--tx-border` line. It is non-interactive
- * here (FR-3.3 makes it draggable, FR-3.6 gives it active/focus chrome), so it never steals a
- * pointer event meant for a pane.
+ * trmx-84/85 — the divider between two panes: a 1px `--tx-border` visual line with a widened (~7px)
+ * INVISIBLE hit area (the `::before`) that drag-resizes the split (FR-3.3). It sits above the panes so
+ * a grab lands on the divider, not a terminal; the resize cursor tells the user it is grabbable.
+ * FR-3.6 will style the visible line (active/focus chrome) — here it stays a plain 1px line.
  */
 .pane-divider {
   background: var(--tx-border);
-  pointer-events: none;
-  z-index: 1;
+  z-index: 2;
+}
+/* The transparent hit area, expanded around the thin line along the cross axis (~3px each side). */
+.pane-divider::before {
+  content: "";
+  position: absolute;
+}
+.pane-divider--row {
+  cursor: col-resize;
+}
+.pane-divider--row::before {
+  inset: 0 -3px; /* vertical line → extend the grab area left/right */
+}
+.pane-divider--column {
+  cursor: row-resize;
+}
+.pane-divider--column::before {
+  inset: -3px 0; /* horizontal line → extend the grab area up/down */
+}
+
+/*
+ * trmx-85 — the drag overlay: while a divider is being dragged it covers the whole content area above
+ * the panes (with the resize cursor), so xterm receives NO stray pointer events mid-drag. The pointer
+ * is captured on the divider (setPointerCapture); this overlay is the belt-and-suspenders shield and
+ * the cursor surface. App renders it only while dragging and removes it on every drag-end path.
+ */
+.pane-drag-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+}
+.pane-drag-overlay--row {
+  cursor: col-resize;
+}
+.pane-drag-overlay--column {
+  cursor: row-resize;
 }
 
 .terminal-host {

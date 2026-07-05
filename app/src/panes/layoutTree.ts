@@ -56,11 +56,18 @@ export interface PaneRect {
   rect: Rect;
 }
 
-/** One divider's solved geometry (static here; FR-3.3 makes it draggable). */
+/** One divider's solved geometry. */
 export interface DividerRect {
   path: SplitPath;
+  /** The thin visual line (1px along the main axis) at its current position. */
   rect: Rect;
   dir: SplitDir;
+  /**
+   * trmx-85: the ENCLOSING rect this split subdivides (origin + full main-axis length, BEFORE the
+   * divider gap is carved). A pointer→ratio drag needs this: the ratio is defined over
+   * `mainAxis(bounds) − min(dividerPx, mainAxis)`, matching solveRects' own `avail`.
+   */
+  bounds: Rect;
 }
 
 /** The full solved layout for a tree within some bounds. */
@@ -74,6 +81,12 @@ export const MIN_RATIO = 0.05;
 
 /** The default divider thickness (px) carved out of the bounds between the two sides. */
 export const DEFAULT_DIVIDER_PX = 1;
+
+/**
+ * The usability floor on "unlimited" splitting: a pane may not shrink below this (px). The SINGLE
+ * source for both the split guard (canSplit / App) and the FR-3.3 divider-drag clamp — no drift.
+ */
+export const MIN_PANE_PX: MinSize = { width: 80, height: 60 };
 
 /** A fresh single-pane tree. */
 export function leafNode(paneId: PaneId): Leaf {
@@ -199,6 +212,7 @@ function walkRects(
       path,
       dir: node.dir,
       rect: { x: rect.x + firstW, y: rect.y, width: gap, height: rect.height },
+      bounds: rect,
     });
     walkRects(node.first, { x: rect.x, y: rect.y, width: firstW, height: rect.height }, [...path, "first"], divider, panes, dividers);
     walkRects(node.second, { x: rect.x + firstW + gap, y: rect.y, width: secondW, height: rect.height }, [...path, "second"], divider, panes, dividers);
@@ -211,6 +225,7 @@ function walkRects(
       path,
       dir: node.dir,
       rect: { x: rect.x, y: rect.y + firstH, width: rect.width, height: gap },
+      bounds: rect,
     });
     walkRects(node.first, { x: rect.x, y: rect.y, width: rect.width, height: firstH }, [...path, "first"], divider, panes, dividers);
     walkRects(node.second, { x: rect.x, y: rect.y + firstH + gap, width: rect.width, height: secondH }, [...path, "second"], divider, panes, dividers);
