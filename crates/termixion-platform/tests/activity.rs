@@ -173,3 +173,46 @@ fn is_busy_tracks_the_shells_activity_round_trip() {
         assert_no_zombie(sp);
     }
 }
+
+/// trmx-91 (review-1): a PIPELINE whose group LEADER exits before the tail must still read as busy.
+/// `true | sleep 2` — job-control zsh puts the pipeline in one foreground group whose leader is
+/// `true` (it exits almost immediately), while `sleep 2` keeps the group foregrounding the terminal.
+/// The tpgid stays != the shell's pid, so `is_busy` must be `Some(true)` for the sleep's duration.
+/// The pre-fix `is_busy` (via `foreground_process`, which needs `ps -p <tpgid> -o comm=` on the now-
+/// DEAD leader) would have returned `None` here and shown the pane idle — this pins that it does not.
+#[test]
+fn is_busy_reports_busy_for_a_pipeline_whose_leader_has_exited() {
+    let factory = MacosPtyFactory;
+    let mut session = Session::spawn(1, &factory, &rc_free_zsh(), PtySize::new(24, 80))
+        .expect("spawn an rc-free shell through the trait");
+    let shell_pid = session.process_id().expect("a real PTY has a child pid");
+    let reader = session.take_reader().expect("a real PTY yields a reader");
+    let (_rx, pump) = pump_reader(reader);
+
+    // Settle at the idle prompt first (not busy).
+    assert_eq!(
+        poll_is_busy_until(shell_pid, false, Instant::now() + Duration::from_secs(5)),
+        Some(false),
+    );
+
+    // The pipeline: `true` (the group leader) exits at once; `sleep 2` (the tail) keeps the group
+    // foreground. is_busy must be Some(true) even though the leader is already gone.
+    session
+        .write(b"true | sleep 2\n")
+        .expect("write the pipeline to the pty");
+    assert_eq!(
+        poll_is_busy_until(shell_pid, true, Instant::now() + Duration::from_secs(3)),
+        Some(true),
+        "a pipeline with a short-lived leader must still read busy (tpgid-only, review-1)"
+    );
+
+    // Back to idle when the pipeline completes.
+    assert_eq!(
+        poll_is_busy_until(shell_pid, false, Instant::now() + Duration::from_secs(5)),
+        Some(false),
+    );
+
+    session.kill().expect("kill the live shell");
+    pump.join().expect("the reader thread exits at EOF");
+    assert_no_zombie(shell_pid);
+}
