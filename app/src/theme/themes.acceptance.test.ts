@@ -12,11 +12,15 @@
 // any future drift must pass the CONTRAST_GATES and update docs/design/visual-baseline.md.
 import { describe, expect, it } from "vitest";
 import { compositeOver, contrastRatio } from "./contrast";
-import { THEME_IDS, themeLabel, themes, type ThemeId } from "./themes";
+import { THEME_IDS, themeLabel, themes, type BuiltinThemeId } from "./themes";
 import type { ThemeTokens } from "./tokens";
 
+// trmx-89 (D): ThemeId widened to `string`; these fixtures are keyed by the closed BUILT-IN catalog
+// exactly, so they use `BuiltinThemeId` — TypeScript still errors if a built-in is missing (the
+// exhaustiveness the catalog acceptance suite depends on) even though ThemeId no longer would.
+
 /** The issue's core-token table (bg.primary / bg.secondary / text.primary / accent / border / dark). */
-const CORE: Record<ThemeId, { bg: string; bg2: string; text: string; accent: string; border: string; dark: boolean }> = {
+const CORE: Record<BuiltinThemeId, { bg: string; bg2: string; text: string; accent: string; border: string; dark: boolean }> = {
   white: { bg: "#FFFFFF", bg2: "#f8f8f8", text: "#1a1a1a", accent: "#0066cc", border: "#eeeeee", dark: false },
   paper: { bg: "#EEEDED", bg2: "#e5e4e4", text: "#1a1a1a", accent: "#0066cc", border: "#d5d4d4", dark: false },
   mint: { bg: "#CCE6D0", bg2: "#b8d9bd", text: "#2d3a35", accent: "#1a6b4a", border: "#a8c9ad", dark: false },
@@ -27,7 +31,7 @@ const CORE: Record<ThemeId, { bg: string; bg2: string; text: string; accent: str
 
 /** Full terminal slices — vmark origin/main @ d7e70e3f plus the two trmx-77 audited deviations
  *  (night.brightBlack, solarized.selectionBackground); see the header comment. */
-const TERMINAL: Record<ThemeId, ThemeTokens["terminal"]> = {
+const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
   white: {
     pane: { activeBorder: "#0066cc", inactiveBorder: "#eeeeee" },
     ansi: {

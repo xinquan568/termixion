@@ -45,7 +45,8 @@ import {
   type SettingsStore,
   type TabBarPosition,
 } from "./settingsStore";
-import { isThemeId, type ThemeId } from "../theme/themes";
+import { isRegisteredThemeId } from "../theme/registry";
+import type { ThemeId } from "../theme/themes";
 import { applyTxTheme } from "../theme/txCssVars";
 import "./settings.css";
 
@@ -129,7 +130,8 @@ export function SettingsApp({
     subscribe(SETTINGS_CHANGED_EVENT, (payload) => {
       if (typeof payload !== "object" || payload === null) return;
       const { key, value } = payload as { key?: unknown; value?: unknown };
-      if (key === "appearance.theme" && isThemeId(value)) setTheme(value);
+      // trmx-89 (D): registry-aware guard — a built-in OR a registered user theme id re-styles.
+      if (key === "appearance.theme" && isRegisteredThemeId(value)) setTheme(value);
       else if (key === "tabs.barPosition" && isTabBarPosition(value)) setBarPosition(value);
     });
     return () => {

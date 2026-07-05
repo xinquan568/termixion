@@ -24,7 +24,8 @@
 // `update.lastCheckAt` stays on localStorage forever: it is internal scheduler bookkeeping, not
 // user configuration, so it never belongs in the user-facing config file (docs/config.md).
 import { defaultThemeId } from "../theme/defaultTheme";
-import { isThemeId, type ThemeId } from "../theme/themes";
+import { isRegisteredThemeId, isUserThemeIdShape } from "../theme/registry";
+import type { ThemeId } from "../theme/themes";
 import { realInvoke, type InvokeFn } from "../ipc/backend";
 import { realEventBus } from "../ipc/eventBus";
 
@@ -206,7 +207,11 @@ function parse<K extends SettingKey>(key: K, raw: string): SettingsValues[K] {
   }
   if (key === "appearance.theme") {
     // trmx-53: junk falls back to the DERIVED default (read-time fallback, not a repair).
-    return (isThemeId(raw) ? raw : defaultFor(key)) as SettingsValues[K];
+    // trmx-89 C1: a registered id OR a shape-valid `user:<stem>` id is kept (a persisted user
+    // theme survives even before the registry scan resolves); anything else re-derives.
+    return (isRegisteredThemeId(raw) || isUserThemeIdShape(raw)
+      ? raw
+      : defaultFor(key)) as SettingsValues[K];
   }
   if (key === "terminal.fontFamily") {
     // A free-form string: any value is a valid font stack ("" = platform default).
@@ -245,7 +250,14 @@ function coerce<K extends SettingKey>(key: K, value: unknown): SettingsValues[K]
     return FREQUENCIES.includes(value as CheckFrequency) ? (value as SettingsValues[K]) : undefined;
   }
   if (key === "appearance.theme") {
-    return isThemeId(value) ? (value as SettingsValues[K]) : undefined;
+    // trmx-89 C1: accept a REGISTERED id (built-in or a resolved user theme) OR a shape-valid
+    // `user:<stem>` id. The shape branch is load-bearing: themes_read() populates the registry
+    // AFTER boot, so a persisted user id would otherwise be coerced back to a built-in default on
+    // the pre-scan read/seed. resolveTheme() serves White for it until the scan resolves; a truly
+    // junk value (wrong type, "neon", "__proto__") still fails both guards and is rejected.
+    return isRegisteredThemeId(value) || isUserThemeIdShape(value)
+      ? (value as SettingsValues[K])
+      : undefined;
   }
   if (key === "terminal.fontFamily") return value as SettingsValues[K];
   if (key === "tabs.barPosition") {

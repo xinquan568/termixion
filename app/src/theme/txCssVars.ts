@@ -10,7 +10,7 @@
 // `.tx-settings` tree (plan D4 — the cascade-winning single write target, valid pre-mount and
 // live). The body background is painted alongside so the window chrome never flashes.
 import { pickReadableOn } from "./contrast";
-import { isThemeId, themes, type ThemeId } from "./themes";
+import { resolveTheme } from "./registry";
 import type { ThemeTokens } from "./tokens";
 
 /** The settings-surface CSS variables derived from a theme — the single role table. */
@@ -42,10 +42,11 @@ export function txCssVars(theme: ThemeTokens): Record<string, string> {
 /**
  * Apply a theme to the settings surface: every `--tx-*` var onto `documentElement` (inline, so
  * it wins over the `:root` fallback) plus the body background. Idempotent — safe to re-apply on
- * bus echoes. Junk ids fall back to White (defense-in-depth behind the registry's parse).
+ * bus echoes. trmx-89 (D): resolves any id (built-in or `user:<stem>`) via the registry, with the
+ * shared White fallback for junk ids (defense-in-depth behind the registry's parse).
  */
-export function applyTxTheme(id: ThemeId, doc: Document = document): void {
-  const theme = isThemeId(id) ? themes[id] : themes.white;
+export function applyTxTheme(id: string, doc: Document = document): void {
+  const theme = resolveTheme(id);
   const root = doc.documentElement;
   for (const [name, value] of Object.entries(txCssVars(theme))) {
     root.style.setProperty(name, value);

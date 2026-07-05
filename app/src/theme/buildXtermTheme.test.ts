@@ -6,7 +6,7 @@
 // for a light and a dark theme, value-exactly.
 import { describe, expect, it } from "vitest";
 import { buildXtermTheme } from "./buildXtermTheme";
-import { themes, type ThemeId } from "./themes";
+import { THEME_IDS, themes } from "./themes";
 
 describe("buildXtermTheme", () => {
   it("maps the White theme onto the full ITheme shape, value-exactly", () => {
@@ -68,7 +68,7 @@ describe("buildXtermTheme", () => {
   });
 
   it("builds a complete theme for every catalog entry (background/foreground from the UI tiers)", () => {
-    for (const id of Object.keys(themes) as ThemeId[]) {
+    for (const id of THEME_IDS) {
       const theme = buildXtermTheme(id);
       expect(theme.background).toBe(themes[id].color.bg.primary);
       expect(theme.foreground).toBe(themes[id].color.text.primary);
@@ -77,7 +77,8 @@ describe("buildXtermTheme", () => {
   });
 
   it("falls back safely on a junk id (defense-in-depth behind the registry's parse)", () => {
-    expect(buildXtermTheme("__proto__" as ThemeId)).toEqual(buildXtermTheme("white"));
-    expect(buildXtermTheme("hotdog-stand" as ThemeId)).toEqual(buildXtermTheme("white"));
+    // trmx-89 (D): buildXtermTheme now takes a plain string; resolveTheme supplies the White fallback.
+    expect(buildXtermTheme("__proto__")).toEqual(buildXtermTheme("white"));
+    expect(buildXtermTheme("hotdog-stand")).toEqual(buildXtermTheme("white"));
   });
 });

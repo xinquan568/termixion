@@ -384,6 +384,28 @@ describe("tabs.barPosition (trmx-81)", () => {
     expect(warn).toHaveBeenCalled();
   });
 
+  it("keeps a shape-valid user: theme id even before the registry scan resolves (trmx-89 C1)", async () => {
+    // themes_read() populates the theme registry only AFTER boot, so a persisted `user:<stem>` id
+    // must SURVIVE the pre-scan set/coerce (isUserThemeIdShape) rather than being dropped back to a
+    // built-in default. resolveTheme serves White for it until the scan resolves.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    const store = makeSettingsStore(undefined, fakeBus(), "settings");
+
+    store.set("appearance.theme", "user:solarizedish");
+    expect(store.get("appearance.theme")).toBe("user:solarizedish");
+    expect(backend.writes()).toContainEqual({
+      key: "appearance.theme",
+      value: "user:solarizedish",
+    });
+
+    // A non-user-shaped, non-built-in value is STILL rejected (unchanged from before C1).
+    store.set("appearance.theme", "neon");
+    expect(store.get("appearance.theme")).toBe("user:solarizedish");
+    expect(warn).toHaveBeenCalled();
+  });
+
   it("hydration seeds a valid file value; an invalid one falls to the default + client warning", async () => {
     const backend = fakeConfigBackend({
       values: { "tabs.barPosition": "top", "appearance.theme": "white" },
