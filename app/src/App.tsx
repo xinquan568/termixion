@@ -76,6 +76,7 @@ import {
   type SessionInfo,
 } from "./ipc/backend";
 import { realEventBus } from "./ipc/eventBus";
+import { installThemeHotReload } from "./theme/themeHotReload";
 import { makeCwdStore, type CwdStore } from "./terminal/osc7";
 import { realSetWindowTitle } from "./terminal/windowTitle";
 import type { TerminalHandle } from "./terminal/mountTerminal";
@@ -198,6 +199,8 @@ export interface AppProps {
   mirrorTitle?: (sessionId: number, title: string) => Promise<void>;
   /** Injection seam for tests; the frame schedule that throttles divider-drag dispatches (trmx-85). */
   dragSchedule?: FrameSchedule;
+  /** Injection seam for tests; defaults to the real themes hot-reload installer (trmx-89). */
+  installHotReload?: typeof installThemeHotReload;
 }
 
 export function App({
@@ -211,6 +214,7 @@ export function App({
   setWindowTitle = realSetWindowTitle,
   mirrorTitle = setSessionTitle,
   dragSchedule = realFrameSchedule,
+  installHotReload = installThemeHotReload,
 }: AppProps = {}) {
   const { attachTerminal } = useBackend();
   const attachFn = attach ?? attachTerminal;
@@ -567,6 +571,20 @@ export function App({
     });
     return stopSettings;
   }, [observeSettings]);
+
+  // trmx-89 (FR-6): the main window owns the theme HOT-RELOAD machine. A `themes:changed` signal
+  // re-hydrates the user-theme registry and, per decideHotReload, reapplies the active user theme
+  // (re-emitting settings:changed so TerminalView repaints with its fresh tokens), falls back to the
+  // derived default when its file was deleted, or warns when it became invalid (keeping the previous
+  // colors). Installed ONCE; the returned unsubscribe tears the subscription down on unmount — the
+  // live-guard / teardown-safe / no-runtime discipline lives inside onThemesChanged, so this is inert
+  // without a Tauri runtime. The store carries the real bus so a fallback's settings.set broadcasts
+  // settings:changed to the live terminals (source "themes-reload").
+  useEffect(() => {
+    return installHotReload({
+      settings: makeSettingsStore(undefined, realEventBus, "themes-reload"),
+    });
+  }, [installHotReload]);
 
   // ⌘1..⌘9 select a tab; ⌘D / ⇧⌘D split (trmx-84); ⌥⌘-arrows / ⌘]/⌘[ navigate panes (trmx-86). Capture
   // phase on window so the chord wins even while xterm's helper textarea has focus; tabKeymap vetoes
