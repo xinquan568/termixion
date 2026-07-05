@@ -380,6 +380,10 @@ body {
 .tab-strip__tab {
   flex: 0 1 180px;
   min-width: 60px;
+  /* trmx-91 — the containing block for the absolutely-positioned activity dot (below). `relative`
+     does NOT create a fixed-positioning containing block, so the trmx-82 D4 rename overlay's
+     viewport pinning is untouched. */
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -458,6 +462,29 @@ body {
 .tab-strip__close:hover {
   background: var(--tx-bg-elev);
   color: var(--tx-text);
+}
+/*
+ * trmx-91 (sub-task G) — the activity DOT on a background busy tab (TabStrip renders it only for a
+ * NON-active busy tab; the active tab already shows its pane's top-edge activity line). A small
+ * themed-green (`--tx-success`, the same semantic-success token the pane line tints) circle,
+ * absolutely positioned inside the `position: relative` tab so it never reflows the label or the
+ * close ×. Click-through (pointer-events: none) so it can never intercept the tab's activate/close.
+ * It pins to the trailing edge and hides on hover, handing that corner to the close × the hover
+ * reveals (the complement of the `:hover .tab-strip__close` rule above).
+ */
+.tab-strip__activity-dot {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tx-success);
+  pointer-events: none;
+}
+.tab-strip__tab:hover .tab-strip__activity-dot {
+  opacity: 0;
 }
 .tab-strip__new {
   flex: 0 0 auto;

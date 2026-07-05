@@ -363,6 +363,12 @@ export function TabStrip({
     >
       {tabs.map((tab, index) => {
         const active = tab.tabId === activeTabId;
+        // trmx-91 (sub-task G): a tab is BUSY when any of its panes is showing its activity line
+        // (the debounced `activityVisible`, tabState.ts). The dot marks only a BACKGROUND busy tab —
+        // the active tab already shows the pane's own top-edge activity line, so it never needs the
+        // dot (the same background-isolation rule the pane overlay follows).
+        const busy = Object.values(tab.panes).some((p) => p.activityVisible === true);
+        const showActivityDot = busy && !active;
         return (
           // A div (not a button): the close × inside is a real <button>, and buttons must not
           // nest. Keyboard activation is wired explicitly below.
@@ -407,6 +413,17 @@ export function TabStrip({
               >
                 {tab.title}
               </span>
+            )}
+            {/* trmx-91 (sub-task G): the subtle activity dot on a BACKGROUND busy tab. Absolutely
+                positioned (the tab is the containing block — index.css) so it never reflows the
+                label or the close ×; aria-hidden + pointer-events:none so it is inert (it can never
+                intercept the tab's activate/close). Rendered only when `showActivityDot`. */}
+            {showActivityDot && (
+              <span
+                className="tab-strip__activity-dot"
+                data-testid={`tab-activity-dot-${tab.tabId}`}
+                aria-hidden="true"
+              />
             )}
             {/* Always in the DOM (CSS reveals it on hover); both the pointer sequence and the
                 click stop at the button so closing never drags/activates the tab under it. */}
