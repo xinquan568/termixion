@@ -119,4 +119,19 @@ describe("ratioForDrag — degenerate & tiny bounds", () => {
     const explicit = ratioForDrag({ pointerMain: 400, grabOffset: 0, bounds, dir: "row", dividerPx: DEFAULT_DIVIDER_PX });
     expect(withDefault).toBe(explicit);
   });
+
+  it("clamps at the min pane HEIGHT on an extreme column drag (round trip)", () => {
+    const bounds: Rect = { x: 0, y: 0, width: 400, height: 500 };
+    const ratio = ratioForDrag({ pointerMain: -9999, grabOffset: 0, bounds, dir: "column", dividerPx: 3 });
+    const { firstMain, secondMain } = applyDrag(colOf(1, 2), bounds, "column", ratio, 3);
+    expect(firstMain).toBe(MIN_PANE_PX.height); // exactly the minimum height, not below
+    expect(secondMain).toBeGreaterThanOrEqual(MIN_PANE_PX.height);
+  });
+
+  it("a capped-gap rect (mainLen < dividerPx) resets rather than dividing by zero", () => {
+    const bounds: Rect = { x: 0, y: 0, width: 2, height: 100 }; // width 2 < dividerPx 4 → available 0
+    const r = ratioForDrag({ pointerMain: 1, grabOffset: 0, bounds, dir: "row", dividerPx: 4 });
+    expect(r).toBe(RESET_RATIO);
+    expect(Number.isNaN(r)).toBe(false);
+  });
 });

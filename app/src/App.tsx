@@ -625,15 +625,22 @@ export function App({
     });
   };
 
-  // End the drag on ANY terminal path (pointerup / pointercancel / lostpointercapture / unmount):
-  // clear state, cancel a pending frame (no stale dispatch), drop the overlay.
-  const endDrag = () => {
-    dragRef.current = null;
-    pendingRatioRef.current = null;
+  // End the drag. `commit` (pointerup) APPLIES the latest pending ratio synchronously first — a quick
+  // drag-and-release within a single animation frame must not be lost — whereas the abort paths
+  // (pointercancel / lostpointercapture / unmount) skip the commit. Either way the pending frame is
+  // cancelled and state cleared, so no dispatch ever lands after the drag has ended.
+  const endDrag = (commit: boolean) => {
+    if (commit) {
+      const d = dragRef.current;
+      const ratio = pendingRatioRef.current;
+      if (d && ratio !== null) dispatch({ kind: "setPaneRatio", tabId: d.tabId, path: d.path, ratio });
+    }
     if (frameCancelRef.current) {
       frameCancelRef.current();
       frameCancelRef.current = null;
     }
+    pendingRatioRef.current = null;
+    dragRef.current = null;
     setDragDir(null);
   };
 
@@ -678,11 +685,11 @@ export function App({
     if (!d || d.pointerId !== e.pointerId) return;
     e.stopPropagation();
     (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
-    endDrag();
+    endDrag(true); // commit the final drag position
   };
 
-  // pointercancel / lostpointercapture end the drag the same way (no stuck overlay / stale frame).
-  const onDividerPointerCancel = () => endDrag();
+  // pointercancel / lostpointercapture ABORT the drag (no commit) — no stuck overlay / stale frame.
+  const onDividerPointerCancel = () => endDrag(false);
 
   const onDividerDoubleClick = (tabId: number, path: DividerRect["path"]) => (e: ReactMouseEvent) => {
     e.stopPropagation();

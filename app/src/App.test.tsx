@@ -1151,24 +1151,54 @@ describe("App divider drag (trmx-85)", () => {
     expect(paneW(1)).toBe(400); // back to half
   });
 
-  it("a frame queued before pointerup does NOT dispatch a stale ratio after release", async () => {
+  it("pointerup COMMITS the final drag position even if the frame never fired (no lost release)", async () => {
     const ctx = renderApp();
     const divider = await splitOnce(ctx);
     fireEvent.pointerDown(divider, { pointerId: 1, clientX: 400, clientY: 300, button: 0 });
     fireEvent.pointerMove(divider, { pointerId: 1, clientX: 200, clientY: 300 }); // queues a frame
-    fireEvent.pointerUp(divider, { pointerId: 1, clientX: 200, clientY: 300 }); // endDrag cancels it
-    expect(ctx.frame.hasPending()).toBe(false); // the pending frame was cancelled
-    await act(async () => ctx.frame.flush()); // no-op
-    expect(paneW(1)).toBe(400); // unchanged — the stale ratio never applied
+    // Release BEFORE flushing the frame — a quick drag-and-release must STILL apply the final position.
+    await act(async () => {
+      fireEvent.pointerUp(divider, { pointerId: 1, clientX: 200, clientY: 300 });
+    });
+    expect(ctx.frame.hasPending()).toBe(false); // the frame was cancelled (no double dispatch)
+    expect(paneW(1)).toBeLessThanOrEqual(210); // the drag to ~200 WAS committed on release
+    await act(async () => ctx.frame.flush()); // a later flush is a no-op
+    expect(paneW(1)).toBeLessThanOrEqual(210);
   });
 
-  it("pointercancel ends the drag and removes the overlay", async () => {
+  it("pointercancel ABORTS the drag (no commit) and removes the overlay", async () => {
     const ctx = renderApp();
     const divider = await splitOnce(ctx);
     fireEvent.pointerDown(divider, { pointerId: 1, clientX: 400, clientY: 300, button: 0 });
+    fireEvent.pointerMove(divider, { pointerId: 1, clientX: 200, clientY: 300 }); // would move to ~200
     expect(screen.getByTestId("pane-drag-overlay")).toBeInTheDocument();
-    fireEvent.pointerCancel(divider, { pointerId: 1, clientX: 300, clientY: 300 });
+    await act(async () => {
+      fireEvent.pointerCancel(divider, { pointerId: 1, clientX: 200, clientY: 300 });
+    });
     expect(screen.queryByTestId("pane-drag-overlay")).not.toBeInTheDocument();
     expect(ctx.frame.hasPending()).toBe(false);
+    expect(paneW(1)).toBe(400); // aborted — the pending position was NOT committed
+  });
+
+  it("lostpointercapture aborts the drag; a nested/column divider drags its own split; content offset respected", async () => {
+    const ctx = renderApp();
+    const divider = await splitOnce(ctx); // panes 1 | 2 (row divider "root")
+    // lostpointercapture aborts like pointercancel.
+    fireEvent.pointerDown(divider, { pointerId: 1, clientX: 400, clientY: 300, button: 0 });
+    fireEvent.pointerMove(divider, { pointerId: 1, clientX: 250, clientY: 300 });
+    fireEvent.lostPointerCapture(divider, { pointerId: 1 });
+    expect(ctx.frame.hasPending()).toBe(false);
+    expect(paneW(1)).toBe(400); // aborted
+
+    // Split pane 2 BELOW → a nested column divider; dragging it must change only that split.
+    fireEvent.keyDown(document.body, { key: "d", metaKey: true, shiftKey: true }); // ⇧⌘D on focused pane 2
+    const p1Before = paneW(1);
+    const colDivider = screen.getByTestId("pane-divider-second"); // the nested split under the root's "second"
+    fireEvent.pointerDown(colDivider, { pointerId: 2, clientX: 600, clientY: 300, button: 0 });
+    fireEvent.pointerMove(colDivider, { pointerId: 2, clientX: 600, clientY: 150 }); // drag the column divider up
+    await act(async () => ctx.frame.flush());
+    fireEvent.pointerUp(colDivider, { pointerId: 2, clientX: 600, clientY: 150 });
+    // Pane 1 (in the ROOT split, untouched by the nested column drag) keeps its width.
+    expect(paneW(1)).toBe(p1Before);
   });
 });
