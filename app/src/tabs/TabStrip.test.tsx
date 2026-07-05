@@ -266,6 +266,16 @@ describe("TabStrip activity dot (trmx-91)", () => {
     expect(screen.getByTestId("tab-1").contains(el)).toBe(true);
   });
 
+  it("shows NO dot when the activity indicator setting is off (review-1)", () => {
+    // A busy background tab, but terminal.activityIndicator is off → the setting gates the dot too.
+    renderStrip({
+      tabs: [tab(1, "Shell", { busy: true }), tab(2, "vim"), tab(3, "build")],
+      activeTabId: 2,
+      activityIndicatorOn: false,
+    });
+    expect(dot(1)).toBeNull();
+  });
+
   it("the ACTIVE tab shows NO dot even when its pane is busy (the pane line already covers it)", () => {
     // tab 2 is busy AND active → no dot (the active tab renders the pane's own activity line).
     renderStrip({

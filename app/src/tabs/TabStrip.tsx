@@ -57,6 +57,9 @@ export interface TabStripProps {
   activeTabId: number | null;
   /** The tab whose label is currently an inline rename input, or null (trmx-75). */
   renamingTabId: number | null;
+  /** trmx-91 (review-1): the live terminal.activityIndicator setting — when off, no busy dot shows
+   * (the setting gates BOTH the pane line and the tab dot). Defaults to on. */
+  activityIndicatorOn?: boolean;
   /**
    * The strip's axis (trmx-81): "horizontal" (default — top/bottom bars) or "vertical"
    * (left/right rails). App derives it from barLayoutFor(tabs.barPosition).
@@ -251,6 +254,7 @@ export function TabStrip({
   tabs,
   activeTabId,
   renamingTabId,
+  activityIndicatorOn = true,
   orientation = "horizontal",
   labelOrientation = "horizontal",
   style,
@@ -368,7 +372,8 @@ export function TabStrip({
         // the active tab already shows the pane's own top-edge activity line, so it never needs the
         // dot (the same background-isolation rule the pane overlay follows).
         const busy = Object.values(tab.panes).some((p) => p.activityVisible === true);
-        const showActivityDot = busy && !active;
+        // review-1: gated by the terminal.activityIndicator setting too — off hides the dot.
+        const showActivityDot = busy && !active && activityIndicatorOn;
         return (
           // A div (not a button): the close × inside is a real <button>, and buttons must not
           // nest. Keyboard activation is wired explicitly below.

@@ -1089,6 +1089,7 @@ export function App({
         tabs={state.tabs}
         activeTabId={state.activeTabId}
         renamingTabId={renamingTabId}
+        activityIndicatorOn={activityIndicatorOn}
         orientation={barLayout.orientation}
         labelOrientation={labelOrientation}
         onActivate={(tabId) => dispatch({ kind: "activateTab", tabId })}

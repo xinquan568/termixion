@@ -173,9 +173,15 @@ describe("activityLine debounce (trmx-91)", () => {
 });
 
 describe("parseActivityPayload (trmx-91)", () => {
-  it("accepts a valid { sessionId, busy } payload", () => {
+  it("accepts a valid { sessionId, busy } payload (positive session handle)", () => {
     expect(parseActivityPayload({ sessionId: 7, busy: true })).toEqual({ sessionId: 7, busy: true });
-    expect(parseActivityPayload({ sessionId: 0, busy: false })).toEqual({ sessionId: 0, busy: false });
+    expect(parseActivityPayload({ sessionId: 1, busy: false })).toEqual({ sessionId: 1, busy: false });
+  });
+
+  it("rejects a non-positive / unsafe sessionId (review-1: ids start at 1, the isSessionId contract)", () => {
+    expect(parseActivityPayload({ sessionId: 0, busy: false })).toBeNull();
+    expect(parseActivityPayload({ sessionId: -1, busy: true })).toBeNull();
+    expect(parseActivityPayload({ sessionId: Number.MAX_SAFE_INTEGER + 1, busy: true })).toBeNull();
   });
 
   it("ignores extra fields, keeping only sessionId and busy", () => {

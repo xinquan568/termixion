@@ -135,7 +135,9 @@ export function onDeadline(state: ActivityState, now: number): ActivityTransitio
 export function parseActivityPayload(payload: unknown): { sessionId: number; busy: boolean } | null {
   if (typeof payload !== "object" || payload === null) return null;
   const { sessionId, busy } = payload as { sessionId?: unknown; busy?: unknown };
-  if (typeof sessionId !== "number" || !Number.isInteger(sessionId)) return null;
+  // review-1: the SAME positive-safe-integer guard the other session ingress points use (ipc/backend
+  // isSessionId) — the backend allocates positive u64 handles, so 0 / negative / unsafe are junk.
+  if (typeof sessionId !== "number" || !Number.isSafeInteger(sessionId) || sessionId <= 0) return null;
   if (typeof busy !== "boolean") return null;
   return { sessionId, busy };
 }
