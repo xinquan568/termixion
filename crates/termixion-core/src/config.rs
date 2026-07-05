@@ -164,6 +164,8 @@ pub struct TerminalConfig {
     /// Empty string = the platform default font stack.
     pub font_family: String,
     pub font_size: u32,
+    /// Show an animated line while a command runs (trmx-91).
+    pub activity_indicator: bool,
 }
 
 impl Default for TerminalConfig {
@@ -174,6 +176,7 @@ impl Default for TerminalConfig {
             scrollback_lines: 10_000,
             font_family: String::new(),
             font_size: 12,
+            activity_indicator: true,
         }
     }
 }
@@ -300,6 +303,7 @@ pub const DEFAULT_TEMPLATE: &str = r##"# Termixion configuration (TOML).
 # scrollback_lines = 10000        # 0..=200000
 # font_family = ""                # "" = the platform default font stack
 # font_size = 12                  # 6..=72
+# activity_indicator = true       # animated line while a command runs
 
 # [appearance]
 # theme = "white"                 # a theme id from the theme catalog
@@ -336,6 +340,7 @@ pub fn toml_path_for(registry_key: &str) -> Option<(&'static str, &'static str)>
         "terminal.scrollbackLines" => Some(("terminal", "scrollback_lines")),
         "terminal.fontFamily" => Some(("terminal", "font_family")),
         "terminal.fontSize" => Some(("terminal", "font_size")),
+        "terminal.activityIndicator" => Some(("terminal", "activity_indicator")),
         "appearance.theme" => Some(("appearance", "theme")),
         "tabs.barPosition" => Some(("tabs", "bar_position")),
         "tabs.sideLabelOrientation" => Some(("tabs", "side_label_orientation")),
@@ -391,6 +396,11 @@ pub fn diff_configs(old: &Config, new: &Config) -> Vec<(String, RegistryValue)> 
         old.terminal.font_size != new.terminal.font_size,
         "terminal.fontSize",
         RegistryValue::Int(new.terminal.font_size),
+    );
+    push(
+        old.terminal.activity_indicator != new.terminal.activity_indicator,
+        "terminal.activityIndicator",
+        RegistryValue::Bool(new.terminal.activity_indicator),
     );
     push(
         old.appearance.theme != new.appearance.theme,
@@ -536,6 +546,12 @@ fn walk_terminal(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
                 ("terminal.font_size", "terminal.fontSize"),
                 FONT_SIZE_RANGE,
                 &mut config.terminal.font_size,
+                sink,
+            ),
+            "activity_indicator" => read_bool(
+                value,
+                ("terminal.activity_indicator", "terminal.activityIndicator"),
+                &mut config.terminal.activity_indicator,
                 sink,
             ),
             _ => sink.warnings.push(ConfigWarning::UnknownKey {
@@ -706,8 +722,8 @@ fn describe_value(value: &toml::Value) -> String {
 mod tests {
     use super::*;
 
-    /// All 11 registry keys.
-    const REGISTRY_KEYS: [&str; 11] = [
+    /// All 12 registry keys.
+    const REGISTRY_KEYS: [&str; 12] = [
         "update.autoCheck",
         "update.checkFrequency",
         "update.autoDownload",
@@ -716,6 +732,7 @@ mod tests {
         "terminal.scrollbackLines",
         "terminal.fontFamily",
         "terminal.fontSize",
+        "terminal.activityIndicator",
         "appearance.theme",
         "tabs.barPosition",
         "tabs.sideLabelOrientation",
@@ -737,6 +754,7 @@ cursor_blink = true
 scrollback_lines = 5000
 font_family = "Menlo"
 font_size = 14
+activity_indicator = false
 
 [appearance]
 theme = "night"
@@ -765,6 +783,7 @@ side_label_orientation = "vertical"
                     scrollback_lines: 5000,
                     font_family: "Menlo".to_string(),
                     font_size: 14,
+                    activity_indicator: false,
                 },
                 appearance: AppearanceConfig {
                     theme: "night".to_string(),
@@ -778,10 +797,10 @@ side_label_orientation = "vertical"
     }
 
     #[test]
-    fn full_file_yields_all_eleven_registry_pairs() {
+    fn full_file_yields_all_twelve_registry_pairs() {
         let (pairs, warnings) = parse_registry_pairs(FULL_NON_DEFAULT);
         assert_eq!(warnings, Vec::new());
-        assert_eq!(pairs.len(), 11);
+        assert_eq!(pairs.len(), 12);
         for key in REGISTRY_KEYS {
             assert!(value_for(&pairs, key).is_some(), "missing pair for {key}");
         }
@@ -816,6 +835,10 @@ side_label_orientation = "vertical"
         assert_eq!(
             value_for(&pairs, "terminal.fontSize"),
             Some(&RegistryValue::Int(14))
+        );
+        assert_eq!(
+            value_for(&pairs, "terminal.activityIndicator"),
+            Some(&RegistryValue::Bool(false))
         );
         assert_eq!(
             value_for(&pairs, "appearance.theme"),
@@ -911,6 +934,32 @@ side_label_orientation = "vertical"
         ));
         let (pairs, _) = parse_registry_pairs(text);
         assert!(value_for(&pairs, "terminal.cursorBlink").is_none());
+    }
+
+    // trmx-91: terminal.activityIndicator defaults to TRUE; explicit false parses
+    // and surfaces the registry pair (tolerant read_bool, same as cursor_blink).
+    #[test]
+    fn activity_indicator_defaults_to_true_and_false_surfaces_pair() {
+        // A [terminal] table with no activity_indicator keeps the default (true).
+        let (config, warnings) = parse_config("[terminal]\n");
+        assert!(
+            config.terminal.activity_indicator,
+            "terminal.activity_indicator defaults to true"
+        );
+        assert_eq!(warnings, Vec::new());
+        assert!(Config::default().terminal.activity_indicator);
+
+        // Explicit false parses to false and surfaces the registry pair.
+        let text = "[terminal]\nactivity_indicator = false\n";
+        let (config, warnings) = parse_config(text);
+        assert!(!config.terminal.activity_indicator);
+        assert_eq!(warnings, Vec::new());
+        let (pairs, warnings) = parse_registry_pairs(text);
+        assert_eq!(warnings, Vec::new());
+        assert_eq!(
+            value_for(&pairs, "terminal.activityIndicator"),
+            Some(&RegistryValue::Bool(false))
+        );
     }
 
     #[test]
@@ -1176,7 +1225,7 @@ side_label_orientation = "vertical"
     // 10. toml_path_for maps all 11 registry keys and rejects junk.
     #[test]
     fn toml_path_for_maps_every_registry_key() {
-        let expected: [(&str, (&str, &str)); 11] = [
+        let expected: [(&str, (&str, &str)); 12] = [
             ("update.autoCheck", ("update", "auto_check")),
             ("update.checkFrequency", ("update", "check_frequency")),
             ("update.autoDownload", ("update", "auto_download")),
@@ -1185,6 +1234,10 @@ side_label_orientation = "vertical"
             ("terminal.scrollbackLines", ("terminal", "scrollback_lines")),
             ("terminal.fontFamily", ("terminal", "font_family")),
             ("terminal.fontSize", ("terminal", "font_size")),
+            (
+                "terminal.activityIndicator",
+                ("terminal", "activity_indicator"),
+            ),
             ("appearance.theme", ("appearance", "theme")),
             ("tabs.barPosition", ("tabs", "bar_position")),
             (
@@ -1208,7 +1261,7 @@ side_label_orientation = "vertical"
     fn toml_path_for_round_trips_through_the_parser() {
         // A minimal file written at toml_path_for's answer must surface exactly
         // that registry key in the pairs.
-        let samples: [(&str, &str); 11] = [
+        let samples: [(&str, &str); 12] = [
             ("update.autoCheck", "false"),
             ("update.checkFrequency", "\"manual\""),
             ("update.autoDownload", "false"),
@@ -1217,6 +1270,7 @@ side_label_orientation = "vertical"
             ("terminal.scrollbackLines", "42"),
             ("terminal.fontFamily", "\"Menlo\""),
             ("terminal.fontSize", "20"),
+            ("terminal.activityIndicator", "false"),
             ("appearance.theme", "\"night\""),
             ("tabs.barPosition", "\"right\""),
             ("tabs.sideLabelOrientation", "\"vertical\""),
