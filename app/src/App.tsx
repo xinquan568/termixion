@@ -57,6 +57,7 @@ import {
 import { grabOffsetOf, ratioForDrag, RESET_RATIO } from "./panes/dividerDrag";
 import { nextPane, paneInDirection, type Direction } from "./panes/paneNav";
 import { activeDividerKeys, dividerKey } from "./panes/paneChrome";
+import { BadgeOverlay } from "./panes/BadgeOverlay";
 import { type FrameSchedule } from "./terminal/resizeCoalescer";
 import {
   isLabelOrientation,
@@ -67,6 +68,7 @@ import {
   type TabBarPosition,
 } from "./settings/settingsStore";
 import { describeTarget, tabKeyAction } from "./tabs/tabKeymap";
+import { isRegisteredThemeId, isUserThemeIdShape, resolveTheme } from "./theme/registry";
 import { useBackend } from "./ipc/useBackend";
 import {
   closePty,
@@ -98,6 +100,12 @@ const realFrameSchedule: FrameSchedule = (cb) => {
 
 /** The default content bounds before the real ResizeObserver measures the pane area (px). */
 const DEFAULT_BOUNDS: Rect = { x: 0, y: 0, width: 800, height: 600 };
+
+// trmx-90: cols/rows fallbacks for the badge threshold + font sizing before the terminal has fit (or
+// under a headless test stub with no metrics) — a sane wide default so a freshly-set badge still shows
+// (a badge is only ever set once a live terminal exists, so this window is effectively pre-mount only).
+const FALLBACK_BADGE_COLS = 80;
+const FALLBACK_BADGE_ROWS = 24;
 
 /** Wire a mounted terminal to a live PTY session; resolves the session's identity (useBackend). */
 export type AttachFn = (
@@ -231,6 +239,16 @@ export function App({
   const [sideLabelOrientation, setSideLabelOrientation] = useState<LabelOrientation>(() =>
     makeSettingsStore().get("tabs.sideLabelOrientation"),
   );
+  // trmx-90: the active theme id, seeded from the shared settings snapshot and kept live over
+  // settings:changed (mirrors barPosition). Its `terminal.badge` tint colors every pane's badge
+  // watermark, so a live theme switch repaints the badges alongside the terminal colors.
+  const [activeThemeId, setActiveThemeId] = useState<string>(() =>
+    makeSettingsStore().get("appearance.theme"),
+  );
+  // trmx-90: the pane whose badge is being edited via the ⇧⌘B inline editor (null = not editing).
+  // Mirrors renamingTabId: while non-null, focus-follows-activation is SUPPRESSED (the input owns
+  // the keyboard); commit/cancel clears it, handing focus back to the pane's terminal.
+  const [badgingPaneId, setBadgingPaneId] = useState<PaneId | null>(null);
   // trmx-84: the measured pane content area — `solveRects` bounds. Seeded to a usable default so a
   // headless render (jsdom, pre-layout) still lays panes out; the ResizeObserver below refreshes it
   // once the window has a real size (a 0×0 reading is ignored so it never clobbers the default).
@@ -248,11 +266,13 @@ export function App({
   const pendingCwdRef = useRef(new Map<PaneId, string | undefined>()); // cwd to seed the open with
   const readyCbsRef = useRef(new Map<PaneId, (handle: TerminalHandle) => void>()); // stable onReady per pane
   const oscTitleCbsRef = useRef(new Map<PaneId, (title: string) => void>()); // stable onOscTitle per pane
+  const badgeCbsRef = useRef(new Map<PaneId, (badge: string | null) => void>()); // stable onBadge per pane (trmx-90)
   const mirroredRef = useRef(new Map<PaneId, string>()); // last title mirrored to the core, per pane
   // Attach epoch per pane: each onReady bumps it; a resolution whose epoch is no longer current is
   // STALE (StrictMode's dev remount opens two PTYs — only the current epoch keeps its session).
   const attachEpochRef = useRef(new Map<PaneId, number>());
   const renamingRef = useRef(renamingTabId); // out-of-render read for the onReady focus guard
+  const badgingRef = useRef(badgingPaneId); // out-of-render read for the onReady focus guard (trmx-90)
   const bootedRef = useRef(false);
 
   // Latest-seam ref: the cached per-pane callbacks (stable identity — an inline arrow would remount
@@ -261,6 +281,7 @@ export function App({
   seamsRef.current = { attach: attachFn, closeWindow, closeSession, setWindowTitle, mirrorTitle };
   boundsRef.current = bounds;
   renamingRef.current = renamingTabId;
+  badgingRef.current = badgingPaneId;
 
   // Keep stateRef pointed at the latest COMMITTED state for the out-of-render callbacks (attach
   // resolutions, event subscriptions) — an effect, not a render assignment, so a discarded render
@@ -321,7 +342,12 @@ export function App({
         handlesRef.current.set(paneId, handle);
         const s = stateRef.current;
         const activeTab = s.tabs.find((t) => t.tabId === s.activeTabId);
-        if (activeTab && activeTab.focusedPaneId === paneId && renamingRef.current === null) {
+        if (
+          activeTab &&
+          activeTab.focusedPaneId === paneId &&
+          renamingRef.current === null &&
+          badgingRef.current === null
+        ) {
           (handle.terminal as unknown as { focus?: () => void } | undefined)?.focus?.();
         }
         const epoch = (attachEpochRef.current.get(paneId) ?? 0) + 1;
@@ -371,6 +397,22 @@ export function App({
     return cb;
   };
 
+  // trmx-90: this pane's onBadge, cached like readyFor/oscTitleFor (a stable identity — an inline
+  // arrow would remount the terminal via TerminalView's effect deps). An OSC 1337 SetBadgeFormat
+  // lands in THIS pane's `badge` slot (last-write-wins); null (empty/undecodable/cleared) removes it.
+  // The per-pane closure is the load-bearing SCOPING — a `printf` in a BACKGROUND pane badges that
+  // pane, never the focused one (the badge is orthogonal to the tab label by construction).
+  const badgeFor = (tabId: number, paneId: PaneId): ((badge: string | null) => void) => {
+    let cb = badgeCbsRef.current.get(paneId);
+    if (!cb) {
+      cb = (badge) => {
+        dispatch({ kind: "setBadge", tabId, paneId, badge });
+      };
+      badgeCbsRef.current.set(paneId, cb);
+    }
+    return cb;
+  };
+
   // Dispose one pane's resources: drop all its paneId-keyed maps and close its PTY (unless the
   // shell already exited). Shared by pane-close, pty:exited, and whole-tab close — one path, no leak.
   const disposePaneResources = (paneId: PaneId, opts?: { alreadyExited?: boolean }) => {
@@ -381,6 +423,7 @@ export function App({
     pendingCwdRef.current.delete(paneId);
     readyCbsRef.current.delete(paneId);
     oscTitleCbsRef.current.delete(paneId);
+    badgeCbsRef.current.delete(paneId);
     mirroredRef.current.delete(paneId);
     attachEpochRef.current.delete(paneId);
     if (sessionId !== undefined && !opts?.alreadyExited) {
@@ -407,6 +450,8 @@ export function App({
     // A tab dying MID-RENAME must clear the rename state, or a stuck renamingTabId would suppress
     // focus-follows-activation forever.
     setRenamingTabId((current) => (current === tabId ? null : current));
+    // trmx-90: same for a tab dying MID-BADGE-EDIT — clear the editor if the badging pane was in it.
+    setBadgingPaneId((current) => (current !== null && paneIds.includes(current) ? null : current));
   };
 
   // Close one pane with the ⌘W precedence: pane → tab → window. More than one pane → drop just that
@@ -424,6 +469,8 @@ export function App({
       dispatch({ kind: "closePane", tabId, paneId });
       disposePaneResources(paneId, opts);
       if (wasRenamedPane) setRenamingTabId((current) => (current === tabId ? null : current));
+      // trmx-90: a pane dying MID-BADGE-EDIT clears the editor so it can't re-target the new focus.
+      setBadgingPaneId((current) => (current === paneId ? null : current));
     } else {
       closeTabInternal(tabId, opts);
     }
@@ -511,6 +558,24 @@ export function App({
   };
   const cancelRename = () => setRenamingTabId(null);
 
+  // trmx-90: the ⇧⌘B badge editor intents. Commit writes the FOCUSED pane's badge (empty/whitespace →
+  // clear to null); cancel (Esc/blur) drops the edit with no dispatch. Clearing badgingPaneId re-runs
+  // the focus effect, handing the keyboard back to that pane's terminal. The tab is found by paneId
+  // (global-unique) so a commit lands on the right pane even if focus/activation moved meanwhile.
+  const commitBadge = (paneId: PaneId, value: string) => {
+    const tab = stateRef.current.tabs.find((t) => t.panes[paneId] !== undefined);
+    if (tab) {
+      dispatch({
+        kind: "setBadge",
+        tabId: tab.tabId,
+        paneId,
+        badge: value.trim() === "" ? null : value,
+      });
+    }
+    setBadgingPaneId(null);
+  };
+  const cancelBadge = () => setBadgingPaneId(null);
+
   // Subscriptions: pty:exited (a pane's shell exited → close just that pane), session:title-hint
   // (route by sessionId into the owning PANE's `process` slot), and the menu's tabs:action intents.
   useEffect(() => {
@@ -549,6 +614,12 @@ export function App({
         const active = stateRef.current.activeTabId;
         if (active !== null) setRenamingTabId(active);
       }
+      // trmx-90: ⇧⌘B → open the badge editor on the ACTIVE tab's FOCUSED pane (seeded with its badge).
+      else if (payload === "set-badge") {
+        const s = stateRef.current;
+        const tab = s.tabs.find((t) => t.tabId === s.activeTabId);
+        if (tab) setBadgingPaneId(tab.focusedPaneId);
+      }
     });
     return () => {
       stopExited();
@@ -567,6 +638,12 @@ export function App({
       if (key === "tabs.barPosition" && isTabBarPosition(value)) setBarPosition(value);
       else if (key === "tabs.sideLabelOrientation" && isLabelOrientation(value)) {
         setSideLabelOrientation(value);
+      }
+      // trmx-90: track the active theme id live so the badge watermark repaints on a theme switch
+      // (same untrusted-payload discipline — only a registered or well-formed user id updates state;
+      // resolveTheme is total anyway, but this mirrors the barPosition guard).
+      else if (key === "appearance.theme" && (isRegisteredThemeId(value) || isUserThemeIdShape(value))) {
+        setActiveThemeId(value);
       }
     });
     return stopSettings;
@@ -615,11 +692,13 @@ export function App({
   const activeTab = state.tabs.find((t) => t.tabId === state.activeTabId);
   const activeFocusedPaneId = activeTab?.focusedPaneId ?? null;
   useEffect(() => {
-    if (renamingTabId !== null) return;
+    // trmx-90: the badge editor (like a rename) owns the keyboard while open — suppress the terminal
+    // grab so the ⇧⌘B input keeps focus; commit/cancel clears badgingPaneId → this re-runs.
+    if (renamingTabId !== null || badgingPaneId !== null) return;
     if (activeFocusedPaneId === null) return;
     const terminal = handlesRef.current.get(activeFocusedPaneId)?.terminal;
     (terminal as unknown as { focus?: () => void } | undefined)?.focus?.();
-  }, [state.activeTabId, activeFocusedPaneId, renamingTabId]);
+  }, [state.activeTabId, activeFocusedPaneId, renamingTabId, badgingPaneId]);
 
   // trmx-75: the NATIVE window title is the ACTIVE tab's (focused pane) effective title — background
   // tabs/panes never reach it. Undefined = no tabs yet (boot) — leave the window alone.
@@ -762,6 +841,8 @@ export function App({
   // LAST): barLayoutFor's flex direction moves the bar; the keyed pane hosts stay put (keep-alive).
   const barLayout = barLayoutFor(barPosition);
   const labelOrientation = labelOrientationFor(barPosition, sideLabelOrientation);
+  // trmx-90: the badge watermark tint for every pane, from the active theme (tracked live above).
+  const badgeColor = resolveTheme(activeThemeId).terminal.badge;
 
   return (
     <main className={`app app--bar-${barPosition}`}>
@@ -781,35 +862,67 @@ export function App({
               data-testid={`tab-host-${tab.tabId}`}
               style={{ display: tab.tabId === state.activeTabId ? undefined : "none" }}
             >
-              {solved.panes.map(({ paneId, rect }) => (
-                <div
-                  key={paneId}
-                  className={
-                    paneId === tab.focusedPaneId ? "pane-host pane-host--focused" : "pane-host"
-                  }
-                  data-testid={`pane-host-${paneId}`}
-                  style={{
-                    position: "absolute",
-                    left: rect.x,
-                    top: rect.y,
-                    width: rect.width,
-                    height: rect.height,
-                  }}
-                  // Click-to-focus: capture phase so a click anywhere in the pane focuses it, WITHOUT
-                  // preventDefault — xterm still starts its text selection on the same mousedown.
-                  onMouseDownCapture={() => {
-                    if (tab.focusedPaneId !== paneId) {
-                      dispatch({ kind: "focusPane", tabId: tab.tabId, paneId });
+              {solved.panes.map(({ paneId, rect }) => {
+                const pane = tab.panes[paneId];
+                // trmx-90: cell metrics for the badge overlay — cols (the narrow-pane threshold) + the
+                // cell height in px (the font is ~2× it), read off the mounted terminal (a localized
+                // cast, like the scrollbar's ScrollbarTerminalLike) with sane fallbacks before the
+                // first fit / under a headless stub. Reactive enough: a resize/split/badge change
+                // re-renders App and re-reads these, and a badge only ever lands on a live terminal.
+                const metrics = handlesRef.current.get(paneId)?.terminal as unknown as
+                  | { cols?: number; rows?: number }
+                  | undefined;
+                const cellsWide = metrics?.cols ?? FALLBACK_BADGE_COLS;
+                const rows = metrics?.rows ?? FALLBACK_BADGE_ROWS;
+                const cellHeightPx = rows > 0 ? rect.height / rows : 0;
+                return (
+                  <div
+                    key={paneId}
+                    className={
+                      paneId === tab.focusedPaneId ? "pane-host pane-host--focused" : "pane-host"
                     }
-                  }}
-                >
-                  <TerminalView
-                    onReady={readyFor(tab.tabId, paneId)}
-                    cwdStore={storeFor(paneId)}
-                    onOscTitle={oscTitleFor(tab.tabId, paneId)}
-                  />
-                </div>
-              ))}
+                    data-testid={`pane-host-${paneId}`}
+                    style={{
+                      position: "absolute",
+                      left: rect.x,
+                      top: rect.y,
+                      width: rect.width,
+                      height: rect.height,
+                    }}
+                    // Click-to-focus: capture phase so a click anywhere in the pane focuses it, WITHOUT
+                    // preventDefault — xterm still starts its text selection on the same mousedown.
+                    onMouseDownCapture={() => {
+                      if (tab.focusedPaneId !== paneId) {
+                        dispatch({ kind: "focusPane", tabId: tab.tabId, paneId });
+                      }
+                    }}
+                  >
+                    <TerminalView
+                      onReady={readyFor(tab.tabId, paneId)}
+                      cwdStore={storeFor(paneId)}
+                      onOscTitle={oscTitleFor(tab.tabId, paneId)}
+                      onBadge={badgeFor(tab.tabId, paneId)}
+                    />
+                    {/* trmx-90: the translucent badge watermark (top-right, click-through). Hidden by
+                        BadgeOverlay itself when the pane has no badge or is too narrow. */}
+                    <BadgeOverlay
+                      badge={pane.badge}
+                      cellsWide={cellsWide}
+                      cellHeightPx={cellHeightPx}
+                      color={badgeColor}
+                    />
+                    {/* trmx-90: the ⇧⌘B inline editor, over this pane while it is being badged. */}
+                    {paneId === badgingPaneId && (
+                      <PaneBadgeInput
+                        key={`badge-input-${paneId}`}
+                        initial={pane.badge ?? ""}
+                        onCommit={(value) => commitBadge(paneId, value)}
+                        onCancel={cancelBadge}
+                      />
+                    )}
+                  </div>
+                );
+              })}
               {solved.dividers.map((d) => (
                 // trmx-85: 1px visual line + a widened (~7px) hit area (index.css) that drag-resizes the
                 // split. Pointer handlers stopPropagation so a grab never focuses a pane; double-click
@@ -863,5 +976,71 @@ export function App({
       />
       <UpdateAuthorityHost />
     </main>
+  );
+}
+
+/**
+ * trmx-90: the ⇧⌘B inline BADGE EDITOR — a small centered input over the focused pane. Mirrors
+ * TabStrip's TabRenameInput discipline: local `value` seeded ONCE from the pane's current badge (a
+ * re-render mid-edit must not clobber the user's typing — useState ignores later `initial` values),
+ * autofocus + select-all on mount (so it is keyboard-operable the instant ⇧⌘B opens it), and a
+ * `done` latch so commit/cancel fires exactly once (Enter commits and the input unmounts; the
+ * resulting blur must not then cancel). Enter commits; Esc AND blur cancel (no dispatch). Every
+ * keydown stopPropagation's so Enter/Esc are TRAPPED here — they never reach xterm or the window-
+ * capture tab keymap (the ⇧⌘B chord itself is swallowed by the menu accelerator upstream).
+ */
+function PaneBadgeInput({
+  initial,
+  onCommit,
+  onCancel,
+}: {
+  initial: string;
+  onCommit: (value: string) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(initial);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const doneRef = useRef(false);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  const commit = () => {
+    if (doneRef.current) return;
+    doneRef.current = true;
+    onCommit(value);
+  };
+  const cancel = () => {
+    if (doneRef.current) return;
+    doneRef.current = true;
+    onCancel();
+  };
+
+  return (
+    <input
+      ref={inputRef}
+      data-testid="pane-badge-input"
+      className="tx-badge-input"
+      aria-label="Set pane badge"
+      value={value}
+      onChange={(e) => setValue(e.target.value)}
+      onKeyDown={(e) => {
+        // Trap Enter/Esc so they commit/cancel HERE and never leak to xterm or the tab keymap.
+        e.stopPropagation();
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commit();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          cancel();
+        }
+      }}
+      onBlur={cancel}
+      // Isolate pointer gestures from the pane's click-to-focus / xterm selection.
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+    />
   );
 }

@@ -593,15 +593,122 @@ describe("TerminalView", () => {
       writeClipboard,
     });
 
-    // OSC 0/2 titles forward to the injected sink; 52 and 7 handlers are registered.
+    // OSC 0/2 titles forward to the injected sink; 52, 7, and 1337 (trmx-90) handlers are registered.
     titleHandler?.("hello from OSC 2");
     expect(setTitle).toHaveBeenCalledWith("hello from OSC 2");
-    expect(oscRegistrations.map((r) => r.ident).sort((a, b) => a - b)).toEqual([7, 52]);
+    expect(oscRegistrations.map((r) => r.ident).sort((a, b) => a - b)).toEqual([7, 52, 1337]);
 
-    // One teardown disposes all three subscriptions.
+    // One teardown disposes all subscriptions (title + 52 + 7 + 1337).
     teardown();
     expect(titleDispose).toHaveBeenCalledTimes(1);
     for (const r of oscRegistrations) expect(r.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("realAttachOscIntegrations wires OSC 1337 SetBadgeFormat into the setBadge sink; teardown disposes it (trmx-90)", () => {
+    // A capable fake that captures each OSC handler's callback + its disposer, so the test can feed
+    // 1337 a SetBadgeFormat payload and confirm the sink fires, then that teardown unregisters it.
+    const oscHandlers = new Map<number, (data: string) => boolean | Promise<boolean>>();
+    const oscDisposes = new Map<number, ReturnType<typeof vi.fn>>();
+    const fakeTerminal = {
+      onTitleChange: () => ({ dispose: vi.fn() }),
+      parser: {
+        registerOscHandler: (ident: number, cb: (data: string) => boolean | Promise<boolean>) => {
+          oscHandlers.set(ident, cb);
+          const dispose = vi.fn();
+          oscDisposes.set(ident, dispose);
+          return { dispose };
+        },
+      },
+    };
+    const setBadge = vi.fn();
+
+    const teardown = realAttachOscIntegrations(fakeTerminal as never, {
+      setTitle: vi.fn(),
+      writeClipboard: vi.fn(),
+      setBadge,
+    });
+
+    // SetBadgeFormat=<base64 "prod"> → the decoded, sanitized badge reaches the injected sink.
+    oscHandlers.get(1337)?.(`SetBadgeFormat=${btoa("prod")}`);
+    expect(setBadge).toHaveBeenCalledWith("prod");
+
+    teardown();
+    expect(oscDisposes.get(1337)).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes OSC 1337 SetBadgeFormat into onBadge when provided — through the DEFAULT integrations (trmx-90)", () => {
+    // The default seam runs the REAL realAttachOscIntegrations; a capable fake captures the 1337 cb.
+    const oscHandlers = new Map<number, (data: string) => boolean | Promise<boolean>>();
+    const fakeTerminal = {
+      onTitleChange: () => ({ dispose: vi.fn() }),
+      parser: {
+        registerOscHandler: (ident: number, cb: (data: string) => boolean | Promise<boolean>) => {
+          oscHandlers.set(ident, cb);
+          return { dispose: vi.fn() };
+        },
+      },
+    };
+    const handle: TerminalHandle = {
+      terminal: fakeTerminal as never,
+      renderer: "dom",
+      fit: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const mount = vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(() => handle);
+    const onBadge = vi.fn();
+
+    render(
+      <TerminalView
+        mount={mount}
+        observeResize={noopObserve}
+        attachScrollbar={noopAttachScrollbar}
+        attachClipboard={noopAttachClipboard}
+        onBadge={onBadge}
+      />,
+    );
+
+    // A program sets its badge via OSC 1337 — THIS pane's callback receives it (not the window).
+    oscHandlers.get(1337)?.(`SetBadgeFormat=${btoa("db")}`);
+    expect(onBadge).toHaveBeenCalledExactlyOnceWith("db");
+  });
+
+  it("threads onBadge through the attachOscIntegrations seam; absent stays undefined (trmx-90)", () => {
+    const handle: TerminalHandle = {
+      terminal: { id: "real-terminal" } as never,
+      renderer: "webgl",
+      fit: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const mount = vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(() => handle);
+    const attachOsc = vi.fn<AttachOscIntegrations>(() => () => {});
+    const onBadge = vi.fn();
+
+    render(
+      <TerminalView
+        mount={mount}
+        observeResize={noopObserve}
+        attachScrollbar={noopAttachScrollbar}
+        attachOscIntegrations={attachOsc}
+        attachClipboard={noopAttachClipboard}
+        onBadge={onBadge}
+      />,
+    );
+    expect(attachOsc).toHaveBeenCalledTimes(1);
+    expect(attachOsc.mock.calls[0][3]).toBe(onBadge); // 4th arg = onBadge
+
+    // Without the prop the seam sees undefined — the badge simply has no destination.
+    const attachOscAbsent = vi.fn<AttachOscIntegrations>(() => () => {});
+    render(
+      <TerminalView
+        mount={mount}
+        observeResize={noopObserve}
+        attachScrollbar={noopAttachScrollbar}
+        attachOscIntegrations={attachOscAbsent}
+        attachClipboard={noopAttachClipboard}
+      />,
+    );
+    expect(attachOscAbsent).toHaveBeenCalledTimes(1);
+    expect(attachOscAbsent.mock.calls[0][3]).toBeUndefined();
   });
 
   it("passes the injected per-tab cwdStore through the OSC seam (trmx-74)", () => {
