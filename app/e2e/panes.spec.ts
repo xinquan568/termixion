@@ -126,3 +126,21 @@ test("⌥⌘-arrows and ⌘] move the focused pane (trmx-86)", async ({ page }) 
   await navKey(page, "]"); // ⌘] cycles (2 → 1, wrapping over the leaves order)
   await expect(page.getByTestId("pane-host-1")).toHaveClass(/pane-host--focused/);
 });
+
+test("the focused pane's dividers render active; a focus flip moves the active chrome (trmx-87)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await split(page); // 1 | 2 (focus 2)
+  await page.getByTestId("pane-host-1").click(); // focus 1
+  await split(page, { below: true }); // split pane 1 → pane 3; tree ((1/3) | 2), focus 3
+
+  // Focus pane 3 (bottom-left): the root divider + the left-column divider both outline it → 2 active.
+  await expect(page.locator(".pane-divider--active")).toHaveCount(2);
+
+  // Focus pane 2 (full-height right): only the root divider outlines it → 1 active; the left-column
+  // divider becomes inactive (a class flip, no re-layout).
+  await page.getByTestId("pane-host-2").click();
+  await expect(page.locator(".pane-divider--active")).toHaveCount(1);
+  await expect(page.locator(".pane-divider--inactive")).toHaveCount(1);
+});

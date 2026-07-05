@@ -100,8 +100,28 @@ body {
  * FR-3.6 will style the visible line (active/focus chrome) — here it stays a plain 1px line.
  */
 .pane-divider {
-  background: var(--tx-border);
   z-index: 2;
+}
+/*
+ * trmx-87 (FR-3.6) — the Kitty multi-pane look. The dividers OUTLINING the focused pane render in the
+ * active border color; the rest inactive (both from the theme catalog via --tx-pane-*). A single-pane
+ * tab has no dividers, so the chrome-free baseline is preserved.
+ */
+.pane-divider--active {
+  background: var(--tx-pane-active-border);
+}
+.pane-divider--inactive {
+  background: var(--tx-pane-inactive-border);
+}
+
+/*
+ * trmx-87 (FR-3.6) — dim UNFOCUSED panes' TEXT (Kitty's inactive_text_alpha) via compositor-side opacity
+ * on xterm's screen layer: instant restore on focus, cheap, and no xterm API. The selection layer is a
+ * sibling of .xterm-screen, so a selection in a dimmed pane stays visible. A single pane is always
+ * focused, so it is never dimmed — the v0.0.4 baseline look is intact when you don't split.
+ */
+.pane-host:not(.pane-host--focused) .xterm-screen {
+  opacity: 0.85;
 }
 /* The transparent hit area, expanded around the thin line along the cross axis (~3px each side). */
 .pane-divider::before {

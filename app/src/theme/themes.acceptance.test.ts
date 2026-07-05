@@ -29,6 +29,7 @@ const CORE: Record<ThemeId, { bg: string; bg2: string; text: string; accent: str
  *  (night.brightBlack, solarized.selectionBackground); see the header comment. */
 const TERMINAL: Record<ThemeId, ThemeTokens["terminal"]> = {
   white: {
+    pane: { activeBorder: "#0066cc", inactiveBorder: "#eeeeee" },
     ansi: {
       black: "#2e3436", red: "#cc0000", green: "#3d7a04", yellow: "#8a7000",
       blue: "#3465a4", magenta: "#75507b", cyan: "#047a7c", white: "#767676",
@@ -41,6 +42,7 @@ const TERMINAL: Record<ThemeId, ThemeTokens["terminal"]> = {
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
   },
   paper: {
+    pane: { activeBorder: "#0066cc", inactiveBorder: "#d5d4d4" },
     ansi: {
       black: "#2e3436", red: "#c33820", green: "#387204", yellow: "#806800",
       blue: "#2f5a92", magenta: "#7b4d82", cyan: "#086e6e", white: "#595959",
@@ -53,6 +55,7 @@ const TERMINAL: Record<ThemeId, ThemeTokens["terminal"]> = {
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
   },
   mint: {
+    pane: { activeBorder: "#1a6b4a", inactiveBorder: "#a8c9ad" },
     ansi: {
       black: "#2a3832", red: "#9e3020", green: "#246428", yellow: "#7a5c00",
       blue: "#155878", magenta: "#7b4a8a", cyan: "#0a6571", white: "#3d5240",
@@ -65,6 +68,7 @@ const TERMINAL: Record<ThemeId, ThemeTokens["terminal"]> = {
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
   },
   sepia: {
+    pane: { activeBorder: "#8b4513", inactiveBorder: "#e0d5bc" },
     ansi: {
       black: "#3e3328", red: "#b5421a", green: "#4a6818", yellow: "#7a5c00",
       blue: "#4a6a8a", magenta: "#8a5470", cyan: "#1e645e", white: "#5e5345",
@@ -77,6 +81,7 @@ const TERMINAL: Record<ThemeId, ThemeTokens["terminal"]> = {
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
   },
   night: {
+    pane: { activeBorder: "#58a6ff", inactiveBorder: "#3a3f46" },
     ansi: {
       black: "#1a1d22", red: "#f85149", green: "#3fb950", yellow: "#d29922",
       blue: "#58a6ff", magenta: "#bc8cff", cyan: "#39c5cf", white: "#b1bac4",
@@ -89,6 +94,7 @@ const TERMINAL: Record<ThemeId, ThemeTokens["terminal"]> = {
     scrollbar: { idle: "rgba(255, 255, 255, 0.12)", hover: "rgba(255, 255, 255, 0.20)", active: "rgba(255, 255, 255, 0.30)" },
   },
   solarized: {
+    pane: { activeBorder: "#268bd2", inactiveBorder: "#0e4753" },
     ansi: {
       black: "#073642", red: "#dc322f", green: "#859900", yellow: "#b58900",
       blue: "#268bd2", magenta: "#d33682", cyan: "#2aa198", white: "#eee8d5",
@@ -206,5 +212,18 @@ describe.each(THEME_IDS)("legibility gates (trmx-77) — %s", (id) => {
     expect(contrastRatio(theme.terminal.cursor, bg)).toBeGreaterThanOrEqual(
       CONTRAST_GATES.cursor,
     );
+  });
+
+  // trmx-87 (FR-3.6): the FOCUSED pane's border must read as "focused" against the background — the same
+  // UI-component contrast the cursor uses. (The inactive border is a subtle line — presence-only, below.)
+  it(`G5: pane activeBorder ≥ ${CONTRAST_GATES.cursor}:1 on the terminal background`, () => {
+    expect(contrastRatio(theme.terminal.pane.activeBorder, bg)).toBeGreaterThanOrEqual(
+      CONTRAST_GATES.cursor,
+    );
+  });
+
+  it("G5b: pane inactiveBorder is present and distinct from the active border", () => {
+    expect(theme.terminal.pane.inactiveBorder).toMatch(/^#|rgb/);
+    expect(theme.terminal.pane.inactiveBorder).not.toBe(theme.terminal.pane.activeBorder);
   });
 });

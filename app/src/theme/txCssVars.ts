@@ -27,6 +27,9 @@ export function txCssVars(theme: ThemeTokens): Record<string, string> {
     "--tx-text-2": theme.color.text.secondary,
     "--tx-text-3": theme.color.text.tertiary,
     "--tx-border": theme.color.border,
+    // trmx-87 (FR-3.6): the multi-pane divider/border colors (active outlines the focused pane).
+    "--tx-pane-active-border": theme.terminal.pane.activeBorder,
+    "--tx-pane-inactive-border": theme.terminal.pane.inactiveBorder,
     "--tx-primary": theme.color.accent.primary,
     "--tx-success": theme.color.semantic.success,
     "--tx-error": theme.color.semantic.error,

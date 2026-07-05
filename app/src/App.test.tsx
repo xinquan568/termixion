@@ -1303,3 +1303,45 @@ describe("App pane navigation (trmx-86)", () => {
     expect(screen.getByTestId("tab-rename-input")).toBeInTheDocument();
   });
 });
+
+// trmx-87 (FR-3.6): the Kitty multi-pane look. The dividers OUTLINING the focused pane render with
+// `pane-divider--active`, the rest `--inactive`; a focus flip moves the active class WITHOUT remounting
+// a terminal; a single-pane tab has no divider (baseline). Divider testids: root / first / second.
+describe("App multi-pane chrome (trmx-87)", () => {
+  const cls = (testid: string) => screen.getByTestId(testid).className;
+
+  async function grid2x2(ctx: ReturnType<typeof renderApp>) {
+    await resolveAttach(ctx.calls[0], { sessionId: 1, title: "one" });
+    fireEvent.keyDown(document.body, { key: "d", metaKey: true }); // ⌘D → pane 2 (focus 2)
+    fireEvent.mouseDown(screen.getByTestId("pane-host-1")); // focus 1
+    fireEvent.keyDown(document.body, { key: "d", metaKey: true, shiftKey: true }); // ⇧⌘D → pane 3
+    fireEvent.mouseDown(screen.getByTestId("pane-host-2")); // focus 2
+    fireEvent.keyDown(document.body, { key: "d", metaKey: true, shiftKey: true }); // ⇧⌘D → pane 4 (focus 4)
+  }
+
+  it("outlines the FOCUSED pane's dividers as active; the rest inactive", async () => {
+    const ctx = renderApp();
+    await grid2x2(ctx); // focus = pane 4 (bottom-right): active = root + right-column ("second")
+    expect(cls("pane-divider-root")).toContain("pane-divider--active");
+    expect(cls("pane-divider-second")).toContain("pane-divider--active");
+    expect(cls("pane-divider-first")).toContain("pane-divider--inactive"); // left column doesn't bound 4
+  });
+
+  it("a focus flip moves the active chrome WITHOUT remounting a terminal (style-only)", async () => {
+    const ctx = renderApp();
+    await grid2x2(ctx); // focus 4
+    const unmountsBefore = recorder.unmounts;
+    fireEvent.mouseDown(screen.getByTestId("pane-host-1")); // focus top-left (1): active = root + "first"
+    expect(cls("pane-divider-first")).toContain("pane-divider--active");
+    expect(cls("pane-divider-second")).toContain("pane-divider--inactive");
+    expect(recorder.unmounts).toBe(unmountsBefore); // re-chrome is a class flip, not a re-layout
+  });
+
+  it("a single-pane tab renders NO divider and its pane is focused (baseline, not dimmed)", async () => {
+    const ctx = renderApp();
+    await resolveAttach(ctx.calls[0], { sessionId: 1, title: "one" });
+    expect(screen.queryByTestId("pane-divider-root")).not.toBeInTheDocument();
+    // The dim is CSS `.pane-host:not(.pane-host--focused)`; the only pane is focused, so it is never dimmed.
+    expect(screen.getByTestId("pane-host-1").className).toContain("pane-host--focused");
+  });
+});
