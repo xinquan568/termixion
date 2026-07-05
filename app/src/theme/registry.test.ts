@@ -187,3 +187,57 @@ describe("themeLabel over the widened id space", () => {
     expect(themeLabel("night")).toBe("Night");
   });
 });
+
+// trmx-89 review-1: an invalidating edit of the ACTIVE user theme must keep serving the last-good
+// colors (the hot-reload "invalid edit -> previous colors stay" for new panes / re-applies), not fall
+// back to White the moment resolveTheme is called again.
+describe("last-good tokens across an invalidating re-register", () => {
+  it("keeps the previous derived tokens when a valid user theme is re-registered invalid", () => {
+    const s = spec(true, "#101010", "#f0f0f0");
+    registerUserThemes([validEntry("user:live", s)]);
+    const good = getTheme("user:live");
+    expect(good).toEqual(deriveTheme(s));
+
+    // The theme-designer saved a broken file: themes_read() now reports it invalid.
+    registerUserThemes([
+      { id: "user:live", source: "user", valid: false, spec: null, warnings: [{ type: "SyntaxError" }] },
+    ]);
+
+    // resolveTheme/getTheme still return the LAST-GOOD tokens (not White) — a new pane keeps the colors.
+    expect(getTheme("user:live")).toEqual(good);
+    expect(resolveTheme("user:live")).toEqual(good);
+    expect(resolveTheme("user:live")).not.toEqual(themes.white);
+    // ...but the picker entry is flagged invalid + unselectable.
+    const entry = listThemes().find((e) => e.id === "user:live");
+    expect(entry?.valid).toBe(false);
+    expect(entry?.diagnostics[0]?.severity).toBe("error");
+  });
+
+  it("still falls back to White for an id that was NEVER valid this session", () => {
+    registerUserThemes([
+      { id: "user:born-bad", source: "user", valid: false, spec: null, warnings: [{ type: "SyntaxError" }] },
+    ]);
+    expect(getTheme("user:born-bad")).toBeUndefined();
+    expect(resolveTheme("user:born-bad")).toEqual(themes.white);
+  });
+
+  it("drops the last-good once the id disappears entirely from a re-register", () => {
+    registerUserThemes([validEntry("user:gone", spec(true, "#101010", "#f0f0f0"))]);
+    registerUserThemes([validEntry("user:other")]); // "user:gone" is absent now (file deleted)
+    expect(getTheme("user:gone")).toBeUndefined();
+    expect(resolveTheme("user:gone")).toEqual(themes.white);
+  });
+});
+
+// trmx-89 review-1: a valid user theme whose colors are rgb()/rgba()/8-hex (all accepted by
+// parse_theme) must register + validate without throwing — the contrast path previously threw.
+describe("registration is grammar-total (rgb()/rgba()/8-hex user colors)", () => {
+  it("registers a user theme with rgb() required colors and computes a contrast diagnostic", () => {
+    const rgbSpec = spec(false, "rgb(255, 255, 255)", "rgb(200, 200, 200)"); // low contrast on purpose
+    expect(() => registerUserThemes([validEntry("user:rgbtheme", rgbSpec)])).not.toThrow();
+    const entry = listThemes().find((e) => e.id === "user:rgbtheme");
+    expect(entry?.valid).toBe(true); // low contrast is a WARNING, still valid/applyable
+    expect(entry?.diagnostics.some((d) => d.severity === "warning")).toBe(true);
+    expect(getTheme("user:rgbtheme")).toBeDefined();
+  });
+});

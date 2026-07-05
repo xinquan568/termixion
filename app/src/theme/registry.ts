@@ -13,7 +13,7 @@
 // built-ins (themes/index.ts), the pure derivation (themeDerive.ts), and the pure contrast math
 // (contrast.ts). themes/index.ts must NEVER import registry.ts. Consumers (buildXtermTheme, txCssVars,
 // applyStartupTheme, themeSettings, the settings store/UI) import their resolution + guards from HERE.
-import { compositeOver, contrastRatio } from "./contrast";
+import { contrastRatio, toOpaqueHex } from "./contrast";
 import { deriveTheme, type ThemeSpec } from "./themeDerive";
 import { themes, THEME_IDS, themeLabel, type BuiltinThemeId } from "./themes";
 import type { ThemeTokens } from "./tokens";
@@ -88,16 +88,17 @@ function firstWarningMessage(warnings: ThemeWarning[] | undefined): string {
  * Non-gating legibility check on a DERIVED user theme (contrast.ts). WCAG 2.x AA requires body text
  * ≥ 4.5:1 against its background (docs/design/visual-baseline.md §4 G1); below that we surface a
  * WARNING only — the theme still applies (author's choice), unlike the built-in catalog's hard gate.
- * Alpha-safe: the text is composited over the bg before the ratio (a ratio against rgba is meaningless).
- * contrast.ts THROWS on a non-hex color; a malformed derived color is a data problem, not a gate, so
- * we swallow it here rather than crash the whole registration.
+ * Alpha-safe AND grammar-safe: both colors are normalized to opaque hex via `toOpaqueHex` (trmx-89
+ * review-1 — a user theme may validly use `rgb()`/`rgba()`/8-hex, which the strict contrast primitives
+ * throw on), so the ratio is well-defined for every accepted color. The try/catch stays as
+ * belt-and-suspenders: a color even `parse_theme` rejected is a data problem, not a gate.
  */
 export function validateUserTheme(tokens: ThemeTokens): ThemeDiagnostic[] {
   const WCAG_AA_BODY_TEXT = 4.5;
   const diagnostics: ThemeDiagnostic[] = [];
   try {
-    const bg = tokens.color.bg.primary;
-    const text = compositeOver(tokens.color.text.primary, bg);
+    const bg = toOpaqueHex(tokens.color.bg.primary);
+    const text = toOpaqueHex(tokens.color.text.primary, bg);
     const ratio = contrastRatio(text, bg);
     if (ratio < WCAG_AA_BODY_TEXT) {
       diagnostics.push({
@@ -122,6 +123,15 @@ export function validateUserTheme(tokens: ThemeTokens): ThemeDiagnostic[] {
  * (warning-level) contrast diagnostics.
  */
 export function registerUserThemes(entries: UserThemeEntry[]): void {
+  // trmx-89 (review-1): snapshot the last-good derived tokens BEFORE clearing. If the ACTIVE user
+  // theme is edited to an invalid state, `resolveTheme(id)` must keep serving its previous colors
+  // (so a newly-mounted pane or any later re-apply stays on the last-good palette, not the White
+  // fallback) — the plan's hot-reload "invalid edit -> previous colors stay". A theme that was never
+  // valid this session has no last-good, so it correctly falls back until fixed.
+  const lastGood = new Map<string, ThemeTokens>();
+  for (const [id, stored] of userThemes) {
+    if (stored.tokens) lastGood.set(id, stored.tokens);
+  }
   userThemes.clear();
   for (const entry of entries) {
     // Built-ins are never shadowable. The `user:` prefix should make this impossible; assert it.
@@ -129,6 +139,9 @@ export function registerUserThemes(entries: UserThemeEntry[]): void {
 
     if (!entry.valid || !entry.spec) {
       userThemes.set(entry.id, {
+        // Keep the last-good tokens (if this theme was valid earlier this session) so the active
+        // selection stays applyable while the entry is flagged invalid + unselectable in the picker.
+        tokens: lastGood.get(entry.id),
         entry: {
           id: entry.id,
           label: themeLabel(entry.id),

@@ -7,7 +7,13 @@
 // resolves rgba tokens (selection tints, scrollbar triple) against an opaque background before
 // any ratio is taken — a ratio against a non-composited alpha color is meaningless.
 import { describe, expect, it } from "vitest";
-import { compositeOver, contrastRatio, pickReadableOn, relativeLuminance } from "./contrast";
+import {
+  compositeOver,
+  contrastRatio,
+  pickReadableOn,
+  relativeLuminance,
+  toOpaqueHex,
+} from "./contrast";
 
 describe("relativeLuminance", () => {
   it("pins the WCAG anchor values", () => {
@@ -78,5 +84,41 @@ describe("pickReadableOn", () => {
 
   it("rejects an empty candidate list", () => {
     expect(() => pickReadableOn("#0066cc", [])).toThrow();
+  });
+
+  // trmx-89 review-1: a valid user theme may use rgb()/rgba()/8-hex; pickReadableOn must not throw
+  // on those (it previously did, crashing the settings theme apply via txCssVars).
+  it("accepts rgb()/rgba()/8-hex colors for bg and candidates without throwing", () => {
+    expect(() => pickReadableOn("rgb(88, 166, 255)", ["#fff", "#23262b"])).not.toThrow();
+    // rgb(88,166,255) ≈ #58a6ff → dark text still wins, and the ORIGINAL candidate string is returned.
+    expect(pickReadableOn("rgb(88, 166, 255)", ["#fff", "#23262b"])).toBe("#23262b");
+    // an rgba() surface (composited over white) and rgb() candidates are all fine.
+    expect(() => pickReadableOn("rgba(0, 102, 204, 0.9)", ["rgb(255,255,255)", "#1a1a1a"])).not.toThrow();
+    // an 8-digit-hex surface is accepted too.
+    expect(() => pickReadableOn("#0066ccff", ["#ffffffff", "#1a1a1aff"])).not.toThrow();
+  });
+});
+
+describe("toOpaqueHex (trmx-89 review-1)", () => {
+  it("round-trips an opaque hex to #rrggbb", () => {
+    expect(toOpaqueHex("#123456")).toBe("#123456");
+    expect(toOpaqueHex("#abc")).toBe("#aabbcc");
+  });
+
+  it("normalizes an opaque rgb() to #rrggbb", () => {
+    expect(toOpaqueHex("rgb(10, 20, 30)")).toBe("#0a141e");
+    expect(toOpaqueHex("rgb(0, 102, 204)")).toBe("#0066cc");
+  });
+
+  it("composites an rgba()/alpha-hex over the background", () => {
+    // matches compositeOver's math (rgba(0,102,204,0.25) over white → #bfd9f2)
+    expect(toOpaqueHex("rgba(0, 102, 204, 0.25)", "#ffffff")).toBe("#bfd9f2");
+    // 8-digit hex carries its own alpha (0x40/255 ≈ 0.251); over white.
+    expect(toOpaqueHex("#0066cc40", "#ffffff")).toBe("#bfd9f2");
+  });
+
+  it("defaults the background to white and rejects genuinely unknown forms", () => {
+    expect(toOpaqueHex("rgba(0,0,0,0)")).toBe("#ffffff"); // fully transparent → the white default
+    expect(() => toOpaqueHex("hsl(0,0%,0%)")).toThrow();
   });
 });
