@@ -23,7 +23,7 @@ use std::time::Duration;
 use tauri::ipc::Channel;
 use tauri::{Emitter, Manager, State, WindowEvent};
 use termixion_core::{PtySize, SessionRegistry, SessionSpec};
-use termixion_platform::{MacosPtyFactory, foreground_process};
+use termixion_platform::{MacosPtyFactory, foreground_process, is_busy};
 
 mod config_io;
 mod menu;
@@ -126,19 +126,74 @@ fn poll_tick(
     (hints, next)
 }
 
-/// trmx-75: the foreground-title poller loop, spawned once in `setup`. Each tick snapshots
-/// `(id, shell_pid)` pairs under the registry lock and **drops the lock before any `ps` call**
-/// (lock discipline — subprocess latency must never stall `pty_write`); an empty snapshot clears
-/// the carry map (a reopened world starts fresh) and parks on the [`PollerGate`] condvar until
-/// `open_pty` wakes it; otherwise it resolves names via [`foreground_process`], diffs through the
-/// pure [`poll_tick`], emits `session:title-hint` best-effort (the webview may be mid-teardown),
-/// and sleeps 1 s. It NEVER writes core titles — the frontend is the single writer.
+/// trmx-91: which detection source produced a session's activity state. `Poll` is the FR-7a
+/// process-group method (this crate's poller). FR-7b (`v0.0.9`) adds `Osc133` and flips the source
+/// per-session when shell integration is present — the emission/UI stack stays identical, so the
+/// takeover is a source swap here, nothing downstream.
+#[allow(dead_code)] // Osc133 is the documented FR-7b seam, not yet produced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActivitySource {
+    Poll,
+    Osc133,
+}
+
+/// Payload of the `session:activity` event (trmx-91, FR-7a): the poller observed that session
+/// `session_id` is now `busy` (a command is running — its foreground process-group leader is not the
+/// shell) or idle again. Change-only (emitted on a flip, not every tick). camelCase for the frontend.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionActivity {
+    session_id: u64,
+    busy: bool,
+}
+
+/// One activity tick's pure diff (trmx-91), the [`poll_tick`] shape for the boolean busy state:
+/// `resolved` is `(id, Some(busy))` this tick (`None` = the busy check failed right now), `prev` the
+/// last-emitted busy states. Returns the CHANGE-ONLY events (a new session, or a busy state that
+/// differs from `prev`) plus the next carry map. A dead session (absent from `resolved`) drops out; an
+/// unresolved `None` carries its previous value silently (a transient `ps` hiccup neither flips nor
+/// re-emits the recovered identical state). Pure — the `is_busy`/subprocess edge stays in the loop.
+fn activity_tick(
+    resolved: Vec<(u64, Option<bool>)>,
+    prev: &HashMap<u64, bool>,
+) -> (Vec<SessionActivity>, HashMap<u64, bool>) {
+    let mut events = Vec::new();
+    let mut next = HashMap::new();
+    for (session_id, busy) in resolved {
+        match busy {
+            Some(busy) => {
+                if prev.get(&session_id) != Some(&busy) {
+                    events.push(SessionActivity { session_id, busy });
+                }
+                next.insert(session_id, busy);
+            }
+            None => {
+                if let Some(kept) = prev.get(&session_id) {
+                    next.insert(session_id, *kept);
+                }
+            }
+        }
+    }
+    (events, next)
+}
+
+/// trmx-75 + trmx-91: the foreground poller loop, spawned once in `setup`. The base tick is now
+/// **250 ms** so the FR-7a activity indicator flips near-instantly; **titles are resolved every 4th
+/// tick** (unchanged 1 Hz). Each tick snapshots `(id, shell_pid)` under the registry lock and **drops
+/// the lock before any `ps` call** (lock discipline — subprocess latency must never stall
+/// `pty_write`); an empty snapshot clears BOTH carry maps (a reopened world starts fresh) and parks on
+/// the [`PollerGate`] condvar until `open_pty` wakes it. Otherwise it computes `busy` per session via
+/// [`is_busy`], diffs through the pure [`activity_tick`], and emits change-only `session:activity`
+/// best-effort; on title ticks it also resolves names via [`foreground_process`] → [`poll_tick`] →
+/// `session:title-hint`. It NEVER writes core titles — the frontend is the single writer.
 fn run_title_poller(
     app: tauri::AppHandle,
     registry: Arc<Mutex<SessionRegistry>>,
     gate: Arc<PollerGate>,
 ) {
-    let mut prev: HashMap<u64, String> = HashMap::new();
+    let mut prev_titles: HashMap<u64, String> = HashMap::new();
+    let mut prev_busy: HashMap<u64, bool> = HashMap::new();
+    let mut tick: u64 = 0;
     loop {
         // Snapshot under the lock, then release it before the subprocess calls below.
         let snapshot: Vec<(u64, Option<u32>)> = match registry.lock() {
@@ -152,25 +207,41 @@ fn run_title_poller(
             Err(_) => return,
         };
         if snapshot.is_empty() {
-            prev.clear();
+            prev_titles.clear();
+            prev_busy.clear();
+            tick = 0;
             gate.wait_while_empty();
             continue;
         }
-        let resolved: Vec<(u64, Option<String>)> = snapshot
-            .into_iter()
-            .map(|(id, pid)| {
-                (
-                    id,
-                    pid.and_then(|pid| foreground_process(pid).map(|fg| fg.name)),
-                )
-            })
+        // trmx-91: activity every tick (250 ms) — busy = the foreground group leader is not the shell.
+        let busy_now: Vec<(u64, Option<bool>)> = snapshot
+            .iter()
+            .map(|(id, pid)| (*id, pid.and_then(is_busy)))
             .collect();
-        let (hints, next) = poll_tick(resolved, &prev);
-        prev = next;
-        for hint in hints {
-            let _ = app.emit("session:title-hint", hint);
+        let (activity, next_busy) = activity_tick(busy_now, &prev_busy);
+        prev_busy = next_busy;
+        for event in activity {
+            let _ = app.emit("session:activity", event);
         }
-        std::thread::sleep(Duration::from_secs(1));
+        // trmx-75: titles every 4th tick (1 Hz, unchanged).
+        if tick.is_multiple_of(4) {
+            let resolved: Vec<(u64, Option<String>)> = snapshot
+                .into_iter()
+                .map(|(id, pid)| {
+                    (
+                        id,
+                        pid.and_then(|pid| foreground_process(pid).map(|fg| fg.name)),
+                    )
+                })
+                .collect();
+            let (hints, next_titles) = poll_tick(resolved, &prev_titles);
+            prev_titles = next_titles;
+            for hint in hints {
+                let _ = app.emit("session:title-hint", hint);
+            }
+        }
+        tick = tick.wrapping_add(1);
+        std::thread::sleep(Duration::from_millis(250));
     }
 }
 
@@ -1015,6 +1086,89 @@ mod tests {
         // (trmx-75) — pin the wire shape like SessionInfo/PtyExited above.
         let value = serde_json::to_value(hint(3, "vim")).expect("TitleHint serializes");
         assert_eq!(value, serde_json::json!({ "sessionId": 3, "name": "vim" }));
+    }
+
+    // --- trmx-91: the activity-tick pure diff (the poll_tick shape for busy state) ---------------
+
+    /// Build a prev/next busy carry map from `(id, busy)` pairs.
+    fn busy_map(entries: &[(u64, bool)]) -> HashMap<u64, bool> {
+        entries.iter().copied().collect()
+    }
+
+    /// Build a resolved busy snapshot (`id` → `Some(busy)`, or `None` when the check failed).
+    fn busy_resolved(entries: &[(u64, Option<bool>)]) -> Vec<(u64, Option<bool>)> {
+        entries.to_vec()
+    }
+
+    fn activity(session_id: u64, busy: bool) -> SessionActivity {
+        SessionActivity { session_id, busy }
+    }
+
+    #[test]
+    fn activity_tick_emits_new_and_changed_states_and_keeps_unchanged_silent() {
+        // Session 1 is new (busy), session 2 flipped idle→busy, session 3 is unchanged (busy) —
+        // only 1 and 2 emit; next carries all three.
+        let prev = busy_map(&[(2, false), (3, true)]);
+        let (events, next) = activity_tick(
+            busy_resolved(&[(1, Some(true)), (2, Some(true)), (3, Some(true))]),
+            &prev,
+        );
+        assert_eq!(events, vec![activity(1, true), activity(2, true)]);
+        assert_eq!(next, busy_map(&[(1, true), (2, true), (3, true)]));
+    }
+
+    #[test]
+    fn activity_tick_all_unchanged_emits_nothing() {
+        let prev = busy_map(&[(1, true), (2, false)]);
+        let (events, next) =
+            activity_tick(busy_resolved(&[(1, Some(true)), (2, Some(false))]), &prev);
+        assert!(events.is_empty(), "unchanged busy states stay silent");
+        assert_eq!(next, prev);
+    }
+
+    #[test]
+    fn activity_tick_busy_to_idle_emits_the_flip() {
+        let prev = busy_map(&[(1, true)]);
+        let (events, next) = activity_tick(busy_resolved(&[(1, Some(false))]), &prev);
+        assert_eq!(events, vec![activity(1, false)]);
+        assert_eq!(next, busy_map(&[(1, false)]));
+    }
+
+    #[test]
+    fn activity_tick_drops_dead_sessions_without_emitting() {
+        // Session 1 closed between ticks: it vanishes from next and emits nothing.
+        let prev = busy_map(&[(1, true), (2, false)]);
+        let (events, next) = activity_tick(busy_resolved(&[(2, Some(false))]), &prev);
+        assert!(events.is_empty());
+        assert_eq!(next, busy_map(&[(2, false)]));
+    }
+
+    #[test]
+    fn activity_tick_empty_snapshot_clears_the_carry_and_emits_nothing() {
+        let prev = busy_map(&[(1, true)]);
+        let (events, next) = activity_tick(Vec::new(), &prev);
+        assert!(events.is_empty());
+        assert!(next.is_empty());
+    }
+
+    #[test]
+    fn activity_tick_unresolved_state_carries_the_previous_one_silently() {
+        // A transient is_busy failure must neither flip nor forget the last known state.
+        let prev = busy_map(&[(1, true)]);
+        let (events, next) = activity_tick(busy_resolved(&[(1, None)]), &prev);
+        assert!(events.is_empty());
+        assert_eq!(next, busy_map(&[(1, true)]));
+        // The recovered identical state stays silent on the following tick.
+        let (events2, next2) = activity_tick(busy_resolved(&[(1, Some(true))]), &next);
+        assert!(events2.is_empty());
+        assert_eq!(next2, next);
+    }
+
+    #[test]
+    fn session_activity_serializes_camel_case_for_the_frontend() {
+        // The frontend destructures `sessionId`/`busy` from the `session:activity` payload (trmx-91).
+        let value = serde_json::to_value(activity(7, true)).expect("SessionActivity serializes");
+        assert_eq!(value, serde_json::json!({ "sessionId": 7, "busy": true }));
     }
 
     #[test]

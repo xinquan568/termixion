@@ -12,16 +12,24 @@ import { TabStrip, hoverIndexFromPoint, hoverSlotFor, DRAG_SLOP_PX } from "./Tab
 import type { Tab } from "./tabState";
 import { leafNode } from "../panes/layoutTree";
 
-function tab(tabId: number, title: string): Tab {
+function tab(tabId: number, title: string, opts: { busy?: boolean } = {}): Tab {
   // trmx-84: a `Tab` owns a pane tree; the strip is presentational and renders `title` only, so a
   // single-leaf tab with one pane seeded from the title keeps these fixtures shape-valid without
   // changing what is exercised. (Pane id = tabId here — arbitrary; the strip never reads it.)
+  // trmx-91: `busy` sets the pane's `activityVisible` so the strip derives a BUSY tab (→ the dot).
   return {
     tabId,
     title,
     tree: leafNode(tabId),
     focusedPaneId: tabId,
-    panes: { [tabId]: { sessionId: null, titleSources: { fallback: title }, title } },
+    panes: {
+      [tabId]: {
+        sessionId: null,
+        titleSources: { fallback: title },
+        title,
+        ...(opts.busy ? { activityVisible: true } : {}),
+      },
+    },
   };
 }
 
@@ -232,6 +240,91 @@ describe("TabStrip", () => {
     fireEvent.pointerCancel(el, { pointerId: 5 });
     fireEvent.pointerUp(el, { pointerId: 5, clientX: 260, clientY: 10 });
     expect(onMove).not.toHaveBeenCalled();
+    expect(onActivate).not.toHaveBeenCalled();
+  });
+});
+
+// trmx-91 (sub-task G): the activity dot. TabStrip derives tab-busy = any pane's `activityVisible`
+// and renders a subtle dot ONLY on a busy BACKGROUND tab — the active tab already shows the pane's
+// own top-edge activity line, so it never carries the dot. The dot is inert (aria-hidden,
+// pointer-events:none) and absolutely positioned, so it never disturbs activation/close/layout.
+describe("TabStrip activity dot (trmx-91)", () => {
+  const dot = (tabId: number) => screen.queryByTestId(`tab-activity-dot-${tabId}`);
+
+  it("a BACKGROUND tab whose pane is busy shows the activity dot (inert: aria-hidden)", () => {
+    // tab 1 is busy but the active tab is 2 → tab 1 is a busy BACKGROUND tab → dot shows.
+    renderStrip({
+      tabs: [tab(1, "Shell", { busy: true }), tab(2, "vim"), tab(3, "build")],
+      activeTabId: 2,
+    });
+    const el = dot(1);
+    expect(el).not.toBeNull();
+    expect(el!.className).toContain("tab-strip__activity-dot");
+    // Inert so it can never intercept the tab click / be read by AT.
+    expect(el!.getAttribute("aria-hidden")).toBe("true");
+    // It lives inside its OWN tab, not another.
+    expect(screen.getByTestId("tab-1").contains(el)).toBe(true);
+  });
+
+  it("shows NO dot when the activity indicator setting is off (review-1)", () => {
+    // A busy background tab, but terminal.activityIndicator is off → the setting gates the dot too.
+    renderStrip({
+      tabs: [tab(1, "Shell", { busy: true }), tab(2, "vim"), tab(3, "build")],
+      activeTabId: 2,
+      activityIndicatorOn: false,
+    });
+    expect(dot(1)).toBeNull();
+  });
+
+  it("the ACTIVE tab shows NO dot even when its pane is busy (the pane line already covers it)", () => {
+    // tab 2 is busy AND active → no dot (the active tab renders the pane's own activity line).
+    renderStrip({
+      tabs: [tab(1, "Shell"), tab(2, "vim", { busy: true }), tab(3, "build")],
+      activeTabId: 2,
+    });
+    expect(dot(2)).toBeNull();
+  });
+
+  it("a tab with no busy pane has no dot", () => {
+    renderStrip(); // default fixtures: no pane is busy
+    expect(dot(1)).toBeNull();
+    expect(dot(2)).toBeNull();
+    expect(dot(3)).toBeNull();
+  });
+
+  it("shows dots on EVERY busy background tab at once, never on the active one", () => {
+    // tabs 1 and 3 busy in the background, tab 2 active → two dots, none on tab 2.
+    renderStrip({
+      tabs: [tab(1, "Shell", { busy: true }), tab(2, "vim"), tab(3, "build", { busy: true })],
+      activeTabId: 2,
+    });
+    expect(dot(1)).not.toBeNull();
+    expect(dot(3)).not.toBeNull();
+    expect(dot(2)).toBeNull();
+  });
+
+  it("the dot does not break activating its busy background tab", () => {
+    const { onActivate } = renderStrip({
+      tabs: [tab(1, "Shell", { busy: true }), tab(2, "vim"), tab(3, "build")],
+      activeTabId: 2,
+    });
+    expect(dot(1)).not.toBeNull();
+    const el = screen.getByTestId("tab-1");
+    // A plain click (down+up, no slop) still activates the tab under the dot.
+    fireEvent.pointerDown(el, { pointerId: 1, clientX: 50, clientY: 10, button: 0 });
+    fireEvent.pointerUp(el, { pointerId: 1, clientX: 50, clientY: 10 });
+    expect(onActivate).toHaveBeenCalledExactlyOnceWith(1);
+  });
+
+  it("the dot does not break closing its busy background tab", () => {
+    const { onActivate, onClose } = renderStrip({
+      tabs: [tab(1, "Shell", { busy: true }), tab(2, "vim"), tab(3, "build")],
+      activeTabId: 2,
+    });
+    expect(dot(1)).not.toBeNull();
+    // × still closes the busy tab WITHOUT activating it (the dot is click-through).
+    fireEvent.click(screen.getByTestId("tab-close-1"));
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(1);
     expect(onActivate).not.toHaveBeenCalled();
   });
 });

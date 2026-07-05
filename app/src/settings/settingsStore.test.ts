@@ -309,7 +309,7 @@ describe("lastCheckAt bookkeeping (legacy storage mode)", () => {
 });
 
 describe("registry shape", () => {
-  it("exposes the enumerable user-visible key set (trmx-51 + theme trmx-53 + FR-13 trio trmx-80 + tab bar trmx-81/82)", () => {
+  it("exposes the enumerable user-visible key set (trmx-51 + theme trmx-53 + FR-13 trio trmx-80 + tab bar trmx-81/82 + activity trmx-91)", () => {
     expect([...SETTING_KEYS].sort()).toEqual(
       [
         "update.autoCheck",
@@ -317,6 +317,7 @@ describe("registry shape", () => {
         "update.autoDownload",
         "terminal.cursorStyle",
         "terminal.cursorBlink",
+        "terminal.activityIndicator",
         "terminal.scrollbackLines",
         "terminal.fontFamily",
         "terminal.fontSize",

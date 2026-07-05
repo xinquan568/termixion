@@ -469,6 +469,100 @@ describe("setBadge (trmx-90 — per-pane badge state)", () => {
   });
 });
 
+describe("setActivity (trmx-91 — per-pane activity-line visibility)", () => {
+  /** One tab with panes 1 | 2 (focus 2). */
+  function split(): TabsState {
+    return run({ kind: "openTab" }, { kind: "splitPane", tabId: 1, dir: "row" });
+  }
+
+  it("sets the focused pane's activity visibility; false clears it back to undefined", () => {
+    let s = run({ kind: "openTab" });
+    expect(s.tabs[0].panes[1].activityVisible).toBeUndefined(); // a fresh pane has no activity
+    s = reduceTabs(s, { kind: "setActivity", tabId: 1, paneId: 1, visible: true });
+    expect(s.tabs[0].panes[1].activityVisible).toBe(true);
+    s = reduceTabs(s, { kind: "setActivity", tabId: 1, paneId: 1, visible: false });
+    expect(s.tabs[0].panes[1].activityVisible).toBeUndefined(); // false normalizes to undefined (off)
+  });
+
+  it("never moves the derived tab title (activity is orthogonal to the title)", () => {
+    let s = run(
+      { kind: "openTab" },
+      { kind: "attachSession", tabId: 1, paneId: 1, sessionId: 7, title: "zsh" },
+    );
+    expect(s.tabs[0].title).toBe("zsh");
+    s = reduceTabs(s, { kind: "setActivity", tabId: 1, paneId: 1, visible: true });
+    expect(s.tabs[0].title).toBe("zsh"); // the tab label is untouched (activity ≠ title source)
+    expect(s.tabs[0].panes[1].title).toBe("zsh");
+    expect(s.tabs[0].panes[1].activityVisible).toBe(true);
+  });
+
+  it("scopes to a BACKGROUND pane only — not the focused pane, and no pane's title", () => {
+    // panes 1 | 2, focus 2; give each a distinct title so any leak into the tab label is visible
+    let s = split();
+    s = reduceTabs(s, { kind: "setTitleSource", tabId: 1, paneId: 1, source: "osc", value: "vim" });
+    s = reduceTabs(s, { kind: "setTitleSource", tabId: 1, paneId: 2, source: "osc", value: "top" });
+    // mark the BACKGROUND pane 1 active
+    s = reduceTabs(s, { kind: "setActivity", tabId: 1, paneId: 1, visible: true });
+    expect(s.tabs[0].panes[1].activityVisible).toBe(true); // the background pane shows activity
+    expect(s.tabs[0].panes[2].activityVisible).toBeUndefined(); // the focused pane is untouched
+    expect(s.tabs[0].focusedPaneId).toBe(2);
+    expect(s.tabs[0].title).toBe("top"); // tab label = focused pane's title, unmoved
+  });
+
+  it("is orthogonal to the badge — both coexist on one pane", () => {
+    let s = run({ kind: "openTab" });
+    s = reduceTabs(s, { kind: "setBadge", tabId: 1, paneId: 1, badge: "prod" });
+    s = reduceTabs(s, { kind: "setActivity", tabId: 1, paneId: 1, visible: true });
+    expect(s.tabs[0].panes[1].badge).toBe("prod");
+    expect(s.tabs[0].panes[1].activityVisible).toBe(true);
+    // clearing activity leaves the badge intact
+    s = reduceTabs(s, { kind: "setActivity", tabId: 1, paneId: 1, visible: false });
+    expect(s.tabs[0].panes[1].badge).toBe("prod");
+    expect(s.tabs[0].panes[1].activityVisible).toBeUndefined();
+  });
+
+  it("closing the pane drops its activity state with the pane", () => {
+    let s = split(); // panes 1 | 2, focus 2
+    s = reduceTabs(s, { kind: "setActivity", tabId: 1, paneId: 2, visible: true });
+    s = reduceTabs(s, { kind: "closePane", tabId: 1, paneId: 2 });
+    expect(s.tabs[0].panes[2]).toBeUndefined(); // activity gone with the pane
+  });
+
+  it("is a no-op (===) for an unknown tab or pane", () => {
+    const s = reduceTabs(run({ kind: "openTab" }), {
+      kind: "setActivity",
+      tabId: 1,
+      paneId: 1,
+      visible: true,
+    });
+    expect(reduceTabs(s, { kind: "setActivity", tabId: 99, paneId: 1, visible: true })).toBe(s); // unknown tab
+    expect(reduceTabs(s, { kind: "setActivity", tabId: 1, paneId: 99, visible: true })).toBe(s); // unknown pane
+  });
+
+  it("is a no-op (===) when the visibility is unchanged (redundant dispatch skips the re-render)", () => {
+    const on = reduceTabs(run({ kind: "openTab" }), {
+      kind: "setActivity",
+      tabId: 1,
+      paneId: 1,
+      visible: true,
+    });
+    expect(reduceTabs(on, { kind: "setActivity", tabId: 1, paneId: 1, visible: true })).toBe(on); // still on
+    // A fresh pane is already "off" (undefined), so a redundant off is === too.
+    const fresh = run({ kind: "openTab" });
+    expect(reduceTabs(fresh, { kind: "setActivity", tabId: 1, paneId: 1, visible: false })).toBe(fresh);
+  });
+
+  it("does not mutate the input state (purity guard)", () => {
+    const before = deepFreeze(
+      reduceTabs(run({ kind: "openTab" }), { kind: "setActivity", tabId: 1, paneId: 1, visible: true }),
+    );
+    expect(() =>
+      reduceTabs(before, { kind: "setActivity", tabId: 1, paneId: 1, visible: false }),
+    ).not.toThrow();
+    expect(before.tabs[0].panes[1].activityVisible).toBe(true);
+  });
+});
+
 describe("closeTab (whole tab, unchanged tab-order semantics)", () => {
   it("closing the active tab activates its RIGHT neighbor (iTerm2)", () => {
     const state = reduceTabs(withTabs(3), { kind: "activateTab", tabId: 2 });

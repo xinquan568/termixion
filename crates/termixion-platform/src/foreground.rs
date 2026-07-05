@@ -17,9 +17,9 @@
 //! poll-time snapshot: a process that starts and exits between polls is never observed, and a
 //! reported name can lag reality by up to one poll interval. Both are acceptable for a title hint.
 //!
-//! **FR-7a breadcrumb (`v0.0.7`).** The "close busy tab?" confirmation defines *busy* as
-//! `foreground leader pid != shell pid` — it reuses exactly [`foreground_process`], comparing
-//! [`ForegroundProcess::pid`] against the registry's shell pid.
+//! **FR-7a (`v0.0.7`).** The activity indicator + "close busy tab?" confirmation define *busy* as
+//! `foreground leader pid != shell pid`: [`is_busy`] is exactly that — a pure map over
+//! [`foreground_process`] comparing [`ForegroundProcess::pid`] against the shell pid.
 
 use std::process::Command;
 
@@ -35,11 +35,38 @@ pub struct ForegroundProcess {
 /// be determined (the pid is gone, has no controlling terminal / no foreground group — `tpgid`
 /// `-1` — or `ps` itself fails). Best-effort by design: a `None` tick simply yields no title hint.
 pub fn foreground_process(shell_pid: u32) -> Option<ForegroundProcess> {
-    let tpgid_raw = ps_column("tpgid=", shell_pid)?;
-    let tpgid = parse_tpgid(&tpgid_raw)?;
+    let tpgid = foreground_leader_pid(shell_pid)?;
     let comm_raw = ps_column("comm=", tpgid)?;
     let name = parse_comm(&comm_raw)?;
     Some(ForegroundProcess { pid: tpgid, name })
+}
+
+/// The foreground process-group id on `shell_pid`'s controlling terminal (the `tpgid`), or `None`
+/// when it cannot be determined (`-1`/`0`/junk, or `ps` fails). ONE `ps -o tpgid=` — the cheap
+/// tcgetpgrp-equivalent the FR-7a busy predicate ([`is_busy`]) polls at 250 ms; it deliberately does
+/// NOT resolve the leader's command name (that second `ps` is only for title hints), so it stays a
+/// single subprocess AND stays correct when the group leader has exited but the group is still
+/// foregrounding (a pipeline like `true | sleep 5` — the leader `true` is gone but the group runs).
+fn foreground_leader_pid(shell_pid: u32) -> Option<u32> {
+    parse_tpgid(&ps_column("tpgid=", shell_pid)?)
+}
+
+/// Is the shell **busy** — is a foreground job *other than the shell itself* running on its
+/// controlling terminal? This is the FR-7a activity-indicator / "close busy tab?" predicate: *busy*
+/// ≡ the foreground process-group leader's pid **differs from the shell's own pid**. A shell sitting
+/// at its prompt is its own foreground group leader ([`foreground_process`]`.pid == shell_pid`), so
+/// it reads as **idle** — `Some(false)`; a running job such as `sleep` forks a child that an
+/// interactive (job-control) shell moves into the terminal's foreground group, so the leader's pid
+/// differs from the shell's and it reads as **busy** — `Some(true)`.
+///
+/// `None` when the foreground leader cannot be determined at all — the shell pid is gone, or it has
+/// no controlling terminal / no foreground group, or `ps` fails; a caller treats `None` as "unknown —
+/// do not gate on it". Uses only [`foreground_leader_pid`] (one cheap `ps -o tpgid=`), NOT the full
+/// [`foreground_process`] — so (review-1) it stays a single subprocess at 250 ms AND reports busy for
+/// a pipeline whose group leader has already exited (`true | sleep 5`): the name lookup that
+/// `foreground_process` needs would fail there, but the tpgid comparison does not. Platform-only (R1/R2).
+pub fn is_busy(shell_pid: u32) -> Option<bool> {
+    foreground_leader_pid(shell_pid).map(|leader| leader != shell_pid)
 }
 
 /// One `ps -o <column> -p <pid>` invocation, as raw stdout. `None` on spawn failure or a non-zero
@@ -107,5 +134,17 @@ mod tests {
         // Empty / whitespace-only output must never become a title hint.
         assert_eq!(parse_comm(""), None);
         assert_eq!(parse_comm("   \n"), None);
+    }
+
+    /// FR-7a: with no foreground group to compare the shell pid against, `is_busy` must resolve to
+    /// `None` — never a spurious `Some`, never a panic (it is a pure map over `foreground_process`,
+    /// so a `None` there propagates unchanged). `u32::MAX` sits far above the macOS pid ceiling
+    /// (~99999), so `ps` never knows it — the dead / unknown-pid path; `pid 1` (launchd) is always
+    /// alive yet has no controlling terminal, so its `tpgid` resolves to none — the
+    /// has-a-pid-but-no-foreground-group path. Both must map to `None`, not `Some(_)`.
+    #[test]
+    fn is_busy_is_none_without_a_determinable_foreground_group() {
+        assert_eq!(is_busy(u32::MAX), None);
+        assert_eq!(is_busy(1), None);
     }
 }

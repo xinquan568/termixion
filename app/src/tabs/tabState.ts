@@ -60,6 +60,12 @@ export interface PaneState {
    * (setting/clearing it never moves the derived tab label).
    */
   badge?: string;
+  /**
+   * trmx-91: whether the pane's activity line is on-screen right now (undefined = off). App owns the
+   * debounce (panes/activityLine.ts) and dispatches only the resolved on/off; like `badge` it is a
+   * single ephemeral slot orthogonal to the title, so toggling it never moves the derived tab label.
+   */
+  activityVisible?: boolean;
 }
 
 /** One tab: a stable identity, the pure pane tree, the focused pane, per-pane state, derived title. */
@@ -105,7 +111,9 @@ export type TabsAction =
   | { kind: "focusPane"; tabId: number; paneId: number }
   | { kind: "setPaneRatio"; tabId: number; path: SplitPath; ratio: number }
   // trmx-90: set (string) or clear (null) a PANE's ephemeral badge — last-write-wins, title-independent.
-  | { kind: "setBadge"; tabId: number; paneId: number; badge: string | null };
+  | { kind: "setBadge"; tabId: number; paneId: number; badge: string | null }
+  // trmx-91: set the PANE's activity-line visibility — App-driven (the debounce owns the timing).
+  | { kind: "setActivity"; tabId: number; paneId: number; visible: boolean };
 
 /** The empty strip: no tabs, nothing active, tab AND pane ids starting at 1. */
 export function initialTabsState(): TabsState {
@@ -311,6 +319,21 @@ export function reduceTabs(state: TabsState, action: TabsAction): TabsState {
       // recomputes the derived tab title to the SAME value — a badge never moves the tab label, on
       // the focused pane or a background one (title-orthogonal by construction).
       const nextPane: PaneState = { ...pane, badge: action.badge ?? undefined };
+      return replacePane(state, tab, action.paneId, nextPane);
+    }
+
+    case "setActivity": {
+      const tab = state.tabs.find((t) => t.tabId === action.tabId);
+      if (!tab) return state;
+      const pane = tab.panes[action.paneId];
+      if (!pane) return state; // dead/unknown pane — no-op (===)
+      // A single ephemeral slot (the badge idiom): visible → true, not-visible → undefined. An
+      // unchanged value is an === no-op so a redundant App dispatch skips the re-render. Like the
+      // badge it is NOT a title source, so replacePane recomputes the derived tab title to the SAME
+      // value — the activity line never moves the tab label, on the focused pane or a background one.
+      const activityVisible = action.visible ? true : undefined;
+      if (pane.activityVisible === activityVisible) return state; // unchanged — === no-op
+      const nextPane: PaneState = { ...pane, activityVisible };
       return replacePane(state, tab, action.paneId, nextPane);
     }
   }

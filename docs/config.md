@@ -35,6 +35,7 @@ tables; internally each maps 1:1 to a camelCase registry key (the mapping is own
 | `update.auto_download` | `update.autoDownload` | bool | `true` | — | next check cycle |
 | `terminal.cursor_style` | `terminal.cursorStyle` | string | `"underline"` | `bar` · `block` · `underline` | immediate |
 | `terminal.cursor_blink` | `terminal.cursorBlink` | bool | `false` | — | immediate |
+| `terminal.activity_indicator` | `terminal.activityIndicator` | bool | `true` | — | immediate⁴ |
 | `terminal.scrollback_lines` | `terminal.scrollbackLines` | integer | `10000` | `0`–`200000` (clamped) | immediate¹ |
 | `terminal.font_family` | `terminal.fontFamily` | string | `""` | any font stack; `""` = platform default² | immediate (re-measure + refit) |
 | `terminal.font_size` | `terminal.fontSize` | integer | `12` | `6`–`72` (clamped) | immediate (re-measure + refit) |
@@ -50,6 +51,9 @@ system monospaced font at the front).
 
 ³ First launch derives the theme from the OS appearance (dark → `night`, light → `white`) and
 writes it into the file ("derive once, then persist"). After that, the file value wins.
+
+⁴ The activity indicator (the green line shown while a command runs) — see
+[activity-indicator.md](activity-indicator.md) for how detection works and its documented limits.
 
 ## Tolerant parsing & warnings
 

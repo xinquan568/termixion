@@ -26,14 +26,15 @@ test("?window=settings renders the settings surface with the vmark chrome", asyn
   const dragRegions = page.locator("[data-tauri-drag-region]");
   await expect(dragRegions).toHaveCount(3);
 
-  // Default landing: the Terminal page with exactly the five boxed rows (trmx-80 added
-  // Scrollback / Font Family / Font Size below the two cursor rows).
+  // Default landing: the Terminal page with exactly the six boxed rows (trmx-80 added
+  // Scrollback / Font Family / Font Size below the two cursor rows; trmx-91 adds Activity Indicator).
   await expect(page.getByText("Cursor Style", { exact: true })).toBeVisible();
   await expect(page.getByText("Cursor Blink", { exact: true })).toBeVisible();
+  await expect(page.getByText("Activity Indicator", { exact: true })).toBeVisible();
   await expect(page.getByText("Scrollback", { exact: true })).toBeVisible();
   await expect(page.getByText("Font Family", { exact: true })).toBeVisible();
   await expect(page.getByText("Font Size", { exact: true })).toBeVisible();
-  await expect(page.locator(".tx-setting-row")).toHaveCount(5);
+  await expect(page.locator(".tx-setting-row")).toHaveCount(6);
 });
 
 test("?window=settings&section=about lands on the vmark-parity About page", async ({ page }) => {

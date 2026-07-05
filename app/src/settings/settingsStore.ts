@@ -72,6 +72,8 @@ export interface SettingsValues {
   "update.autoDownload": boolean;
   "terminal.cursorStyle": CursorStyle;
   "terminal.cursorBlink": boolean;
+  /** trmx-91: show the per-pane activity line while a session runs a foreground job. */
+  "terminal.activityIndicator": boolean;
   /** trmx-80 (FR-13): scrollback capacity in lines (was the fixed SCROLLBACK_LINES constant). */
   "terminal.scrollbackLines": number;
   /** trmx-80 (FR-13): terminal font family; "" means "use the platform default stack". */
@@ -121,6 +123,8 @@ export const SETTING_DEFAULTS: SettingsValues = {
   "update.autoDownload": true,
   "terminal.cursorStyle": "underline",
   "terminal.cursorBlink": false,
+  // trmx-91: the activity line is ON by default (off keeps the poller running for titles).
+  "terminal.activityIndicator": true,
   "terminal.scrollbackLines": 10_000,
   "terminal.fontFamily": "",
   "terminal.fontSize": 12,
@@ -151,6 +155,7 @@ const STORAGE_KEYS: Record<SettingKey, string> = {
   "update.autoDownload": "termixion.update.autoDownload",
   "terminal.cursorStyle": "termixion.terminal.cursorStyle",
   "terminal.cursorBlink": "termixion.terminal.cursorBlink",
+  "terminal.activityIndicator": "termixion.terminal.activityIndicator",
   "terminal.scrollbackLines": "termixion.terminal.scrollbackLines",
   "terminal.fontFamily": "termixion.terminal.fontFamily",
   "terminal.fontSize": "termixion.terminal.fontSize",

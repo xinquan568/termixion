@@ -12,11 +12,13 @@ import {
   encodePtyInput,
   getCoreVersion,
   onPtyExited,
+  onSessionActivity,
   onTitleHint,
   openPty,
   PTY_EXITED_EVENT,
   sendPtyInput,
   sendPtyResize,
+  SESSION_ACTIVITY_EVENT,
   setSessionTitle,
   TITLE_HINT_EVENT,
   wirePtyChannel,
@@ -485,6 +487,130 @@ describe("onPtyExited", () => {
       listen: () => Promise.reject(new Error("no Tauri runtime")),
     };
     const teardown = onPtyExited(() => {}, bus);
+    await Promise.resolve();
+    expect(() => teardown()).not.toThrow();
+  });
+});
+
+// trmx-91: the backend announces a session's foreground busy<->idle transitions over the event bus.
+// Same discipline as onTitleHint/onPtyExited: the payload is untrusted input, guarded by the pure
+// parseActivityPayload (junk inert), and the teardown is safe before the async `listen` resolves.
+describe("onSessionActivity", () => {
+  /** A synchronous in-memory bus: listen registers immediately, unlisten removes. */
+  function fakeBus() {
+    const handlers = new Map<string, Set<(payload: unknown) => void>>();
+    const bus: EventBus = {
+      emit(event, payload) {
+        handlers.get(event)?.forEach((h) => h(payload));
+      },
+      listen(event, handler) {
+        const set = handlers.get(event) ?? new Set();
+        set.add(handler);
+        handlers.set(event, set);
+        return Promise.resolve(() => set.delete(handler));
+      },
+    };
+    return { bus, activity: (payload: unknown) => bus.emit(SESSION_ACTIVITY_EVENT, payload) };
+  }
+
+  it("dispatches sessionId + busy for a valid payload (both boolean values)", async () => {
+    const { bus, activity } = fakeBus();
+    const handler = vi.fn<(sessionId: number, busy: boolean) => void>();
+    onSessionActivity(handler, bus);
+    await Promise.resolve(); // let the listen promise settle
+
+    activity({ sessionId: 4, busy: true });
+    expect(handler).toHaveBeenCalledExactlyOnceWith(4, true);
+    activity({ sessionId: 4, busy: false });
+    expect(handler).toHaveBeenLastCalledWith(4, false);
+  });
+
+  it.each([
+    {},
+    null,
+    undefined,
+    "busy",
+    4,
+    true,
+    { sessionId: 4 }, // missing busy
+    { busy: true }, // missing sessionId
+    { sessionId: "4", busy: true }, // stringly-typed id
+    { sessionId: NaN, busy: true }, // non-finite id
+    { sessionId: 1.5, busy: true }, // fractional — parseActivityPayload requires an integer
+    { session_id: 4, busy: true }, // wrong casing — the event payload is serde camelCase
+    { sessionId: 4, busy: "true" }, // stringly-typed busy
+    { sessionId: 4, busy: 1 }, // numeric busy
+    { sessionId: 4, busy: null }, // null busy
+  ])("is inert for a junk payload (%j)", async (junk) => {
+    const { bus, activity } = fakeBus();
+    const handler = vi.fn<(sessionId: number, busy: boolean) => void>();
+    onSessionActivity(handler, bus);
+    await Promise.resolve();
+
+    activity(junk);
+    expect(handler).not.toHaveBeenCalled();
+    // The subscription itself must survive the junk: a valid payload still dispatches.
+    activity({ sessionId: 9, busy: true });
+    expect(handler).toHaveBeenCalledExactlyOnceWith(9, true);
+  });
+
+  it("teardown unsubscribes — later activity no longer dispatches", async () => {
+    const { bus, activity } = fakeBus();
+    const handler = vi.fn<(sessionId: number, busy: boolean) => void>();
+    const teardown = onSessionActivity(handler, bus);
+    await Promise.resolve();
+
+    activity({ sessionId: 1, busy: true });
+    expect(handler).toHaveBeenCalledTimes(1);
+    teardown();
+    activity({ sessionId: 1, busy: false });
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("a teardown that runs BEFORE listen resolves still unlistens (no leaked subscription)", async () => {
+    let resolveListen: ((unlisten: () => void) => void) | undefined;
+    const unlisten = vi.fn();
+    const bus: EventBus = {
+      emit() {},
+      listen: () =>
+        new Promise((resolve) => {
+          resolveListen = resolve;
+        }),
+    };
+
+    const teardown = onSessionActivity(() => {}, bus);
+    teardown(); // the subscriber is gone before the async listen ever resolved
+    resolveListen?.(unlisten);
+    await vi.waitFor(() => expect(unlisten).toHaveBeenCalledTimes(1));
+  });
+
+  it("dispatches nothing after teardown even if the bus still fires (torn-down guard)", async () => {
+    // A bus whose unlisten is a no-op — the `live` guard alone must keep the handler silent.
+    const registered: Array<(payload: unknown) => void> = [];
+    const bus: EventBus = {
+      emit(_event, payload) {
+        registered.forEach((h) => h(payload));
+      },
+      listen(_event, handler) {
+        registered.push(handler);
+        return Promise.resolve(() => {});
+      },
+    };
+    const handler = vi.fn<(sessionId: number, busy: boolean) => void>();
+    const teardown = onSessionActivity(handler, bus);
+    await Promise.resolve();
+
+    teardown();
+    bus.emit(SESSION_ACTIVITY_EVENT, { sessionId: 3, busy: true });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("swallows a bus without a runtime (listen rejects) and the teardown stays safe", async () => {
+    const bus: EventBus = {
+      emit() {},
+      listen: () => Promise.reject(new Error("no Tauri runtime")),
+    };
+    const teardown = onSessionActivity(() => {}, bus);
     await Promise.resolve();
     expect(() => teardown()).not.toThrow();
   });

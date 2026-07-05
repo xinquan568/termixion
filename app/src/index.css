@@ -239,6 +239,57 @@ body {
 }
 
 /*
+ * trmx-91 (sub-task F) — the per-pane ACTIVITY LINE (ActivityLine.tsx): a thin 2px bar across the pane
+ * host's TOP edge, shown (App-gated) while the pane's session runs a foreground job. Click-through
+ * (pointer-events: none, also inline for jsdom) so it never eats the terminal's clicks; clipped to the
+ * pane (overflow: hidden) so the shimmer can't spill. The base color (the theme's semantic.success at
+ * ~80% alpha) is written INLINE; the motion is here. z-index 3 sits ABOVE the xterm screen (z-auto)
+ * and BELOW the badge watermark (z-index 4) — a badged, busy pane shows both. The indeterminate
+ * shimmer is a GPU-cheap `transform: translateX` sweep of a translucent highlight on the `::after`
+ * (compositor-only — no layout/paint, NO JS timers); prefers-reduced-motion drops the animation but
+ * keeps the (static) line so the busy state is never lost.
+ */
+.tx-activity-line {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  z-index: 3;
+  pointer-events: none;
+  overflow: hidden;
+}
+.tx-activity-line::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 35%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.55),
+    transparent
+  );
+  will-change: transform;
+  animation: tx-activity-shimmer 1.3s linear infinite;
+}
+@keyframes tx-activity-shimmer {
+  from {
+    transform: translateX(-120%);
+  }
+  to {
+    transform: translateX(400%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tx-activity-line::after {
+    animation: none;
+  }
+}
+
+/*
  * trmx-90 — the ⇧⌘B badge EDITOR input (PaneBadgeInput in App): a small, CENTERED text field over the
  * focused pane. Absolutely positioned in the pane host, centered with the translate trick; themed with
  * the same --tx-* vars + accent ring as the tab rename input. z-index 6 keeps it above the badge
@@ -329,6 +380,10 @@ body {
 .tab-strip__tab {
   flex: 0 1 180px;
   min-width: 60px;
+  /* trmx-91 — the containing block for the absolutely-positioned activity dot (below). `relative`
+     does NOT create a fixed-positioning containing block, so the trmx-82 D4 rename overlay's
+     viewport pinning is untouched. */
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -407,6 +462,29 @@ body {
 .tab-strip__close:hover {
   background: var(--tx-bg-elev);
   color: var(--tx-text);
+}
+/*
+ * trmx-91 (sub-task G) — the activity DOT on a background busy tab (TabStrip renders it only for a
+ * NON-active busy tab; the active tab already shows its pane's top-edge activity line). A small
+ * themed-green (`--tx-success`, the same semantic-success token the pane line tints) circle,
+ * absolutely positioned inside the `position: relative` tab so it never reflows the label or the
+ * close ×. Click-through (pointer-events: none) so it can never intercept the tab's activate/close.
+ * It pins to the trailing edge and hides on hover, handing that corner to the close × the hover
+ * reveals (the complement of the `:hover .tab-strip__close` rule above).
+ */
+.tab-strip__activity-dot {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tx-success);
+  pointer-events: none;
+}
+.tab-strip__tab:hover .tab-strip__activity-dot {
+  opacity: 0;
 }
 .tab-strip__new {
   flex: 0 0 auto;

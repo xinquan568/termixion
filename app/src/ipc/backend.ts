@@ -15,6 +15,7 @@
 // `{ channel, rows, cols }` / `{ data }` args.
 import { invoke as tauriInvoke, Channel } from "@tauri-apps/api/core";
 import { realEventBus, type EventBus } from "./eventBus";
+import { parseActivityPayload } from "../panes/activityLine";
 
 /** The `invoke` signature this module depends on — injectable so callers can fake the backend. */
 export type InvokeFn = (
@@ -237,4 +238,43 @@ export function setSessionTitle(
   invoke: InvokeFn = realInvoke,
 ): Promise<void> {
   return invoke("set_session_title", { sessionId, title }).then(() => {});
+}
+
+/** The backend broadcast carrying a session's foreground busy<->idle transitions (trmx-91). */
+export const SESSION_ACTIVITY_EVENT = "session:activity";
+
+/**
+ * Subscribe to `session:activity` and dispatch each `{ sessionId, busy }` to `handler` (trmx-91 —
+ * the backend's change-only, 250ms busy detector; App routes each transition into the owning pane
+ * and drives the activity-line debounce). Same discipline as `onTitleHint`/`onPtyExited`: the payload
+ * is untrusted input, guarded HERE by the pure `parseActivityPayload` (an integer sessionId + a
+ * boolean busy — junk is inert), and the returned teardown is safe to call BEFORE the async `listen`
+ * resolves (a late-resolving subscription is unlistened instead of leaked; the `live` guard keeps a
+ * torn-down handler silent even if the bus still fires). Without a Tauri runtime (plain browser/
+ * jsdom) the listen rejects and activity transitions simply never arrive.
+ */
+export function onSessionActivity(
+  handler: (sessionId: number, busy: boolean) => void,
+  bus: EventBus = realEventBus,
+): () => void {
+  let live = true;
+  let unlisten: (() => void) | undefined;
+  bus
+    .listen(SESSION_ACTIVITY_EVENT, (payload) => {
+      if (!live) return;
+      const parsed = parseActivityPayload(payload);
+      if (parsed === null) return;
+      handler(parsed.sessionId, parsed.busy);
+    })
+    .then((u) => {
+      if (live) unlisten = u;
+      else u();
+    })
+    .catch(() => {
+      // No Tauri runtime — there is no backend to announce activity; the subscription is inert.
+    });
+  return () => {
+    live = false;
+    unlisten?.();
+  };
 }

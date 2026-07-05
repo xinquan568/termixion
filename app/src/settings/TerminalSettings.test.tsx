@@ -45,11 +45,21 @@ describe("TerminalSettings", () => {
     expect(screen.getByText("Lines of history kept per terminal")).toBeInTheDocument();
     expect(screen.getByText("Font Family")).toBeInTheDocument();
     expect(screen.getByText("Font Size")).toBeInTheDocument();
-    // EXACTLY these five rows (no Shell / Panel / Line Height).
+    // trmx-91: the Activity Indicator toggle sits below Cursor Blink.
+    expect(screen.getByText("Activity Indicator")).toBeInTheDocument();
+    expect(screen.getByText("Show a green line while a command is running")).toBeInTheDocument();
+    // EXACTLY these six rows (no Shell / Panel / Line Height).
     const rows = container.querySelectorAll(".tx-setting-row");
-    expect(rows).toHaveLength(5);
+    expect(rows).toHaveLength(6);
     const labels = [...rows].map((r) => r.querySelector(".tx-setting-row__label")?.textContent);
-    expect(labels).toEqual(["Cursor Style", "Cursor Blink", "Scrollback", "Font Family", "Font Size"]);
+    expect(labels).toEqual([
+      "Cursor Style",
+      "Cursor Blink",
+      "Activity Indicator",
+      "Scrollback",
+      "Font Family",
+      "Font Size",
+    ]);
   });
 
   it("offers vmark's glyphed options and defaults to Underline", () => {
@@ -68,6 +78,15 @@ describe("TerminalSettings", () => {
       "aria-checked",
       "false",
     );
+  });
+
+  it("defaults Activity Indicator to ON and persists a toggle (trmx-91)", () => {
+    const store = makeSettingsStore(fakeStorage());
+    render(<TerminalSettings settings={store} />);
+    const toggle = screen.getByRole("switch", { name: "Activity Indicator" });
+    expect(toggle).toHaveAttribute("aria-checked", "true"); // default on
+    fireEvent.click(toggle);
+    expect(store.get("terminal.activityIndicator")).toBe(false); // toggled off, persisted
   });
 
   it("persists a cursor style change and broadcasts it for the live terminal", () => {

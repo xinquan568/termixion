@@ -57,6 +57,9 @@ export interface TabStripProps {
   activeTabId: number | null;
   /** The tab whose label is currently an inline rename input, or null (trmx-75). */
   renamingTabId: number | null;
+  /** trmx-91 (review-1): the live terminal.activityIndicator setting — when off, no busy dot shows
+   * (the setting gates BOTH the pane line and the tab dot). Defaults to on. */
+  activityIndicatorOn?: boolean;
   /**
    * The strip's axis (trmx-81): "horizontal" (default — top/bottom bars) or "vertical"
    * (left/right rails). App derives it from barLayoutFor(tabs.barPosition).
@@ -251,6 +254,7 @@ export function TabStrip({
   tabs,
   activeTabId,
   renamingTabId,
+  activityIndicatorOn = true,
   orientation = "horizontal",
   labelOrientation = "horizontal",
   style,
@@ -363,6 +367,13 @@ export function TabStrip({
     >
       {tabs.map((tab, index) => {
         const active = tab.tabId === activeTabId;
+        // trmx-91 (sub-task G): a tab is BUSY when any of its panes is showing its activity line
+        // (the debounced `activityVisible`, tabState.ts). The dot marks only a BACKGROUND busy tab —
+        // the active tab already shows the pane's own top-edge activity line, so it never needs the
+        // dot (the same background-isolation rule the pane overlay follows).
+        const busy = Object.values(tab.panes).some((p) => p.activityVisible === true);
+        // review-1: gated by the terminal.activityIndicator setting too — off hides the dot.
+        const showActivityDot = busy && !active && activityIndicatorOn;
         return (
           // A div (not a button): the close × inside is a real <button>, and buttons must not
           // nest. Keyboard activation is wired explicitly below.
@@ -407,6 +418,17 @@ export function TabStrip({
               >
                 {tab.title}
               </span>
+            )}
+            {/* trmx-91 (sub-task G): the subtle activity dot on a BACKGROUND busy tab. Absolutely
+                positioned (the tab is the containing block — index.css) so it never reflows the
+                label or the close ×; aria-hidden + pointer-events:none so it is inert (it can never
+                intercept the tab's activate/close). Rendered only when `showActivityDot`. */}
+            {showActivityDot && (
+              <span
+                className="tab-strip__activity-dot"
+                data-testid={`tab-activity-dot-${tab.tabId}`}
+                aria-hidden="true"
+              />
             )}
             {/* Always in the DOM (CSS reveals it on hover); both the pointer sequence and the
                 click stop at the button so closing never drags/activates the tab under it. */}
