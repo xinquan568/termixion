@@ -39,7 +39,8 @@ export type TabKeyAction =
   | { kind: "select-index"; index: number }
   | { kind: "split"; dir: "right" | "below" }
   | { kind: "nav-dir"; dir: Direction }
-  | { kind: "nav-cycle"; delta: 1 | -1 };
+  | { kind: "nav-cycle"; delta: 1 | -1 }
+  | { kind: "set-badge" };
 
 /** trmx-86: the four arrow keys → a pane-nav direction (anything else → undefined). */
 const ARROW_DIR: Record<string, Direction | undefined> = {
@@ -69,6 +70,13 @@ export function tabKeyAction(ev: TabKeyEvent, target: KeyTarget): TabKeyAction |
   // because ⇧⌘D carries shift (which that veto rejects); ctrl/alt are never ours.
   if (ev.metaKey && !ev.ctrlKey && !ev.altKey && (ev.key === "d" || ev.key === "D")) {
     return { kind: "split", dir: ev.shiftKey ? "below" : "right" };
+  }
+  // trmx-90 (FR-4): ⇧⌘B → open the pane badge editor on the focused pane. Checked BEFORE the
+  // exact-meta veto (shift is present, which that veto rejects); ctrl/alt are never ours. This is
+  // the keyboard path that works in dev/browser/e2e; the ⇧⌘B menu accelerator covers the packaged
+  // app — the OS consumes the accelerator there, so the two never both fire (the split precedent).
+  if (ev.metaKey && ev.shiftKey && !ev.ctrlKey && !ev.altKey && (ev.key === "b" || ev.key === "B")) {
+    return { kind: "set-badge" };
   }
   // trmx-86 (FR-3.5): ⌥⌘ + arrow → directional pane nav. Checked BEFORE the exact-meta veto because
   // alt is present (which that veto rejects). ctrl/shift are never ours.

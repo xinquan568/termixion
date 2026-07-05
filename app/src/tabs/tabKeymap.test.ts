@@ -256,3 +256,25 @@ describe("tabKeyAction — pane navigation (trmx-86 FR-3.5)", () => {
     expect(tabKeyAction(cmd("1"), PAGE)).toEqual({ kind: "select-index", index: 0 });
   });
 });
+
+describe("tabKeyAction — set-badge (trmx-90 FR-4)", () => {
+  it("maps ⇧⌘B to set-badge (upper and lower case)", () => {
+    expect(tabKeyAction(cmd("b", { shiftKey: true }), PAGE)).toEqual({ kind: "set-badge" });
+    expect(tabKeyAction(cmd("B", { shiftKey: true }), PAGE)).toEqual({ kind: "set-badge" });
+    // fires on the terminal target too (so ⇧⌘B works while a pane is focused)
+    expect(tabKeyAction(cmd("b", { shiftKey: true }), TERMINAL)).toEqual({ kind: "set-badge" });
+  });
+
+  it("requires exactly ⇧⌘ (no ⌘B, no ctrl/alt) and stays inert on a non-terminal editable", () => {
+    expect(tabKeyAction(cmd("b"), PAGE)).toBeNull(); // ⌘B without shift is not ours
+    expect(tabKeyAction(cmd("b", { shiftKey: true, ctrlKey: true }), PAGE)).toBeNull();
+    expect(tabKeyAction(cmd("b", { shiftKey: true, altKey: true }), PAGE)).toBeNull();
+    expect(tabKeyAction(ev("b", { shiftKey: true }), PAGE)).toBeNull(); // no meta
+    expect(tabKeyAction(cmd("b", { shiftKey: true }), EDITABLE)).toBeNull(); // settings input keeps ⇧⌘B
+  });
+
+  it("does not regress ⌘D split or ⌘1..9", () => {
+    expect(tabKeyAction(cmd("d", { shiftKey: true }), PAGE)).toEqual({ kind: "split", dir: "below" });
+    expect(tabKeyAction(cmd("1"), PAGE)).toEqual({ kind: "select-index", index: 0 });
+  });
+});

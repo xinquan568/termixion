@@ -673,7 +673,15 @@ export function App({
       ev.preventDefault();
       if (action.kind === "select-index") dispatch({ kind: "selectIndex", index: action.index });
       else if (action.kind === "split") requestSplit(action.dir);
-      else {
+      else if (action.kind === "set-badge") {
+        // trmx-90: ⇧⌘B opens the badge editor on the focused pane. stopImmediatePropagation so the
+        // chord never leaks a byte to xterm (the pane-nav discipline); the same editor the menu's
+        // set-badge verb opens.
+        ev.stopImmediatePropagation();
+        const s = stateRef.current;
+        const tab = s.tabs.find((t) => t.tabId === s.activeTabId);
+        if (tab) setBadgingPaneId(tab.focusedPaneId);
+      } else {
         // trmx-86: a pane-nav chord must ALSO be kept from xterm (stopImmediatePropagation) — even at an
         // edge no-op — so ⌥⌘-arrows / ⌘]/⌘[ never leak a byte to the PTY. preventDefault alone doesn't
         // stop xterm's own textarea keydown listener; halting propagation from this capture-phase
