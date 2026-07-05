@@ -4013,7 +4013,7 @@ dependencies = [
 
 [[package]]
 name = "termixion-core"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "serde",
  "toml 1.1.2+spec-1.1.0",
@@ -4021,7 +4021,7 @@ dependencies = [
 
 [[package]]
 name = "termixion-platform"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "portable-pty",
  "termixion-core",
@@ -4029,7 +4029,7 @@ dependencies = [
 
 [[package]]
 name = "termixion-tauri"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "notify",
  "serde",

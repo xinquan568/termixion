@@ -5,6 +5,14 @@ The user-facing changes to Termixion are documented here. The format follows
 [Semantic Versioning](https://semver.org). Auto-generated from Conventional Commits by git-cliff;
 internal changes (build / CI / tests / refactors / docs) live in the git history and the linked issues.
 
+## [0.0.6] - 2026-07-05
+
+### Added
+- Split panes over a pure layout tree (trmx-84) (#115)
+- Drag-resize pane dividers (trmx-85) (#116)
+- Keyboard pane navigation (trmx-86) (#117)
+- Kitty multi-pane look — divider chrome, focus, dim (trmx-87) (#118)
+
 ## [0.0.5] - 2026-07-04
 
 ### Added
