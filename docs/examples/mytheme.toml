@@ -1,0 +1,37 @@
+# Termixion user theme — a minimal, complete example.
+#
+# Copy this into ~/.config/termixion/themes/<id>.toml (the file stem becomes the theme id,
+# namespaced as `user:<stem>`), then edit it. It provides ONLY the required minimum — every
+# other color (bg tiers, text tiers, accent, border, selection, semantic, cursor, scrollbar,
+# pane borders) is DERIVED from these. See docs/themes.md for the full field list and how each
+# optional field is derived, and for the accepted color forms (#rgb / #rrggbb / #rgba /
+# #rrggbbaa / rgb(...) / rgba(...)).
+
+# true for a dark theme, false for light — drives derivation direction and dark/light classification.
+is_dark = true
+
+[color.bg]
+primary = "#1b1d23"   # the window / terminal background (REQUIRED)
+
+[color.text]
+primary = "#e6e8ee"   # the primary foreground text (REQUIRED)
+
+# The 16 ANSI colors the terminal renders (ALL REQUIRED). accent, semantic error/success, and
+# more are derived from these (accent = blue, error = red, success = green) unless you set them.
+[terminal.ansi]
+black = "#2a2d35"
+red = "#e06c75"
+green = "#98c379"
+yellow = "#e5c07b"
+blue = "#61afef"
+magenta = "#c678dd"
+cyan = "#56b6c2"
+white = "#c8ccd4"
+bright_black = "#5c6370"
+bright_red = "#e69aa0"
+bright_green = "#b5d6a0"
+bright_yellow = "#efd4a0"
+bright_blue = "#8fc7f2"
+bright_magenta = "#d7a3e6"
+bright_cyan = "#8bd0d8"
+bright_white = "#ffffff"
