@@ -620,3 +620,72 @@
 .tx-swatch--active .tx-swatch__label {
   color: var(--tx-text);
 }
+
+/*
+ * trmx-89 (4b) — the USER-THEME picker additions. Each swatch lives in a column cell so its
+ * status badge (warning / invalid) and the built-in-only "Duplicate" affordance sit BELOW the
+ * swatch as siblings (never nested inside the radio, so the swatch's accessible name stays its
+ * label). Themed only via the --tx-* vars, like every control above.
+ */
+.tx-swatch-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+/* An invalid user theme is inert: dimmed, default cursor, never a pointer target. */
+.tx-swatch--invalid {
+  opacity: 0.55;
+  cursor: default;
+}
+.tx-swatch__badge {
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.tx-swatch__badge--warning {
+  color: var(--tx-on-accent, #fff);
+  background: var(--tx-primary);
+}
+.tx-swatch__badge--error {
+  color: var(--tx-on-error, #fff);
+  background: var(--tx-error);
+}
+.tx-swatch__dup {
+  border: 1px solid var(--tx-border);
+  background: var(--tx-bg-sunken);
+  color: var(--tx-text-2);
+  padding: 2px 8px;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.tx-swatch__dup:hover {
+  border-color: var(--tx-text-3);
+  color: var(--tx-text);
+}
+
+/* The Theme group's action row (Open themes folder + the docs hint), below the swatches. */
+.tx-theme-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 14px 14px;
+}
+.tx-theme-hint {
+  margin: 0;
+  color: var(--tx-text-2);
+  font-size: 12px;
+}
+.tx-theme-hint__link {
+  color: var(--tx-primary);
+  text-decoration: none;
+}
+.tx-theme-hint__link:hover {
+  text-decoration: underline;
+}

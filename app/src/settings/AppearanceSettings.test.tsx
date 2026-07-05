@@ -14,8 +14,8 @@
 // external moves live, and the new Orientation row (tabs.sideLabelOrientation) below it is
 // gated PURELY by that prop — disabled with a hint on top/bottom bars, never writing while
 // disabled.
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppearanceSettings } from "./AppearanceSettings";
 import {
   makeSettingsStore,
@@ -24,8 +24,49 @@ import {
   type SettingsBus,
 } from "./settingsStore";
 import { themes } from "../theme/themes";
+import { clearUserThemes, registerUserThemes, type UserThemeEntry } from "../theme/registry";
+import type { ThemeSpec } from "../theme/themeDerive";
+import type { AnsiPalette } from "../theme/tokens";
+import type { InvokeFn } from "../ipc/backend";
 
 const ORIENTATION_HINT = "Only applies when the tab bar is on the left or right.";
+
+// --- trmx-89 (4b) user-theme fixtures (mirror registry.test.ts's spec/entry helpers) ---
+const ANSI: AnsiPalette = {
+  black: "#000000", red: "#ff0000", green: "#00ff00", yellow: "#ffff00",
+  blue: "#0000ff", magenta: "#ff00ff", cyan: "#00ffff", white: "#ffffff",
+  brightBlack: "#808080", brightRed: "#ff8080", brightGreen: "#80ff80", brightYellow: "#ffff80",
+  brightBlue: "#8080ff", brightMagenta: "#ff80ff", brightCyan: "#80ffff", brightWhite: "#f0f6fc",
+};
+
+function spec(isDark: boolean, bgPrimary: string, textPrimary: string): ThemeSpec {
+  return {
+    isDark,
+    color: { bg: { primary: bgPrimary }, text: { primary: textPrimary }, accent: {}, semantic: {} },
+    terminal: { ansi: { ...ANSI }, scrollbar: {}, pane: {} },
+  };
+}
+
+/** A valid, high-contrast user theme (black bg / white text → ~21:1, no contrast warning). */
+function validUserEntry(id: string): UserThemeEntry {
+  return { id, source: "user", valid: true, spec: spec(true, "#000000", "#ffffff"), warnings: [] };
+}
+
+/** A valid but LOW-CONTRAST user theme — derives fine, so it applies, but flags a warning. */
+function lowContrastUserEntry(id: string): UserThemeEntry {
+  return { id, source: "user", valid: true, spec: spec(false, "#8a8a8a", "#808080"), warnings: [] };
+}
+
+/** An INVALID user theme (unparseable) — listed for diagnosis, never applyable. */
+function invalidUserEntry(id: string, message: string): UserThemeEntry {
+  return {
+    id,
+    source: "user",
+    valid: false,
+    spec: null,
+    warnings: [{ type: "InvalidColor", message }],
+  };
+}
 
 function fakeStorage(initial: Record<string, string> = {}): KeyValueStore & {
   data: Map<string, string>;
@@ -352,5 +393,250 @@ describe("AppearanceSettings — Orientation (trmx-82, FR-2.3)", () => {
       "aria-checked",
       "true",
     );
+  });
+});
+
+// trmx-89 (4b, test-first): the USER-THEME picker. The Theme row lists the whole registry —
+// built-ins THEN the hydrated user themes — with valid/invalid/warning affordances, a Duplicate
+// on each built-in, an "Open themes folder" button, and the docs hint. The registry is
+// module-level, so each test seeds/clears it in isolation.
+describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
+  beforeEach(() => clearUserThemes());
+  afterEach(() => clearUserThemes());
+
+  const themeGroup = () => screen.getByRole("radiogroup", { name: "Theme" });
+
+  it("lists user themes AFTER the built-ins, labeled", () => {
+    registerUserThemes([validUserEntry("user:cool"), validUserEntry("user:zed")]);
+    render(
+      <AppearanceSettings
+        settings={makeSettingsStore(fakeStorage())}
+        selected="night"
+        barPosition="bottom"
+      />,
+    );
+    // The six built-ins first, then the two user themes (registry insertion order).
+    expect(within(themeGroup()).getAllByRole("radio").map((s) => s.textContent)).toEqual([
+      "White",
+      "Paper",
+      "Mint",
+      "Sepia",
+      "Night",
+      "Solarized",
+      "Cool",
+      "Zed",
+    ]);
+  });
+
+  it("fills a user swatch with its resolved background color and selects it exactly like a built-in", () => {
+    registerUserThemes([validUserEntry("user:cool")]);
+    const storage = fakeStorage();
+    const settings = makeSettingsStore(storage);
+    const onThemeChange = vi.fn();
+    render(
+      <AppearanceSettings
+        settings={settings}
+        selected="night"
+        onThemeChange={onThemeChange}
+        barPosition="bottom"
+      />,
+    );
+    const cool = screen.getByRole("radio", { name: "Cool" });
+    // Black bg from the spec (jsdom normalizes hex → rgb; compare via a scratch element).
+    const circle = cool.querySelector(".tx-swatch__circle") as HTMLElement;
+    const probe = document.createElement("div");
+    probe.style.background = "#000000";
+    expect(circle.style.background).toBe(probe.style.background);
+
+    fireEvent.click(cool);
+    expect(storage.data.get("termixion.appearance.theme")).toBe("user:cool");
+    expect(onThemeChange).toHaveBeenCalledWith("user:cool");
+  });
+
+  it("an INVALID user theme shows an 'invalid' badge + tooltip and is NOT selectable", () => {
+    registerUserThemes([invalidUserEntry("user:bad", "invalid color at color.bg.primary")]);
+    const settings = makeSettingsStore(fakeStorage());
+    const setSpy = vi.spyOn(settings, "set");
+    const onThemeChange = vi.fn();
+    render(
+      <AppearanceSettings
+        settings={settings}
+        selected="night"
+        onThemeChange={onThemeChange}
+        barPosition="bottom"
+      />,
+    );
+
+    // The badge is shown, and the swatch is NOT a radio (it never joins the selectable set).
+    expect(screen.getByText("invalid")).toBeInTheDocument();
+    expect(within(themeGroup()).queryByRole("radio", { name: "Bad" })).toBeNull();
+
+    // The swatch carries aria-disabled + the first diagnostic as a tooltip.
+    const swatch = screen.getByText("Bad").closest(".tx-swatch") as HTMLElement;
+    expect(swatch).toHaveAttribute("aria-disabled", "true");
+    expect(swatch).toHaveAttribute("title", "invalid color at color.bg.primary");
+
+    // Clicking the inert swatch (or its badge) never persists or notifies.
+    fireEvent.click(swatch);
+    fireEvent.click(screen.getByText("invalid"));
+    expect(setSpy).not.toHaveBeenCalled();
+    expect(onThemeChange).not.toHaveBeenCalled();
+  });
+
+  it("a low-contrast user theme is SELECTABLE and shows a 'warning' badge + tooltip", () => {
+    registerUserThemes([lowContrastUserEntry("user:dim")]);
+    const storage = fakeStorage();
+    const settings = makeSettingsStore(storage);
+    const onThemeChange = vi.fn();
+    render(
+      <AppearanceSettings
+        settings={settings}
+        selected="night"
+        onThemeChange={onThemeChange}
+        barPosition="bottom"
+      />,
+    );
+
+    expect(screen.getByText("warning")).toBeInTheDocument();
+    const dim = screen.getByRole("radio", { name: "Dim" });
+    expect(dim.getAttribute("title")).toContain("low contrast");
+
+    // Still selectable — warnings never block.
+    fireEvent.click(dim);
+    expect(storage.data.get("termixion.appearance.theme")).toBe("user:dim");
+    expect(onThemeChange).toHaveBeenCalledWith("user:dim");
+  });
+
+  it("'Open themes folder' calls the backend with themes_open_dir", async () => {
+    const invoke = vi.fn<InvokeFn>().mockResolvedValue(undefined);
+    render(
+      <AppearanceSettings
+        settings={makeSettingsStore(fakeStorage())}
+        selected="night"
+        barPosition="bottom"
+        invoke={invoke}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Open themes folder" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("themes_open_dir"));
+  });
+
+  it("'Duplicate' on a built-in writes a TOML copy, re-hydrates, and selects the new user id", async () => {
+    const storage = fakeStorage();
+    const settings = makeSettingsStore(storage);
+    const onThemeChange = vi.fn();
+    // themes_read returns [] (the file watcher will re-read for real); themes_write resolves the id.
+    const invoke = vi
+      .fn<InvokeFn>()
+      .mockImplementation((cmd) =>
+        Promise.resolve(cmd === "themes_read" ? [] : "user:night-copy"),
+      );
+    render(
+      <AppearanceSettings
+        settings={settings}
+        selected="white"
+        onThemeChange={onThemeChange}
+        barPosition="bottom"
+        invoke={invoke}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Duplicate Night" }));
+
+    // themes_write with a sane stem + a real TOML body …
+    await waitFor(() =>
+      expect(invoke.mock.calls.some((c) => c[0] === "themes_write")).toBe(true),
+    );
+    const writeCall = invoke.mock.calls.find((c) => c[0] === "themes_write")!;
+    const args = writeCall[1] as { stem: string; text: string };
+    expect(args.stem).toBe("night-copy");
+    expect(args.text).toContain("is_dark");
+    expect(args.text).toContain("[terminal.ansi]");
+    expect(args.text).toContain("duplicated from Night");
+
+    // … then a re-hydrate (themes_read) and the selection of the new user id.
+    expect(invoke).toHaveBeenCalledWith("themes_read");
+    await waitFor(() => expect(onThemeChange).toHaveBeenCalledWith("user:night-copy"));
+    expect(storage.data.get("termixion.appearance.theme")).toBe("user:night-copy");
+  });
+
+  it("'Duplicate' auto-increments the stem past an existing user:<stem> copy", async () => {
+    registerUserThemes([validUserEntry("user:night-copy")]);
+    const invoke = vi
+      .fn<InvokeFn>()
+      .mockImplementation((cmd) => Promise.resolve(cmd === "themes_read" ? [] : "user:x"));
+    render(
+      <AppearanceSettings
+        settings={makeSettingsStore(fakeStorage())}
+        selected="white"
+        barPosition="bottom"
+        invoke={invoke}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Duplicate Night" }));
+
+    await waitFor(() =>
+      expect(invoke.mock.calls.some((c) => c[0] === "themes_write")).toBe(true),
+    );
+    const writeCall = invoke.mock.calls.find((c) => c[0] === "themes_write")!;
+    expect((writeCall[1] as { stem: string }).stem).toBe("night-copy-2");
+  });
+
+  it("surfaces nothing fatal when the Duplicate write rejects", async () => {
+    const settings = makeSettingsStore(fakeStorage());
+    const setSpy = vi.spyOn(settings, "set");
+    const onThemeChange = vi.fn();
+    const invoke = vi
+      .fn<InvokeFn>()
+      .mockImplementation((cmd) =>
+        cmd === "themes_write"
+          ? Promise.reject(new Error("disk full"))
+          : Promise.resolve([]),
+      );
+    render(
+      <AppearanceSettings
+        settings={settings}
+        selected="white"
+        onThemeChange={onThemeChange}
+        barPosition="bottom"
+        invoke={invoke}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Duplicate White" }));
+
+    await waitFor(() =>
+      expect(invoke.mock.calls.some((c) => c[0] === "themes_write")).toBe(true),
+    );
+    // A rejected write leaves the selection untouched (no theme set, no notify).
+    expect(setSpy).not.toHaveBeenCalled();
+    expect(onThemeChange).not.toHaveBeenCalled();
+  });
+
+  it("shows the theme-file-format docs hint", () => {
+    render(
+      <AppearanceSettings
+        settings={makeSettingsStore(fakeStorage())}
+        selected="night"
+        barPosition="bottom"
+      />,
+    );
+    expect(screen.getByText(/Learn the theme file format/i)).toBeInTheDocument();
+  });
+
+  it("keeps the two group titles (no third group) with the picker additions inside Theme", () => {
+    registerUserThemes([validUserEntry("user:cool"), invalidUserEntry("user:bad", "bad")]);
+    const { container } = render(
+      <AppearanceSettings
+        settings={makeSettingsStore(fakeStorage())}
+        selected="night"
+        barPosition="bottom"
+      />,
+    );
+    const titles = [...container.querySelectorAll(".tx-settings-group__title")].map(
+      (el) => el.textContent,
+    );
+    expect(titles).toEqual(["Theme", "Tab bar"]);
   });
 });

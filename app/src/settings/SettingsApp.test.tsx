@@ -22,6 +22,30 @@ import {
 } from "./settingsStore";
 import { initialUpdateState } from "../update/updateState";
 import type { UseUpdate } from "../update/useUpdate";
+import { clearUserThemes, type UserThemeEntry } from "../theme/registry";
+import type { ThemeSpec } from "../theme/themeDerive";
+import type { AnsiPalette } from "../theme/tokens";
+import type { InvokeFn } from "../ipc/backend";
+
+// --- trmx-89 (4b) user-theme fixtures (mirror registry.test.ts's spec/entry helpers) ---
+const ANSI: AnsiPalette = {
+  black: "#000000", red: "#ff0000", green: "#00ff00", yellow: "#ffff00",
+  blue: "#0000ff", magenta: "#ff00ff", cyan: "#00ffff", white: "#ffffff",
+  brightBlack: "#808080", brightRed: "#ff8080", brightGreen: "#80ff80", brightYellow: "#ffff80",
+  brightBlue: "#8080ff", brightMagenta: "#ff80ff", brightCyan: "#80ffff", brightWhite: "#f0f6fc",
+};
+
+function validSpec(): ThemeSpec {
+  return {
+    isDark: true,
+    color: { bg: { primary: "#000000" }, text: { primary: "#ffffff" }, accent: {}, semantic: {} },
+    terminal: { ansi: { ...ANSI }, scrollbar: {}, pane: {} },
+  };
+}
+
+function validUserEntry(id: string): UserThemeEntry {
+  return { id, source: "user", valid: true, spec: validSpec(), warnings: [] };
+}
 
 function fakeStorage(initial: Record<string, string> = {}): KeyValueStore {
   const data = new Map(Object.entries(initial));
@@ -429,5 +453,75 @@ describe("SettingsApp config warnings banner (trmx-80)", () => {
     // A fresh re-parse with warnings resurfaces the banner.
     bus.deliver(CONFIG_WARNINGS_EVENT, [{ type: "UnknownKey", key: "fresh.key" }]);
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("fresh.key"));
+  });
+});
+
+// trmx-89 (4b, test-first): the settings window owns its own registry instance, so the shell must
+// hydrate the user themes on mount (the Appearance picker lists from it) and re-hydrate live when a
+// `themes:changed` file-watch signal fires. Both go through the injected invoke + listen seams.
+describe("SettingsApp — user themes hydration (trmx-89, 4b)", () => {
+  beforeEach(() => clearUserThemes());
+  afterEach(() => clearUserThemes());
+
+  function renderWithThemes(invoke: InvokeFn, listen: ReturnType<typeof fakeListen>["listen"]) {
+    return render(
+      <SettingsApp
+        update={fakeUpdate()}
+        appInfo={makeFakeAppInfo("0.0.1")}
+        opener={makeFakeOpener()}
+        settings={makeSettingsStore(fakeStorage())}
+        listen={listen}
+        invoke={invoke}
+        initialSection="appearance"
+      />,
+    );
+  }
+
+  const themesReadCount = (invoke: ReturnType<typeof vi.fn>) =>
+    invoke.mock.calls.filter((c) => c[0] === "themes_read").length;
+
+  it("hydrates the user themes on mount (invoke reads themes_read) and lists them in the picker", async () => {
+    const bus = fakeListen();
+    const invoke = vi
+      .fn<InvokeFn>()
+      .mockImplementation((cmd) =>
+        Promise.resolve(cmd === "themes_read" ? [validUserEntry("user:cool")] : null),
+      );
+    renderWithThemes(invoke, bus.listen);
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("themes_read"));
+    // After the registry hydrates and the shell bumps, the user theme lists in the Theme picker.
+    await waitFor(() =>
+      expect(screen.getByRole("radio", { name: "Cool" })).toBeInTheDocument(),
+    );
+  });
+
+  it("re-hydrates on a themes:changed event (invoke reads themes_read again)", async () => {
+    const bus = fakeListen();
+    const invoke = vi.fn<InvokeFn>().mockResolvedValue([]);
+    renderWithThemes(invoke, bus.listen);
+
+    // The mount read happened, and the shell subscribed to themes:changed.
+    await waitFor(() => expect(themesReadCount(invoke)).toBeGreaterThan(0));
+    await waitFor(() => expect(bus.count("themes:changed")).toBeGreaterThan(0));
+    const before = themesReadCount(invoke);
+
+    // A dropped/edited/removed theme file → the shell re-reads and re-registers.
+    bus.deliver("themes:changed", null);
+    await waitFor(() => expect(themesReadCount(invoke)).toBeGreaterThan(before));
+  });
+
+  it("tears the themes:changed subscription down on unmount", async () => {
+    const bus = fakeListen();
+    const invoke = vi.fn<InvokeFn>().mockResolvedValue([]);
+    const { unmount } = renderWithThemes(invoke, bus.listen);
+    await waitFor(() => expect(bus.count("themes:changed")).toBeGreaterThan(0));
+
+    unmount();
+    expect(bus.count("themes:changed")).toBe(0);
+    // A post-unmount delivery must be inert (nothing left to receive it, no throw, no re-read).
+    const before = themesReadCount(invoke);
+    bus.deliver("themes:changed", null);
+    expect(themesReadCount(invoke)).toBe(before);
   });
 });
