@@ -58,6 +58,15 @@ import { grabOffsetOf, ratioForDrag, RESET_RATIO } from "./panes/dividerDrag";
 import { nextPane, paneInDirection, type Direction } from "./panes/paneNav";
 import { activeDividerKeys, dividerKey } from "./panes/paneChrome";
 import { BadgeOverlay } from "./panes/BadgeOverlay";
+import { ActivityLineOverlay } from "./panes/ActivityLineOverlay";
+import {
+  initialActivity,
+  isVisible as isActivityVisible,
+  onBusyChange,
+  onDeadline,
+  type ActivityState,
+  type ActivityTransition,
+} from "./panes/activityLine";
 import { type FrameSchedule } from "./terminal/resizeCoalescer";
 import {
   isLabelOrientation,
@@ -69,10 +78,12 @@ import {
 } from "./settings/settingsStore";
 import { describeTarget, tabKeyAction } from "./tabs/tabKeymap";
 import { isRegisteredThemeId, isUserThemeIdShape, resolveTheme } from "./theme/registry";
+import { withAlpha } from "./theme/colorMath";
 import { useBackend } from "./ipc/useBackend";
 import {
   closePty,
   onPtyExited,
+  onSessionActivity,
   onTitleHint,
   setSessionTitle,
   type SessionInfo,
@@ -107,6 +118,16 @@ const DEFAULT_BOUNDS: Rect = { x: 0, y: 0, width: 800, height: 600 };
 const FALLBACK_BADGE_COLS = 80;
 const FALLBACK_BADGE_ROWS = 24;
 
+// trmx-91: the activity line's alpha over the theme's semantic-success tint — faint enough to sit
+// quietly at a pane's top edge, strong enough to read as "busy". Applied to `color.semantic.success`
+// (a solid theme color) so, unlike the badge tint (already a low-alpha token), App derives the rgba.
+const ACTIVITY_LINE_ALPHA = 0.8;
+
+/** The activity line's color for a theme id: its `color.semantic.success` at {@link ACTIVITY_LINE_ALPHA}. */
+function activityColorFor(themeId: string): string {
+  return withAlpha(resolveTheme(themeId).color.semantic.success, ACTIVITY_LINE_ALPHA);
+}
+
 /** Wire a mounted terminal to a live PTY session; resolves the session's identity (useBackend). */
 export type AttachFn = (
   handle: TerminalHandle,
@@ -122,6 +143,11 @@ export type PtyExitedObservation = (onExit: (sessionId: number) => void) => () =
 /** Observe `session:title-hint` broadcasts (trmx-75); returns a teardown. */
 export type TitleHintObservation = (
   onHint: (sessionId: number, name: string) => void,
+) => () => void;
+
+/** Observe `session:activity` busy<->idle transitions (trmx-91); returns a teardown. */
+export type ActivityObservation = (
+  onActivity: (sessionId: number, busy: boolean) => void,
 ) => () => void;
 
 /**
@@ -199,6 +225,8 @@ export interface AppProps {
   observePtyExited?: PtyExitedObservation;
   /** Injection seam for tests; defaults to the real `session:title-hint` subscription (trmx-75). */
   observeTitleHint?: TitleHintObservation;
+  /** Injection seam for tests; defaults to the real `session:activity` subscription (trmx-91). */
+  observeActivity?: ActivityObservation;
   /** Injection seam for tests; defaults to the real `settings:changed` subscription (trmx-81). */
   observeSettings?: SettingsObservation;
   /** Injection seam for tests; defaults to retitling the native window (trmx-75). */
@@ -218,6 +246,7 @@ export function App({
   observeTabsAction = realObserveTabsAction,
   observePtyExited = onPtyExited,
   observeTitleHint = onTitleHint,
+  observeActivity = onSessionActivity,
   observeSettings = realObserveAppSettings,
   setWindowTitle = realSetWindowTitle,
   mirrorTitle = setSessionTitle,
@@ -247,6 +276,19 @@ export function App({
   const [badgeColor, setBadgeColor] = useState<string>(
     () => resolveTheme(makeSettingsStore().get("appearance.theme")).terminal.badge,
   );
+  // trmx-91: whether the per-pane activity line is enabled (terminal.activityIndicator, default true),
+  // seeded from the shared settings snapshot and kept live over settings:changed. When off, the line
+  // never renders (App gates it) though the backend poller keeps running for titles.
+  const [activityIndicatorOn, setActivityIndicatorOn] = useState<boolean>(() =>
+    makeSettingsStore().get("terminal.activityIndicator"),
+  );
+  // trmx-91: the activity line's COLOR — the active theme's semantic-success tint at ~80% alpha,
+  // tracked as RESOLVED state exactly like badgeColor (review-1: the trmx-89 hot-reload re-emits the
+  // SAME user-theme id after re-registering tokens, so keying on the id would leave the line on a
+  // stale color; the resolved color repaints). resolveTheme is total, so any id resolves.
+  const [activityColor, setActivityColor] = useState<string>(() =>
+    activityColorFor(makeSettingsStore().get("appearance.theme")),
+  );
   // trmx-90: the pane whose badge is being edited via the ⇧⌘B inline editor (null = not editing).
   // Mirrors renamingTabId: while non-null, focus-follows-activation is SUPPRESSED (the input owns
   // the keyboard); commit/cancel clears it, handing focus back to the pane's terminal.
@@ -273,6 +315,12 @@ export function App({
   // Attach epoch per pane: each onReady bumps it; a resolution whose epoch is no longer current is
   // STALE (StrictMode's dev remount opens two PTYs — only the current epoch keeps its session).
   const attachEpochRef = useRef(new Map<PaneId, number>());
+  // trmx-91: per-pane activity DEBOUNCE state + its single timer, both keyed by the global paneId. App
+  // owns the debounce (panes/activityLine.ts is pure/time-injected): each pane holds an ActivityState
+  // and at most ONE pending timer, armed to the current transition's deadline (cleared + re-armed on
+  // every transition, disposed on pane close / unmount).
+  const activityStatesRef = useRef(new Map<PaneId, ActivityState>());
+  const activityTimersRef = useRef(new Map<PaneId, ReturnType<typeof setTimeout>>());
   const renamingRef = useRef(renamingTabId); // out-of-render read for the onReady focus guard
   const badgingRef = useRef(badgingPaneId); // out-of-render read for the onReady focus guard (trmx-90)
   const bootedRef = useRef(false);
@@ -415,6 +463,35 @@ export function App({
     return cb;
   };
 
+  // trmx-91: apply ONE activity transition for a pane — persist the new debounce phase, (re)arm its
+  // single timer to the returned deadline (clearing any prior), and dispatch the resolved visibility.
+  // Shared by the session:activity event AND the timer's own fire, so both go through one arm+dispatch
+  // path. The timer fire re-reads the pane's CURRENT phase (a stale fire is inert per onDeadline) and
+  // recurses here. `tabId` is captured at arm time (a pane never migrates tabs); if the pane died
+  // meanwhile the setActivity reducer no-ops on the unknown id, and disposePaneResources cleared the
+  // timer, so a fire into a dead pane can't happen anyway.
+  const applyActivityTransition = (
+    tabId: number,
+    paneId: PaneId,
+    { state, deadline }: ActivityTransition,
+  ) => {
+    activityStatesRef.current.set(paneId, state);
+    const prior = activityTimersRef.current.get(paneId);
+    if (prior !== undefined) {
+      clearTimeout(prior);
+      activityTimersRef.current.delete(paneId);
+    }
+    if (deadline !== null) {
+      const timer = setTimeout(() => {
+        activityTimersRef.current.delete(paneId);
+        const current = activityStatesRef.current.get(paneId) ?? initialActivity();
+        applyActivityTransition(tabId, paneId, onDeadline(current, Date.now()));
+      }, Math.max(0, deadline - Date.now()));
+      activityTimersRef.current.set(paneId, timer);
+    }
+    dispatch({ kind: "setActivity", tabId, paneId, visible: isActivityVisible(state) });
+  };
+
   // Dispose one pane's resources: drop all its paneId-keyed maps and close its PTY (unless the
   // shell already exited). Shared by pane-close, pty:exited, and whole-tab close — one path, no leak.
   const disposePaneResources = (paneId: PaneId, opts?: { alreadyExited?: boolean }) => {
@@ -428,6 +505,12 @@ export function App({
     badgeCbsRef.current.delete(paneId);
     mirroredRef.current.delete(paneId);
     attachEpochRef.current.delete(paneId);
+    // trmx-91: cancel this pane's pending activity timer and drop its debounce state (no stray fire
+    // into a dead pane, no leaked ActivityState).
+    const activityTimer = activityTimersRef.current.get(paneId);
+    if (activityTimer !== undefined) clearTimeout(activityTimer);
+    activityTimersRef.current.delete(paneId);
+    activityStatesRef.current.delete(paneId);
     if (sessionId !== undefined && !opts?.alreadyExited) {
       seamsRef.current.closeSession(sessionId).catch((err: unknown) => {
         console.error("[termixion] close pty failed", err);
@@ -630,6 +713,21 @@ export function App({
     };
   }, [observePtyExited, observeTitleHint, observeTabsAction]);
 
+  // trmx-91: subscribe to session:activity — route each busy<->idle transition by sessionId into the
+  // OWNING pane (the per-pane closure is the load-bearing scoping: a background pane's busy state
+  // shows on THAT pane's line, never the focused one) and drive its debounce. Its OWN effect, dep'd
+  // only on the stable seam. Independent of the setting: the debounce always runs; the render gate
+  // (activityIndicatorOn) alone decides whether the resolved line paints, so toggling the setting
+  // never desyncs the phase.
+  useEffect(() => {
+    return observeActivity((sessionId, busy) => {
+      const hit = paneBySessionId(stateRef.current, sessionId);
+      if (!hit) return; // no pane owns this session (session-less/closed) — inert
+      const current = activityStatesRef.current.get(hit.paneId) ?? initialActivity();
+      applyActivityTransition(hit.tab.tabId, hit.paneId, onBusyChange(current, busy, Date.now()));
+    });
+  }, [observeActivity]);
+
   // trmx-81/82: keep the bar position + side-label orientation live over settings:changed. Its OWN
   // effect, dep'd only on the stable observation seam — payloads are untrusted (only a well-formed
   // key with a registry-valid value updates state).
@@ -641,11 +739,17 @@ export function App({
       else if (key === "tabs.sideLabelOrientation" && isLabelOrientation(value)) {
         setSideLabelOrientation(value);
       }
-      // trmx-90: recompute the badge watermark color on every theme event so it repaints on a theme
-      // switch AND on a trmx-89 same-id hot-reload (the token changed under the same id, review-1). Same
-      // untrusted-payload discipline as barPosition; resolveTheme is total (unknown id -> White's badge).
+      // trmx-91: keep the activity-indicator toggle live (boolean-guarded, the untrusted-payload
+      // discipline). Off hides the line without touching the backend poller (titles keep flowing).
+      else if (key === "terminal.activityIndicator" && typeof value === "boolean") {
+        setActivityIndicatorOn(value);
+      }
+      // trmx-90/91: recompute the badge watermark AND the activity-line color on every theme event so
+      // both repaint on a theme switch AND on a trmx-89 same-id hot-reload (the token changed under the
+      // same id, review-1). Same untrusted-payload discipline as barPosition; resolveTheme is total.
       else if (key === "appearance.theme" && (isRegisteredThemeId(value) || isUserThemeIdShape(value))) {
         setBadgeColor(resolveTheme(value).terminal.badge);
+        setActivityColor(activityColorFor(value));
       }
     });
     return stopSettings;
@@ -840,10 +944,14 @@ export function App({
     dispatch({ kind: "setPaneRatio", tabId, path, ratio: RESET_RATIO });
   };
 
-  // Cleanup on unmount: a mid-drag unmount must not leave a queued frame to dispatch into a dead reducer.
+  // Cleanup on unmount: a mid-drag unmount must not leave a queued frame to dispatch into a dead
+  // reducer, and (trmx-91) no pending activity timer may fire a dispatch after unmount either.
   useEffect(() => {
+    const activityTimers = activityTimersRef.current;
     return () => {
       if (frameCancelRef.current) frameCancelRef.current();
+      for (const timer of activityTimers.values()) clearTimeout(timer);
+      activityTimers.clear();
     };
   }, []);
 
@@ -912,6 +1020,13 @@ export function App({
                       cwdStore={storeFor(paneId)}
                       onOscTitle={oscTitleFor(tab.tabId, paneId)}
                       onBadge={badgeFor(tab.tabId, paneId)}
+                    />
+                    {/* trmx-91: the top-edge activity line (click-through, below the badge). Shown only
+                        while this pane is busy (its debounced activityVisible) AND the setting is on;
+                        ActivityLine self-hides when the combined gate is false. */}
+                    <ActivityLineOverlay
+                      visible={activityIndicatorOn && pane.activityVisible === true}
+                      color={activityColor}
                     />
                     {/* trmx-90: the translucent badge watermark (top-right, click-through). Hidden by
                         BadgeOverlay itself when the pane has no badge or is too narrow. */}

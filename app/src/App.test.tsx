@@ -128,6 +128,21 @@ function makeHintObservation() {
   };
 }
 
+// The session:activity seam carries (sessionId, busy) — same capture pattern (trmx-91).
+function makeActivityObservation() {
+  let handler: ((sessionId: number, busy: boolean) => void) | undefined;
+  const teardown = vi.fn();
+  const observe = vi.fn((h: (sessionId: number, busy: boolean) => void) => {
+    handler = h;
+    return teardown;
+  });
+  return {
+    observe,
+    teardown,
+    fire: (sessionId: number, busy: boolean) => handler?.(sessionId, busy),
+  };
+}
+
 // A controllable frame schedule for the divider-drag rAF coalescing (trmx-85): the test flushes the
 // pending frame deterministically and `scheduleCalls` proves coalescing (many moves → one frame).
 function makeFrameSchedule() {
@@ -162,6 +177,7 @@ function renderApp(opts: { strict?: boolean } = {}) {
   const tabsAction = makeObservation<unknown>();
   const ptyExited = makeObservation<number>();
   const titleHint = makeHintObservation();
+  const activity = makeActivityObservation(); // trmx-91: session:activity broadcasts
   const settingsChanged = makeObservation<unknown>(); // trmx-81: settings:changed broadcasts
   const setWindowTitle = vi.fn();
   const mirrorTitle = vi.fn(() => Promise.resolve());
@@ -176,6 +192,7 @@ function renderApp(opts: { strict?: boolean } = {}) {
     observeTabsAction: tabsAction.observe,
     observePtyExited: ptyExited.observe,
     observeTitleHint: titleHint.observe,
+    observeActivity: activity.observe,
     observeSettings: settingsChanged.observe,
     setWindowTitle,
     mirrorTitle,
@@ -199,6 +216,7 @@ function renderApp(opts: { strict?: boolean } = {}) {
     tabsAction,
     ptyExited,
     titleHint,
+    activity,
     settingsChanged,
     setWindowTitle,
     mirrorTitle,
@@ -1555,5 +1573,131 @@ describe("App badge editor (trmx-90)", () => {
     fireEvent.keyDown(screen.getByTestId("pane-badge-input"), { key: "2", metaKey: true });
     expect(screen.getByTestId("tab-1").className).toContain(activeClass);
     expect(screen.getByTestId("pane-badge-input")).toBeInTheDocument(); // still editing
+  });
+});
+
+// trmx-91 (sub-tasks E + F): the per-pane ACTIVITY LINE. App subscribes to session:activity, routes
+// each busy<->idle transition by sessionId into the OWNING pane, drives the pure debounce (150ms show
+// delay / 300ms min-visible hold) via a single per-pane timer, and renders the top-edge line — gated
+// on the terminal.activityIndicator setting. Fake timers drive the debounce deterministically (the
+// debounce reads Date.now() + setTimeout, both faked); they are enabled only AFTER the async attach so
+// every async `act` (render/attach) stays on real timers and the fake portion uses only sync `act`.
+describe("App activity indicator (trmx-91)", () => {
+  beforeEach(() => {
+    __resetSettingsForTest();
+  });
+  afterEach(() => {
+    vi.useRealTimers(); // a no-op when a test never enabled fake timers
+    __resetSettingsForTest();
+  });
+
+  const activityLineIn = (paneId: number) =>
+    within(screen.getByTestId(`pane-host-${paneId}`)).queryByTestId("pane-activity");
+
+  it("shows the owning pane's line after the 150ms show delay and holds it 300ms after idle", async () => {
+    const { calls, activity } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
+    vi.useFakeTimers();
+
+    // Busy — the line must NOT flash before the 150ms show floor is crossed.
+    act(() => activity.fire(7, true));
+    expect(activityLineIn(1)).not.toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(149));
+    expect(activityLineIn(1)).not.toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(1)); // cross 150ms → the line appears
+    expect(activityLineIn(1)).toBeInTheDocument();
+
+    // Idle — the line HOLDS through the 300ms min-visible window, then clears (no strobe).
+    act(() => activity.fire(7, false));
+    expect(activityLineIn(1)).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(299));
+    expect(activityLineIn(1)).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(1)); // cross the 300ms min-visible floor → clears
+    expect(activityLineIn(1)).not.toBeInTheDocument();
+  });
+
+  it("never flashes for an instant job (busy then idle within the 150ms show delay)", async () => {
+    const { calls, activity } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
+    vi.useFakeTimers();
+
+    act(() => activity.fire(7, true));
+    act(() => vi.advanceTimersByTime(100)); // still inside the show delay
+    act(() => activity.fire(7, false)); // the job finished before the line ever showed
+    act(() => vi.advanceTimersByTime(1000)); // drain every timer
+    expect(activityLineIn(1)).not.toBeInTheDocument();
+  });
+
+  it("gates on the terminal.activityIndicator setting: OFF hides the line, back ON reveals it", async () => {
+    const { calls, activity, settingsChanged } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
+    vi.useFakeTimers();
+    act(() => activity.fire(7, true));
+    act(() => vi.advanceTimersByTime(150));
+    expect(activityLineIn(1)).toBeInTheDocument();
+
+    // OFF → hidden. Only the RENDER is gated — the pane's debounced state is untouched.
+    act(() =>
+      settingsChanged.fire({
+        key: "terminal.activityIndicator",
+        value: false,
+        source: "settings-window",
+      }),
+    );
+    expect(activityLineIn(1)).not.toBeInTheDocument();
+
+    // Back ON → the still-busy pane's line reappears with no new activity event.
+    act(() =>
+      settingsChanged.fire({
+        key: "terminal.activityIndicator",
+        value: true,
+        source: "settings-window",
+      }),
+    );
+    expect(activityLineIn(1)).toBeInTheDocument();
+
+    // A non-boolean value for the key is inert (the untrusted-payload guard).
+    act(() =>
+      settingsChanged.fire({
+        key: "terminal.activityIndicator",
+        value: "nope",
+        source: "config-file",
+      }),
+    );
+    expect(activityLineIn(1)).toBeInTheDocument();
+  });
+
+  it("scopes a BACKGROUND pane's activity to THAT pane's line only (per-pane routing)", async () => {
+    const { calls, tabsAction, activity } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 1, title: "one" });
+    await act(async () => tabsAction.fire("split-right")); // focus moves to the new pane 2
+    await resolveAttach(calls[1], { sessionId: 2, title: "two" });
+    vi.useFakeTimers();
+
+    // Session 1 owns the now-BACKGROUND pane 1. Its busy transition lights pane 1's line ONLY.
+    act(() => activity.fire(1, true));
+    act(() => vi.advanceTimersByTime(150));
+    expect(activityLineIn(1)).toBeInTheDocument();
+    expect(activityLineIn(2)).not.toBeInTheDocument();
+  });
+
+  it("colors the line from the active theme's semantic-success tint (a real rgba, not empty)", async () => {
+    const { calls, activity } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
+    vi.useFakeTimers();
+    act(() => activity.fire(7, true));
+    act(() => vi.advanceTimersByTime(150));
+    // App threads withAlpha(resolveTheme(id).color.semantic.success, 0.8) — a resolved color, not "".
+    const line = within(screen.getByTestId("pane-host-1")).getByTestId("pane-activity");
+    expect(line.style.backgroundColor).not.toBe("");
+  });
+
+  it("is inert for activity on an unknown session (no line anywhere)", async () => {
+    const { calls, activity } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
+    vi.useFakeTimers();
+    act(() => activity.fire(4040, true)); // no pane owns this session
+    act(() => vi.advanceTimersByTime(150));
+    expect(activityLineIn(1)).not.toBeInTheDocument();
   });
 });

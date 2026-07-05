@@ -239,6 +239,57 @@ body {
 }
 
 /*
+ * trmx-91 (sub-task F) — the per-pane ACTIVITY LINE (ActivityLine.tsx): a thin 2px bar across the pane
+ * host's TOP edge, shown (App-gated) while the pane's session runs a foreground job. Click-through
+ * (pointer-events: none, also inline for jsdom) so it never eats the terminal's clicks; clipped to the
+ * pane (overflow: hidden) so the shimmer can't spill. The base color (the theme's semantic.success at
+ * ~80% alpha) is written INLINE; the motion is here. z-index 3 sits ABOVE the xterm screen (z-auto)
+ * and BELOW the badge watermark (z-index 4) — a badged, busy pane shows both. The indeterminate
+ * shimmer is a GPU-cheap `transform: translateX` sweep of a translucent highlight on the `::after`
+ * (compositor-only — no layout/paint, NO JS timers); prefers-reduced-motion drops the animation but
+ * keeps the (static) line so the busy state is never lost.
+ */
+.tx-activity-line {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  z-index: 3;
+  pointer-events: none;
+  overflow: hidden;
+}
+.tx-activity-line::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 35%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.55),
+    transparent
+  );
+  will-change: transform;
+  animation: tx-activity-shimmer 1.3s linear infinite;
+}
+@keyframes tx-activity-shimmer {
+  from {
+    transform: translateX(-120%);
+  }
+  to {
+    transform: translateX(400%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tx-activity-line::after {
+    animation: none;
+  }
+}
+
+/*
  * trmx-90 — the ⇧⌘B badge EDITOR input (PaneBadgeInput in App): a small, CENTERED text field over the
  * focused pane. Absolutely positioned in the pane host, centered with the translate trick; themed with
  * the same --tx-* vars + accent ring as the tab rename input. z-index 6 keeps it above the badge
