@@ -112,8 +112,24 @@ capture() {
   echo "Done: ${#THEMES[@]} captures in $out_dir/"
 }
 
+# trmx-87 (FR-3.6): the split scenario — prints the operator steps for the multi-pane screenshot rows.
+# The capture itself is operator-driven (no headless packaged-app screenshotting); see
+# docs/design/visual-baseline.md §6.4.
+split() {
+  cat <<'GUIDE'
+-- multi-pane (FR-3.6) screenshot scenario --
+In the packaged app, for EACH of the six themes (switch in Settings):
+  1. Cmd-D then focus the left pane and Shift-Cmd-D to build a 2x2 grid.
+  2. Confirm the FOCUSED pane's border is the active color and reads as focused at a glance.
+  3. Select text in an UNFOCUSED (dimmed) pane — the selection must stay visible.
+  4. Close down to a single pane — it must look byte-identical to the v0.0.4 baseline (no border, no dim).
+  Capture one screenshot row per theme; file them under the baseline set and note the result in §6.4.
+GUIDE
+}
+
 case "${1:-}" in
   content) content ;;
   capture) shift; capture "$@" ;;
+  split) split ;;
   *) grep '^#' "$0" | sed -n '3,25p' | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
