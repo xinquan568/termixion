@@ -16,6 +16,8 @@ export const paper: ThemeTokens = {
     semantic: semanticLight,
   },
   terminal: {
+    // trmx-87 (FR-3.6): Kitty pane borders — active = accent (outlines the focused pane), inactive = the theme border line.
+    pane: { activeBorder: "#0066cc", inactiveBorder: "#d5d4d4" },
     ansi: {
       black: "#2e3436",
       red: "#c33820",

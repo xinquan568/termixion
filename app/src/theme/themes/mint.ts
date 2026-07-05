@@ -16,6 +16,8 @@ export const mint: ThemeTokens = {
     semantic: semanticLight,
   },
   terminal: {
+    // trmx-87 (FR-3.6): Kitty pane borders — active = accent (outlines the focused pane), inactive = the theme border line.
+    pane: { activeBorder: "#1a6b4a", inactiveBorder: "#a8c9ad" },
     // vmark: cyan H~187, between green (124) and blue (202) — pure teal reads as green on mint.
     ansi: {
       black: "#2a3832",

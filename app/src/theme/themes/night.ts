@@ -20,6 +20,8 @@ export const night: ThemeTokens = {
     semantic: { error: "#f85149", errorBg: "rgba(248, 81, 73, 0.15)", success: "#4ade80" },
   },
   terminal: {
+    // trmx-87 (FR-3.6): Kitty pane borders — active = accent (outlines the focused pane), inactive = the theme border line.
+    pane: { activeBorder: "#58a6ff", inactiveBorder: "#3a3f46" },
     ansi: {
       black: "#1a1d22",
       red: "#f85149",

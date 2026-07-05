@@ -22,6 +22,8 @@
   --tx-text-2: #9aa0a6;
   --tx-text-3: #6b7078;
   --tx-border: #3a3f46;
+  --tx-pane-active-border: #58a6ff;
+  --tx-pane-inactive-border: #3a3f46;
   --tx-primary: #58a6ff;
   --tx-success: #4ade80;
   --tx-error: #f85149;

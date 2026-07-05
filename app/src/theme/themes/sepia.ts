@@ -16,6 +16,8 @@ export const sepia: ThemeTokens = {
     semantic: semanticLight,
   },
   terminal: {
+    // trmx-87 (FR-3.6): Kitty pane borders — active = accent (outlines the focused pane), inactive = the theme border line.
+    pane: { activeBorder: "#8b4513", inactiveBorder: "#e0d5bc" },
     ansi: {
       black: "#3e3328",
       red: "#b5421a",

@@ -56,6 +56,12 @@ export interface ThemeTokens {
     cursorAccent: string;
     selectionBackground: string;
     scrollbar: { idle: string; hover: string; active: string };
+    /**
+     * trmx-87 (FR-3.6): the multi-pane "Kitty look" border colors. In our flat-rect model the divider
+     * IS the pane border — `activeBorder` outlines the FOCUSED pane (accent-derived, must read clearly
+     * against `bg.primary`), `inactiveBorder` is the subtle line between unfocused panes (border-derived).
+     */
+    pane: { activeBorder: string; inactiveBorder: string };
   };
 }
 

@@ -176,3 +176,44 @@ barLayout/TabStrip/AppearanceSettings/SettingsApp unit suites.
   this doc only move via an issue that updates doc + gates together.
 - **Re-audit trigger:** any change to `iterm2Theme.ts`, the catalog, `buildXtermTheme.ts`,
   `txCssVars.ts`, or terminal-adjacent chrome re-runs §3's protocol and §5's capture.
+
+## 6. Multi-pane look (FR-3.6, trmx-87)
+
+The split-pane layout (trmx-84/85/86) gets the Kitty "internal windows" look, an extension of the
+locked baseline — the single-pane look is **unchanged** (a lone pane has no divider and is never
+dimmed), so everything here applies only once you split.
+
+### 6.1 Pane border tokens (contract)
+
+`ThemeTokens.terminal.pane = { activeBorder, inactiveBorder }` — the two Kitty window-border colors.
+In our flat-rect model the **divider IS the border**. Emitted as `--tx-pane-active-border` /
+`--tx-pane-inactive-border` (`txCssVars.ts`); no color literals in the chrome (§4 rule).
+
+| token | source | gate |
+| ----- | ------ | ---- |
+| `pane.activeBorder` | the theme's **accent** (per theme) | **G5**: ≥ `CONTRAST_GATES.cursor` (3:1) vs `bg.primary` — the focused pane must read as focused in every theme |
+| `pane.inactiveBorder` | the theme's **border** | presence + distinct from active (subtle line) |
+
+### 6.2 Focus indication (active dividers)
+
+`paneChrome.activeDividerKeys` (pure) returns the dividers **outlining the focused pane** (edge-adjacent
++ perpendicular overlap). App draws those `pane-divider--active` (`--tx-pane-active-border`), the rest
+`pane-divider--inactive`. A focus change is a **class flip only** — no re-layout, no terminal touch
+(pinned by `App.test.tsx`: survivor `recorder.unmounts === 0`). Kitty segments borders; our whole-divider
+approximation is the faithful flat-rect analogue.
+
+### 6.3 Unfocused dim (Kitty `inactive_text_alpha`)
+
+**Decision:** dim unfocused panes' **text** to `opacity: 0.85` via `.pane-host:not(.pane-host--focused)
+.xterm-screen` — compositor-side, no xterm API, instant restore on focus. The selection layer is a
+sibling of `.xterm-screen`, so a selection in a dimmed pane stays visible. **WebGL outcome:** opacity is
+applied to the screen host container (compositor-side), so the WebGL canvas composites normally — no
+blending artifacts observed; the documented fallback (borders-only, skip the dim) was **not** needed.
+
+### 6.4 Screenshot rows (operator-captured)
+
+`scripts/visual-review.sh split` opens a 2×2 grid; capture one row per theme (six rows), each showing the
+focused pane obvious at a glance, a selection visible in a dimmed pane, and a single-pane tab
+byte-identical to §1's baseline. The headless gate (token contrast + `paneChrome` geometry + the
+style-only-flip component test) runs in CI; **this image set + the visual sign-off is the operator step**,
+recorded here alongside §5's single-pane captures.

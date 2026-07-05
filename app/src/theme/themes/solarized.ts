@@ -23,6 +23,8 @@ export const solarized: ThemeTokens = {
     semantic: { error: "#dc322f", errorBg: "rgba(220, 50, 47, 0.15)", success: "#859900" },
   },
   terminal: {
+    // trmx-87 (FR-3.6): Kitty pane borders — active = accent (outlines the focused pane), inactive = the theme border line.
+    pane: { activeBorder: "#268bd2", inactiveBorder: "#0e4753" },
     ansi: {
       black: "#073642",
       red: "#dc322f",

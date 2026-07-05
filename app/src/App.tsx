@@ -56,6 +56,7 @@ import {
 } from "./panes/layoutTree";
 import { grabOffsetOf, ratioForDrag, RESET_RATIO } from "./panes/dividerDrag";
 import { nextPane, paneInDirection, type Direction } from "./panes/paneNav";
+import { activeDividerKeys, dividerKey } from "./panes/paneChrome";
 import { type FrameSchedule } from "./terminal/resizeCoalescer";
 import {
   isLabelOrientation,
@@ -752,6 +753,9 @@ export function App({
           // only toggles visibility. trmx-84: within it, each pane is an absolutely-positioned
           // sibling keyed by paneId, laid out from solveRects — a re-layout mutates only style.
           const solved = solveRects(tab.tree, bounds);
+          // trmx-87 (FR-3.6): the dividers OUTLINING the focused pane render in the active border color;
+          // the rest inactive. A pure class flip — no re-layout, no terminal touch.
+          const activeKeys = activeDividerKeys(solved.panes, solved.dividers, tab.focusedPaneId);
           return (
             <div
               key={tab.tabId}
@@ -794,7 +798,9 @@ export function App({
                 // resets to 50/50. Chrome/styling is FR-3.6.
                 <div
                   key={`divider-${d.path.join("-") || "root"}`}
-                  className={`pane-divider pane-divider--${d.dir}`}
+                  className={`pane-divider pane-divider--${d.dir} ${
+                    activeKeys.has(dividerKey(d.path)) ? "pane-divider--active" : "pane-divider--inactive"
+                  }`}
                   data-testid={`pane-divider-${d.path.join("-") || "root"}`}
                   style={{
                     position: "absolute",
