@@ -239,11 +239,13 @@ export function App({
   const [sideLabelOrientation, setSideLabelOrientation] = useState<LabelOrientation>(() =>
     makeSettingsStore().get("tabs.sideLabelOrientation"),
   );
-  // trmx-90: the active theme id, seeded from the shared settings snapshot and kept live over
-  // settings:changed (mirrors barPosition). Its `terminal.badge` tint colors every pane's badge
-  // watermark, so a live theme switch repaints the badges alongside the terminal colors.
-  const [activeThemeId, setActiveThemeId] = useState<string>(() =>
-    makeSettingsStore().get("appearance.theme"),
+  // trmx-90: the badge watermark COLOR, seeded from the active theme's `terminal.badge` token and
+  // kept live over settings:changed. Tracking the RESOLVED COLOR (not just the theme id, review-1) is
+  // load-bearing: the trmx-89 hot-reload re-emits appearance.theme with the SAME user-theme id after
+  // re-registering updated tokens, so keying on the id would no-op setState and leave the badge on a
+  // stale color while the terminal repaints. resolveTheme is total, so any id resolves to a color.
+  const [badgeColor, setBadgeColor] = useState<string>(
+    () => resolveTheme(makeSettingsStore().get("appearance.theme")).terminal.badge,
   );
   // trmx-90: the pane whose badge is being edited via the ⇧⌘B inline editor (null = not editing).
   // Mirrors renamingTabId: while non-null, focus-follows-activation is SUPPRESSED (the input owns
@@ -639,11 +641,11 @@ export function App({
       else if (key === "tabs.sideLabelOrientation" && isLabelOrientation(value)) {
         setSideLabelOrientation(value);
       }
-      // trmx-90: track the active theme id live so the badge watermark repaints on a theme switch
-      // (same untrusted-payload discipline — only a registered or well-formed user id updates state;
-      // resolveTheme is total anyway, but this mirrors the barPosition guard).
+      // trmx-90: recompute the badge watermark color on every theme event so it repaints on a theme
+      // switch AND on a trmx-89 same-id hot-reload (the token changed under the same id, review-1). Same
+      // untrusted-payload discipline as barPosition; resolveTheme is total (unknown id -> White's badge).
       else if (key === "appearance.theme" && (isRegisteredThemeId(value) || isUserThemeIdShape(value))) {
-        setActiveThemeId(value);
+        setBadgeColor(resolveTheme(value).terminal.badge);
       }
     });
     return stopSettings;
@@ -849,8 +851,8 @@ export function App({
   // LAST): barLayoutFor's flex direction moves the bar; the keyed pane hosts stay put (keep-alive).
   const barLayout = barLayoutFor(barPosition);
   const labelOrientation = labelOrientationFor(barPosition, sideLabelOrientation);
-  // trmx-90: the badge watermark tint for every pane, from the active theme (tracked live above).
-  const badgeColor = resolveTheme(activeThemeId).terminal.badge;
+  // trmx-90: `badgeColor` is now live state (updated on every appearance.theme event, incl. a same-id
+  // hot-reload), not a per-render derive — see the useState above.
 
   return (
     <main className={`app app--bar-${barPosition}`}>

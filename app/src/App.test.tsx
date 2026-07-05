@@ -79,6 +79,8 @@ vi.mock("./update/UpdateAuthorityHost", () => ({
 
 import { App, type AppProps } from "./App";
 import { makeSettingsStore, __resetSettingsForTest } from "./settings/settingsStore";
+import { clearUserThemes, registerUserThemes } from "./theme/registry";
+import type { ThemeSpec } from "./theme/themeDerive";
 
 interface AttachCall {
   handle: unknown;
@@ -1419,6 +1421,50 @@ describe("App per-pane badges (trmx-90)", () => {
     const badge = within(screen.getByTestId("pane-host-1")).getByTestId("pane-badge");
     expect(badge.style.color).not.toBe("");
     expect(badge).toHaveTextContent("db");
+  });
+
+  // review-1: the badge color must repaint on a SAME-ID trmx-89 hot reload — the designer edits their
+  // ACTIVE user theme's terminal.badge; trmx-89 re-registers the tokens and re-emits appearance.theme
+  // with the SAME id. Keying on the id alone would no-op setState and leave the overlay on the stale
+  // color; tracking the resolved color repaints it.
+  it("repaints the badge color on a same-id user-theme hot reload (review-1)", async () => {
+    const ANSI = {
+      black: "#000", red: "#f00", green: "#0f0", yellow: "#ff0", blue: "#00f", magenta: "#f0f",
+      cyan: "#0ff", white: "#fff", brightBlack: "#888", brightRed: "#f88", brightGreen: "#8f8",
+      brightYellow: "#ff8", brightBlue: "#88f", brightMagenta: "#f8f", brightCyan: "#8ff", brightWhite: "#fff",
+    };
+    const specWithBadge = (badge: string): ThemeSpec => ({
+      isDark: true,
+      color: { bg: { primary: "#111111" }, text: { primary: "#eeeeee" }, accent: {}, semantic: {} },
+      terminal: { ansi: { ...ANSI }, scrollbar: {}, pane: {}, badge },
+    });
+    const register = (badge: string) =>
+      registerUserThemes([
+        { id: "user:designer", source: "user", valid: true, spec: specWithBadge(badge), warnings: [] },
+      ]);
+
+    const { calls, settingsChanged } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 1, title: "one" });
+    await act(async () => recorder.mounts[0].onBadge?.("db"));
+    const badge = () => within(screen.getByTestId("pane-host-1")).getByTestId("pane-badge");
+
+    // Switch to the user theme (badge = colorA).
+    register("rgba(1, 2, 3, 0.1)");
+    await act(async () =>
+      settingsChanged.fire({ key: "appearance.theme", value: "user:designer", source: "manual" }),
+    );
+    const colorA = badge().style.color;
+    expect(colorA).not.toBe("");
+
+    // Edit the SAME theme file → new badge (colorB); trmx-89 re-registers + re-emits the SAME id.
+    register("rgba(9, 8, 7, 0.2)");
+    await act(async () =>
+      settingsChanged.fire({ key: "appearance.theme", value: "user:designer", source: "themes-reload" }),
+    );
+    // The overlay repaints (was stale before the fix: same id no-op'd setState).
+    expect(badge().style.color).not.toBe(colorA);
+
+    clearUserThemes();
   });
 });
 
