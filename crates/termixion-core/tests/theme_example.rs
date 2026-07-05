@@ -8,9 +8,11 @@ use termixion_core::parse_theme;
 
 #[test]
 fn documented_example_theme_parses_with_zero_warnings() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/examples/mytheme.toml");
-    let text = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/examples/mytheme.toml"
+    );
+    let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
     let (spec, warnings) = parse_theme(&text);
     assert!(
         spec.is_some(),
