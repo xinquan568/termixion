@@ -40,6 +40,8 @@ export const mint: ThemeTokens = {
     cursor: "#2d3a35",
     cursorAccent: "#CCE6D0",
     selectionBackground: "rgba(0,102,204,0.25)",
+    // trmx-90: per-pane badge watermark — translucent green-gray (text #2d3a35) on the mint background.
+    badge: "rgba(45, 58, 53, 0.06)",
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
   },
 };

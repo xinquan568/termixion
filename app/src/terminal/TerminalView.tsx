@@ -49,6 +49,7 @@ import {
 } from "./windowTitle";
 import { attachOsc52, realWriteClipboard, type Osc52TerminalLike } from "./osc52";
 import { attachOsc7, defaultCwdStore, type CwdStore, type Osc7TerminalLike } from "./osc7";
+import { attachOsc1337, type Osc1337TerminalLike } from "./osc1337";
 import {
   applyCursorSettingsChange,
   cursorTerminalOptions,
@@ -149,11 +150,15 @@ export type AttachScrollbar = (
  * consumer and test is unaffected. trmx-75: `onTitle` redirects the OSC 0/2 TITLE sink — App
  * injects a per-tab callback so a program's title retitles its TAB (the reducer's `osc` source),
  * not the native window; when omitted the sink stays `realSetWindowTitle` (standalone compat).
+ * trmx-90: `onBadge` redirects the OSC 1337 SetBadgeFormat sink — App injects a per-PANE callback so
+ * a `printf` badges its own pane (the reducer's `badge` slot); when omitted the badge is a no-op (a
+ * badge has no standalone destination, unlike a title/clipboard).
  */
 export type AttachOscIntegrations = (
   terminal: TerminalLike,
   cwdStore?: CwdStore,
   onTitle?: (title: string) => void,
+  onBadge?: (badge: string | null) => void,
 ) => () => void;
 
 export function realAttachOscIntegrations(
@@ -161,6 +166,9 @@ export function realAttachOscIntegrations(
   sinks: {
     setTitle: (title: string) => void;
     writeClipboard: (text: string) => void;
+    // trmx-90: the per-pane badge sink. Optional (defaulted to a no-op below): unlike title/clipboard
+    // a badge has no standalone edge, so a caller with no pane layer simply drops SetBadgeFormat.
+    setBadge?: (badge: string | null) => void;
   } = { setTitle: realSetWindowTitle, writeClipboard: realWriteClipboard },
   cwdStore: CwdStore = defaultCwdStore,
 ): () => void {
@@ -173,10 +181,17 @@ export function realAttachOscIntegrations(
     sinks.writeClipboard,
   );
   const detach7 = attachOsc7(terminal as unknown as Osc7TerminalLike, cwdStore);
+  // trmx-90: OSC 1337 SetBadgeFormat → the per-pane badge sink (localized adapter cast, like the
+  // three above). No sink injected → a no-op consumer, so an unhandled 1337 still dies in osc1337.ts.
+  const detach1337 = attachOsc1337(
+    terminal as unknown as Osc1337TerminalLike,
+    sinks.setBadge ?? (() => {}),
+  );
   return () => {
     detachTitle();
     detach52();
     detach7();
+    detach1337();
   };
 }
 
@@ -185,12 +200,19 @@ export function realAttachOscIntegrations(
 // change identity every render and remount the terminal via the effect deps (trmx-74). trmx-75:
 // a caller-provided title sink REPLACES realSetWindowTitle (the tab layer owns the window title
 // now — only the active tab's effective title may reach it, from App's window-title effect).
-const defaultAttachOscIntegrations: AttachOscIntegrations = (terminal, cwdStore, onTitle) =>
+const defaultAttachOscIntegrations: AttachOscIntegrations = (terminal, cwdStore, onTitle, onBadge) =>
   realAttachOscIntegrations(
     terminal,
-    onTitle === undefined
+    // No tab/pane layer at all → the full default sinks (window title, real clipboard, no-op badge).
+    // Otherwise build the sinks: onTitle REPLACES the window title (else stays realSetWindowTitle),
+    // onBadge feeds the pane's badge slot (trmx-90; absent → osc1337 no-op).
+    onTitle === undefined && onBadge === undefined
       ? undefined
-      : { setTitle: onTitle, writeClipboard: realWriteClipboard },
+      : {
+          setTitle: onTitle ?? realSetWindowTitle,
+          writeClipboard: realWriteClipboard,
+          setBadge: onBadge,
+        },
     cwdStore,
   );
 
@@ -264,6 +286,13 @@ export interface TerminalViewProps {
    * window directly (`realSetWindowTitle` — standalone/pre-tab behavior).
    */
   onOscTitle?: (title: string) => void;
+  /**
+   * Where this terminal's OSC 1337 SetBadgeFormat lands (trmx-90): App injects a per-PANE callback
+   * (cached — an unstable identity would remount the terminal via the effect deps, exactly like
+   * onOscTitle) that routes the badge into THIS pane's reducer `badge` slot. When omitted the badge
+   * has no destination (a no-op — a badge is meaningless without the pane layer).
+   */
+  onBadge?: (badge: string | null) => void;
   /** Injection seam for tests; defaults to the real ⌘C/⌘V clipboard guards (trmx-66). */
   attachClipboard?: AttachClipboard;
   /**
@@ -285,6 +314,7 @@ export function TerminalView({
   attachClipboard = realAttachClipboard,
   cwdStore,
   onOscTitle,
+  onBadge,
   resizeSchedule,
 }: TerminalViewProps) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -305,8 +335,8 @@ export function TerminalView({
     // trmx-64: OSC integrations (0/2 title → window title, 52 → write-only clipboard, 7 → cwd —
     // into this tab's injected store when the tab layer provides one, trmx-74). trmx-75: when the
     // tab layer provides onOscTitle, OSC titles go THERE (the tab's `osc` source) instead of the
-    // native window.
-    const detachOsc = attachOscIntegrations(handle.terminal, cwdStore, onOscTitle);
+    // native window. trmx-90: onBadge routes OSC 1337 SetBadgeFormat into THIS pane's badge slot.
+    const detachOsc = attachOscIntegrations(handle.terminal, cwdStore, onOscTitle, onBadge);
     // trmx-66: owned ⌘C/⌘V — capture-phase guards on the host (sanitized paste, no-clear copy).
     const detachClipboard = attachClipboard(host, handle.terminal);
     // Keep the grid filling the host as the window resizes (issue 2): a size change re-fits, which
@@ -367,7 +397,7 @@ export function TerminalView({
       scrollbar.dispose();
       handle.dispose();
     };
-  }, [mount, deps, onReady, observeResize, attachScrollbar, observeSettings, attachOscIntegrations, attachClipboard, cwdStore, onOscTitle, resizeSchedule]);
+  }, [mount, deps, onReady, observeResize, attachScrollbar, observeSettings, attachOscIntegrations, attachClipboard, cwdStore, onOscTitle, onBadge, resizeSchedule]);
 
   return <div ref={hostRef} data-testid="terminal" className="terminal-host" />;
 }

@@ -31,6 +31,7 @@ success = "#4ade80"
 cursor = "#d6d9de"
 cursor_accent = "#23262b"
 selection_background = "rgba(90, 168, 255, 0.22)"
+badge = "rgba(255, 255, 255, 0.08)"
 
 [terminal.ansi]
 black = "#1a1d22"

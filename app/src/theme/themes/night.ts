@@ -43,6 +43,9 @@ export const night: ThemeTokens = {
     cursor: "#d6d9de",
     cursorAccent: "#23262b",
     selectionBackground: "rgba(90, 168, 255, 0.22)",
+    // trmx-90: per-pane badge watermark — translucent white on the dark background (matches the
+    // theme-golden fixture, whose user theme is this night palette).
+    badge: "rgba(255, 255, 255, 0.08)",
     scrollbar: {
       idle: "rgba(255, 255, 255, 0.12)",
       hover: "rgba(255, 255, 255, 0.20)",

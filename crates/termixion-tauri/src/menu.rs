@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: ISC
 // Copyright (c) 2026 Eric Y. Liu
-//! trmx-48/trmx-51/trmx-74/trmx-75/trmx-84: the application menu. It carries the standard macOS app
+//! trmx-48/trmx-51/trmx-74/trmx-75/trmx-84/trmx-90: the application menu. It carries the standard macOS app
 //! / Edit / Window submenus plus the custom items — **About Termixion** and **Settings… (⌘,)**
 //! (both open the standalone Settings window via `window_manager::show_settings_window`; About
 //! lands on the About page) — and, since trmx-74, the tab surface: a **Shell** submenu (New Tab
-//! ⌘T, Close Tab ⌘W, Rename Tab… since trmx-75, Split Right ⌘D / Split Below ⇧⌘D since trmx-84,
-//! Close Window ⇧⌘W) plus Window-menu tab cycling (Show Previous/Next Tab ⇧⌘[ / ⇧⌘]). ⌘W now
+//! ⌘T, Close Tab ⌘W, Rename Tab… since trmx-75, Set Badge… ⇧⌘B since trmx-90, Split Right ⌘D /
+//! Split Below ⇧⌘D since trmx-84, Close Window ⇧⌘W) plus Window-menu tab cycling (Show
+//! Previous/Next Tab ⇧⌘[ / ⇧⌘]). ⌘W now
 //! belongs to Close Tab, so the Window submenu drops the predefined close item and closing the
 //! window moves to ⇧⌘W. The menu construction is runtime glue (exercised by `cargo tauri dev` /
 //! the packaged app); the pure id→action mapping is unit-tested.
@@ -19,9 +20,9 @@ use tauri::{AppHandle, Runtime};
 pub enum MenuAction {
     /// Open (or focus) the singleton Settings window, optionally landing on a section.
     ShowSettings { section: Option<&'static str> },
-    /// Broadcast the carried verb ("new" / "close" / "next" / "prev" / "rename" / "split-right" /
-    /// "split-below") as a `tabs:action` event — the frontend tab/pane manager owns the state, so
-    /// the menu only announces intent (trmx-74; split verbs trmx-84).
+    /// Broadcast the carried verb ("new" / "close" / "next" / "prev" / "rename" / "set-badge" /
+    /// "split-right" / "split-below") as a `tabs:action` event — the frontend tab/pane manager owns
+    /// the state, so the menu only announces intent (trmx-74; split verbs trmx-84; badge verb trmx-90).
     EmitTabsAction(&'static str),
     /// Close the main terminal window (⇧⌘W) — ⌘W closes a tab now, not the window (trmx-74).
     CloseMainWindow,
@@ -40,6 +41,8 @@ pub fn menu_action(id: &str) -> Option<MenuAction> {
         "shell-close-tab" => Some(MenuAction::EmitTabsAction("close")),
         // trmx-75: Rename Tab… — the frontend opens the inline rename input on the active tab.
         "shell-rename-tab" => Some(MenuAction::EmitTabsAction("rename")),
+        // trmx-90: Set Badge… — the frontend opens the badge editor on the focused pane.
+        "shell-set-badge" => Some(MenuAction::EmitTabsAction("set-badge")),
         // trmx-84 (FR-3.2): split the focused pane — right (⌘D) or below (⇧⌘D).
         "shell-split-right" => Some(MenuAction::EmitTabsAction("split-right")),
         "shell-split-below" => Some(MenuAction::EmitTabsAction("split-below")),
@@ -105,6 +108,15 @@ pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         true,
         None::<&str>,
     )?;
+    // trmx-90 (per-pane badges): edit the focused pane's badge — a per-surface label editor like
+    // Rename Tab…, so it sits alongside it. ⇧⌘B opens the editor; the frontend owns the badge state.
+    let set_badge = MenuItem::with_id(
+        handle,
+        "shell-set-badge",
+        "Set Badge…",
+        true,
+        Some("Shift+CmdOrCtrl+B"),
+    )?;
     // trmx-84 (FR-3.2): split the focused pane. ⌘D adds a pane to the right, ⇧⌘D below. The
     // frontend pane manager owns the layout tree; the menu only announces the split intent.
     let split_right = MenuItem::with_id(
@@ -136,6 +148,7 @@ pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &new_tab,
             &close_tab,
             &rename_tab,
+            &set_badge,
             &PredefinedMenuItem::separator(handle)?,
             &split_right,
             &split_below,
@@ -281,6 +294,12 @@ mod tests {
             menu_action("shell-rename-tab"),
             Some(MenuAction::EmitTabsAction("rename"))
         );
+        // trmx-90: Set Badge… (⇧⌘B) broadcasts "set-badge"; the frontend opens the badge editor
+        // on the focused pane. Like Rename Tab…, it edits a per-surface label.
+        assert_eq!(
+            menu_action("shell-set-badge"),
+            Some(MenuAction::EmitTabsAction("set-badge"))
+        );
     }
 
     #[test]
@@ -352,5 +371,9 @@ mod tests {
         assert_eq!(menu_action("window-pane"), None);
         assert_eq!(menu_action("pane-left"), None);
         assert_eq!(menu_action("window-pane-forward"), None);
+        // trmx-90 near-misses of the set-badge id stay unmapped.
+        assert_eq!(menu_action("shell-badge"), None);
+        assert_eq!(menu_action("set-badge"), None);
+        assert_eq!(menu_action("shell-set"), None);
     }
 }

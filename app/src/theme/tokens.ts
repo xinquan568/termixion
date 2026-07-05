@@ -55,6 +55,13 @@ export interface ThemeTokens {
     cursor: string;
     cursorAccent: string;
     selectionBackground: string;
+    /**
+     * trmx-90 (sub-task B): the per-pane badge watermark color — a translucent tint drawn large and
+     * faint in a pane's corner (iTerm2-style), so it reads as identity without harming glyph
+     * legibility. Every fully-derived theme carries one; dark themes use a translucent light, light
+     * themes a translucent dark (typically a low-alpha rgba of the theme's text color).
+     */
+    badge: string;
     scrollbar: { idle: string; hover: string; active: string };
     /**
      * trmx-87 (FR-3.6): the multi-pane "Kitty look" border colors. In our flat-rect model the divider

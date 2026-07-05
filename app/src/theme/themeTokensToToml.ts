@@ -75,6 +75,8 @@ export function themeTokensToToml(tokens: ThemeTokens, sourceLabel?: string): st
   lines.push(`cursor = ${q(terminal.cursor)}`);
   lines.push(`cursor_accent = ${q(terminal.cursorAccent)}`);
   lines.push(`selection_background = ${q(terminal.selectionBackground)}`);
+  // trmx-90 (sub-task B): the per-pane badge watermark — a single-word `badge` key under [terminal].
+  lines.push(`badge = ${q(terminal.badge)}`);
   lines.push("");
 
   lines.push("[terminal.ansi]");

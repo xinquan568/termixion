@@ -10,7 +10,7 @@
 // Every runtime edge (attach / closeWindow / closePty / event subscriptions) is injected via
 // App's seam props, so this runs headless with controllable SessionInfo promises.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, act } from "@testing-library/react";
+import { render, screen, fireEvent, act, within } from "@testing-library/react";
 import { StrictMode } from "react";
 import type { SessionInfo } from "./ipc/backend";
 import type { FrameSchedule } from "./terminal/resizeCoalescer";
@@ -25,6 +25,7 @@ const recorder = vi.hoisted(() => ({
     handle: { terminal: { focus: () => void } };
     cwdStore: { get(): string | null; set(cwd: string): void } | undefined;
     onOscTitle: ((title: string) => void) | undefined;
+    onBadge: ((badge: string | null) => void) | undefined;
   }>,
   unmounts: 0,
   reset() {
@@ -40,10 +41,12 @@ vi.mock("./terminal/TerminalView", async () => {
       onReady,
       cwdStore,
       onOscTitle,
+      onBadge,
     }: {
       onReady?: (handle: unknown) => void;
       cwdStore?: { get(): string | null; set(cwd: string): void };
       onOscTitle?: (title: string) => void;
+      onBadge?: (badge: string | null) => void;
     }) => {
       useEffect(() => {
         const handle = {
@@ -52,15 +55,15 @@ vi.mock("./terminal/TerminalView", async () => {
           fit: () => {},
           dispose: () => {},
         };
-        recorder.mounts.push({ handle, cwdStore, onOscTitle });
+        recorder.mounts.push({ handle, cwdStore, onOscTitle, onBadge });
         onReady?.(handle);
         return () => {
           recorder.unmounts += 1;
         };
         // The real TerminalView remounts when these identities change — mirroring that makes the
-        // keep-alive test honest: an unstable onReady/cwdStore/onOscTitle from App would count an
-        // unmount (trmx-75: the per-tab OSC callback must be cached like onReady).
-      }, [onReady, cwdStore, onOscTitle]);
+        // keep-alive test honest: an unstable onReady/cwdStore/onOscTitle/onBadge from App would count
+        // an unmount (trmx-75/90: the per-pane OSC callbacks must be cached like onReady).
+      }, [onReady, cwdStore, onOscTitle, onBadge]);
       return <div data-testid="terminal-view-stub" />;
     },
   };
@@ -76,6 +79,8 @@ vi.mock("./update/UpdateAuthorityHost", () => ({
 
 import { App, type AppProps } from "./App";
 import { makeSettingsStore, __resetSettingsForTest } from "./settings/settingsStore";
+import { clearUserThemes, registerUserThemes } from "./theme/registry";
+import type { ThemeSpec } from "./theme/themeDerive";
 
 interface AttachCall {
   handle: unknown;
@@ -1365,5 +1370,190 @@ describe("App theme hot-reload wiring (trmx-89)", () => {
     );
     view.unmount();
     expect(hotReloadTeardown).toHaveBeenCalledTimes(1);
+  });
+});
+
+// trmx-90 (sub-tasks E + F): per-pane badges. App threads a per-pane onBadge sink into each
+// TerminalView (a `printf` in a background pane badges THAT pane, never the focused one) and renders
+// the pane's badge as a top-right overlay watermark, colored by the active theme.
+describe("App per-pane badges (trmx-90)", () => {
+  it("routes a pane's onBadge sink to ONLY that pane's overlay (background isolation)", async () => {
+    const { calls, tabsAction } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 1, title: "one" });
+    await act(async () => tabsAction.fire("split-right"));
+    await resolveAttach(calls[1], { sessionId: 2, title: "two" });
+    expect(recorder.mounts).toHaveLength(2);
+
+    const unmountsBefore = recorder.unmounts;
+    // Pane 1 is now the BACKGROUND pane (the split focused pane 2). Its OSC 1337 sink fires — pane 1
+    // gets the badge; pane 2 does not. This is the load-bearing per-pane scoping.
+    await act(async () => recorder.mounts[0].onBadge?.("prod"));
+    expect(within(screen.getByTestId("pane-host-1")).getByTestId("pane-badge")).toHaveTextContent(
+      "prod",
+    );
+    expect(
+      within(screen.getByTestId("pane-host-2")).queryByTestId("pane-badge"),
+    ).not.toBeInTheDocument();
+    // The badge dispatch re-rendered App WITHOUT remounting any terminal — onBadge is a cached, stable
+    // per-pane callback (an unstable identity would remount via TerminalView's effect deps).
+    expect(recorder.unmounts).toBe(unmountsBefore);
+
+    // Pane 2's sink is independent; a null (cleared/empty) badge removes ONLY pane 1's overlay.
+    await act(async () => recorder.mounts[1].onBadge?.("staging"));
+    expect(within(screen.getByTestId("pane-host-2")).getByTestId("pane-badge")).toHaveTextContent(
+      "staging",
+    );
+    await act(async () => recorder.mounts[0].onBadge?.(null));
+    expect(
+      within(screen.getByTestId("pane-host-1")).queryByTestId("pane-badge"),
+    ).not.toBeInTheDocument();
+    expect(within(screen.getByTestId("pane-host-2")).getByTestId("pane-badge")).toHaveTextContent(
+      "staging",
+    );
+  });
+
+  it("colors the badge overlay from the active theme's terminal.badge tint", async () => {
+    const { calls } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 1, title: "one" });
+    await act(async () => recorder.mounts[0].onBadge?.("db"));
+    // The default theme is White; its badge tint is a translucent dark (rgba). Assert the overlay
+    // carries a color (sourced from resolveTheme(activeThemeId).terminal.badge), not the empty default.
+    const badge = within(screen.getByTestId("pane-host-1")).getByTestId("pane-badge");
+    expect(badge.style.color).not.toBe("");
+    expect(badge).toHaveTextContent("db");
+  });
+
+  // review-1: the badge color must repaint on a SAME-ID trmx-89 hot reload — the designer edits their
+  // ACTIVE user theme's terminal.badge; trmx-89 re-registers the tokens and re-emits appearance.theme
+  // with the SAME id. Keying on the id alone would no-op setState and leave the overlay on the stale
+  // color; tracking the resolved color repaints it.
+  it("repaints the badge color on a same-id user-theme hot reload (review-1)", async () => {
+    const ANSI = {
+      black: "#000", red: "#f00", green: "#0f0", yellow: "#ff0", blue: "#00f", magenta: "#f0f",
+      cyan: "#0ff", white: "#fff", brightBlack: "#888", brightRed: "#f88", brightGreen: "#8f8",
+      brightYellow: "#ff8", brightBlue: "#88f", brightMagenta: "#f8f", brightCyan: "#8ff", brightWhite: "#fff",
+    };
+    const specWithBadge = (badge: string): ThemeSpec => ({
+      isDark: true,
+      color: { bg: { primary: "#111111" }, text: { primary: "#eeeeee" }, accent: {}, semantic: {} },
+      terminal: { ansi: { ...ANSI }, scrollbar: {}, pane: {}, badge },
+    });
+    const register = (badge: string) =>
+      registerUserThemes([
+        { id: "user:designer", source: "user", valid: true, spec: specWithBadge(badge), warnings: [] },
+      ]);
+
+    const { calls, settingsChanged } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 1, title: "one" });
+    await act(async () => recorder.mounts[0].onBadge?.("db"));
+    const badge = () => within(screen.getByTestId("pane-host-1")).getByTestId("pane-badge");
+
+    // Switch to the user theme (badge = colorA).
+    register("rgba(1, 2, 3, 0.1)");
+    await act(async () =>
+      settingsChanged.fire({ key: "appearance.theme", value: "user:designer", source: "manual" }),
+    );
+    const colorA = badge().style.color;
+    expect(colorA).not.toBe("");
+
+    // Edit the SAME theme file → new badge (colorB); trmx-89 re-registers + re-emits the SAME id.
+    register("rgba(9, 8, 7, 0.2)");
+    await act(async () =>
+      settingsChanged.fire({ key: "appearance.theme", value: "user:designer", source: "themes-reload" }),
+    );
+    // The overlay repaints (was stale before the fix: same id no-op'd setState).
+    expect(badge().style.color).not.toBe(colorA);
+
+    clearUserThemes();
+  });
+});
+
+// trmx-90 (sub-task G-frontend): the ⇧⌘B inline badge EDITOR — a centered input over the focused
+// pane (the menu accelerator emits the "set-badge" tabs:action; App opens the editor). Enter commits
+// (empty → clear), Esc AND blur cancel; edit-in-place seeds the input with the pane's current badge.
+describe("App badge editor (trmx-90)", () => {
+  it("'set-badge' opens the editor on the FOCUSED pane; type + Enter sets that pane's badge", async () => {
+    const { calls, tabsAction } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 1, title: "one" });
+
+    await act(async () => tabsAction.fire("set-badge"));
+    const input = screen.getByTestId("pane-badge-input") as HTMLInputElement;
+    expect(input.value).toBe(""); // no badge yet
+    expect(document.activeElement).toBe(input); // keyboard-operable the instant it opens
+
+    fireEvent.change(input, { target: { value: "prod" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(screen.queryByTestId("pane-badge-input")).not.toBeInTheDocument(); // editor closed
+    expect(within(screen.getByTestId("pane-host-1")).getByTestId("pane-badge")).toHaveTextContent(
+      "prod",
+    );
+  });
+
+  it("Esc cancels the edit with no change", async () => {
+    const { calls, tabsAction } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 1, title: "one" });
+
+    await act(async () => tabsAction.fire("set-badge"));
+    const input = screen.getByTestId("pane-badge-input");
+    fireEvent.change(input, { target: { value: "nope" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    expect(screen.queryByTestId("pane-badge-input")).not.toBeInTheDocument();
+    expect(
+      within(screen.getByTestId("pane-host-1")).queryByTestId("pane-badge"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("blur cancels the edit (no dispatch)", async () => {
+    const { calls, tabsAction } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 1, title: "one" });
+
+    await act(async () => tabsAction.fire("set-badge"));
+    const input = screen.getByTestId("pane-badge-input");
+    fireEvent.change(input, { target: { value: "temp" } });
+    fireEvent.blur(input);
+
+    expect(screen.queryByTestId("pane-badge-input")).not.toBeInTheDocument();
+    expect(
+      within(screen.getByTestId("pane-host-1")).queryByTestId("pane-badge"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("edit-in-place: seeds the input with the current badge; empty + Enter clears it", async () => {
+    const { calls, tabsAction } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 1, title: "one" });
+
+    // Seed a badge (via the pane's OSC sink), then re-open the editor: it edits in place.
+    await act(async () => recorder.mounts[0].onBadge?.("prod"));
+    expect(within(screen.getByTestId("pane-host-1")).getByTestId("pane-badge")).toHaveTextContent(
+      "prod",
+    );
+
+    await act(async () => tabsAction.fire("set-badge"));
+    const input = screen.getByTestId("pane-badge-input") as HTMLInputElement;
+    expect(input.value).toBe("prod"); // seeded with the current badge
+
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(
+      within(screen.getByTestId("pane-host-1")).queryByTestId("pane-badge"),
+    ).not.toBeInTheDocument(); // empty commit cleared it
+  });
+
+  it("⌘1..⌘9 are inert while the badge input has focus (editable non-terminal target)", async () => {
+    const { calls, tabsAction } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 1, title: "one" });
+    fireEvent.click(screen.getByTestId("tab-new"));
+    await resolveAttach(calls[1], { sessionId: 2, title: "two" });
+    clickTab(1);
+    expect(screen.getByTestId("tab-1").className).toContain(activeClass);
+
+    await act(async () => tabsAction.fire("set-badge"));
+    // The chord lands ON the input — the keymap's editable-non-terminal veto keeps it a keystroke.
+    fireEvent.keyDown(screen.getByTestId("pane-badge-input"), { key: "2", metaKey: true });
+    expect(screen.getByTestId("tab-1").className).toContain(activeClass);
+    expect(screen.getByTestId("pane-badge-input")).toBeInTheDocument(); // still editing
   });
 });

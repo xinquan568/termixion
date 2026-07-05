@@ -67,6 +67,14 @@ describe("themeTokensToToml", () => {
     expect(toml).toContain('idle = "rgba(255, 255, 255, 0.12)"'); // rgba() preserved verbatim
   });
 
+  it("emits the per-pane badge token under [terminal] (trmx-90)", () => {
+    // A single-word `badge` key; night's built-in watermark preserved verbatim.
+    expect(toml).toMatch(/^badge = "rgba\(255, 255, 255, 0\.08\)"$/m);
+    // …and it sits inside [terminal], before the [terminal.ansi] table opens.
+    expect(toml.indexOf("[terminal]")).toBeLessThan(toml.indexOf("badge = "));
+    expect(toml.indexOf("badge = ")).toBeLessThan(toml.indexOf("[terminal.ansi]"));
+  });
+
   it("names the source built-in in the header comment when given", () => {
     const labeled = themeTokensToToml(night, "Night");
     expect(labeled.split("\n")[0]).toBe(

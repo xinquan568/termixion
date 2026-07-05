@@ -26,6 +26,9 @@
 // - trmx-75 titles are layered SOURCES (manual > osc > process > fallback, tabTitle.ts), now held
 //   PER PANE; every sources change recomputes that pane's `title`, and if it is the focused pane,
 //   the tab's derived `title` too. A background pane's title change never moves the tab label.
+// - trmx-90 adds a per-pane `badge`: an ephemeral, session-lifetime overlay label — a SINGLE opaque
+//   slot (last-write-wins, NOT a source ladder like the title). It is orthogonal to the title:
+//   setting/clearing a badge never moves the tab label, even on the focused pane.
 // - Pane ORDER always comes from the layout tree (`leaves`), never `Object.keys(panes)` (numeric
 //   object keys enumerate string-coerced in ascending order, which is NOT layout order).
 
@@ -45,12 +48,18 @@ import {
   type SplitPath,
 } from "../panes/layoutTree";
 
-/** One pane: the backend session it is bound to (null while opening) + its layered title. */
+/** One pane: the backend session it is bound to (null while opening), its layered title + badge. */
 export interface PaneState {
   sessionId: number | null;
   titleSources: TitleSources;
   /** The pane's effective title — always `effectiveTitle(titleSources)`. */
   title: string;
+  /**
+   * trmx-90: an ephemeral, session-lifetime overlay label (undefined = no badge). A single OPAQUE
+   * slot — last-write-wins, NOT a source ladder like the title. Not persisted; orthogonal to `title`
+   * (setting/clearing it never moves the derived tab label).
+   */
+  badge?: string;
 }
 
 /** One tab: a stable identity, the pure pane tree, the focused pane, per-pane state, derived title. */
@@ -94,7 +103,9 @@ export type TabsAction =
   | { kind: "splitPane"; tabId: number; dir: SplitDir }
   | { kind: "closePane"; tabId: number; paneId: number }
   | { kind: "focusPane"; tabId: number; paneId: number }
-  | { kind: "setPaneRatio"; tabId: number; path: SplitPath; ratio: number };
+  | { kind: "setPaneRatio"; tabId: number; path: SplitPath; ratio: number }
+  // trmx-90: set (string) or clear (null) a PANE's ephemeral badge — last-write-wins, title-independent.
+  | { kind: "setBadge"; tabId: number; paneId: number; badge: string | null };
 
 /** The empty strip: no tabs, nothing active, tab AND pane ids starting at 1. */
 export function initialTabsState(): TabsState {
@@ -288,6 +299,19 @@ export function reduceTabs(state: TabsState, action: TabsAction): TabsState {
       const tree = setRatioTree(tab.tree, action.path, action.ratio);
       if (tree === tab.tree) return state; // no change — === no-op
       return replaceTab(state, tab.tabId, { ...tab, tree });
+    }
+
+    case "setBadge": {
+      const tab = state.tabs.find((t) => t.tabId === action.tabId);
+      if (!tab) return state;
+      const pane = tab.panes[action.paneId];
+      if (!pane) return state; // dead/unknown pane — no-op (===)
+      // A single opaque slot: a string sets it, null clears it (→ undefined). Last-write-wins, no
+      // ladder. The badge is NOT a title source, so `nextPane.title === pane.title` and replacePane
+      // recomputes the derived tab title to the SAME value — a badge never moves the tab label, on
+      // the focused pane or a background one (title-orthogonal by construction).
+      const nextPane: PaneState = { ...pane, badge: action.badge ?? undefined };
+      return replacePane(state, tab, action.paneId, nextPane);
     }
   }
 }

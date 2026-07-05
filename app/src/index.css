@@ -208,6 +208,65 @@ body {
 }
 
 /*
+ * trmx-90 (sub-task F) — the per-pane BADGE OVERLAY (BadgeOverlay.tsx). iTerm2's translucent corner
+ * watermark: pinned to the pane host's TOP-RIGHT, click-through (pointer-events: none) so it never
+ * eats the terminal's own clicks/selection, large + bold system-UI. It clamps to 2 lines with an
+ * ellipsis and caps its width at ~50% of the pane so a long badge never sprawls; `pre-line` keeps a
+ * multi-line badge's `\n` breaks (the OSC 1337 sanitizer preserves LF). z-index 4 sits ABOVE the
+ * xterm screen (z-auto) and BELOW the Kitty scrollbar (z-index 10). The color + font-size are written
+ * INLINE (the active theme's `terminal.badge` tint + ~2× cell height); the rest of the look is here.
+ */
+.tx-badge {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  z-index: 4;
+  pointer-events: none;
+  max-width: 50%;
+  text-align: right;
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  font-weight: 700;
+  line-height: 1.05;
+  white-space: pre-line;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+/*
+ * trmx-90 — the ⇧⌘B badge EDITOR input (PaneBadgeInput in App): a small, CENTERED text field over the
+ * focused pane. Absolutely positioned in the pane host, centered with the translate trick; themed with
+ * the same --tx-* vars + accent ring as the tab rename input. z-index 6 keeps it above the badge
+ * watermark (4) while editing. It is transient (only mounted while editing), so it never affects layout.
+ */
+.tx-badge-input {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 6;
+  width: min(60%, 320px);
+  box-sizing: border-box;
+  font:
+    13px -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  color: var(--tx-text);
+  background: var(--tx-bg);
+  border: 1px solid var(--tx-primary);
+  border-radius: 4px;
+  outline: none;
+  padding: 4px 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+/*
  * trmx-74 — the tab strip (TabStrip.tsx). Themed ONLY via the existing `--tx-*` vars
  * (txCssVars.ts writes them; settings.css's `:root` block is the static fallback, loaded in this
  * window's bundle): sunken bg for the bar, primary bg + accent inset line for the active tab.

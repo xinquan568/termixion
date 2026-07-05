@@ -46,6 +46,8 @@ export const solarized: ThemeTokens = {
     cursor: "#93a1a1",
     cursorAccent: "#002b36",
     selectionBackground: "rgba(38, 139, 210, 0.15)",
+    // trmx-90: per-pane badge watermark — translucent base1 (text #93a1a1) on the dark teal background.
+    badge: "rgba(147, 161, 161, 0.10)",
     scrollbar: {
       idle: "rgba(255, 255, 255, 0.12)",
       hover: "rgba(255, 255, 255, 0.20)",

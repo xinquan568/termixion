@@ -377,6 +377,98 @@ describe("setPaneRatio (trmx-84 — FR-3.3 seam)", () => {
   });
 });
 
+// trmx-90: the per-pane badge — an ephemeral, session-lifetime overlay label held on PaneState as a
+// single opaque slot (last-write-wins, NOT a title-style source ladder). It is orthogonal to the
+// title: a badge set/clear never moves the derived tab label, even on the focused pane.
+describe("setBadge (trmx-90 — per-pane badge state)", () => {
+  /** One tab with panes 1 | 2 (focus 2). */
+  function split(): TabsState {
+    return run({ kind: "openTab" }, { kind: "splitPane", tabId: 1, dir: "row" });
+  }
+
+  it("sets the focused pane's badge; a second set overwrites (last-write-wins); null clears it", () => {
+    let s = run({ kind: "openTab" });
+    expect(s.tabs[0].panes[1].badge).toBeUndefined(); // a fresh pane has no badge
+    s = reduceTabs(s, { kind: "setBadge", tabId: 1, paneId: 1, badge: "prod" });
+    expect(s.tabs[0].panes[1].badge).toBe("prod");
+    s = reduceTabs(s, { kind: "setBadge", tabId: 1, paneId: 1, badge: "staging" });
+    expect(s.tabs[0].panes[1].badge).toBe("staging"); // overwrites — last write wins, no ladder
+    s = reduceTabs(s, { kind: "setBadge", tabId: 1, paneId: 1, badge: null });
+    expect(s.tabs[0].panes[1].badge).toBeUndefined(); // null clears back to undefined
+  });
+
+  it("never moves the derived tab title (badge is orthogonal to the title)", () => {
+    let s = run(
+      { kind: "openTab" },
+      { kind: "attachSession", tabId: 1, paneId: 1, sessionId: 7, title: "zsh" },
+    );
+    expect(s.tabs[0].title).toBe("zsh");
+    s = reduceTabs(s, { kind: "setBadge", tabId: 1, paneId: 1, badge: "prod" });
+    expect(s.tabs[0].title).toBe("zsh"); // the tab label is untouched (badge ≠ title source)
+    expect(s.tabs[0].panes[1].title).toBe("zsh"); // nor is the pane's own title
+    expect(s.tabs[0].panes[1].badge).toBe("prod");
+  });
+
+  it("badges a BACKGROUND pane only — not the focused pane's badge, and no pane's title", () => {
+    // panes 1 | 2, focus 2; give each a distinct title so any leak into the tab label is visible
+    let s = split();
+    s = reduceTabs(s, { kind: "setTitleSource", tabId: 1, paneId: 1, source: "osc", value: "vim" });
+    s = reduceTabs(s, { kind: "setTitleSource", tabId: 1, paneId: 2, source: "osc", value: "top" });
+    // badge the BACKGROUND pane 1
+    s = reduceTabs(s, { kind: "setBadge", tabId: 1, paneId: 1, badge: "bg" });
+    expect(s.tabs[0].panes[1].badge).toBe("bg"); // the background pane carries the badge
+    expect(s.tabs[0].panes[2].badge).toBeUndefined(); // the focused pane's badge is untouched
+    // every title is intact — the background badge scopes to its pane only
+    expect(s.tabs[0].focusedPaneId).toBe(2);
+    expect(s.tabs[0].title).toBe("top"); // tab label = focused pane's title, unmoved
+    expect(s.tabs[0].panes[1].title).toBe("vim");
+    expect(s.tabs[0].panes[2].title).toBe("top");
+  });
+
+  it("survives an unrelated action — orthogonal to title-source and focus changes", () => {
+    let s = split(); // panes 1 | 2, focus 2
+    s = reduceTabs(s, { kind: "setBadge", tabId: 1, paneId: 2, badge: "prod" });
+    // a title-source change on the SAME pane leaves the badge intact
+    s = reduceTabs(s, { kind: "setTitleSource", tabId: 1, paneId: 2, source: "osc", value: "top" });
+    expect(s.tabs[0].panes[2].badge).toBe("prod");
+    expect(s.tabs[0].panes[2].title).toBe("top");
+    // moving focus away and back leaves it intact too
+    s = reduceTabs(s, { kind: "focusPane", tabId: 1, paneId: 1 });
+    expect(s.tabs[0].panes[2].badge).toBe("prod");
+    s = reduceTabs(s, { kind: "focusPane", tabId: 1, paneId: 2 });
+    expect(s.tabs[0].panes[2].badge).toBe("prod");
+  });
+
+  it("closing the pane drops its badge with the pane", () => {
+    let s = split(); // panes 1 | 2, focus 2
+    s = reduceTabs(s, { kind: "setBadge", tabId: 1, paneId: 2, badge: "prod" });
+    s = reduceTabs(s, { kind: "closePane", tabId: 1, paneId: 2 });
+    expect(Object.keys(s.tabs[0].panes).map(Number)).toEqual([1]); // pane 2 removed
+    expect(s.tabs[0].panes[2]).toBeUndefined(); // badge gone with the pane
+  });
+
+  it("is a no-op (===) for an unknown tab or pane", () => {
+    const s = reduceTabs(run({ kind: "openTab" }), {
+      kind: "setBadge",
+      tabId: 1,
+      paneId: 1,
+      badge: "x",
+    });
+    expect(reduceTabs(s, { kind: "setBadge", tabId: 99, paneId: 1, badge: "y" })).toBe(s); // unknown tab
+    expect(reduceTabs(s, { kind: "setBadge", tabId: 1, paneId: 99, badge: "y" })).toBe(s); // unknown pane
+  });
+
+  it("does not mutate the input state (purity guard)", () => {
+    const before = deepFreeze(
+      reduceTabs(run({ kind: "openTab" }), { kind: "setBadge", tabId: 1, paneId: 1, badge: "prod" }),
+    );
+    expect(() =>
+      reduceTabs(before, { kind: "setBadge", tabId: 1, paneId: 1, badge: "staging" }),
+    ).not.toThrow();
+    expect(before.tabs[0].panes[1].badge).toBe("prod");
+  });
+});
+
 describe("closeTab (whole tab, unchanged tab-order semantics)", () => {
   it("closing the active tab activates its RIGHT neighbor (iTerm2)", () => {
     const state = reduceTabs(withTabs(3), { kind: "activateTab", tabId: 2 });
