@@ -1201,4 +1201,31 @@ describe("App divider drag (trmx-85)", () => {
     // Pane 1 (in the ROOT split, untouched by the nested column drag) keeps its width.
     expect(paneW(1)).toBe(p1Before);
   });
+
+  it("maps the pointer through a NON-ZERO content-area offset (subtracts contentRect.left)", async () => {
+    const ctx = renderApp();
+    const divider = await splitOnce(ctx);
+    // Place the content area (.tab-hosts) at viewport (100,50): a content-x of 400 is viewport-x 500.
+    const hosts = ctx.view.container.querySelector(".tab-hosts")!;
+    hosts.getBoundingClientRect = () =>
+      ({ left: 100, top: 50, right: 900, bottom: 650, width: 800, height: 600, x: 100, y: 50, toJSON: () => ({}) }) as DOMRect;
+    // Grab the divider (viewport 500 = content 400, offset 0), drag to viewport 300 (= content 200).
+    fireEvent.pointerDown(divider, { pointerId: 1, clientX: 500, clientY: 350, button: 0 });
+    fireEvent.pointerMove(divider, { pointerId: 1, clientX: 300, clientY: 350 });
+    await act(async () => ctx.frame.flush());
+    // If the offset were NOT subtracted, content-x would be 300 (pane ~300); it is 200 (pane ~200).
+    expect(paneW(1)).toBeLessThanOrEqual(210);
+    fireEvent.pointerUp(divider, { pointerId: 1, clientX: 300, clientY: 350 });
+  });
+
+  it("unmounting mid-drag cancels the pending frame (no dispatch into a dead reducer)", async () => {
+    const ctx = renderApp();
+    const divider = await splitOnce(ctx);
+    fireEvent.pointerDown(divider, { pointerId: 1, clientX: 400, clientY: 300, button: 0 });
+    fireEvent.pointerMove(divider, { pointerId: 1, clientX: 200, clientY: 300 }); // queues a frame
+    expect(ctx.frame.hasPending()).toBe(true);
+    ctx.view.unmount();
+    expect(ctx.frame.hasPending()).toBe(false); // the unmount cleanup cancelled it
+    expect(() => ctx.frame.flush()).not.toThrow(); // flushing after unmount is a safe no-op
+  });
 });
