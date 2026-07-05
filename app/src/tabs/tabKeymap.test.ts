@@ -64,7 +64,7 @@ describe("tabKeyAction", () => {
     expect(tabKeyAction(ev("1", { ctrlKey: true }), PAGE)).toBeNull();
   });
 
-  it.each(["c", "v", "t", "w", "C", "V", "0", "a", "Enter", "Tab", "[", "10"])(
+  it.each(["c", "v", "t", "w", "C", "V", "0", "a", "Enter", "Tab", "10"])(
     "never intercepts ⌘%s (non-digit / reserved shortcuts pass through)",
     (key) => {
       expect(tabKeyAction(cmd(key), PAGE)).toBeNull();
@@ -216,5 +216,43 @@ describe("describeTarget", () => {
       isTerminalTarget: false,
       isEditableTarget: false,
     });
+  });
+});
+
+describe("tabKeyAction — pane navigation (trmx-86 FR-3.5)", () => {
+  it.each([
+    ["ArrowLeft", "left"],
+    ["ArrowRight", "right"],
+    ["ArrowUp", "up"],
+    ["ArrowDown", "down"],
+  ])("⌥⌘%s → nav-dir %s", (key, dir) => {
+    expect(tabKeyAction(cmd(key, { altKey: true }), PAGE)).toEqual({ kind: "nav-dir", dir });
+    expect(tabKeyAction(cmd(key, { altKey: true }), TERMINAL)).toEqual({ kind: "nav-dir", dir });
+  });
+
+  it("⌘] → nav-cycle +1, ⌘[ → nav-cycle -1", () => {
+    expect(tabKeyAction(cmd("]"), PAGE)).toEqual({ kind: "nav-cycle", delta: 1 });
+    expect(tabKeyAction(cmd("["), TERMINAL)).toEqual({ kind: "nav-cycle", delta: -1 });
+  });
+
+  it("nav chords are inert on a NON-terminal editable target", () => {
+    expect(tabKeyAction(cmd("ArrowLeft", { altKey: true }), EDITABLE)).toBeNull();
+    expect(tabKeyAction(cmd("]"), EDITABLE)).toBeNull();
+  });
+
+  it("requires the EXACT modifiers (no bleed between chords)", () => {
+    // Directional needs BOTH meta and alt, nothing else.
+    expect(tabKeyAction(cmd("ArrowLeft"), PAGE)).toBeNull(); // ⌘← (no alt)
+    expect(tabKeyAction(ev("ArrowLeft", { altKey: true }), PAGE)).toBeNull(); // ⌥← (no meta)
+    expect(tabKeyAction(cmd("ArrowLeft", { altKey: true, ctrlKey: true }), PAGE)).toBeNull();
+    expect(tabKeyAction(cmd("ArrowLeft", { altKey: true, shiftKey: true }), PAGE)).toBeNull();
+    // ⇧⌘] is TAB cycling (Window menu), NOT pane cycling — the keymap must not claim it.
+    expect(tabKeyAction(cmd("]", { shiftKey: true }), PAGE)).toBeNull();
+    expect(tabKeyAction(cmd("[", { altKey: true }), PAGE)).toBeNull();
+  });
+
+  it("does not regress ⌘D or ⌘1..9", () => {
+    expect(tabKeyAction(cmd("d"), PAGE)).toEqual({ kind: "split", dir: "right" });
+    expect(tabKeyAction(cmd("1"), PAGE)).toEqual({ kind: "select-index", index: 0 });
   });
 });

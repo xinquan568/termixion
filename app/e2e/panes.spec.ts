@@ -98,3 +98,31 @@ test("dragging a divider resizes the two panes (keep-alive); double-click resets
   const resetWidth = (await p1.boundingBox())!.width;
   expect(Math.abs(resetWidth - beforeWidth)).toBeLessThan(8);
 });
+
+// trmx-86 (FR-3.5): keyboard pane navigation moves the focused-pane class. Nav chords are dispatched
+// synthetically (App's capture-phase handler picks them up) — a real ⌥⌘-arrow is OS/browser-owned. The
+// marker-char-lands-in-the-focused-pane check needs a PTY, so it is the packaged/manual gate; here we
+// assert the observable focus movement (no backend in e2e).
+async function navKey(page: Page, key: string, opts: { alt?: boolean } = {}) {
+  await page.evaluate(
+    ({ key, alt }) =>
+      window.dispatchEvent(new KeyboardEvent("keydown", { key, metaKey: true, altKey: alt, bubbles: true })),
+    { key, alt: opts.alt ?? false },
+  );
+}
+
+test("⌥⌘-arrows and ⌘] move the focused pane (trmx-86)", async ({ page }) => {
+  await page.goto("/");
+  await split(page); // panes 1 | 2; the new pane (2) is focused
+  await expect(page.getByTestId("pane-host-2")).toHaveClass(/pane-host--focused/);
+
+  await navKey(page, "ArrowLeft", { alt: true }); // ⌥⌘← → left pane (1)
+  await expect(page.getByTestId("pane-host-1")).toHaveClass(/pane-host--focused/);
+  await expect(page.getByTestId("pane-host-2")).not.toHaveClass(/pane-host--focused/);
+
+  await navKey(page, "ArrowRight", { alt: true }); // ⌥⌘→ → right pane (2)
+  await expect(page.getByTestId("pane-host-2")).toHaveClass(/pane-host--focused/);
+
+  await navKey(page, "]"); // ⌘] cycles (2 → 1, wrapping over the leaves order)
+  await expect(page.getByTestId("pane-host-1")).toHaveClass(/pane-host--focused/);
+});

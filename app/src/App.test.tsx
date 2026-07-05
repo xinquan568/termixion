@@ -1229,3 +1229,77 @@ describe("App divider drag (trmx-85)", () => {
     expect(() => ctx.frame.flush()).not.toThrow(); // flushing after unmount is a safe no-op
   });
 });
+
+// trmx-86 (FR-3.5): keyboard pane navigation. ⌥⌘-arrows move focus geometrically; ⌘]/⌘[ cycle; the
+// Window-menu verbs do the same. Nav chords are consumed from xterm (stopImmediatePropagation) even at
+// an edge no-op. A 2×2 grid is ((1/3) | (2/4)): 1 top-left, 3 bottom-left, 2 top-right, 4 bottom-right.
+describe("App pane navigation (trmx-86)", () => {
+  const focused = (id: number) => screen.getByTestId(`pane-host-${id}`).className.includes("pane-host--focused");
+  const key = (k: string, mods: Record<string, boolean> = {}) =>
+    fireEvent.keyDown(document.body, { key: k, metaKey: true, ...mods });
+
+  async function grid2x2(ctx: ReturnType<typeof renderApp>) {
+    await resolveAttach(ctx.calls[0], { sessionId: 1, title: "one" });
+    key("d"); // ⌘D → pane 2 (focus 2)
+    fireEvent.mouseDown(screen.getByTestId("pane-host-1")); // focus 1
+    key("d", { shiftKey: true }); // ⇧⌘D split pane 1 below → pane 3 (focus 3)
+    fireEvent.mouseDown(screen.getByTestId("pane-host-2")); // focus 2
+    key("d", { shiftKey: true }); // ⇧⌘D split pane 2 below → pane 4 (focus 4)
+    expect(focused(4)).toBe(true);
+  }
+
+  it("⌥⌘-arrows move focus geometrically in a 2×2 grid", async () => {
+    const ctx = renderApp();
+    await grid2x2(ctx); // focus = pane 4 (bottom-right)
+    key("ArrowLeft", { altKey: true }); // → bottom-left (3)
+    expect(focused(3)).toBe(true);
+    key("ArrowUp", { altKey: true }); // → top-left (1)
+    expect(focused(1)).toBe(true);
+    key("ArrowRight", { altKey: true }); // → top-right (2)
+    expect(focused(2)).toBe(true);
+  });
+
+  it("⌘] / ⌘[ cycle focus over the leaves order (wrapping)", async () => {
+    const ctx = renderApp();
+    await grid2x2(ctx); // leaves order 1,3,2,4; focus 4
+    key("]"); // 4 → 1 (wrap)
+    expect(focused(1)).toBe(true);
+    key("]"); // 1 → 3
+    expect(focused(3)).toBe(true);
+    key("["); // 3 → 1
+    expect(focused(1)).toBe(true);
+  });
+
+  it("Window-menu pane verbs move focus the same way", async () => {
+    const ctx = renderApp();
+    await grid2x2(ctx); // focus 4
+    await act(async () => ctx.tabsAction.fire("pane-left")); // → 3
+    expect(focused(3)).toBe(true);
+    await act(async () => ctx.tabsAction.fire("pane-next")); // leaves cycle 3 → 2
+    expect(focused(2)).toBe(true);
+  });
+
+  it("an edge nav is a no-op but STILL consumes the key (no PTY leak)", async () => {
+    const ctx = renderApp();
+    await grid2x2(ctx);
+    fireEvent.mouseDown(screen.getByTestId("pane-host-1")); // focus top-left
+    expect(focused(1)).toBe(true);
+    // ⌥⌘← at the left edge: no pane to the left → focus unchanged, but the event is consumed.
+    const ev = new KeyboardEvent("keydown", { key: "ArrowLeft", metaKey: true, altKey: true, bubbles: true, cancelable: true });
+    const stop = vi.spyOn(ev, "stopImmediatePropagation");
+    document.body.dispatchEvent(ev);
+    expect(focused(1)).toBe(true); // no-op
+    expect(stop).toHaveBeenCalled(); // consumed — xterm never sees it
+    expect(ev.defaultPrevented).toBe(true);
+  });
+
+  it("nav chords are inert while a rename input is focused", async () => {
+    const ctx = renderApp();
+    await grid2x2(ctx); // focus 4
+    await act(async () => ctx.tabsAction.fire("rename"));
+    const input = screen.getByTestId("tab-rename-input");
+    fireEvent.keyDown(input, { key: "ArrowLeft", metaKey: true, altKey: true });
+    expect(focused(4)).toBe(true); // focus unchanged — the input (non-terminal editable) owns the key
+    expect(screen.getByTestId("tab-rename-input")).toBeInTheDocument();
+  });
+});
