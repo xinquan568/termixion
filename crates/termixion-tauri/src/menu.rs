@@ -46,6 +46,13 @@ pub fn menu_action(id: &str) -> Option<MenuAction> {
         "shell-close-window" => Some(MenuAction::CloseMainWindow),
         "window-next-tab" => Some(MenuAction::EmitTabsAction("next")),
         "window-prev-tab" => Some(MenuAction::EmitTabsAction("prev")),
+        // trmx-86 (FR-3.5): keyboard pane navigation — directional (⌥⌘-arrows) + cyclic (⌘] / ⌘[).
+        "window-pane-left" => Some(MenuAction::EmitTabsAction("pane-left")),
+        "window-pane-right" => Some(MenuAction::EmitTabsAction("pane-right")),
+        "window-pane-up" => Some(MenuAction::EmitTabsAction("pane-up")),
+        "window-pane-down" => Some(MenuAction::EmitTabsAction("pane-down")),
+        "window-pane-next" => Some(MenuAction::EmitTabsAction("pane-next")),
+        "window-pane-prev" => Some(MenuAction::EmitTabsAction("pane-prev")),
         _ => None,
     }
 }
@@ -168,6 +175,51 @@ pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         true,
         Some("Shift+CmdOrCtrl+]"),
     )?;
+    // trmx-86 (FR-3.5): keyboard pane navigation. Directional focus with ⌥⌘-arrows, cyclic with ⌘] / ⌘[
+    // (shift-free, so distinct from the ⇧⌘[ / ⇧⌘] tab cycling above). The frontend pane manager owns
+    // focus; these items only announce the intent verb.
+    let pane_left = MenuItem::with_id(
+        handle,
+        "window-pane-left",
+        "Select Pane Left",
+        true,
+        Some("Alt+CmdOrCtrl+Left"),
+    )?;
+    let pane_right = MenuItem::with_id(
+        handle,
+        "window-pane-right",
+        "Select Pane Right",
+        true,
+        Some("Alt+CmdOrCtrl+Right"),
+    )?;
+    let pane_up = MenuItem::with_id(
+        handle,
+        "window-pane-up",
+        "Select Pane Above",
+        true,
+        Some("Alt+CmdOrCtrl+Up"),
+    )?;
+    let pane_down = MenuItem::with_id(
+        handle,
+        "window-pane-down",
+        "Select Pane Below",
+        true,
+        Some("Alt+CmdOrCtrl+Down"),
+    )?;
+    let pane_next = MenuItem::with_id(
+        handle,
+        "window-pane-next",
+        "Select Next Pane",
+        true,
+        Some("CmdOrCtrl+]"),
+    )?;
+    let pane_prev = MenuItem::with_id(
+        handle,
+        "window-pane-prev",
+        "Select Previous Pane",
+        true,
+        Some("CmdOrCtrl+["),
+    )?;
     let window_menu = Submenu::with_items(
         handle,
         "Window",
@@ -177,6 +229,13 @@ pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &PredefinedMenuItem::separator(handle)?,
             &prev_tab,
             &next_tab,
+            &PredefinedMenuItem::separator(handle)?,
+            &pane_left,
+            &pane_right,
+            &pane_up,
+            &pane_down,
+            &pane_next,
+            &pane_prev,
         ],
     )?;
 
@@ -251,6 +310,21 @@ mod tests {
     }
 
     #[test]
+    fn window_pane_nav_items_broadcast_their_pane_verbs() {
+        // trmx-86 (FR-3.5): Select Pane Left/Right/Above/Below + Next/Previous Pane announce the verb.
+        for (id, verb) in [
+            ("window-pane-left", "pane-left"),
+            ("window-pane-right", "pane-right"),
+            ("window-pane-up", "pane-up"),
+            ("window-pane-down", "pane-down"),
+            ("window-pane-next", "pane-next"),
+            ("window-pane-prev", "pane-prev"),
+        ] {
+            assert_eq!(menu_action(id), Some(MenuAction::EmitTabsAction(verb)));
+        }
+    }
+
+    #[test]
     fn close_window_closes_the_main_window_not_a_tab() {
         // trmx-74: ⌘W belongs to Close Tab; the window itself closes via ⇧⌘W.
         assert_eq!(
@@ -274,5 +348,9 @@ mod tests {
         assert_eq!(menu_action("shell-split"), None);
         assert_eq!(menu_action("split-right"), None);
         assert_eq!(menu_action("shell-split-up"), None);
+        // trmx-86 near-misses of the pane-nav ids stay unmapped.
+        assert_eq!(menu_action("window-pane"), None);
+        assert_eq!(menu_action("pane-left"), None);
+        assert_eq!(menu_action("window-pane-forward"), None);
     }
 }

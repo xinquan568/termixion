@@ -55,6 +55,7 @@ import {
   type SplitDir,
 } from "./panes/layoutTree";
 import { grabOffsetOf, ratioForDrag, RESET_RATIO } from "./panes/dividerDrag";
+import { nextPane, paneInDirection, type Direction } from "./panes/paneNav";
 import { type FrameSchedule } from "./terminal/resizeCoalescer";
 import {
   isLabelOrientation,
@@ -451,6 +452,26 @@ export function App({
     dispatch({ kind: "splitPane", tabId: tab.tabId, dir: treeDir });
   };
 
+  // trmx-86 (FR-3.5): move focus between panes of the ACTIVE tab. `nav-dir` picks the geometrically
+  // nearest pane via paneInDirection over the current solved rects; `nav-cycle` steps the leaves order.
+  // A null / same-as-current target is a no-op. Shared by the keymap AND the Window-menu verbs, and kept
+  // action-shaped so FR-9's command registry can lift it directly.
+  const requestPaneNav = (
+    action: { kind: "nav-dir"; dir: Direction } | { kind: "nav-cycle"; delta: 1 | -1 },
+  ) => {
+    const s = stateRef.current;
+    if (s.activeTabId === null) return;
+    const tab = s.tabs.find((t) => t.tabId === s.activeTabId);
+    if (!tab) return;
+    const target =
+      action.kind === "nav-dir"
+        ? paneInDirection(solveRects(tab.tree, boundsRef.current).panes, tab.focusedPaneId, action.dir)
+        : nextPane(tab.tree, tab.focusedPaneId, action.delta);
+    if (target !== null && target !== tab.focusedPaneId) {
+      dispatch({ kind: "focusPane", tabId: tab.tabId, paneId: target });
+    }
+  };
+
   // ⌘W / menu "close": close the active tab's FOCUSED pane (pane → tab → window).
   const requestCloseActive = () => {
     const s = stateRef.current;
@@ -512,6 +533,13 @@ export function App({
       else if (payload === "prev") dispatch({ kind: "prevTab" });
       else if (payload === "split-right") requestSplit("right");
       else if (payload === "split-below") requestSplit("below");
+      // trmx-86: Window ▸ Select Pane / Next/Previous Pane verbs → the same pane-nav path as the keymap.
+      else if (payload === "pane-left") requestPaneNav({ kind: "nav-dir", dir: "left" });
+      else if (payload === "pane-right") requestPaneNav({ kind: "nav-dir", dir: "right" });
+      else if (payload === "pane-up") requestPaneNav({ kind: "nav-dir", dir: "up" });
+      else if (payload === "pane-down") requestPaneNav({ kind: "nav-dir", dir: "down" });
+      else if (payload === "pane-next") requestPaneNav({ kind: "nav-cycle", delta: 1 });
+      else if (payload === "pane-prev") requestPaneNav({ kind: "nav-cycle", delta: -1 });
       else if (payload === "rename") {
         const active = stateRef.current.activeTabId;
         if (active !== null) setRenamingTabId(active);
@@ -539,16 +567,24 @@ export function App({
     return stopSettings;
   }, [observeSettings]);
 
-  // ⌘1..⌘9 select a tab; ⌘D / ⇧⌘D split the focused pane (trmx-84). Capture phase on window so the
-  // chord wins even while xterm's helper textarea has focus; tabKeymap vetoes non-terminal editables
-  // and foreign chords, so nothing else is intercepted.
+  // ⌘1..⌘9 select a tab; ⌘D / ⇧⌘D split (trmx-84); ⌥⌘-arrows / ⌘]/⌘[ navigate panes (trmx-86). Capture
+  // phase on window so the chord wins even while xterm's helper textarea has focus; tabKeymap vetoes
+  // non-terminal editables and foreign chords, so nothing else is intercepted.
   useEffect(() => {
     const onKeyDown = (ev: KeyboardEvent) => {
       const action = tabKeyAction(ev, describeTarget(ev.target));
       if (!action) return;
       ev.preventDefault();
       if (action.kind === "select-index") dispatch({ kind: "selectIndex", index: action.index });
-      else requestSplit(action.dir);
+      else if (action.kind === "split") requestSplit(action.dir);
+      else {
+        // trmx-86: a pane-nav chord must ALSO be kept from xterm (stopImmediatePropagation) — even at an
+        // edge no-op — so ⌥⌘-arrows / ⌘]/⌘[ never leak a byte to the PTY. preventDefault alone doesn't
+        // stop xterm's own textarea keydown listener; halting propagation from this capture-phase
+        // listener does.
+        ev.stopImmediatePropagation();
+        requestPaneNav(action);
+      }
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);

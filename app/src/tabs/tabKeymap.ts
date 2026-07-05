@@ -28,13 +28,26 @@ export interface KeyTarget {
   isEditableTarget: boolean;
 }
 
+import type { Direction } from "../panes/paneNav";
+
 /**
  * The actions this keymap emits: `select-index` (⌘1..⌘9; the reducer maps index 8/⌘9 to the last
- * tab) and `split` (trmx-84 — ⌘D right, ⇧⌘D below).
+ * tab), `split` (trmx-84 — ⌘D right, ⇧⌘D below), and pane navigation (trmx-86 — `nav-dir` for
+ * ⌥⌘-arrows, `nav-cycle` for ⌘] / ⌘[).
  */
 export type TabKeyAction =
   | { kind: "select-index"; index: number }
-  | { kind: "split"; dir: "right" | "below" };
+  | { kind: "split"; dir: "right" | "below" }
+  | { kind: "nav-dir"; dir: Direction }
+  | { kind: "nav-cycle"; delta: 1 | -1 };
+
+/** trmx-86: the four arrow keys → a pane-nav direction (anything else → undefined). */
+const ARROW_DIR: Record<string, Direction | undefined> = {
+  ArrowLeft: "left",
+  ArrowRight: "right",
+  ArrowUp: "up",
+  ArrowDown: "down",
+};
 
 /** The slice of a KeyboardEvent the keymap reads — structural, so tests need no real events. */
 export interface TabKeyEvent {
@@ -56,6 +69,18 @@ export function tabKeyAction(ev: TabKeyEvent, target: KeyTarget): TabKeyAction |
   // because ⇧⌘D carries shift (which that veto rejects); ctrl/alt are never ours.
   if (ev.metaKey && !ev.ctrlKey && !ev.altKey && (ev.key === "d" || ev.key === "D")) {
     return { kind: "split", dir: ev.shiftKey ? "below" : "right" };
+  }
+  // trmx-86 (FR-3.5): ⌥⌘ + arrow → directional pane nav. Checked BEFORE the exact-meta veto because
+  // alt is present (which that veto rejects). ctrl/shift are never ours.
+  if (ev.metaKey && ev.altKey && !ev.ctrlKey && !ev.shiftKey) {
+    const dir = ARROW_DIR[ev.key];
+    if (dir) return { kind: "nav-dir", dir };
+  }
+  // trmx-86 (FR-3.5): ⌘] next / ⌘[ previous pane — META ONLY. ⇧⌘] / ⇧⌘[ carry shift and belong to TAB
+  // cycling (the Window menu), so the shift-free chord is unambiguously pane cycling.
+  if (ev.metaKey && !ev.ctrlKey && !ev.altKey && !ev.shiftKey) {
+    if (ev.key === "]") return { kind: "nav-cycle", delta: 1 };
+    if (ev.key === "[") return { kind: "nav-cycle", delta: -1 };
   }
   // Exactly meta — any extra modifier makes it someone else's chord (e.g. ⌘⇧9 screenshots).
   if (!ev.metaKey || ev.ctrlKey || ev.altKey || ev.shiftKey) return null;
