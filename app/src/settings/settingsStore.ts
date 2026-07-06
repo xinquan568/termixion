@@ -88,6 +88,9 @@ export interface SettingsValues {
    * Registry-stored unconditionally; App gates the EFFECT to left/right bars (labelOrientationFor).
    */
   "tabs.sideLabelOrientation": LabelOrientation;
+  /** trmx-93 (FR-5): the startup script to source in the first tab on launch, as a scripts-root
+   * relative path (e.g. "work/proj-x.sh"); "" = none. A free string, like terminal.fontFamily. */
+  "scripts.startup": string;
 }
 
 export type SettingKey = keyof SettingsValues;
@@ -135,6 +138,8 @@ export const SETTING_DEFAULTS: SettingsValues = {
   "tabs.barPosition": "bottom",
   // trmx-82 (FR-2.3): side-rail labels stay readable by default; rotation is an opt-in.
   "tabs.sideLabelOrientation": "horizontal",
+  // trmx-93 (FR-5): no startup script by default (empty = none).
+  "scripts.startup": "",
 };
 
 /**
@@ -163,6 +168,8 @@ const STORAGE_KEYS: Record<SettingKey, string> = {
   // trmx-81/82: never existed pre-config-file, so the T3b migration finds nothing — harmless.
   "tabs.barPosition": "termixion.tabs.barPosition",
   "tabs.sideLabelOrientation": "termixion.tabs.sideLabelOrientation",
+  // trmx-93 (FR-5): never existed pre-config-file, so the migration finds nothing — harmless.
+  "scripts.startup": "termixion.scripts.startup",
 };
 
 // Internal scheduler bookkeeping (NOT a user-visible setting, NOT config-file material — see
@@ -222,6 +229,10 @@ function parse<K extends SettingKey>(key: K, raw: string): SettingsValues[K] {
     // A free-form string: any value is a valid font stack ("" = platform default).
     return raw as SettingsValues[K];
   }
+  if (key === "scripts.startup") {
+    // trmx-93: a free-form scripts-root relative path ("" = none); validated at launch, not here.
+    return raw as SettingsValues[K];
+  }
   if (key === "tabs.barPosition") {
     // trmx-81: enum parse-with-fallback, exactly like terminal.cursorStyle below.
     return (isTabBarPosition(raw) ? raw : fallback) as SettingsValues[K];
@@ -265,6 +276,7 @@ function coerce<K extends SettingKey>(key: K, value: unknown): SettingsValues[K]
       : undefined;
   }
   if (key === "terminal.fontFamily") return value as SettingsValues[K];
+  if (key === "scripts.startup") return value as SettingsValues[K];
   if (key === "tabs.barPosition") {
     return isTabBarPosition(value) ? (value as SettingsValues[K]) : undefined;
   }

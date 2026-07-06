@@ -595,3 +595,81 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
+
+/*
+ * trmx-93 (FR-5) — the script picker overlay: a keyboard-first, command-palette-style modal centered
+ * near the top of the window. Themed via the existing --tx-* vars. z-index 20 keeps it above every
+ * pane overlay (scrollbar 10, badge 4, rename/badge-input 6). pointer-events on the backdrop close it.
+ */
+.tx-script-picker-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12vh;
+  background: rgba(0, 0, 0, 0.35);
+}
+.tx-script-picker {
+  width: min(540px, 90vw);
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  color: var(--tx-text);
+  background: var(--tx-bg);
+  border: 1px solid var(--tx-border);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+.tx-script-picker__input {
+  padding: 12px 14px;
+  font:
+    14px -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  color: var(--tx-text);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--tx-border);
+  outline: none;
+}
+.tx-script-picker__list {
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  overflow-y: auto;
+}
+.tx-script-picker__item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.tx-script-picker__item--active {
+  color: var(--tx-bg);
+  background: var(--tx-primary);
+}
+.tx-script-picker__name {
+  font-weight: 600;
+}
+.tx-script-picker__path {
+  color: var(--tx-text-2);
+  font-size: 12px;
+}
+.tx-script-picker__item--active .tx-script-picker__name,
+.tx-script-picker__item--active .tx-script-picker__path {
+  color: var(--tx-bg);
+  opacity: 0.9;
+}
+.tx-script-picker__empty {
+  padding: 16px;
+  color: var(--tx-text-2);
+  font-size: 13px;
+  text-align: center;
+}

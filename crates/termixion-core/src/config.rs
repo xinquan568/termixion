@@ -214,6 +214,17 @@ impl Default for TabsConfig {
     }
 }
 
+/// The `[scripts]` table (trmx-93, FR-5).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScriptsConfig {
+    /// The startup script to source in the first tab on a normal launch, as a path relative to the
+    /// scripts root (e.g. `work/proj-x.sh`). Empty string (the default) = no startup script
+    /// (validated tolerantly: a missing/unmatched value warns at launch and starts a plain shell,
+    /// never a blocked launch).
+    pub startup: String,
+}
+
 /// The fully-defaulted typed configuration model (one field per TOML table).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -222,6 +233,7 @@ pub struct Config {
     pub terminal: TerminalConfig,
     pub appearance: AppearanceConfig,
     pub tabs: TabsConfig,
+    pub scripts: ScriptsConfig,
 }
 
 /// A value in the frontend settings registry's wire shape (untagged: `true`, `14`, `"night"`).
@@ -311,6 +323,10 @@ pub const DEFAULT_TEMPLATE: &str = r##"# Termixion configuration (TOML).
 # [tabs]
 # bar_position = "bottom"         # "top" | "bottom" | "left" | "right"
 # side_label_orientation = "horizontal"   # "horizontal" | "vertical" (left/right bars only)
+
+# [scripts]
+# startup = ""                    # a script under ~/.config/termixion/scripts/ to run in the first
+                                  # tab on launch, e.g. "work/proj-x.sh" ("" = none)
 "##;
 
 /// Tolerantly parse `text` into a typed [`Config`]. Never panics, never hard-fails:
@@ -344,6 +360,7 @@ pub fn toml_path_for(registry_key: &str) -> Option<(&'static str, &'static str)>
         "appearance.theme" => Some(("appearance", "theme")),
         "tabs.barPosition" => Some(("tabs", "bar_position")),
         "tabs.sideLabelOrientation" => Some(("tabs", "side_label_orientation")),
+        "scripts.startup" => Some(("scripts", "startup")),
         _ => None,
     }
 }
@@ -417,6 +434,11 @@ pub fn diff_configs(old: &Config, new: &Config) -> Vec<(String, RegistryValue)> 
         "tabs.sideLabelOrientation",
         RegistryValue::Str(new.tabs.side_label_orientation.as_str().to_string()),
     );
+    push(
+        old.scripts.startup != new.scripts.startup,
+        "scripts.startup",
+        RegistryValue::Str(new.scripts.startup.clone()),
+    );
     changed
 }
 
@@ -460,6 +482,7 @@ fn parse_full(text: &str) -> (Config, Vec<(String, RegistryValue)>, Vec<ConfigWa
             "terminal" => Some(walk_terminal),
             "appearance" => Some(walk_appearance),
             "tabs" => Some(walk_tabs),
+            "scripts" => Some(walk_scripts),
             _ => None,
         };
         match walk_table {
@@ -556,6 +579,22 @@ fn walk_terminal(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
             ),
             _ => sink.warnings.push(ConfigWarning::UnknownKey {
                 key: format!("terminal.{key}"),
+            }),
+        }
+    }
+}
+
+fn walk_scripts(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
+    for (key, value) in table {
+        match key.as_str() {
+            "startup" => read_string(
+                value,
+                ("scripts.startup", "scripts.startup"),
+                &mut config.scripts.startup,
+                sink,
+            ),
+            _ => sink.warnings.push(ConfigWarning::UnknownKey {
+                key: format!("scripts.{key}"),
             }),
         }
     }
@@ -792,6 +831,7 @@ side_label_orientation = "vertical"
                     bar_position: TabBarPosition::Top,
                     side_label_orientation: LabelOrientation::Vertical,
                 },
+                scripts: ScriptsConfig::default(),
             }
         );
     }
@@ -959,6 +999,70 @@ side_label_orientation = "vertical"
         assert_eq!(
             value_for(&pairs, "terminal.activityIndicator"),
             Some(&RegistryValue::Bool(false))
+        );
+    }
+
+    // trmx-93: scripts.startup is a free string (""=unset). Present-only pair; wrong-type keeps the
+    // default and warns (absent from pairs); an unknown scripts.* key warns; diff yields the pair.
+    #[test]
+    fn scripts_startup_present_only_pair_and_default() {
+        assert_eq!(Config::default().scripts.startup, "");
+        let text = "[scripts]\nstartup = \"work/proj-x.sh\"\n";
+        let (config, warnings) = parse_config(text);
+        assert_eq!(config.scripts.startup, "work/proj-x.sh");
+        assert_eq!(warnings, Vec::new());
+        let (pairs, warnings) = parse_registry_pairs(text);
+        assert_eq!(warnings, Vec::new());
+        assert_eq!(
+            pairs,
+            vec![(
+                "scripts.startup".to_string(),
+                RegistryValue::Str("work/proj-x.sh".to_string())
+            )]
+        );
+    }
+
+    #[test]
+    fn scripts_startup_wrong_type_keeps_default_and_warns() {
+        let text = "[scripts]\nstartup = 3\n";
+        let (config, warnings) = parse_config(text);
+        assert_eq!(config.scripts.startup, "");
+        assert_eq!(warnings.len(), 1);
+        assert!(matches!(
+            &warnings[0],
+            ConfigWarning::InvalidValue { key, .. } if key == "scripts.startup"
+        ));
+        let (pairs, _) = parse_registry_pairs(text);
+        assert!(value_for(&pairs, "scripts.startup").is_none());
+    }
+
+    #[test]
+    fn scripts_unknown_key_warns() {
+        let (_, warnings) = parse_config("[scripts]\nfoo = 1\n");
+        assert!(warnings.contains(&ConfigWarning::UnknownKey {
+            key: "scripts.foo".to_string()
+        }));
+    }
+
+    #[test]
+    fn scripts_startup_diff_yields_the_pair_and_template_documents_it() {
+        let old = Config::default();
+        let mut new = Config::default();
+        new.scripts.startup = "work/proj-x.sh".to_string();
+        assert_eq!(
+            diff_configs(&old, &new),
+            vec![(
+                "scripts.startup".to_string(),
+                RegistryValue::Str("work/proj-x.sh".to_string())
+            )]
+        );
+        assert!(
+            DEFAULT_TEMPLATE.contains("# [scripts]"),
+            "template must document the [scripts] table (commented)"
+        );
+        assert_eq!(
+            toml_path_for("scripts.startup"),
+            Some(("scripts", "startup"))
         );
     }
 

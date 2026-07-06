@@ -139,7 +139,8 @@ fn value_kind_for(registry_key: &str) -> Option<ValueKind> {
         | "terminal.fontFamily"
         | "appearance.theme"
         | "tabs.barPosition"
-        | "tabs.sideLabelOrientation" => Some(ValueKind::Str),
+        | "tabs.sideLabelOrientation"
+        | "scripts.startup" => Some(ValueKind::Str),
         _ => None,
     }
 }
@@ -750,6 +751,7 @@ mod tests {
             ("appearance.theme", ValueKind::Str),
             ("tabs.barPosition", ValueKind::Str),
             ("tabs.sideLabelOrientation", ValueKind::Str),
+            ("scripts.startup", ValueKind::Str),
         ];
         for (key, kind) in keys {
             assert_eq!(value_kind_for(key), Some(kind), "for {key}");

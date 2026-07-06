@@ -27,6 +27,7 @@ use termixion_platform::{MacosPtyFactory, foreground_process, is_busy};
 
 mod config_io;
 mod menu;
+mod scripts_io;
 mod themes_io;
 mod window_manager;
 
@@ -858,6 +859,10 @@ fn main() -> ExitCode {
             // frontend to re-read the user theme catalog via `themes:changed`.
             let themes_app = app.handle().clone();
             std::thread::spawn(move || themes_io::run_themes_watcher(themes_app));
+            // trmx-93 (FR-5): watch the scripts directory TREE (recursive) for edits and signal the
+            // frontend to re-read the script catalog via `scripts:changed`.
+            let scripts_app = app.handle().clone();
+            std::thread::spawn(move || scripts_io::run_scripts_watcher(scripts_app));
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -904,7 +909,9 @@ fn main() -> ExitCode {
             config_io::config_reset_all,
             themes_io::themes_read,
             themes_io::themes_write,
-            themes_io::themes_open_dir
+            themes_io::themes_open_dir,
+            scripts_io::scripts_list,
+            scripts_io::scripts_open_dir
         ])
         .on_window_event(|window, event| {
             // trmx-51: only the MAIN window owns the PTY sessions — closing the settings window

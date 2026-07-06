@@ -42,6 +42,7 @@ tables; internally each maps 1:1 to a camelCase registry key (the mapping is own
 | `appearance.theme` | `appearance.theme` | string | derived³ | a theme id from the built-in catalog | immediate |
 | `tabs.bar_position` | `tabs.barPosition` | string | `"bottom"` | `top` · `bottom` · `left` · `right` | immediate (the tab bar repositions live; terminals keep running) |
 | `tabs.side_label_orientation` | `tabs.sideLabelOrientation` | string | `"horizontal"` | `horizontal` · `vertical` | immediate (applies only when the bar is `left`/`right`; the value persists across moves and re-applies) |
+| `scripts.startup` | `scripts.startup` | string | `""` | a script path relative to the scripts root, e.g. `"work/proj-x.sh"`; `""` = none⁵ | next launch (sourced in the first tab) |
 
 ¹ Shrinking `scrollback_lines` truncates the existing scrollback buffer (xterm behavior) — history
 beyond the new cap is discarded at apply time.
@@ -54,6 +55,10 @@ writes it into the file ("derive once, then persist"). After that, the file valu
 
 ⁴ The activity indicator (the green line shown while a command runs) — see
 [activity-indicator.md](activity-indicator.md) for how detection works and its documented limits.
+
+⁵ The startup script is **sourced** in the first tab on launch (a `cd`/alias/env it sets persists in
+that shell). A missing or unmatched value warns and starts a plain shell — never a blocked launch;
+never runs on the `--smoke`/`--perf` deterministic launches. See [scripts.md](scripts.md).
 
 ## Tolerant parsing & warnings
 
