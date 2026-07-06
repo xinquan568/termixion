@@ -29,6 +29,7 @@ pnpm --filter app exec vitest run src/conformance
 | `mouse-reporting.test.ts` | tracking-mode acceptance (9/1000/1002/1003), 1006, SGR press/motion/release encoding, legacy X10 on the binary channel |
 | `reports.test.ts` | DA1/DA2, DSR 5, CPR |
 | `osc.test.ts` | OSC 0/2 titles (BEL **and** ST), unknown-OSC safety, OSC 8 hyperlinks |
+| `unicode.test.ts` | **(trmx-97)** grapheme widths (CJK/full-width/half-width/combining/ZWJ/flag/skin-tone/VS16), wide-cell cursor+wrap+erase, buffer readback, chunked-input byte-splits mid-codepoint/mid-cluster |
 
 ## Tiers: headless vs packaged manual checklist
 
@@ -50,6 +51,43 @@ required bridging, and one class of behavior cannot run headless at all:
 - **Hyperlink ranges**: OSC 8 parse-safety and text rendering are covered headless; link-range
   introspection and pointer activation are browser API (link providers), so hover/click behavior is
   a manual-checklist item.
+
+## Unicode (trmx-97, FR-1.4)
+
+`unicode.test.ts` pins grapheme-cluster correctness. xterm.js 5.5 defaults to **Unicode v6** widths,
+which split modern emoji clusters and mis-width some forms; production activates
+`@xterm/addon-unicode-graphemes` at the `realDeps.createTerminal` chokepoint, and the driver's
+`openTerm` activates the **same** helper (`terminal/unicodeGraphemes.ts`) — so the harness pins the
+exact emulator we ship (the invariant above). Both `@xterm/xterm` and `@xterm/headless` expose
+`.unicode.activeVersion` publicly, so activation needs no internal seam. All cases pass with the addon
+active (they are RED under bare v6) — there are **no** Unicode deviations to skip.
+
+- **Chunked input** uses `driver.feedBytes(term, Uint8Array)` (not the string `feed`) so UTF-8 can be
+  split at arbitrary byte offsets — mid-codepoint AND mid-cluster — to pin the PTY-streaming reality
+  (4096-byte channel reads land anywhere in a rune); the split render must equal a single write.
+- **Copy fidelity** is proven two ways: the headless buffer-readback table (`getChars()` returns the
+  whole cluster, `getWidth()` is correct — the API the copy path reads), AND a real browser
+  `getSelection()` round-trip in `terminal/unicodeCopy.test.ts` (a grapheme-active `@xterm/xterm`
+  Terminal rendered in jsdom with a `matchMedia` stub, driven through the public selection API) for
+  CJK / ZWJ / flag / combining / mixed-width-multiline — the string both ⌘C and auto-copy read via the
+  shared `selectionText`.
+
+### Packaged manual checklist (record in the PR with screenshots)
+
+- **Rendering zoo** on the reference Mac (WebGL renderer): a CJK paragraph, the emoji-ZWJ zoo, mixed-width
+  `ls` output — glyph fallback to PingFang SC / Apple Color Emoji, no tofu, **no clipped double-width
+  glyphs at pane edges in a split**.
+- **IME** (manual smoke): macOS Pinyin + Japanese — the composition underline appears and committed text
+  lands once (any deviation documented + upstream-linked, not silently shipped).
+- `vim` / `less` navigating mixed-width content; an emoji spot-check in `tmux`.
+- Real mouse-drag select of CJK/emoji → paste elsewhere round-trips (the browser select→system-clipboard
+  path the jsdom test approximates).
+
+### Non-goals (this phase)
+
+RTL / bidirectional text is **out** — xterm.js has no bidi engine (a known limitation, not attempted).
+Per-script font *selection* is out (system fallback only). Search over wide-char content belongs to
+FR-1.5 (trmx-98), not here.
 
 ## Deviations
 

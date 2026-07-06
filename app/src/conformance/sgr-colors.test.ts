@@ -143,6 +143,7 @@ describe("conformance: SGR colors and attributes", () => {
     });
     expect(cellAt(term, 0, 1)).toEqual({
       text: "B",
+      width: 1,
       fgMode: "default",
       fg: -1,
       bgMode: "default",
@@ -162,6 +163,7 @@ describe("conformance: SGR colors and attributes", () => {
     await feed(term, "A");
     expect(cellAt(term, 0, 0)).toEqual({
       text: "A",
+      width: 1,
       fgMode: "default",
       fg: -1,
       bgMode: "default",
