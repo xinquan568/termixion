@@ -1,0 +1,13 @@
+{
+  "protocol": 1,
+  "tabs": [
+    {
+      "id": 10,
+      "active": true,
+      "panes": [
+        { "id": 1, "sessionId": 100, "title": "zsh", "cwd": "/home", "busy": false, "focused": false },
+        { "id": 2, "sessionId": 101, "title": "vim", "cwd": null, "busy": true, "focused": true }
+      ]
+    }
+  ]
+}

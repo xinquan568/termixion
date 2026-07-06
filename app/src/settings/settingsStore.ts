@@ -93,6 +93,10 @@ export interface SettingsValues {
   /** trmx-93 (FR-5): the startup script to source in the first tab on launch, as a scripts-root
    * relative path (e.g. "work/proj-x.sh"); "" = none. A free string, like terminal.fontFamily. */
   "scripts.startup": string;
+  /** trmx-101 (FR-9.4): the external control channel — OFF by default; a local socket that lets scripts
+   * drive the terminal. `socketPath` "" = the default path. The socket itself lives in the Rust shell. */
+  "remote_control.enabled": boolean;
+  "remote_control.socketPath": string;
 }
 
 export type SettingKey = keyof SettingsValues;
@@ -144,6 +148,8 @@ export const SETTING_DEFAULTS: SettingsValues = {
   "tabs.sideLabelOrientation": "horizontal",
   // trmx-93 (FR-5): no startup script by default (empty = none).
   "scripts.startup": "",
+  "remote_control.enabled": false,
+  "remote_control.socketPath": "",
 };
 
 /**
@@ -175,6 +181,8 @@ const STORAGE_KEYS: Record<SettingKey, string> = {
   "tabs.sideLabelOrientation": "termixion.tabs.sideLabelOrientation",
   // trmx-93 (FR-5): never existed pre-config-file, so the migration finds nothing — harmless.
   "scripts.startup": "termixion.scripts.startup",
+  "remote_control.enabled": "termixion.remote_control.enabled",
+  "remote_control.socketPath": "termixion.remote_control.socketPath",
 };
 
 // Internal scheduler bookkeeping (NOT a user-visible setting, NOT config-file material — see

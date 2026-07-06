@@ -135,7 +135,8 @@ fn value_kind_for(registry_key: &str) -> Option<ValueKind> {
         | "update.autoDownload"
         | "terminal.cursorBlink"
         | "terminal.activityIndicator"
-        | "terminal.copyOnSelect" => Some(ValueKind::Bool),
+        | "terminal.copyOnSelect"
+        | "remote_control.enabled" => Some(ValueKind::Bool),
         "terminal.scrollbackLines" | "terminal.fontSize" => Some(ValueKind::Int),
         "update.checkFrequency"
         | "terminal.cursorStyle"
@@ -143,7 +144,8 @@ fn value_kind_for(registry_key: &str) -> Option<ValueKind> {
         | "appearance.theme"
         | "tabs.barPosition"
         | "tabs.sideLabelOrientation"
-        | "scripts.startup" => Some(ValueKind::Str),
+        | "scripts.startup"
+        | "remote_control.socketPath" => Some(ValueKind::Str),
         _ => None,
     }
 }
@@ -412,23 +414,33 @@ pub fn keys_read() -> BTreeMap<String, String> {
 /// lazily creating the file from the commented template).
 #[tauri::command]
 pub fn config_write(
+    app: tauri::AppHandle,
     state: State<'_, ConfigState>,
+    control_state: State<'_, crate::control::ControlState>,
     key: String,
     value: JsonValue,
 ) -> Result<(), String> {
     let (hash, config) = write_key_at(&config_path(), &key, &value)?;
+    // trmx-101: an app-originated write suppresses the watcher's self-echo, so apply remote_control here.
+    let new_remote_control = config.remote_control.clone();
     let mut inner = state
         .0
         .lock()
         .map_err(|_| "config state poisoned".to_string())?;
     inner.last_write_hash = Some(hash);
     inner.last = config;
+    drop(inner);
+    crate::control::apply_remote_control(&app, &new_remote_control, &control_state);
     Ok(())
 }
 
 /// Reset the config file to the pristine commented template (every key back to its default).
 #[tauri::command]
-pub fn config_reset_all(state: State<'_, ConfigState>) -> Result<(), String> {
+pub fn config_reset_all(
+    app: tauri::AppHandle,
+    state: State<'_, ConfigState>,
+    control_state: State<'_, crate::control::ControlState>,
+) -> Result<(), String> {
     let hash = reset_all_at(&config_path())?;
     let mut inner = state
         .0
@@ -436,6 +448,9 @@ pub fn config_reset_all(state: State<'_, ConfigState>) -> Result<(), String> {
         .map_err(|_| "config state poisoned".to_string())?;
     inner.last_write_hash = Some(hash);
     inner.last = Config::default();
+    drop(inner);
+    // A reset restores every default → remote control OFF.
+    crate::control::apply_remote_control(&app, &Config::default().remote_control, &control_state);
     Ok(())
 }
 
@@ -525,6 +540,9 @@ fn on_config_file_event(app: &tauri::AppHandle, path: &Path) {
     if keys_map_changed(&inner.last, &application.config) {
         emissions.push(("keys:changed", JsonValue::Null));
     }
+    // trmx-101: capture the new remote-control config before `application.config` moves into `last`, so
+    // the socket listener is (re)started/stopped AFTER the config lock is released (never held across it).
+    let new_remote_control = application.config.remote_control.clone();
     inner.last = application.config;
     // An EXTERNAL edit was applied: clear the self-echo latch so a stale hash can never
     // suppress a later external edit that happens to restore our last-written bytes.
@@ -536,6 +554,12 @@ fn on_config_file_event(app: &tauri::AppHandle, path: &Path) {
     for (event, payload) in emissions {
         let _ = app.emit(event, payload);
     }
+    // trmx-101 (FR-9.4): an external edit to remote_control.enabled starts/stops the socket live.
+    crate::control::apply_remote_control(
+        app,
+        &new_remote_control,
+        &app.state::<crate::control::ControlState>(),
+    );
 }
 
 #[cfg(test)]
@@ -814,6 +838,8 @@ mod tests {
             ("tabs.barPosition", ValueKind::Str),
             ("tabs.sideLabelOrientation", ValueKind::Str),
             ("scripts.startup", ValueKind::Str),
+            ("remote_control.enabled", ValueKind::Bool),
+            ("remote_control.socketPath", ValueKind::Str),
         ];
         for (key, kind) in keys {
             assert_eq!(value_kind_for(key), Some(kind), "for {key}");
