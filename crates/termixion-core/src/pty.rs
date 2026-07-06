@@ -254,7 +254,10 @@ mod tests {
         );
         // trmx-102: unset $SHELL AND no /bin/zsh (a zsh-less Linux box) → /bin/bash.
         let no_zsh = |p: &str| p != "/bin/zsh";
-        assert_eq!(login_shell_program(None, no_zsh), OsString::from("/bin/bash"));
+        assert_eq!(
+            login_shell_program(None, no_zsh),
+            OsString::from("/bin/bash")
+        );
     }
 
     #[test]
