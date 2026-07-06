@@ -43,11 +43,11 @@ export const FULL_DEFAULT_KEYS: Readonly<Record<string, string>> = {
   "cmd+alt+right": "pane.focus-right",
   "cmd+alt+up": "pane.focus-up",
   "cmd+alt+down": "pane.focus-down",
-  // trmx-100 (FR-3.4): re-dock the focused pane (⌃⌥⌘-arrows).
-  "ctrl+alt+cmd+left": "pane.move-left",
-  "ctrl+alt+cmd+right": "pane.move-right",
-  "ctrl+alt+cmd+up": "pane.move-up",
-  "ctrl+alt+cmd+down": "pane.move-down",
+  // trmx-100 (FR-3.4): re-dock the focused pane (⌃⌥⌘-arrows). Canonical modifier order (cmd, ctrl, alt).
+  "cmd+ctrl+alt+left": "pane.move-left",
+  "cmd+ctrl+alt+right": "pane.move-right",
+  "cmd+ctrl+alt+up": "pane.move-up",
+  "cmd+ctrl+alt+down": "pane.move-down",
   "cmd+1": "tab.select-1",
   "cmd+2": "tab.select-2",
   "cmd+3": "tab.select-3",

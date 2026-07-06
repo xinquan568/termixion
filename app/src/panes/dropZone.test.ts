@@ -10,9 +10,13 @@ const R: Rect = { x: 100, y: 50, width: 400, height: 300 }; // center (300, 200)
 const at = (x: number, y: number) => dropZone(R, { x, y });
 
 describe("dropZone", () => {
-  it("the center square swaps", () => {
+  it("the center square (inner 40%) swaps, and its boundary resolves to an edge just outside", () => {
     expect(at(300, 200)).toBe("center");
-    expect(at(320, 210)).toBe("center"); // still within the inner 30%
+    // inner 40% = |dx|,|dy| ≤ 0.2 → x∈[220,380], y∈[140,260] for this 400×300 rect at (300,200).
+    expect(at(380, 200)).toBe("center"); // right boundary of the center square (|dx| = 0.2)
+    expect(at(400, 200)).toBe("right"); // just outside → edge
+    expect(at(300, 260)).toBe("center"); // bottom boundary (|dy| = 0.2)
+    expect(at(300, 290)).toBe("bottom"); // just outside → edge
   });
 
   it("each edge region docks on that edge", () => {

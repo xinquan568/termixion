@@ -10,11 +10,11 @@ import type { DropEdge, Rect } from "./layoutTree";
 
 export type DropZone = DropEdge | "center";
 
-/** Half-width of the central swap square, as a fraction of the rect from center (0.15 → inner 30%). */
-const CENTER_HALF = 0.15;
+/** Half-width of the central swap square, as a fraction of the rect from center (0.2 → inner 40%). */
+const CENTER_HALF = 0.2;
 
 /**
- * Which drop zone the `pointer` falls in over `rect`. A central square (inner 30%) is `center` (swap);
+ * Which drop zone the `pointer` falls in over `rect`. A central square (inner 40%) is `center` (swap);
  * otherwise the dominant axis from center picks an edge — `|dx| >= |dy|` → left/right, else top/bottom
  * (so a perfect corner resolves to the horizontal edge, deterministically). A pointer outside the rect
  * clamps in (App only calls this for the hovered pane).

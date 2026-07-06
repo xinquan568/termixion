@@ -1406,6 +1406,10 @@ export function App({
         zone: target.zone,
       });
     }
+    // An abort path (pointercancel / lostpointercapture / Esc / unmount) produces NO trailing click, so the
+    // click-swallow must be disarmed here or it would eat the next unrelated pane click. On a `commit`
+    // (pointerup) the synthetic click DOES follow and onPaneClickCapture clears the flag itself.
+    if (!commit) suppressClickRef.current = false;
     pickupRef.current = null;
     pendingPointerRef.current = null;
     setDropPreview(null);
@@ -1414,6 +1418,7 @@ export function App({
 
   const onPanePointerDownCapture = (tabId: number, paneId: PaneId) => (e: ReactPointerEvent) => {
     if (e.button !== 0 || !e.metaKey) return; // only ⌘ + primary starts a pickup candidate
+    suppressClickRef.current = false; // clear any stale swallow from a prior gesture that never clicked
     // Record the origin but do NOT preventDefault yet — a sub-slop ⌘-click must still open an OSC 8 link.
     pickupRef.current = { pointerId: e.pointerId, tabId, paneId, originX: e.clientX, originY: e.clientY, active: false };
   };
