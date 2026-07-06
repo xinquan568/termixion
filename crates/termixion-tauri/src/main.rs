@@ -654,6 +654,9 @@ fn set_session_title(
 struct SpecialLaunch {
     smoke: Option<String>,
     perf: Option<String>,
+    /// trmx-103: which perf scenario the webview should drive (`single`|`multipane`); irrelevant
+    /// unless `perf` is set. Resolved once at launch from the args/env by [`perf_scenario`].
+    perf_scenario: &'static str,
 }
 
 /// Whether/how the packaged smoke runs. `MissingDir` (smoke requested but no `DIR`) must FAIL the gate,
@@ -743,13 +746,40 @@ fn launch_modes(
     Ok((None, perf))
 }
 
-/// What `perf_config` returns to the webview (trmx-78): where to have the report written, and
-/// which build produced it (budgets are only recorded from `release`). camelCase for the frontend.
+/// Resolve which perf scenario to drive (trmx-103): `--scenario multipane` (or `--scenario=…`) OR
+/// `TERMIXION_PERF_SCENARIO=multipane` selects the v0.0.9 multi-pane load; anything else — including
+/// absent — is the default single-pane run. Pure, for testing (the same discipline as `perf_mode`).
+fn perf_scenario<I: IntoIterator<Item = String>>(
+    args: I,
+    scenario_env: Option<String>,
+) -> &'static str {
+    let mut selected: Option<String> = None;
+    let mut expect_value = false;
+    for a in args {
+        if expect_value {
+            selected = Some(a);
+            expect_value = false;
+        } else if a == "--scenario" {
+            expect_value = true;
+        } else if let Some(v) = a.strip_prefix("--scenario=") {
+            selected = Some(v.to_string());
+        }
+    }
+    match selected.or(scenario_env).as_deref() {
+        Some("multipane") => "multipane",
+        _ => "single",
+    }
+}
+
+/// What `perf_config` returns to the webview (trmx-78): where to have the report written, which
+/// build produced it (budgets are only recorded from `release`), and which scenario to drive
+/// (trmx-103 — `single`|`multipane`). camelCase for the frontend.
 #[derive(Clone, serde::Serialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct PerfConfig {
     out_dir: String,
     build: &'static str,
+    scenario: &'static str,
 }
 
 /// The smoke watchdog (trmx-102): fail rather than hang if the webview never reports the sentinel. Bumped
@@ -772,6 +802,7 @@ fn perf_config(launch: State<'_, SpecialLaunch>) -> Option<PerfConfig> {
         } else {
             "release"
         },
+        scenario: launch.perf_scenario,
     })
 }
 
@@ -865,7 +896,15 @@ fn main() -> ExitCode {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .manage(PtyState::default())
-        .manage(SpecialLaunch { smoke, perf })
+        .manage(SpecialLaunch {
+            smoke,
+            perf,
+            // trmx-103: pure read of args/env — harmless when perf is None (perf_config returns None).
+            perf_scenario: perf_scenario(
+                std::env::args(),
+                std::env::var("TERMIXION_PERF_SCENARIO").ok(),
+            ),
+        })
         // trmx-80 (FR-13): the config backbone's state — the file-watch diff base + the
         // self-echo latch for our own writes.
         .manage(config_io::ConfigState::default())
@@ -1315,15 +1354,51 @@ mod tests {
 
     #[test]
     fn perf_config_serializes_camel_case_for_the_frontend() {
-        // The frontend destructures `outDir`/`build` — pin the wire shape like SessionInfo above.
+        // The frontend destructures `outDir`/`build`/`scenario` — pin the wire shape like SessionInfo.
         let value = serde_json::to_value(PerfConfig {
             out_dir: "/tmp/perf".to_string(),
             build: "release",
+            scenario: "single",
         })
         .expect("PerfConfig serializes");
         assert_eq!(
             value,
-            serde_json::json!({ "outDir": "/tmp/perf", "build": "release" })
+            serde_json::json!({ "outDir": "/tmp/perf", "build": "release", "scenario": "single" })
+        );
+    }
+
+    #[test]
+    fn perf_scenario_resolves_single_and_multipane_from_arg_or_env() {
+        // Default (nothing set) → single; the whole point is the existing path is unchanged.
+        assert_eq!(perf_scenario(args(&["app", "--perf"]), None), "single");
+        // Explicit multipane via arg (spaced or `=`) or env.
+        assert_eq!(
+            perf_scenario(args(&["app", "--perf", "--scenario", "multipane"]), None),
+            "multipane"
+        );
+        assert_eq!(
+            perf_scenario(args(&["app", "--scenario=multipane"]), None),
+            "multipane"
+        );
+        assert_eq!(
+            perf_scenario(args(&["app"]), Some("multipane".to_string())),
+            "multipane"
+        );
+        // The arg wins over the env; an unknown value falls back to single (never a launch failure).
+        assert_eq!(
+            perf_scenario(
+                args(&["app", "--scenario", "single"]),
+                Some("multipane".to_string())
+            ),
+            "single"
+        );
+        assert_eq!(
+            perf_scenario(args(&["app", "--scenario", "bogus"]), None),
+            "single"
+        );
+        assert_eq!(
+            perf_scenario(args(&["app"]), Some("single".to_string())),
+            "single"
         );
     }
 

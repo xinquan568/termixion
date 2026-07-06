@@ -135,3 +135,39 @@ numbers in the commit message, re-run `perf.sh` between steps, stop at green:
 3. **ADR tier:** if profiling shows Channel IPC itself is the bottleneck and budgets still fail,
    ADR-0001's documented fallback applies — move the output stream (only) to a local WebSocket,
    re-measure, record **ADR-0002**. Lands in `termixion-tauri` + `app`; not a casual commit.
+
+## 9. Multi-pane load (v0.0.9)
+
+The single-pane run (§3) measures a quiet terminal. The v0.0.9 Beta-hardening re-run measures the
+same NFR-1 scenarios **while five other terminals are alive** — the realistic "busy workspace" the
+tab/pane model makes normal. It is a **load condition, not a new report**: the harness emits the
+**same four scenario keys** and `evaluatePerf` + `BUDGETS` judge it **UNCHANGED** (§4).
+
+- **Panes:** six xterms are mounted in **one** webview (`SCENARIO_MULTIPANE`, zero-based indices):
+  - **`streamPaneIndices = [0, 1, 2, 3]`** — four **streaming** panes each running a `yes`/`seq`
+    **mix** flood (even indices `seq 1 300000`, odd indices `yes`) as background LOAD. Their output
+    is really rendered and flow-control-acked (real GPU/IPC cost — the busy neighborhood), but feeds
+    **no sampler**: it is a discard sink, never a measured number.
+  - **`typingPaneIndex = 4`** — typing latency is measured here, **busy-adjacent**: the exact
+    readiness → warmup → 1000 paced keys → FIFO-matched round-trip of §3, but under the four-pane
+    flood.
+  - **`scrollPaneIndex = 5`** — the three scroll scenarios (`scrollSeq`, `scrollYes`,
+    `scrollbackPaging`) run in a sixth pane, again under the flood.
+- **Timing knobs** are the **single-pane values** (`SCENARIO`) — one source, quoted here and in the
+  tests. The renderer assertion (§3) and the `hasFocus` validity gate (§1) apply identically; the
+  renderer is read from the **measured (typing) pane** and re-read after the scenarios.
+- **Budgets are the same** table (§4). The point is to show typing stays ≤ 16 ms p50 / 33 ms p95 and
+  every scroll scenario < 5 % dropped **even under multi-pane load**, not to relax anything.
+
+**How to run** (numbers are operator-run on the reference Mac, same conditions as §1):
+
+```
+(cd crates/termixion-tauri && cargo tauri build)      # release bundle
+scripts/perf.sh --scenario multipane                  # run + verdict (exit 0/1)
+scripts/perf.sh --scenario multipane --commit         # + machine block + copy into perf-results/
+```
+
+`perf.sh --scenario multipane` passes `TERMIXION_PERF_SCENARIO=multipane` to the app (the backend's
+`perf_config` forwards a `scenario` field; `main.tsx` picks `runPerfMultipane`). A committed
+multi-pane report lands as `docs/design/perf-results/<date>-v<version>-multipane.json` (the
+`-multipane` suffix keeps it beside — not overwriting — the single-pane record for the same version).

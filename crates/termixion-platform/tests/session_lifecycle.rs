@@ -11,7 +11,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use termixion_core::{PtyReader, PtySize, Session, SessionRegistry, SessionSpec};
-use termixion_platform::UnixPtyFactory;
+use termixion_platform::{UnixPtyFactory, foreground_process};
 
 /// The process state of `pid` via `ps -o stat=` — `None` if the pid is gone, else the state string
 /// (a leading `Z` means a zombie). We check the *zombie state* specifically, not mere existence,
@@ -395,4 +395,194 @@ fn registry_kill_all_leaves_no_zombies() {
     assert_no_zombie(pid1);
     assert_no_zombie(pid2);
     assert!(registry.is_empty());
+}
+
+// ---------------------------------------------------------------------------------------------
+// trmx-103 (beta hardening, block B): the KILL MATRIX. Three golden tests that a session — and the
+// registry — survive / clean up under the violent teardown paths a real terminal actually hits: an
+// OUTSIDE `kill -9` of a foreground child, a `kill()` fired mid-flood, and a `kill_all()` over many
+// streaming sessions. Same anti-flake discipline as every golden test here: assert on TERMINAL
+// STATE (poll-based `assert_no_zombie`, registry-empty, a marker round-trip), NEVER on exact byte
+// counts, and CONFIRM the precondition (a real fg child / an active flood) BEFORE tearing down.
+// ---------------------------------------------------------------------------------------------
+
+/// Poll `foreground_process(shell_pid)` until the terminal's foreground-group leader is a process
+/// OTHER than the shell itself — i.e. a real foreground job (our `sleep`) has taken over the
+/// terminal's foreground group — and return that leader's pid. `foreground_process` is the
+/// documented pid-acquisition path (trmx-75); it resolves the tpgid, which for a single-process job
+/// like `sleep 30` IS that process's own pid, so the returned pid is exactly what to `kill -9`.
+/// 50 ms steps under a generous 5 s window — load-bearing only when the plumbing is broken.
+fn poll_foreground_child(shell_pid: u32) -> u32 {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut last: Option<u32> = None;
+    loop {
+        if let Some(fg) = foreground_process(shell_pid) {
+            if fg.pid != shell_pid {
+                return fg.pid;
+            }
+            last = Some(fg.pid);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "foreground of shell pid {shell_pid} never became a child job before the deadline; \
+             last observed leader pid: {last:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Drain at least `at_least` bytes off the pump to CONFIRM a flood is actually flowing before we
+/// kill it — killing a quiescent shell is the easy case; the kill matrix wants bytes in flight.
+/// Bounded by a generous deadline so a broken pipe fails loudly instead of hanging. `label` names
+/// the stream in panic messages. We assert on liveness (SOME output arrived), never on an exact
+/// count — the byte total is nondeterministic and must not gate the test.
+fn confirm_streaming(rx: &mpsc::Receiver<Vec<u8>>, at_least: usize, label: &str) {
+    let mut seen = 0usize;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while seen < at_least {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "{label}: the flood never produced {at_least} bytes before the deadline (saw {seen})"
+        );
+        match rx.recv_timeout(remaining) {
+            Ok(chunk) => seen += chunk.len(),
+            Err(err) => {
+                panic!("{label}: pty output ended before the flood got going ({err}); saw {seen}")
+            }
+        }
+    }
+}
+
+/// Drain any residual buffered chunks, then join the pump. The pump's sender is dropped when the
+/// pump thread exits, so `recv` returns `Err` exactly once the reader thread is done — a clean join
+/// then proves the teardown orphaned no reader thread. `label` names the stream in panics.
+fn drain_and_join(rx: mpsc::Receiver<Vec<u8>>, pump: std::thread::JoinHandle<()>, label: &str) {
+    while rx.recv().is_ok() {}
+    if pump.join().is_err() {
+        panic!("{label}: the reader thread must exit cleanly after teardown — no orphan");
+    }
+}
+
+/// trmx-103: an OUTSIDE `kill -9` of the shell's foreground child must NOT take the session down —
+/// the shell reaps its dead job and keeps serving. Spawn `zsh -f`, launch a long `sleep 30`
+/// foreground child, resolve its pid via `foreground_process` (poll until the fg leader is not the
+/// shell), then `kill -9` it FROM THE TEST as an outside actor would. The child must be reaped and
+/// gone (no zombie), and the shell must still answer a marker round-trip — proof the session
+/// survived its child's violent external death. Teardown then leaves no zombie for the shell.
+#[test]
+fn external_kill9_of_a_foreground_child_leaves_the_session_alive_and_no_zombie() {
+    let factory = UnixPtyFactory;
+    let mut session = Session::spawn(103, &factory, &rc_free_zsh(), PtySize::new(24, 80))
+        .expect("spawn an rc-free shell through the trait");
+    let shell_pid = session.process_id().expect("a real PTY has a child pid");
+    let reader = session.take_reader().expect("a real PTY yields a reader");
+    let (rx, pump) = pump_reader(reader);
+
+    // Launch a long-lived foreground child so there is a fg leader OTHER than the shell to kill.
+    session.write(b"sleep 30\n").expect("write `sleep 30`");
+    let child_pid = poll_foreground_child(shell_pid);
+    assert_ne!(
+        child_pid, shell_pid,
+        "the foreground child must run in its own process group, not the shell's"
+    );
+
+    // The kill matrix's core event: an OUTSIDE `kill -9` of the foreground child (not our teardown).
+    let killed = Command::new("kill")
+        .args(["-9", &child_pid.to_string()])
+        .status()
+        .expect("run `kill -9` on the foreground child");
+    assert!(killed.success(), "`kill -9 {child_pid}` should succeed");
+
+    // The shell reaps its dead job: the child pid must be reaped and gone (no zombie left behind).
+    assert_no_zombie(child_pid);
+
+    // The SESSION survives — it still runs a command and echoes the result. The `MAR""K99` trick
+    // means the literal `MARK99` can only come from the shell EXECUTING echo, not the PTY echoing
+    // the typed line — proof the shell is alive and serving after its child's external death.
+    session
+        .write(b"echo MAR\"\"K99\n")
+        .expect("write the survival marker after the child's external death");
+    read_until(&rx, "MARK99", Instant::now() + Duration::from_secs(10));
+
+    // Teardown of the surviving shell leaves no zombie either.
+    session.kill().expect("kill the surviving shell");
+    assert!(!session.is_alive());
+    assert_no_zombie(shell_pid);
+    pump.join().expect("the reader thread exits at EOF");
+}
+
+/// trmx-103: `kill()` fired WHILE the child is flooding output must still reap cleanly — no zombie,
+/// and no orphaned reader thread. Start `yes` (an unbounded flood), drain a few KB to CONFIRM the
+/// stream is live, then kill mid-stream. The child must be reaped and gone, and the pump must
+/// observe its torn-down PTY and exit (a clean join proves no reader was left running).
+#[test]
+fn killing_a_session_mid_stream_leaves_no_zombie_and_no_orphan_reader() {
+    let factory = UnixPtyFactory;
+    let mut session = Session::spawn(104, &factory, &rc_free_zsh(), PtySize::new(24, 80))
+        .expect("spawn an rc-free shell through the trait");
+    let shell_pid = session.process_id().expect("a real PTY has a child pid");
+    let reader = session.take_reader().expect("a real PTY yields a reader");
+    let (rx, pump) = pump_reader(reader);
+
+    // Start an unbounded flood so bytes are demonstrably in flight when we kill.
+    session
+        .write(b"yes\n")
+        .expect("write `yes` to start a flood");
+    confirm_streaming(&rx, 4096, "mid-stream kill");
+
+    // Kill WHILE `yes` is still flooding — the mid-stream teardown path.
+    session.kill().expect("kill the session mid-stream");
+    assert!(!session.is_alive());
+    assert_no_zombie(shell_pid);
+
+    // The pump must see the torn-down PTY and exit — proving no orphaned reader thread.
+    drain_and_join(rx, pump, "mid-stream kill");
+}
+
+/// trmx-103: `kill_all` (window close) over MANY streaming sessions reaps every child and empties
+/// the registry — the multi-session, under-load version of the no-zombie invariant. Spawn N=4
+/// `zsh -f` sessions, start `yes` on each, confirm each is streaming, then `kill_all`. Every child
+/// must be reaped and gone, the registry must be empty, and no reader thread may be orphaned.
+#[test]
+fn kill_all_with_many_streaming_sessions_leaves_no_zombies() {
+    const N: usize = 4;
+    let factory = UnixPtyFactory;
+    let mut registry = SessionRegistry::new();
+
+    let mut pids = Vec::with_capacity(N);
+    let mut streams = Vec::with_capacity(N);
+    for _ in 0..N {
+        let (id, reader) = registry
+            .spawn(&factory, &rc_free_zsh(), PtySize::new(24, 80))
+            .expect("spawn a streaming session through the registry");
+        let pid = registry
+            .process_id(id)
+            .expect("the session is live")
+            .expect("a real PTY has a child pid");
+        let (rx, pump) = pump_reader(reader);
+        registry
+            .write(id, b"yes\n")
+            .expect("start a flood on the session");
+        pids.push(pid);
+        streams.push((rx, pump));
+    }
+    assert_eq!(registry.len(), N);
+
+    // Confirm EVERY session is actually streaming before the mass kill (bytes in flight on each).
+    for (i, (rx, _)) in streams.iter().enumerate() {
+        confirm_streaming(rx, 2048, &format!("session {i}"));
+    }
+
+    // The window-close path: reap every streaming child and empty the registry.
+    registry.kill_all();
+    for &pid in &pids {
+        assert_no_zombie(pid);
+    }
+    assert!(registry.is_empty());
+
+    // No orphaned readers: each pump observes its torn-down PTY and exits.
+    for (i, (rx, pump)) in streams.into_iter().enumerate() {
+        drain_and_join(rx, pump, &format!("session {i}"));
+    }
 }

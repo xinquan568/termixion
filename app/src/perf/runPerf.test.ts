@@ -97,6 +97,8 @@ function fakeWorld(
   const deps: PerfDeps = {
     invoke: (() => Promise.resolve()) as InvokeFn,
     mount: () => mount,
+    // trmx-103: the single-pane driver never calls mountPane; the seam returns the one shared mount.
+    mountPane: () => mount,
     openPty: (handler): Promise<SessionInfo> => {
       onBytes = handler;
       return Promise.resolve({ sessionId: 1, title: "zsh" });
