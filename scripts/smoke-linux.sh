@@ -31,13 +31,22 @@ cleanup() { rm -rf "$(dirname "$DIR")" 2>/dev/null || true; }
 trap cleanup EXIT
 
 echo "smoke-linux: DIR=$DIR — running $APP --smoke under xvfb"
-# APPIMAGE_EXTRACT_AND_RUN=1 (ENV var, not a CLI flag — the flag would reach the app) runs the AppImage
-# without FUSE; the WEBKIT_DISABLE_* flags avoid the headless-webkit2gtk GL/DMABUF compositing crashes.
+# Headless webkit2gtk needs coaxing to render in CI (no GPU, no compositor). The incantation:
+#   - xvfb with an EXPLICIT screen + depth (the default 8-bit screen is too small for the webview to paint,
+#     which silently leaves the sentinel sequence never running → the app's watchdog times out);
+#   - APPIMAGE_EXTRACT_AND_RUN=1 (ENV var, not a CLI flag — a flag would reach the app) runs the AppImage
+#     without FUSE;
+#   - LIBGL_ALWAYS_SOFTWARE forces software GL (no GPU on the runner); GDK_BACKEND=x11 pins the backend;
+#     WEBKIT_DISABLE_COMPOSITING_MODE / _DMABUF_RENDERER avoid the headless-webkit GL/DMABUF crashes;
+#   - NO_AT_BRIDGE silences the benign AT-SPI accessibility-bus warning.
 # `--smoke` is unambiguously the app's own argument. The app's 30 s watchdog fails-closed on a hang.
-xvfb-run -a env \
+xvfb-run -a --server-args="-screen 0 1280x1024x24" env \
   APPIMAGE_EXTRACT_AND_RUN=1 \
+  LIBGL_ALWAYS_SOFTWARE=1 \
+  GDK_BACKEND=x11 \
   WEBKIT_DISABLE_COMPOSITING_MODE=1 \
   WEBKIT_DISABLE_DMABUF_RENDERER=1 \
+  NO_AT_BRIDGE=1 \
   DIR="$DIR" \
   "$APP" --smoke
 echo "smoke-linux: OK — the packaged AppImage's --smoke exited 0"
