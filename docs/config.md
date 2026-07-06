@@ -55,7 +55,10 @@ system monospaced font at the front).
 writes it into the file ("derive once, then persist"). After that, the file value wins.
 
 ⁴ The activity indicator (the green line shown while a command runs) — see
-[activity-indicator.md](activity-indicator.md) for how detection works and its documented limits.
+[activity-indicator.md](activity-indicator.md) for how detection works and its documented limits. For an
+**accurate** indicator (exact command windows + an exit-code failure flash), install the optional OSC 133
+shell integration (Settings → Terminal → Shell integration → "Reveal snippets"; trmx-99/FR-7b) — no config
+key, it upgrades per session automatically when the shell emits the markers.
 
 ⁵ The startup script is **sourced** in the first tab on launch (a `cd`/alias/env it sets persists in
 that shell). A missing or unmatched value warns and starts a plain shell — never a blocked launch;

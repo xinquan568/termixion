@@ -28,6 +28,7 @@ use termixion_platform::{MacosPtyFactory, foreground_process, is_busy};
 mod config_io;
 mod menu;
 mod scripts_io;
+mod shell_integration_io;
 mod themes_io;
 mod window_manager;
 
@@ -906,7 +907,8 @@ fn main() -> ExitCode {
             themes_io::themes_write,
             themes_io::themes_open_dir,
             scripts_io::scripts_list,
-            scripts_io::scripts_open_dir
+            scripts_io::scripts_open_dir,
+            shell_integration_io::shell_integration_reveal
         ])
         .on_window_event(|window, event| {
             // trmx-51: only the MAIN window owns the PTY sessions — closing the settings window

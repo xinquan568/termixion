@@ -28,6 +28,21 @@ jobs:
       - name: core seam guard (forbidden-dep + no platform cfg / std::os)
         run: bash scripts/check-core-seam.sh
 
+  # trmx-99 (FR-7b): the shell-integration snippets must be shellcheck-clean and pass the source-and-assert
+  # test (idempotency, hook preservation, $?-capture). ubuntu runners ship shellcheck; zsh is installed for
+  # the zsh half of the test.
+  shell-integration:
+    name: shell integration (shellcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install zsh (for the zsh half of the source-and-assert test)
+        run: sudo apt-get update && sudo apt-get install -y zsh
+      - name: shellcheck the bash snippet + the test
+        run: shellcheck -s bash resources/shell-integration/termixion.bash resources/shell-integration/integration_test.sh
+      - name: source-and-assert (idempotency, hook preservation, $?-capture)
+        run: bash resources/shell-integration/integration_test.sh
+
   # REQUIRED — the platform-agnostic core must build + test headless on Linux (no platform deps).
   core-linux:
     name: core tests (linux)

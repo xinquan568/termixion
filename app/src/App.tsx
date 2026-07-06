@@ -68,6 +68,8 @@ import {
   type ActivityState,
   type ActivityTransition,
 } from "./panes/activityLine";
+import { shouldFlash, FLASH_MS } from "./panes/activityFlash";
+import { type PromptTransition } from "./terminal/osc133";
 import { type FrameSchedule } from "./terminal/resizeCoalescer";
 import {
   isLabelOrientation,
@@ -144,6 +146,11 @@ const ACTIVITY_LINE_ALPHA = 0.8;
 /** The activity line's color for a theme id: its `color.semantic.success` at {@link ACTIVITY_LINE_ALPHA}. */
 function activityColorFor(themeId: string): string {
   return withAlpha(resolveTheme(themeId).color.semantic.success, ACTIVITY_LINE_ALPHA);
+}
+
+/** trmx-99: the exit-code flash color — `color.semantic.error` at the same alpha as the activity line. */
+function activityErrorColorFor(themeId: string): string {
+  return withAlpha(resolveTheme(themeId).color.semantic.error, ACTIVITY_LINE_ALPHA);
 }
 
 /** Wire a mounted terminal to a live PTY session; resolves the session's identity (useBackend). */
@@ -313,6 +320,12 @@ export function App({
   const [activityColor, setActivityColor] = useState<string>(() =>
     activityColorFor(makeSettingsStore().get("appearance.theme")),
   );
+  // trmx-99 (FR-7b): the exit-code flash color (semantic.error at the same alpha) + the set of panes
+  // currently flashing after a failed command. The flashing set drives the overlay re-render.
+  const [activityErrorColor, setActivityErrorColor] = useState<string>(() =>
+    activityErrorColorFor(makeSettingsStore().get("appearance.theme")),
+  );
+  const [flashingPanes, setFlashingPanes] = useState<Set<PaneId>>(() => new Set());
   // trmx-90: the pane whose badge is being edited via the ⇧⌘B inline editor (null = not editing).
   // Mirrors renamingTabId: while non-null, focus-follows-activation is SUPPRESSED (the input owns
   // the keyboard); commit/cancel clears it, handing focus back to the pane's terminal.
@@ -370,6 +383,11 @@ export function App({
   // every transition, disposed on pane close / unmount).
   const activityStatesRef = useRef(new Map<PaneId, ActivityState>());
   const activityTimersRef = useRef(new Map<PaneId, ReturnType<typeof setTimeout>>());
+  // trmx-99 (FR-7b): panes whose activity is OSC-133-owned (the poller's session:activity is ignored for
+  // them, sticky per session); their stable onPromptMarker callbacks; and the per-pane exit-flash timers.
+  const osc133PanesRef = useRef(new Set<PaneId>());
+  const promptMarkerCbsRef = useRef(new Map<PaneId, (t: PromptTransition) => void>());
+  const activityFlashTimersRef = useRef(new Map<PaneId, ReturnType<typeof setTimeout>>());
   const renamingRef = useRef(renamingTabId); // out-of-render read for the onReady focus guard
   const badgingRef = useRef(badgingPaneId); // out-of-render read for the onReady focus guard (trmx-90)
   const openSearchRef = useRef(openSearchPanes); // out-of-render read for the onReady focus guard (trmx-98)
@@ -622,6 +640,59 @@ export function App({
     dispatch({ kind: "setActivity", tabId, paneId, visible: isActivityVisible(state) });
   };
 
+  // trmx-99 (FR-7b): start / cancel a pane's exit-code flash. The flashing set drives the overlay
+  // re-render; the timer clears it after FLASH_MS. A new command (C) cancels a stale flash.
+  const startFlash = (paneId: PaneId) => {
+    const prior = activityFlashTimersRef.current.get(paneId);
+    if (prior !== undefined) clearTimeout(prior);
+    setFlashingPanes((prev) => new Set(prev).add(paneId));
+    const timer = setTimeout(() => {
+      activityFlashTimersRef.current.delete(paneId);
+      setFlashingPanes((prev) => {
+        if (!prev.has(paneId)) return prev;
+        const next = new Set(prev);
+        next.delete(paneId);
+        return next;
+      });
+    }, FLASH_MS);
+    activityFlashTimersRef.current.set(paneId, timer);
+  };
+  const clearFlashFor = (paneId: PaneId) => {
+    const prior = activityFlashTimersRef.current.get(paneId);
+    if (prior !== undefined) {
+      clearTimeout(prior);
+      activityFlashTimersRef.current.delete(paneId);
+    }
+    setFlashingPanes((prev) => {
+      if (!prev.has(paneId)) return prev;
+      const next = new Set(prev);
+      next.delete(paneId);
+      return next;
+    });
+  };
+
+  // trmx-99: this pane's OSC 133 marker sink, cached like badgeFor (a stable identity — an inline arrow
+  // would remount the terminal via the effect deps). ANY valid marker latches the pane to the osc133
+  // source (sticky — the poller is ignored for it thereafter); App applies the activity change from the
+  // machine's `busyChanged` (so an `A`-while-running clears the line), a `C` cancels a stale flash, and a
+  // failed command's exit code flashes the error color.
+  const promptMarkerFor = (tabId: number, paneId: PaneId): ((t: PromptTransition) => void) => {
+    let cb = promptMarkerCbsRef.current.get(paneId);
+    if (!cb) {
+      cb = (transition) => {
+        osc133PanesRef.current.add(paneId);
+        if (transition.busy) clearFlashFor(paneId); // a new command wins over a leftover flash
+        if (transition.busyChanged) {
+          const current = activityStatesRef.current.get(paneId) ?? initialActivity();
+          applyActivityTransition(tabId, paneId, onBusyChange(current, transition.busy, Date.now()));
+        }
+        if (shouldFlash(transition.exitCode)) startFlash(paneId);
+      };
+      promptMarkerCbsRef.current.set(paneId, cb);
+    }
+    return cb;
+  };
+
   // Dispose one pane's resources: drop all its paneId-keyed maps and close its PTY (unless the
   // shell already exited). Shared by pane-close, pty:exited, and whole-tab close — one path, no leak.
   const disposePaneResources = (paneId: PaneId, opts?: { alreadyExited?: boolean }) => {
@@ -642,6 +713,11 @@ export function App({
     if (activityTimer !== undefined) clearTimeout(activityTimer);
     activityTimersRef.current.delete(paneId);
     activityStatesRef.current.delete(paneId);
+    // trmx-99 (FR-7b): drop this pane's OSC 133 latch + marker cb + exit-flash (a closed pane leaves no
+    // sticky source, no stale flash timer). The latch resets so a reused pane re-detects integration.
+    osc133PanesRef.current.delete(paneId);
+    promptMarkerCbsRef.current.delete(paneId);
+    clearFlashFor(paneId);
     // trmx-98: drop this pane's find-bar state so a closed pane leaves no open bar / stale controller.
     searchControllersRef.current.delete(paneId);
     setOpenSearchPanes((prev) => {
@@ -1017,6 +1093,9 @@ export function App({
     return observeActivity((sessionId, busy) => {
       const hit = paneBySessionId(stateRef.current, sessionId);
       if (!hit) return; // no pane owns this session (session-less/closed) — inert
+      // trmx-99 (FR-7b): once a pane is OSC-133-owned, the poller's guesses are dropped for it — the
+      // shell-integration state machine is the authoritative source (a sticky, session-scoped upgrade).
+      if (osc133PanesRef.current.has(hit.paneId)) return;
       const current = activityStatesRef.current.get(hit.paneId) ?? initialActivity();
       applyActivityTransition(hit.tab.tabId, hit.paneId, onBusyChange(current, busy, Date.now()));
     });
@@ -1044,6 +1123,7 @@ export function App({
       else if (key === "appearance.theme" && (isRegisteredThemeId(value) || isUserThemeIdShape(value))) {
         setBadgeColor(resolveTheme(value).terminal.badge);
         setActivityColor(activityColorFor(value));
+        setActivityErrorColor(activityErrorColorFor(value)); // trmx-99: re-tint the exit-code flash
         setSearchColors(resolveTheme(value).terminal.search); // trmx-98: re-tint the find highlights
       }
     });
@@ -1305,13 +1385,17 @@ export function App({
                       cwdStore={storeFor(paneId)}
                       onOscTitle={oscTitleFor(tab.tabId, paneId)}
                       onBadge={badgeFor(tab.tabId, paneId)}
+                      onPromptMarker={promptMarkerFor(tab.tabId, paneId)}
                     />
-                    {/* trmx-91: the top-edge activity line (click-through, below the badge). Shown only
-                        while this pane is busy (its debounced activityVisible) AND the setting is on;
-                        ActivityLine self-hides when the combined gate is false. */}
+                    {/* trmx-91: the top-edge activity line (click-through, below the badge). Shown while
+                        this pane is busy (its debounced activityVisible) OR flashing a failed command's
+                        exit code (trmx-99), AND the setting is on. The flash paints the error color and
+                        overrides the busy color (a new command clears the flash first). */}
                     <ActivityLineOverlay
-                      visible={activityIndicatorOn && pane.activityVisible === true}
-                      color={activityColor}
+                      visible={
+                        activityIndicatorOn && (pane.activityVisible === true || flashingPanes.has(paneId))
+                      }
+                      color={flashingPanes.has(paneId) ? activityErrorColor : activityColor}
                     />
                     {/* trmx-90: the translucent badge watermark (top-right, click-through). Hidden by
                         BadgeOverlay itself when the pane has no badge or is too narrow. */}

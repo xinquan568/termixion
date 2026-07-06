@@ -691,12 +691,12 @@ describe("TerminalView", () => {
       writeClipboard,
     });
 
-    // OSC 0/2 titles forward to the injected sink; 52, 7, and 1337 (trmx-90) handlers are registered.
+    // OSC 0/2 titles forward to the injected sink; 52, 7, 1337 (trmx-90), and 133 (trmx-99) are registered.
     titleHandler?.("hello from OSC 2");
     expect(setTitle).toHaveBeenCalledWith("hello from OSC 2");
-    expect(oscRegistrations.map((r) => r.ident).sort((a, b) => a - b)).toEqual([7, 52, 1337]);
+    expect(oscRegistrations.map((r) => r.ident).sort((a, b) => a - b)).toEqual([7, 52, 133, 1337]);
 
-    // One teardown disposes all subscriptions (title + 52 + 7 + 1337).
+    // One teardown disposes all subscriptions (title + 52 + 7 + 1337 + 133).
     teardown();
     expect(titleDispose).toHaveBeenCalledTimes(1);
     for (const r of oscRegistrations) expect(r.dispose).toHaveBeenCalledTimes(1);

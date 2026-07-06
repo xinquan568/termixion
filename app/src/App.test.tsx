@@ -26,6 +26,7 @@ const recorder = vi.hoisted(() => ({
     cwdStore: { get(): string | null; set(cwd: string): void } | undefined;
     onOscTitle: ((title: string) => void) | undefined;
     onBadge: ((badge: string | null) => void) | undefined;
+    onPromptMarker: ((t: { kind: string; busy: boolean; busyChanged: boolean; exitCode?: number }) => void) | undefined;
   }>,
   unmounts: 0,
   reset() {
@@ -42,11 +43,13 @@ vi.mock("./terminal/TerminalView", async () => {
       cwdStore,
       onOscTitle,
       onBadge,
+      onPromptMarker,
     }: {
       onReady?: (handle: unknown) => void;
       cwdStore?: { get(): string | null; set(cwd: string): void };
       onOscTitle?: (title: string) => void;
       onBadge?: (badge: string | null) => void;
+      onPromptMarker?: (t: { kind: string; busy: boolean; busyChanged: boolean; exitCode?: number }) => void;
     }) => {
       useEffect(() => {
         const handle = {
@@ -55,15 +58,15 @@ vi.mock("./terminal/TerminalView", async () => {
           fit: () => {},
           dispose: () => {},
         };
-        recorder.mounts.push({ handle, cwdStore, onOscTitle, onBadge });
+        recorder.mounts.push({ handle, cwdStore, onOscTitle, onBadge, onPromptMarker });
         onReady?.(handle);
         return () => {
           recorder.unmounts += 1;
         };
         // The real TerminalView remounts when these identities change — mirroring that makes the
-        // keep-alive test honest: an unstable onReady/cwdStore/onOscTitle/onBadge from App would count
-        // an unmount (trmx-75/90: the per-pane OSC callbacks must be cached like onReady).
-      }, [onReady, cwdStore, onOscTitle, onBadge]);
+        // keep-alive test honest: an unstable onReady/cwdStore/onOscTitle/onBadge/onPromptMarker from App
+        // would count an unmount (trmx-75/90/99: the per-pane OSC callbacks must be cached like onReady).
+      }, [onReady, cwdStore, onOscTitle, onBadge, onPromptMarker]);
       return <div data-testid="terminal-view-stub" />;
     },
   };
@@ -1614,6 +1617,42 @@ describe("App activity indicator (trmx-91)", () => {
     expect(activityLineIn(1)).toBeInTheDocument();
     act(() => vi.advanceTimersByTime(1)); // cross the 300ms min-visible floor → clears
     expect(activityLineIn(1)).not.toBeInTheDocument();
+  });
+
+  it("OSC 133 drives the line and LATCHES the pane so the poller is ignored (trmx-99, FR-7b)", async () => {
+    const { calls, activity } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
+    vi.useFakeTimers();
+    const marker = recorder.mounts[0].onPromptMarker!;
+    // A command starts (OSC 133;C) → busy → the line appears after the 150ms show floor.
+    act(() => marker({ kind: "C", busy: true, busyChanged: true }));
+    act(() => vi.advanceTimersByTime(150));
+    expect(activityLineIn(1)).toBeInTheDocument();
+    // The poller's guess (idle) is DROPPED for this OSC-133-owned pane — the line HOLDS (no strobe).
+    act(() => activity.fire(7, false));
+    act(() => vi.advanceTimersByTime(500)); // well past the 300ms min-visible
+    expect(activityLineIn(1)).toBeInTheDocument();
+    // The command finishes via OSC 133 (D, exit 0) → busy clears → the line goes after min-visible.
+    act(() => marker({ kind: "D", busy: false, busyChanged: true, exitCode: 0 }));
+    act(() => vi.advanceTimersByTime(700));
+    expect(activityLineIn(1)).not.toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("a failed command (D;1) flashes the line after it finishes, then clears (trmx-99)", async () => {
+    const { calls } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
+    vi.useFakeTimers();
+    const marker = recorder.mounts[0].onPromptMarker!;
+    act(() => marker({ kind: "C", busy: true, busyChanged: true }));
+    act(() => vi.advanceTimersByTime(150));
+    // Finish with a non-zero exit → busy clears, but the flash keeps the line painting for FLASH_MS.
+    act(() => marker({ kind: "D", busy: false, busyChanged: true, exitCode: 1 }));
+    act(() => vi.advanceTimersByTime(300)); // past min-visible; the flash (600ms) still shows the line
+    expect(activityLineIn(1)).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(400)); // past FLASH_MS → the flash clears
+    expect(activityLineIn(1)).not.toBeInTheDocument();
+    vi.useRealTimers();
   });
 
   it("never flashes for an instant job (busy then idle within the 150ms show delay)", async () => {
