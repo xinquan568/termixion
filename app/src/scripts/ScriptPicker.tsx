@@ -26,11 +26,15 @@ export function ScriptPicker({ onRun, onCancel, invoke = realInvoke }: ScriptPic
   const [selected, setSelected] = useState(0);
 
   // Load the catalog on mount and re-load on a `scripts:changed` signal. No runtime → [] (inert).
+  // A monotonic request id guards against out-of-order resolution — a slow initial load must not
+  // clobber a fresher reload triggered by a scripts:changed while it was in flight.
   useEffect(() => {
     let live = true;
+    let latest = 0;
     const reload = () => {
+      const id = ++latest;
       listScripts(invoke).then((entries) => {
-        if (live) setScripts(entries);
+        if (live && id === latest) setScripts(entries);
       });
     };
     reload();
@@ -46,8 +50,9 @@ export function ScriptPicker({ onRun, onCancel, invoke = realInvoke }: ScriptPic
     [query, scripts],
   );
 
-  // A new filter re-selects the top (best) result so Enter runs the obvious choice.
-  useEffect(() => setSelected(0), [query]);
+  // A new filter — or a refreshed catalog (a scripts:changed reload may shrink the list) — re-selects
+  // the top (best) result, keeping the highlight in range and Enter on the obvious choice.
+  useEffect(() => setSelected(0), [query, scripts]);
 
   const onKeyDown = (event: React.KeyboardEvent) => {
     if (event.key === "ArrowDown") {

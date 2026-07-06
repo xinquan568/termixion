@@ -491,12 +491,17 @@ export function App({
               seamsRef.current.closeSession(info.sessionId).catch((err: unknown) => {
                 console.error("[termixion] orphan session close failed", err);
               });
+              // trmx-93: if the pane is truly DEAD (not merely a stale epoch on a still-live pane),
+              // drop its pending script — no later attach will consume it. A stale-epoch-but-alive
+              // pane keeps it so the current-epoch attach still sources it.
+              if (!paneAlive(tabId, paneId)) pendingScriptRef.current.delete(paneId);
             }
           })
           .catch((err: unknown) => {
             // Open failed (no backend in `pnpm dev`, or a real spawn error): the pane keeps its
             // placeholder title with a dead session — do not crash the shell.
             console.error("[termixion] pane attach failed", err);
+            pendingScriptRef.current.delete(paneId); // trmx-93: no session → the script never sources
           });
       };
       readyCbsRef.current.set(paneId, cb);
@@ -576,6 +581,7 @@ export function App({
     handlesRef.current.delete(paneId);
     storesRef.current.delete(paneId);
     pendingCwdRef.current.delete(paneId);
+    pendingScriptRef.current.delete(paneId); // trmx-93: a pane closed before its script sourced
     readyCbsRef.current.delete(paneId);
     oscTitleCbsRef.current.delete(paneId);
     badgeCbsRef.current.delete(paneId);

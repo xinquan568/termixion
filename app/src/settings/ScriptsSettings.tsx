@@ -36,9 +36,13 @@ export function ScriptsSettings({ settings, invoke = realInvoke }: ScriptsSettin
   // script file). Without a Tauri runtime listScripts resolves [] and the subscription is inert.
   useEffect(() => {
     let live = true;
+    let latest = 0;
     const reload = () => {
+      const id = ++latest;
       listScripts(invoke).then((entries) => {
-        if (live) setScripts(entries);
+        // A monotonic id guards against out-of-order resolution (a slow initial load clobbering a
+        // fresher scripts:changed reload).
+        if (live && id === latest) setScripts(entries);
       });
     };
     reload();

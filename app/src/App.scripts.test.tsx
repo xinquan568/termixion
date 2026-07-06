@@ -156,4 +156,51 @@ describe("App scripting orchestration (trmx-93)", () => {
     fireEvent.keyDown(screen.getByTestId("script-picker"), { key: "Escape" });
     await waitFor(() => expect(screen.queryByTestId("script-picker")).toBeNull());
   });
+
+  // The full picker → pick → run path for each surface verb: pick a script, resolve the NEW pane's
+  // attach, and assert it is sourced. (The first pane is calls[0]; the scripted surface is calls[1].)
+  it.each([
+    ["new-with-script"],
+    ["split-right-with-script"],
+    ["split-below-with-script"],
+  ])("%s: picking a script sources it in the new surface", async (verb) => {
+    const invoke = vi.fn(async () => [ENTRY]) as unknown as InvokeFn;
+    const sendInput = vi.fn(() => Promise.resolve());
+    const { calls, tabsAction } = renderScriptsApp({ invoke, sendInput });
+    await waitFor(() => expect(calls.length).toBe(1));
+    act(() => calls[0].resolve({ sessionId: 1, title: "zsh" })); // first pane, no script
+
+    act(() => tabsAction.fire(verb));
+    const picker = await screen.findByTestId("script-picker");
+    await screen.findByText("work/proj-x.sh"); // catalog loaded into the picker
+    fireEvent.keyDown(picker, { key: "Enter" }); // run the highlighted entry
+
+    await waitFor(() => expect(calls.length).toBe(2)); // the new surface's pane attaches
+    act(() => calls[1].resolve({ sessionId: 2, title: "zsh" }));
+    await waitFor(() =>
+      expect(sendInput).toHaveBeenCalledWith(2, "source '/x/work/proj-x.sh'\r"),
+    );
+    // Exactly the new surface was sourced — the first pane never was.
+    expect(sendInput).toHaveBeenCalledTimes(1);
+  });
+
+  it("a scripted tab closed BEFORE its attach resolves is never sourced (no stale pending)", async () => {
+    const invoke = vi.fn(async () => [ENTRY]) as unknown as InvokeFn;
+    const sendInput = vi.fn(() => Promise.resolve());
+    const { calls, tabsAction } = renderScriptsApp({ invoke, sendInput });
+    await waitFor(() => expect(calls.length).toBe(1));
+    act(() => calls[0].resolve({ sessionId: 1, title: "zsh" }));
+
+    act(() => tabsAction.fire("new-with-script"));
+    await screen.findByTestId("script-picker");
+    await screen.findByText("work/proj-x.sh");
+    fireEvent.keyDown(screen.getByTestId("script-picker"), { key: "Enter" });
+    await waitFor(() => expect(calls.length).toBe(2)); // the scripted tab's pane mounted...
+
+    act(() => tabsAction.fire("close")); // ...then it is closed before attach resolves
+    act(() => calls[1].resolve({ sessionId: 2, title: "zsh" })); // the now-orphan attach lands
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sendInput).not.toHaveBeenCalled(); // a dead pane sources nothing
+  });
 });
