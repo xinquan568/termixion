@@ -5,6 +5,16 @@ The user-facing changes to Termixion are documented here. The format follows
 [Semantic Versioning](https://semver.org). Auto-generated from Conventional Commits by git-cliff;
 internal changes (build / CI / tests / refactors / docs) live in the git history and the linked issues.
 
+## [0.0.9] - 2026-07-06
+
+### Added
+- Grapheme-cluster Unicode correctness + conformance group (trmx-97) (#128)
+- In-pane find bar (⌘F) with scrollback search + ⌘G nav & case/regex (trmx-98) (#129)
+- Accurate activity indicator via OSC 133 shell integration (trmx-99) (#130)
+- Drag to re-dock panes with five-zone drop targets + keyboard move (trmx-100) (#131)
+- Opt-in external control channel over a unix socket (trmx-101) (#132)
+- Linux build — unix PTY backend, Linux CI gate, AppImage/.deb release (trmx-102) (#133)
+
 ## [0.0.8] - 2026-07-06
 
 ### Added
@@ -82,3 +92,4 @@ internal changes (build / CI / tests / refactors / docs) live in the git history
 - Always set TERM=xterm-256color for the login shell (trmx-37) (#38)
 - Show scrollbar on user wheel/viewport scroll (trmx-41) (#43)
 - Grant start_dragging so the Settings window can be dragged (trmx-54) (#58)
+
