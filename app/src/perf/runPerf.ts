@@ -546,19 +546,48 @@ function rootContainer(): HTMLElement {
 }
 
 /** The real, Tauri/xterm-backed deps used by the app entry (main.tsx `--perf` gate). */
+/** Lazily build (once) a viewport-filling 3×2 CSS grid inside `#root` and return the slot for `index`.
+ *  Each slot is a real, sized cell so xterm's fit addon gives every pane nonzero geometry — the load the
+ *  multi-pane scenario measures under. Idempotent per index within a run. */
+function perfGridSlot(index: number): HTMLElement {
+  const root = rootContainer();
+  let grid = root.querySelector<HTMLElement>(":scope > .perf-grid");
+  if (!grid) {
+    grid = document.createElement("div");
+    grid.className = "perf-grid";
+    grid.style.cssText =
+      "position:fixed;inset:0;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(2,1fr);gap:2px;";
+    root.appendChild(grid);
+  }
+  let slot = grid.querySelector<HTMLElement>(`:scope > [data-perf-pane="${index}"]`);
+  if (!slot) {
+    slot = document.createElement("div");
+    slot.dataset.perfPane = String(index);
+    slot.style.cssText = "position:relative;overflow:hidden;min-width:0;min-height:0;";
+    grid.appendChild(slot);
+  }
+  return slot;
+}
+
 export function realPerfDeps(): PerfDeps {
   return {
     invoke: realInvoke,
     mount: () => mountPerfInto(rootContainer()),
-    // trmx-103: pane 0 reuses `#root`; each further pane gets a fresh child slot so N real xterms
-    // coexist in one webview — the multi-pane grid the load scenario measures under.
+    // trmx-103: mount pane `index` into a REAL, sized grid slot so the load scenario measures a genuinely
+    // visible six-pane layout — never a zero-size/off-screen pane. The grid (3 cols × 2 rows filling the
+    // viewport) is built lazily on the first mountPane call; each slot is a flex cell so xterm's fit gives
+    // it nonzero geometry. We then ASSERT the slot rendered non-empty and throw into the report path
+    // otherwise (a collapsed layout must fail the run honestly, not silently measure a 0×0 terminal).
     mountPane: (index) => {
-      const root = rootContainer();
-      if (index === 0) return mountPerfInto(root);
-      const slot = document.createElement("div");
-      slot.dataset.perfPane = String(index);
-      root.appendChild(slot);
-      return mountPerfInto(slot);
+      const slot = perfGridSlot(index);
+      const mount = mountPerfInto(slot);
+      const rect = slot.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        throw new Error(
+          `perf: multipane slot ${index} has zero geometry (${rect.width}x${rect.height}) — grid collapsed`,
+        );
+      }
+      return mount;
     },
     openPty: (onBytes, rows, cols, invoke) => openPty(onBytes, rows, cols, undefined, invoke),
     sendInput: sendPtyInput,

@@ -72,8 +72,10 @@ are **sanctioned manual-checklist items**, not un-referenced skips: `mouse-repor
 pointer events translate to cell coordinates (manual checklist)")` and `it.skip("wheel and modifier-key
 reports from real events (manual checklist)")` — real DOM pointer/wheel events jsdom cannot synthesize,
 covered by the packaged manual checklist (`README.md` §manual) and flagged inline with a pointer comment
-(`mouse-reporting.test.ts:9`). **Attested: every skip is accounted for — zero un-sanctioned skips; the 2
-skips are the documented real-event manual items, verified on the reference Mac in the appendix.**
+(`mouse-reporting.test.ts:9`). **Attested: every skip is accounted for — zero un-sanctioned skips.** The 2
+skips are the documented real-event manual items; they are **NOT yet verified** — the packaged manual
+checklist on the reference Mac (an unchecked, publish-blocking appendix item) must record their result
+before publishing. This report makes no claim that they have passed.
 
 ## §1 — NFR-1 under multi-pane load
 
@@ -169,34 +171,37 @@ confirmation. No crasher expected or found.
 
 ## §4 — Phase-1 feature-acceptance matrix
 
-Every FR shipped in v0.0.1–v0.0.9 → its `trmx-N` issue → re-verification status. **Automated** = covered by
-a green CI suite (unit/conformance/golden/e2e); **packaged** = operator re-verify on the packaged macOS
-build; **linux** = operator spot-check on Ubuntu. (FR definitions sourced from each linked issue; the
-FR→trmx map is reconstructed from in-repo source tags.)
+Every FR shipped in v0.0.1–v0.0.9 → its `trmx-N` issue → re-verification status. The **Automated evidence**
+column is the ONLY column this report attests as PASS — a green CI suite (unit/conformance/golden/e2e) at
+the sweep SHA. The **Packaged re-verify** column is the operator's packaged-macOS + Ubuntu re-verification;
+it is **entirely operator-pending (⏳)** — this report shows NO packaged/Linux cell as green, since none has
+been run. (FR definitions sourced from each linked issue; the FR→trmx map is reconstructed from in-repo
+source tags.)
 
-| FR | Feature | trmx-N | Automated evidence | Packaged / Linux |
-| -- | ------- | ------ | ------------------ | ---------------- |
-| FR-1.2 | LF column discipline (convertEol) | trmx-64 | conformance `cursor-controls` | ✅ / spot |
-| FR-1.3 | erase/edit correctness | trmx-65 | conformance `erase-edit` | ✅ / spot |
-| FR-1.4 | Unicode width/grapheme | trmx-97 | conformance `unicode` | ✅ / spot |
-| FR-1.5 | in-pane search | trmx-98 | app unit (search store) | ✅ / spot |
-| FR-1.6 | resize / winsize | trmx-67 | platform golden (`resize_winsize…`) | ✅ / spot |
-| FR-1.7 | Linux build/dist | trmx-102 | Linux full gate (CI) | — / ✅ operator VM |
-| FR-2.x | session registry / lifecycle | trmx-64/74/81/82/75 | platform golden + core unit | ✅ / spot |
-| FR-3.2–3.6 | panes: split/close/redock/nav/zoom | trmx-84/85/94/100/86/87 | app unit + e2e `panes.spec` | ✅ / spot |
-| FR-4 | badges | trmx-90 | app unit | ✅ / spot |
-| FR-5 | scripts | trmx-93 | app unit + `scripts.md` | ✅ / spot |
-| FR-6 | themes | trmx-89 | app unit + `themes.md` | ✅ / spot |
-| FR-7a/7b | activity / OSC-133 | trmx-91/99 | conformance `osc133` + app unit | ✅ / spot |
-| FR-8 | auto-copy | trmx-95 | app unit | ✅ / spot |
-| FR-9.x | command registry/palette/keys | trmx-94 | app unit (`registry`/`keymap`) | ✅ / spot |
-| FR-9.4 | remote control (ctl) | trmx-101 | `control_io`/`control` unit | ✅ / spot |
-| FR-13 | config backbone | trmx-80 | core `config` + app `settingsStore` | ✅ / spot |
-| NFR-1 | perf budgets | trmx-78 | perf unit (shape) | ⏳ operator numbers (§1) |
+| FR | Feature | trmx-N | Automated evidence (attested ✅) | Packaged re-verify (operator) |
+| -- | ------- | ------ | ------------------------------- | ----------------------------- |
+| FR-1.2 | LF column discipline (convertEol) | trmx-64 | ✅ conformance `cursor-controls` | ⏳ operator |
+| FR-1.3 | erase/edit correctness | trmx-65 | ✅ conformance `erase-edit` | ⏳ operator |
+| FR-1.4 | Unicode width/grapheme | trmx-97 | ✅ conformance `unicode` | ⏳ operator |
+| FR-1.5 | in-pane search | trmx-98 | ✅ app unit (search store) | ⏳ operator |
+| FR-1.6 | resize / winsize | trmx-67 | ✅ platform golden (`resize_winsize…`) | ⏳ operator |
+| FR-1.7 | Linux build/dist | trmx-102 | ✅ Linux full gate (CI) | ⏳ operator (Ubuntu 22.04/24.04 VM) |
+| FR-2.x | session registry / lifecycle | trmx-64/74/81/82/75 | ✅ platform golden + core unit | ⏳ operator |
+| FR-3.2–3.6 | panes: split/close/redock/nav/zoom | trmx-84/85/94/100/86/87 | ✅ app unit + e2e `panes.spec` | ⏳ operator |
+| FR-4 | badges | trmx-90 | ✅ app unit | ⏳ operator |
+| FR-5 | scripts | trmx-93 | ✅ app unit + `scripts.md` | ⏳ operator |
+| FR-6 | themes | trmx-89 | ✅ app unit + `themes.md` | ⏳ operator |
+| FR-7a/7b | activity / OSC-133 | trmx-91/99 | ✅ conformance `osc133` + app unit | ⏳ operator |
+| FR-8 | auto-copy | trmx-95 | ✅ app unit | ⏳ operator |
+| FR-9.x | command registry/palette/keys | trmx-94 | ✅ app unit (`registry`/`keymap`) | ⏳ operator |
+| FR-9.4 | remote control (ctl) | trmx-101 | ✅ `control_io`/`control` unit | ⏳ operator |
+| FR-13 | config backbone | trmx-80 | ✅ core `config` + app `settingsStore` | ⏳ operator |
+| NFR-1 | perf budgets | trmx-78 | ✅ perf unit (shape only) | ⏳ operator numbers (§1) |
 
-All shipped FRs have automated coverage green at the sweep SHA; the packaged/Linux/perf-number columns are
-operator spot-checks in the appendix. **No FR fails its acceptance** (any fail would be a Sev-1/2 defect
-issue + NO-GO).
+Every shipped FR has automated coverage **green at the sweep SHA** (the attested column). The packaged
+re-verify column is **wholly operator-pending** — no FR is marked packaged-passed here. **No FR's automated
+coverage fails** (an automated fail would be a Sev-1/2 defect issue + NO-GO); a packaged re-verify failure
+would likewise become a defect issue + revert the GO.
 
 ## §5 — Docs + release-surface audit (record-only)
 

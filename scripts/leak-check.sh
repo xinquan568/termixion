@@ -35,9 +35,25 @@ rss_kb="$(ps -o rss= -p "$APP_PID" | tr -d ' ')"
 rss_mb=$(( rss_kb / 1024 ))
 fds="$(lsof -p "$APP_PID" 2>/dev/null | wc -l | tr -d ' ')"
 threads="$(ps -M "$APP_PID" 2>/dev/null | tail -n +2 | wc -l | tr -d ' ')"
-# Descendant zombie sweep (a leaked PTY child is a Z-state descendant).
-pgid="$(ps -o pgid= -p "$APP_PID" | tr -d ' ')"
-zombies="$(ps -o pid=,stat= -g "$pgid" 2>/dev/null | awk '$2 ~ /^Z/' | wc -l | tr -d ' ')"
+# Descendant zombie sweep — walk the subtree by PPID, NOT the process group (PTY shells + their fg jobs run
+# in their own process groups, so `ps -g` would miss a leaked zombie child).
+descendants() {
+  local frontier="$1" next pid kids all=""
+  while [ -n "$frontier" ]; do
+    next=""
+    for pid in $frontier; do
+      all="$all $pid"
+      kids="$(ps -o pid= -o ppid= -ax 2>/dev/null | awk -v p="$pid" '$2==p {print $1}')"
+      next="$next $kids"
+    done
+    frontier="$next"
+  done
+  echo "$all"
+}
+zombies=0
+for pid in $(descendants "$APP_PID"); do
+  case "$(ps -o stat= -p "$pid" 2>/dev/null | tr -d ' ' || true)" in Z*) zombies=$((zombies + 1));; esac
+done
 
 echo "leak-check [$LABEL]: pid=$APP_PID rss=${rss_mb}MB fds=$fds threads=$threads zombies=$zombies"
 # `footprint` is the higher-fidelity macOS memory tool (dirty + swapped) — advisory, not all hosts have it.
