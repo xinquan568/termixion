@@ -153,11 +153,13 @@ describe("SettingsApp shell", () => {
 
     // An About-page reset / cross-window write re-selects the broadcast theme, ring included.
     bus.deliver("settings:changed", { key: "appearance.theme", value: "paper", source: "main" });
+    // The radio ring AND the applied `--tx-bg` swatch move together — assert BOTH inside the waitFor so a
+    // slow runner can't observe the radio after it flips but before the CSS var catches up (a test race).
     await waitFor(() => {
       expect(screen.getByRole("radio", { name: "Paper" })).toHaveAttribute("aria-checked", "true");
       expect(screen.getByRole("radio", { name: "Night" })).toHaveAttribute("aria-checked", "false");
+      expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#EEEDED");
     });
-    expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#EEEDED");
   });
 
   it("renders the sidebar with the search field and the Terminal + About entries", () => {

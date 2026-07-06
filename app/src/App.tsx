@@ -111,6 +111,7 @@ import { CommandPalette } from "./commands/CommandPalette";
 import { growTarget } from "./commands/growPane";
 import { listThemes } from "./theme/registry";
 import { realEventBus } from "./ipc/eventBus";
+import { routeControlRequest, buildLsSnapshot, type ControlDeps } from "./control/controlBridge";
 import { installThemeHotReload } from "./theme/themeHotReload";
 import { makeCwdStore, type CwdStore } from "./terminal/osc7";
 import { realSetWindowTitle } from "./terminal/windowTitle";
@@ -239,6 +240,31 @@ const realObserveAppSettings: SettingsObservation = (onChange) => {
   };
 };
 
+// trmx-101 (FR-9.4): observe the Rust control socket's requests over `control:request` — same
+// teardown-before-resolve pattern. Each payload is `{ id, request }`; App routes it through the command
+// dispatcher / builds the snapshot / sends text, then replies via `invoke("control_response")`.
+export type ControlRequest = { id: number; request: { cmd?: unknown; args?: unknown } };
+export type ControlRequestObservation = (onRequest: (req: ControlRequest) => void) => () => void;
+const realObserveControlRequest: ControlRequestObservation = (onRequest) => {
+  let live = true;
+  let unlisten: (() => void) | undefined;
+  realEventBus
+    .listen("control:request", (payload) => {
+      if (live) onRequest(payload as ControlRequest);
+    })
+    .then((u) => {
+      if (live) unlisten = u;
+      else u();
+    })
+    .catch(() => {
+      // No Tauri runtime — there is no control socket in a plain browser tab.
+    });
+  return () => {
+    live = false;
+    unlisten?.();
+  };
+};
+
 export interface AppProps {
   /** Injection seam for tests; defaults to useBackend's attachTerminal (the live PTY wiring). */
   attach?: AttachFn;
@@ -256,6 +282,8 @@ export interface AppProps {
   observeActivity?: ActivityObservation;
   /** Injection seam for tests; defaults to the real `settings:changed` subscription (trmx-81). */
   observeSettings?: SettingsObservation;
+  /** Injection seam for tests; the control socket's request stream (trmx-101). */
+  observeControlRequest?: ControlRequestObservation;
   /** Injection seam for tests; defaults to retitling the native window (trmx-75). */
   setWindowTitle?: (title: string) => void;
   /** Injection seam for tests; defaults to the real `set_session_title` core mirror (trmx-75). */
@@ -279,6 +307,7 @@ export function App({
   observeTitleHint = onTitleHint,
   observeActivity = onSessionActivity,
   observeSettings = realObserveAppSettings,
+  observeControlRequest = realObserveControlRequest,
   setWindowTitle = realSetWindowTitle,
   mirrorTitle = setSessionTitle,
   dragSchedule = realFrameSchedule,
@@ -1115,6 +1144,43 @@ export function App({
       applyActivityTransition(hit.tab.tabId, hit.paneId, onBusyChange(current, busy, Date.now()));
     });
   }, [observeActivity]);
+
+  // trmx-101 (FR-9.4): the control-channel bridge. A request from the Rust socket routes through the SAME
+  // command dispatcher as a keypress, builds the ls snapshot, or types into a pane; the reply goes back
+  // via control_response. All App-owned state read from refs (out-of-render).
+  useEffect(() => {
+    const paneBusy = (paneId: PaneId): boolean => {
+      for (const tab of stateRef.current.tabs) {
+        const pane = tab.panes[paneId];
+        if (pane) return pane.activityVisible === true;
+      }
+      return false;
+    };
+    return observeControlRequest(({ id, request }) => {
+      const deps: ControlDeps = {
+        dispatch: (cmd, arg) => dispatcherRef.current?.dispatch(cmd, arg) ?? false,
+        hasCommand: (cmd) => dispatcherRef.current?.get(cmd) !== undefined,
+        buildLs: () =>
+          buildLsSnapshot(
+            stateRef.current.tabs,
+            stateRef.current.activeTabId,
+            (paneId) => storesRef.current.get(paneId)?.get() ?? null,
+            paneBusy,
+          ),
+        sendText: (pane, text) => {
+          const active = getActiveTab();
+          const paneId = pane === "focused" ? active?.focusedPaneId : Number(pane);
+          if (paneId === undefined || Number.isNaN(paneId)) return false;
+          const sessionId = sessionsRef.current.get(paneId);
+          if (sessionId === undefined) return false;
+          seamsRef.current.sendInput(sessionId, text).catch(() => {});
+          return true;
+        },
+      };
+      const payload = routeControlRequest(request, deps);
+      invoke("control_response", { id, payload }).catch(() => {});
+    });
+  }, [observeControlRequest, invoke]);
 
   // trmx-81/82: keep the bar position + side-label orientation live over settings:changed. Its OWN
   // effect, dep'd only on the stable observation seam — payloads are untrusted (only a well-formed

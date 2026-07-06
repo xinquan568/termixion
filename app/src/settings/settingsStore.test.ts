@@ -326,6 +326,8 @@ describe("registry shape", () => {
         "tabs.barPosition",
         "tabs.sideLabelOrientation",
         "scripts.startup",
+        "remote_control.enabled",
+        "remote_control.socketPath",
       ].sort(),
     );
   });

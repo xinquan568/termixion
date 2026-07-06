@@ -155,6 +155,18 @@ impl Default for UpdateConfig {
     }
 }
 
+/// The `[remote_control]` table (trmx-101, FR-9.4): the opt-in external control channel. OFF by default;
+/// `socket_path` empty = the XDG-default socket path (resolved in the tauri shell — the socket + its perms
+/// live there, never in core; R2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct RemoteControlConfig {
+    /// OFF by default (a `bool` defaults to `false`).
+    pub enabled: bool,
+    /// Empty string (the `String` default) = the default socket path (`~/.config/termixion/control.sock`).
+    pub socket_path: String,
+}
+
 /// The `[terminal]` table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -238,6 +250,8 @@ pub struct Config {
     pub appearance: AppearanceConfig,
     pub tabs: TabsConfig,
     pub scripts: ScriptsConfig,
+    /// trmx-101 (FR-9.4): the opt-in external control channel.
+    pub remote_control: RemoteControlConfig,
     /// trmx-94 (FR-9.3): the `[keys]` table — an OPEN map of chord string → command id (or the
     /// literal `"none"` to unbind a default). Unlike every other table this is a DYNAMIC map, not a
     /// fixed schema, so it is read tolerantly (a non-string value warns and is skipped) and surfaced
@@ -339,6 +353,10 @@ pub const DEFAULT_TEMPLATE: &str = r##"# Termixion configuration (TOML).
 # startup = ""                    # a script under ~/.config/termixion/scripts/ to run in the first
                                   # tab on launch, e.g. "work/proj-x.sh" ("" = none)
 
+# [remote_control]                # trmx-101: the opt-in external control channel (see docs/remote-control.md).
+# enabled = false                 # OFF by default — a local socket that lets scripts drive the terminal.
+# socket_path = ""                # "" = ~/.config/termixion/control.sock (0600 in a 0700 dir; NO TCP, ever).
+
 # [keys]                          # chord = "command.id" — rebind any shortcut; = "none" to unbind.
 # "cmd+t" = "tab.new"             # See docs/commands.md for every command id + its default binding.
 # "cmd+w" = "tab.close"
@@ -390,6 +408,8 @@ pub fn toml_path_for(registry_key: &str) -> Option<(&'static str, &'static str)>
         "tabs.barPosition" => Some(("tabs", "bar_position")),
         "tabs.sideLabelOrientation" => Some(("tabs", "side_label_orientation")),
         "scripts.startup" => Some(("scripts", "startup")),
+        "remote_control.enabled" => Some(("remote_control", "enabled")),
+        "remote_control.socketPath" => Some(("remote_control", "socket_path")),
         _ => None,
     }
 }
@@ -473,6 +493,16 @@ pub fn diff_configs(old: &Config, new: &Config) -> Vec<(String, RegistryValue)> 
         "scripts.startup",
         RegistryValue::Str(new.scripts.startup.clone()),
     );
+    push(
+        old.remote_control.enabled != new.remote_control.enabled,
+        "remote_control.enabled",
+        RegistryValue::Bool(new.remote_control.enabled),
+    );
+    push(
+        old.remote_control.socket_path != new.remote_control.socket_path,
+        "remote_control.socketPath",
+        RegistryValue::Str(new.remote_control.socket_path.clone()),
+    );
     changed
 }
 
@@ -530,6 +560,7 @@ fn parse_full(text: &str) -> (Config, Vec<(String, RegistryValue)>, Vec<ConfigWa
             "appearance" => Some(walk_appearance),
             "tabs" => Some(walk_tabs),
             "scripts" => Some(walk_scripts),
+            "remote_control" => Some(walk_remote_control),
             _ => None,
         };
         match walk_table {
@@ -575,6 +606,29 @@ fn walk_update(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
             ),
             _ => sink.warnings.push(ConfigWarning::UnknownKey {
                 key: format!("update.{key}"),
+            }),
+        }
+    }
+}
+
+// trmx-101 (FR-9.4): the `[remote_control]` table. Mirrors walk_update; the socket itself lives in the tauri shell.
+fn walk_remote_control(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
+    for (key, value) in table {
+        match key.as_str() {
+            "enabled" => read_bool(
+                value,
+                ("remote_control.enabled", "remote_control.enabled"),
+                &mut config.remote_control.enabled,
+                sink,
+            ),
+            "socket_path" => read_string(
+                value,
+                ("remote_control.socket_path", "remote_control.socketPath"),
+                &mut config.remote_control.socket_path,
+                sink,
+            ),
+            _ => sink.warnings.push(ConfigWarning::UnknownKey {
+                key: format!("remote_control.{key}"),
             }),
         }
     }
@@ -906,6 +960,7 @@ side_label_orientation = "vertical"
                     side_label_orientation: LabelOrientation::Vertical,
                 },
                 scripts: ScriptsConfig::default(),
+                remote_control: RemoteControlConfig::default(),
                 keys: BTreeMap::new(),
             }
         );
@@ -1214,6 +1269,48 @@ side_label_orientation = "vertical"
             toml_path_for("scripts.startup"),
             Some(("scripts", "startup"))
         );
+    }
+
+    // trmx-101 (FR-9.4): the [remote_control] table — OFF by default, round-trips, diffs, documented.
+    #[test]
+    fn remote_control_defaults_off_and_round_trips() {
+        assert!(!Config::default().remote_control.enabled);
+        assert_eq!(Config::default().remote_control.socket_path, "");
+        let (config, warnings) =
+            parse_config("[remote_control]\nenabled = true\nsocket_path = \"/tmp/tmx.sock\"\n");
+        assert!(config.remote_control.enabled);
+        assert_eq!(config.remote_control.socket_path, "/tmp/tmx.sock");
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn remote_control_diffs_and_maps_and_template_documents_it() {
+        let old = Config::default();
+        let mut new = Config::default();
+        new.remote_control.enabled = true;
+        assert_eq!(
+            diff_configs(&old, &new),
+            vec![(
+                "remote_control.enabled".to_string(),
+                RegistryValue::Bool(true)
+            )]
+        );
+        assert_eq!(
+            toml_path_for("remote_control.enabled"),
+            Some(("remote_control", "enabled"))
+        );
+        assert_eq!(
+            toml_path_for("remote_control.socketPath"),
+            Some(("remote_control", "socket_path"))
+        );
+        assert!(DEFAULT_TEMPLATE.contains("# [remote_control]"));
+    }
+
+    #[test]
+    fn remote_control_wrong_type_keeps_default_and_warns() {
+        let (config, warnings) = parse_config("[remote_control]\nenabled = \"yes\"\n");
+        assert!(!config.remote_control.enabled); // default kept
+        assert_eq!(warnings.len(), 1);
     }
 
     #[test]

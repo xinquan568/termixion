@@ -44,6 +44,8 @@ tables; internally each maps 1:1 to a camelCase registry key (the mapping is own
 | `tabs.bar_position` | `tabs.barPosition` | string | `"bottom"` | `top` · `bottom` · `left` · `right` | immediate (the tab bar repositions live; terminals keep running) |
 | `tabs.side_label_orientation` | `tabs.sideLabelOrientation` | string | `"horizontal"` | `horizontal` · `vertical` | immediate (applies only when the bar is `left`/`right`; the value persists across moves and re-applies) |
 | `scripts.startup` | `scripts.startup` | string | `""` | a script path relative to the scripts root, e.g. `"work/proj-x.sh"`; `""` = none⁵ | next launch (sourced in the first tab) |
+| `remote_control.enabled` | `remote_control.enabled` | bool | `false` | — | immediate (starts/stops the socket)⁷ |
+| `remote_control.socket_path` | `remote_control.socketPath` | string | `""` | an absolute path in a private (`0700`) dir; `""` = the default⁷ | next enable |
 
 ¹ Shrinking `scrollback_lines` truncates the existing scrollback buffer (xterm behavior) — history
 beyond the new cap is discarded at apply time.
@@ -68,6 +70,12 @@ never runs on the `--smoke`/`--perf` deterministic launches. See [scripts.md](sc
 iTerm2-style — no ⌘C needed, byte-identical to ⌘C. An empty/collapsed selection never overwrites the
 clipboard. With it on, ⌘C still works and an app's OSC 52 write can land in between — **last write
 wins**, matching iTerm2. Toggling it live attaches/detaches the listeners per pane (no restart).
+
+⁷ Remote control (trmx-101, FR-9.4): the opt-in external control channel — a local socket that lets scripts
+drive the terminal. **OFF by default; NO TCP, ever.** Enabling it starts the socket live (`0600` in a `0700`
+dir); `socket_path` overrides the default `~/.config/termixion/control.sock` (the parent must be a private,
+you-owned `0700` dir or the override is refused). See [remote-control.md](remote-control.md) for the
+protocol, the `termixion ctl` CLI, and the threat model.
 
 ## `[keys]` — keybindings (trmx-94, FR-9)
 

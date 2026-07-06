@@ -26,6 +26,8 @@ use termixion_core::{PtySize, SessionRegistry, SessionSpec};
 use termixion_platform::{MacosPtyFactory, foreground_process, is_busy};
 
 mod config_io;
+mod control;
+mod control_io;
 mod menu;
 mod scripts_io;
 mod shell_integration_io;
@@ -792,6 +794,11 @@ fn smoke_done(success: bool, reason: String) {
 }
 
 fn main() -> ExitCode {
+    // trmx-101 (FR-9.4): `termixion ctl <…>` is a non-GUI CLI — connect to the control socket, send one
+    // request, print the response, exit. An EARLY fork, before the tauri app is ever built.
+    if std::env::args().nth(1).as_deref() == Some("ctl") {
+        return control::run_ctl(std::env::args());
+    }
     let resolved = launch_modes(
         smoke_mode(
             std::env::args(),
@@ -811,6 +818,8 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // trmx-101: a deterministic launch never opens the control socket (captured before smoke/perf move).
+    let deterministic = smoke.is_some() || perf.is_some();
     if smoke.is_some() {
         // Watchdog: fail the smoke (exit 1) rather than hang if the webview never reports back.
         std::thread::spawn(|| {
@@ -840,6 +849,10 @@ fn main() -> ExitCode {
         // trmx-80 (FR-13): the config backbone's state — the file-watch diff base + the
         // self-echo latch for our own writes.
         .manage(config_io::ConfigState::default())
+        // trmx-101 (FR-9.4): the opt-in external control channel's socket-listener state. A --smoke/--perf
+        // launch is deterministic → the control socket NEVER opens (baked into ControlState, so EVERY
+        // apply path — initial load, config write/reset, the watcher — is forced off).
+        .manage(control::ControlState::new(deterministic))
         // trmx-48/trmx-51: install the app menu; "About Termixion" / "Settings…" open the
         // standalone Settings window (About lands on the About page). trmx-74 adds the Shell
         // submenu + Window tab-cycling items; trmx-75 adds Rename Tab… and spawns the
@@ -864,6 +877,19 @@ fn main() -> ExitCode {
             // frontend to re-read the script catalog via `scripts:changed`.
             let scripts_app = app.handle().clone();
             std::thread::spawn(move || scripts_io::run_scripts_watcher(scripts_app));
+            // trmx-101 (FR-9.4): apply the remote-control state from the config at startup. A --smoke/--perf
+            // launch NEVER opens the socket (the deterministic launches force it disabled).
+            let special = app.state::<SpecialLaunch>();
+            let deterministic = special.smoke.is_some() || special.perf.is_some();
+            if !deterministic {
+                let text = std::fs::read_to_string(config_io::config_path()).unwrap_or_default();
+                let cfg = termixion_core::config::parse_config(&text).0;
+                control::apply_remote_control(
+                    &app.handle().clone(),
+                    &cfg.remote_control,
+                    &app.state::<control::ControlState>(),
+                );
+            }
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -908,7 +934,8 @@ fn main() -> ExitCode {
             themes_io::themes_open_dir,
             scripts_io::scripts_list,
             scripts_io::scripts_open_dir,
-            shell_integration_io::shell_integration_reveal
+            shell_integration_io::shell_integration_reveal,
+            control::control_response
         ])
         .on_window_event(|window, event| {
             // trmx-51: only the MAIN window owns the PTY sessions — closing the settings window
@@ -923,6 +950,10 @@ fn main() -> ExitCode {
                     && let Ok(mut registry) = state.registry.lock()
                 {
                     registry.kill_all();
+                }
+                // trmx-101 (FR-9.4): tear down the control socket (stop the acceptor + unlink).
+                if let Some(control_state) = window.try_state::<control::ControlState>() {
+                    control::shutdown(&control_state);
                 }
                 if let Some(settings) = window
                     .app_handle()
