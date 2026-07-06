@@ -34,6 +34,7 @@ import type {
   ITerminalInitOnlyOptions,
 } from "@xterm/headless";
 import { emulationTerminalOptions } from "../terminal/emulationOptions";
+import { activateUnicodeGraphemes } from "../terminal/unicodeGraphemes";
 
 /**
  * Construct a headless terminal from the production emulation slice. 80x24 is the vttest-canonical
@@ -45,17 +46,37 @@ import { emulationTerminalOptions } from "../terminal/emulationOptions";
 export function openTerm(
   overrides?: ITerminalOptions & ITerminalInitOnlyOptions,
 ): Terminal {
-  return new Terminal({
+  const term = new Terminal({
     ...emulationTerminalOptions(),
     cols: 80,
     rows: 24,
     ...overrides,
   });
+  // trmx-97 (FR-1.4): the SAME grapheme-cluster activation production runs in realDeps.createTerminal,
+  // so this harness pins Termixion's real Unicode config (the trmx-64 invariant). Both @xterm/headless
+  // and @xterm/xterm expose `.unicode.activeVersion` publicly, so no internal cast is needed here.
+  activateUnicodeGraphemes(term);
+  return term;
 }
 
 /** Write `data` and resolve once the parser has fully processed it (xterm parses asynchronously). */
 export function feed(term: Terminal, data: string): Promise<void> {
   return new Promise<void>((resolve) => term.write(data, resolve));
+}
+
+/**
+ * trmx-97: write RAW UTF-8 bytes (xterm `write` accepts `Uint8Array`). A JS string can only be split at
+ * surrogate-pair boundaries, so the string `feed` cannot reproduce a byte split mid-codepoint; this seam
+ * lets the Unicode group split multi-byte UTF-8 at ARBITRARY byte offsets (mid-codepoint / mid-cluster)
+ * to pin the PTY-streaming reality (4096-byte channel reads land anywhere in a rune).
+ */
+export function feedBytes(term: Terminal, bytes: Uint8Array): Promise<void> {
+  return new Promise<void>((resolve) => term.write(bytes, resolve));
+}
+
+/** UTF-8 encode a string to raw bytes (for `feedBytes` chunk-split tests). */
+export function utf8Bytes(s: string): Uint8Array {
+  return new TextEncoder().encode(s);
 }
 
 /** Right-trimmed text of a buffer row (leading spaces preserved — they are erase/ICH evidence). */
@@ -75,6 +96,8 @@ export type ColorMode = "default" | "palette" | "rgb";
 /** A plain snapshot of one buffer cell — text, color modes, and the SGR attribute flags. */
 export interface CellSnapshot {
   text: string;
+  /** trmx-97: cell width in columns — 2 for a wide (CJK/emoji) lead cell, 0 for its trailing spacer. */
+  width: number;
   fgMode: ColorMode;
   /**
    * Palette index (0-255) in palette mode; raw 24-bit 0xRRGGBB in rgb mode. In default mode the
@@ -104,6 +127,7 @@ export function cellAt(term: Terminal, row: number, col: number): CellSnapshot {
   }
   return {
     text: cell.getChars(),
+    width: cell.getWidth(),
     fgMode: cell.isFgRGB() ? "rgb" : cell.isFgPalette() ? "palette" : "default",
     fg: cell.getFgColor(),
     bgMode: cell.isBgRGB() ? "rgb" : cell.isBgPalette() ? "palette" : "default",

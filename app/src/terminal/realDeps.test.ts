@@ -13,11 +13,23 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Hoisted by Vitest above the imports below, so `realDeps` sees these mocks at module load.
-vi.mock("@xterm/xterm", () => ({ Terminal: vi.fn() }));
+// trmx-97: each `new Terminal()` returns a fresh instance carrying `loadAddon` + `unicode` so the
+// graphemes-addon activation inside createTerminal can be asserted (a bare vi.fn() returns {}, so
+// `term.loadAddon`/`term.unicode` would be undefined and activation would throw).
+vi.mock("@xterm/xterm", () => ({
+  // A regular function (not an arrow) so `new Terminal(...)` constructs; returning the object makes
+  // `new` yield it, giving each terminal its own loadAddon spy + unicode slot.
+  Terminal: vi.fn(function () {
+    return { loadAddon: vi.fn(), unicode: { activeVersion: "" } };
+  }),
+}));
 vi.mock("@xterm/addon-webgl", () => ({ WebglAddon: vi.fn() }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: vi.fn() }));
+vi.mock("@xterm/addon-unicode-graphemes", () => ({ UnicodeGraphemesAddon: vi.fn() }));
 
 import { Terminal } from "@xterm/xterm";
+import { UnicodeGraphemesAddon } from "@xterm/addon-unicode-graphemes";
+import { GRAPHEMES_VERSION } from "./unicodeGraphemes";
 import { realDeps } from "./TerminalView";
 import { iterm2TerminalOptions } from "./iterm2Theme";
 import { emulationTerminalOptions } from "./emulationOptions";
@@ -63,6 +75,7 @@ async function seedSettings(values: Record<string, unknown>): Promise<void> {
 describe("realDeps.createTerminal (the display chokepoint)", () => {
   beforeEach(() => {
     vi.mocked(Terminal).mockClear();
+    vi.mocked(UnicodeGraphemesAddon).mockClear(); // trmx-97: addon-activation counts are per-test
     // Each test starts from an EMPTY shared snapshot (trmx-80), or a prior test's seeded values
     // would shadow this test's stubbed OS appearance / seeded settings.
     __resetSettingsForTest();
@@ -99,6 +112,18 @@ describe("realDeps.createTerminal (the display chokepoint)", () => {
       ...clipboardTerminalOptions(),
       linkHandler: expect.anything(),
     });
+  });
+
+  it("activates the grapheme-cluster Unicode addon at construction (correct CJK/emoji widths, trmx-97)", () => {
+    stubMatchMedia(true);
+    realDeps.createTerminal();
+    const term = vi.mocked(Terminal).mock.results[0]?.value as {
+      loadAddon: ReturnType<typeof vi.fn>;
+      unicode: { activeVersion: string };
+    };
+    expect(vi.mocked(UnicodeGraphemesAddon)).toHaveBeenCalledTimes(1); // the addon was instantiated
+    expect(term.loadAddon).toHaveBeenCalledTimes(1); // and loaded onto THIS terminal
+    expect(term.unicode.activeVersion).toBe(GRAPHEMES_VERSION); // and made the active Unicode version
   });
 
   it("uses the PERSISTED theme regardless of the OS appearance (no live OS-following, trmx-53)", async () => {

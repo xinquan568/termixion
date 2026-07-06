@@ -42,6 +42,7 @@ import {
   type PasteTerminalLike,
 } from "./clipboard";
 import { attachCopyOnSelect, type SelectionTerminalLike } from "./copyOnSelect";
+import { activateUnicodeGraphemes } from "./unicodeGraphemes";
 import { copyOnSelectEnabled, copyOnSelectSettingChange } from "./copyOnSelectSettings";
 import { makeLinkHandler, realOpenUrl } from "./linkHandler";
 import {
@@ -90,7 +91,7 @@ function supportsWebgl2(): boolean {
 export const realDeps: MountDeps = {
   createTerminal: () => {
     const settings = makeSettingsStore();
-    return new Terminal({
+    const terminal = new Terminal({
       ...iterm2TerminalOptions(initialAppearanceFromWindow()),
       ...themeTerminalOptions(settings),
       ...fontTerminalOptions(settings),
@@ -104,7 +105,11 @@ export const realDeps: MountDeps = {
       ...emulationTerminalOptions(),
       // trmx-64: OSC 8 hyperlinks activate on ⌘-click only, http/https only, via the opener plugin.
       linkHandler: makeLinkHandler(realOpenUrl),
-    }) as unknown as TerminalLike;
+    });
+    // trmx-97 (FR-1.4): grapheme-cluster Unicode (correct CJK/emoji/combining widths) — the conformance
+    // driver activates the SAME helper, so the harness pins this exact emulator (the trmx-64 invariant).
+    activateUnicodeGraphemes(terminal);
+    return terminal as unknown as TerminalLike;
   },
   createWebglAddon: () => {
     if (!supportsWebgl2()) {
