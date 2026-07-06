@@ -104,3 +104,52 @@ jobs:
       # --- advisory only (not a gate): NFR-2 footprint smoke ---
       - name: Footprint (advisory)
         run: du -sh target/debug/bundle/macos/Termixion.app | awk '{ print "termixion.app (debug) size:", $1 }'
+
+  # trmx-102 (FR-1.7): the full Linux gate — mirrors the macOS gate on ubuntu-22.04 (webkit2gtk 4.1 + gtk
+  # dev deps), runs the un-gated real-PTY tests (zsh apt-installed) and the packaged AppImage `--smoke`
+  # under xvfb. Required alongside the macOS gate.
+  linux:
+    name: full gate (linux)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tauri Linux system deps (webkit2gtk 4.1 + gtk) + zsh + xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
+            build-essential curl wget file libssl-dev libxdo-dev \
+            zsh xvfb libfuse2
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install "$(sed -nE 's/^channel = "([^"]+)".*/\1/p' rust-toolchain.toml)"
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.6.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+      - name: Bootstrap cargo-tauri (§2.4)
+        run: cargo install tauri-cli --version 2.11.3 --locked
+
+      # --- fast gates first ---
+      - name: cargo fmt
+        run: cargo fmt --check
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: pnpm lint
+        run: pnpm --filter app lint
+      - name: cargo test (workspace — incl. Linux PTY + integration)
+        run: cargo test --workspace --locked
+      - name: pnpm test (vitest)
+        run: pnpm --filter app test
+
+      # --- build + end-to-end ---
+      - name: Build the packaged app (debug, AppImage)
+        run: cargo tauri build --debug --bundles appimage
+        working-directory: crates/termixion-tauri
+      - name: Packaged AppImage --smoke under xvfb (authoritative Linux E2E)
+        run: bash scripts/smoke-linux.sh

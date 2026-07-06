@@ -98,6 +98,35 @@ xcrun stapler validate Termixion_0.0.1_aarch64.dmg   # "The validate action work
 spctl --assess --type open --context context:primary-signature -vvv Termixion_0.0.1_aarch64.dmg
 ```
 
+## Linux (trmx-102, FR-1.7) — x86_64 AppImage + `.deb`
+
+Since v0.0.9 the release also ships **x86_64 Linux** artifacts (built on `ubuntu-22.04`, in the
+`build-linux` job): a portable **`.AppImage`** + its signed updater tarball (`.AppImage.tar.gz` +
+`.AppImage.tar.gz.sig`) and a **`.deb`** for install convenience. The `publish` job (which `needs` both the
+macOS and Linux builds) assembles ONE `latest.json` carrying both `darwin-aarch64` and `linux-x86_64`
+entries, signed by the **same** minisign updater key — there is **no notarization concept on Linux**
+(Gatekeeper is macOS-only).
+
+Running the AppImage:
+
+```sh
+chmod +x Termixion_<version>_amd64.AppImage
+./Termixion_<version>_amd64.AppImage
+# On a host without FUSE (many CI images / minimal installs), extract-and-run instead of mounting:
+APPIMAGE_EXTRACT_AND_RUN=1 ./Termixion_<version>_amd64.AppImage
+```
+
+Or install the `.deb`: `sudo apt install ./Termixion_<version>_amd64.deb`.
+
+**Verification checklist (manual, per release):** on a stock **Ubuntu 22.04** and **24.04** the AppImage
+launches, runs a live shell, and tabs / splits / themes / settings / the config file all function;
+`foreground_process` tab titles resolve (the `/proc`-backed `ps` path). **Known limitations (recorded, not
+fixed this release):** x86_64 only (**aarch64-linux deferred** — no runner/hardware need shown); in-webview
+keyboard shortcuts bind to Super/⌘ not Ctrl (native menu accelerators work; a Ctrl-based Linux keymap is a
+follow-up); **the Linux updater install/relaunch is operator-verified** (this release ships the artifacts +
+manifest — end-to-end self-update is checked by hand). GTK cosmetic deviations are filed as issues, not
+blockers (this release targets **functional** parity).
+
 ## Release metadata (E-2a)
 
 The `v0.0.1` release identity is fixed and **machine-checked** by

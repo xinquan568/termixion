@@ -90,7 +90,10 @@ export function initialAppearanceFromWindow(
 // diverges from the iTerm2 default; the size, spacing, cursor, and colors below still mirror that profile.
 // trmx-80 (FR-13): these two are now the DEFAULTS behind the user settings terminal.fontFamily (empty =
 // this stack) / terminal.fontSize — fontSettings.ts overlays the persisted values at the chokepoint.
-export const ITERM2_FONT_FAMILY = 'ui-monospace, "SF Mono", Menlo, monospace';
+// trmx-102 (FR-1.7): a Linux tail after the macOS fonts — DejaVu/Liberation/Noto are the common Linux
+// monospaced fonts (webkit2gtk has no "SF Mono"/Menlo); `ui-monospace`/`monospace` still bookend the stack.
+export const ITERM2_FONT_FAMILY =
+  'ui-monospace, "SF Mono", Menlo, "DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono", monospace';
 export const ITERM2_FONT_SIZE = 12;
 
 /**
