@@ -6,7 +6,7 @@ import { App } from "./App";
 import { SettingsWindowHost } from "./settings/SettingsWindowHost";
 import { resolveSurface } from "./surface";
 import { realInvoke } from "./ipc/backend";
-import { runPerf, realPerfDeps, type PerfLaunchConfig } from "./perf/runPerf";
+import { runPerf, runPerfMultipane, realPerfDeps, type PerfLaunchConfig } from "./perf/runPerf";
 import { runSmoke, realSmokeDeps } from "./smoke/runSmoke";
 import { hydrateSettings } from "./settings/settingsStore";
 import { hydrateUserThemes } from "./theme/themesBackend";
@@ -59,7 +59,13 @@ async function boot() {
     perfConfig = null;
   }
   if (perfConfig) {
-    await runPerf(perfConfig, realPerfDeps());
+    // trmx-103: the backend's `scenario` picks the driver — `multipane` runs the v0.0.9
+    // Beta-hardening multi-pane load; anything else keeps the unchanged single-pane default.
+    if (perfConfig.scenario === "multipane") {
+      await runPerfMultipane(perfConfig, realPerfDeps());
+    } else {
+      await runPerf(perfConfig, realPerfDeps());
+    }
     return; // the backend exits via perf_done
   }
 

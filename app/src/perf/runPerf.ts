@@ -24,7 +24,7 @@ import {
 import { mountTerminal, type RendererKind, type TerminalLike } from "../terminal/mountTerminal";
 import { realDeps } from "../terminal/TerminalView";
 import { BUDGETS, evaluatePerf, type PerfReportBody } from "./evaluatePerf";
-import { missedFrames, summarize } from "./stats";
+import { missedFrames, summarize, type LatencySummary } from "./stats";
 
 /** The scenario parameters — exported so tests, the Rust watchdog derivation, and the protocol
  *  doc all quote ONE source. End-to-end schedule ≈ 105 s; PERF_WATCHDOG_SECS (main.rs) is 300. */
@@ -40,6 +40,29 @@ export const SCENARIO = {
   readinessTimeoutMs: 10000,
   drainTimeoutMs: 30000,
   scrollTimeoutMs: 60000,
+} as const;
+
+/** The v0.0.9 Beta-hardening multi-pane LOAD scenario (trmx-103). Six panes are mounted in ONE
+ *  webview; four (`streamPaneIndices`) run a `yes`/`seq` flood as background load, typing latency
+ *  is measured in a fifth (`typingPaneIndex`) busy-adjacent, and the three scroll scenarios run in
+ *  a sixth (`scrollPaneIndex`). Multi-pane is a LOAD condition, NOT a new report schema: the driver
+ *  emits the SAME four scenario keys so `evaluatePerf` + `BUDGETS` judge it UNCHANGED. Indices are
+ *  explicit and zero-based; the timing knobs are the single-pane values (docs quote ONE source). */
+export const SCENARIO_MULTIPANE = {
+  panes: 6,
+  streamPaneIndices: [0, 1, 2, 3],
+  typingPaneIndex: 4,
+  scrollPaneIndex: 5,
+  typingKeys: SCENARIO.typingKeys,
+  typingPaceMs: SCENARIO.typingPaceMs,
+  warmupKeys: SCENARIO.warmupKeys,
+  settleMs: SCENARIO.settleMs,
+  readinessTimeoutMs: SCENARIO.readinessTimeoutMs,
+  drainTimeoutMs: SCENARIO.drainTimeoutMs,
+  scrollTimeoutMs: SCENARIO.scrollTimeoutMs,
+  yesDurationMs: SCENARIO.yesDurationMs,
+  pagingPages: SCENARIO.pagingPages,
+  pagingPaceMs: SCENARIO.pagingPaceMs,
 } as const;
 
 /** Output markers — matched CONTIGUOUS only. The sent lines below carry the `""` split (the
@@ -115,6 +138,10 @@ export interface PerfMount {
 export interface PerfDeps {
   invoke: InvokeFn;
   mount(): PerfMount;
+  /** Mount the terminal pipeline into a per-index grid slot (trmx-103) — the multi-pane seam. The
+   *  single-pane driver ignores it; `runPerfMultipane` mounts `SCENARIO_MULTIPANE.panes` of them so
+   *  N xterms coexist in one webview. Index 0 reuses the `#root` mount; the rest get a child slot. */
+  mountPane(index: number): PerfMount;
   openPty(
     onBytes: PtyBytesHandler,
     rows: number,
@@ -135,6 +162,9 @@ export interface PerfDeps {
 export interface PerfLaunchConfig {
   outDir: string;
   build: string;
+  /** Which scenario to drive (trmx-103): `"multipane"` selects `runPerfMultipane`; anything else
+   *  (incl. absent, for backward-compatible reports) is the default single-pane `runPerf`. */
+  scenario?: string;
 }
 
 /** The full on-disk report: the judged body plus the budgets and the verdict. */
@@ -215,6 +245,138 @@ async function withTimeout<T>(
   return guarded;
 }
 
+/** The timing knobs `measureTyping`/`measureScroll` read — the shared subset SCENARIO and
+ *  SCENARIO_MULTIPANE both carry, so ONE measurement body drives single-pane and multi-pane. */
+type ScenarioKnobs = Pick<
+  typeof SCENARIO,
+  | "typingKeys"
+  | "typingPaceMs"
+  | "warmupKeys"
+  | "settleMs"
+  | "readinessTimeoutMs"
+  | "drainTimeoutMs"
+  | "scrollTimeoutMs"
+  | "yesDurationMs"
+  | "pagingPages"
+  | "pagingPaceMs"
+>;
+
+/** A PTY wired to a mount with production flow-control acks + the typing FIFO (trmx-78 round 2b):
+ *  every chunk is acked on PARSE COMPLETION so the backend's credit window throttles floods by the
+ *  real parse rate, and the "typing" phase closes latency samples one rAF after the parse. */
+interface PerfChannel {
+  router: ByteRouter;
+  send(data: string): Promise<void>;
+}
+
+async function openPerfPty(mount: PerfMount, deps: PerfDeps): Promise<PerfChannel> {
+  const router = new ByteRouter();
+  const terminal = mount.terminal; // const-captured for the closure (strict narrowing)
+  // The id lands after openPty resolves; the readiness preamble rides the initial credit window.
+  let ackSessionId = 0;
+  const ack = (bytes: number) => {
+    if (ackSessionId > 0) void deps.sendAck(ackSessionId, bytes, deps.invoke).catch(() => {});
+  };
+  const onBytes: PtyBytesHandler = (bytes) => {
+    router.ingest(bytes);
+    if (router.phase === "typing") {
+      // The measured tail: chunk parsed (write callback) → next frame (rAF) → close samples.
+      terminal.write(bytes, () => {
+        ack(bytes.length);
+        deps.raf((t1) => router.closeSamples(bytes.length, t1));
+      });
+    } else {
+      terminal.write(bytes, () => ack(bytes.length));
+    }
+  };
+  const { sessionId } = await withTimeout(
+    deps.openPty(onBytes, 24, 80, deps.invoke),
+    INVOKE_TIMEOUT_MS,
+    "open_pty",
+    deps,
+  );
+  ackSessionId = sessionId;
+  const send = (data: string) =>
+    withTimeout(deps.sendInput(sessionId, data, deps.invoke), INVOKE_TIMEOUT_MS, "pty_write", deps);
+  return { router, send };
+}
+
+/** Measure typing latency on a freshly opened channel: readiness → warmup → N paced keys, matched
+ *  back to their send times by the ByteRouter FIFO (D5). Leaves `cat` running — the caller ends it. */
+async function measureTyping(
+  channel: PerfChannel,
+  deps: PerfDeps,
+  s: ScenarioKnobs,
+): Promise<LatencySummary> {
+  const { router, send } = channel;
+  // Readiness (D4): configure the tty + start the echo discipline; wait for the CONTIGUOUS marker
+  // (the echoed command carries the split form and cannot match).
+  await send(READY_LINE);
+  await waitFor(() => router.sawMarker(READY_MARKER), s.readinessTimeoutMs, "readiness", deps);
+  router.phase = "discard"; // trailing marker-echo noise must not count as warmup bytes
+  await deps.delay(s.settleMs);
+
+  // Warmup: prove the echo loop is live at the scenario pace; samples discarded.
+  router.phase = "warmup";
+  for (let i = 0; i < s.warmupKeys; i += 1) {
+    void send("x").catch(() => {});
+    await deps.delay(s.typingPaceMs);
+  }
+  await waitFor(() => router.warmupBytes >= s.warmupKeys, s.drainTimeoutMs, "warmup echoes", deps);
+
+  // Typing latency: N paced keys through the production input path.
+  router.phase = "typing";
+  for (let i = 0; i < s.typingKeys; i += 1) {
+    router.push(deps.now());
+    void send("x").catch(() => {});
+    await deps.delay(s.typingPaceMs);
+  }
+  await waitFor(
+    () => router.samples.length >= s.typingKeys,
+    s.drainTimeoutMs,
+    "typing echoes to drain",
+    deps,
+  );
+  return summarize(router.samples);
+}
+
+/** Measure the three scroll scenarios on a channel + its mount: seq burst, sustained `yes`, and
+ *  scrollback paging both ways — rAF-gap accounting under each. The shell must be at a prompt. */
+async function measureScroll(
+  mount: PerfMount,
+  channel: PerfChannel,
+  deps: PerfDeps,
+  s: ScenarioKnobs,
+): Promise<Pick<PerfReportBody["scenarios"], "scrollSeq" | "scrollYes" | "scrollbackPaging">> {
+  const { router, send } = channel;
+  // Scroll throughput: seq burst, sampled send → completion marker.
+  router.resetText();
+  const seqSampler = startFrameSampling(deps);
+  await send(SEQ_LINE);
+  await waitFor(() => router.sawMarker(SCROLL_MARKER), s.scrollTimeoutMs, "seq scroll", deps);
+  const scrollSeq = missedFrames(seqSampler.stop());
+
+  // Sustained stream: yes for a fixed window, then SIGINT.
+  const yesSampler = startFrameSampling(deps);
+  await send("yes\r");
+  await deps.delay(s.yesDurationMs);
+  await send("\x03");
+  const scrollYes = missedFrames(yesSampler.stop());
+  await deps.delay(s.settleMs);
+
+  // Scrollback interaction: page through the filled buffer both ways.
+  const pagingSampler = startFrameSampling(deps);
+  for (let i = 0; i < s.pagingPages; i += 1) {
+    mount.scrollPages(-1);
+    await deps.delay(s.pagingPaceMs);
+  }
+  for (let i = 0; i < s.pagingPages; i += 1) {
+    mount.scrollPages(1);
+    await deps.delay(s.pagingPaceMs);
+  }
+  return { scrollSeq, scrollYes, scrollbackPaging: missedFrames(pagingSampler.stop()) };
+}
+
 /**
  * Drive the NFR-1 scenarios and report the verdict. Resolves with the full report once
  * `reportDone` has been called (the backend then writes the JSON and exits 0/1).
@@ -239,118 +401,18 @@ export async function runPerf(config: PerfLaunchConfig, deps: PerfDeps): Promise
     // A DOM fallback invalidates every number — skip the scenarios entirely (the verdict below
     // fails on the renderer check with a named reason).
     if (mounted.renderer() === "webgl") {
-      const router = new ByteRouter();
-      const terminal = mounted.terminal; // const-captured for the closure (strict narrowing)
-      // Flow-control acks mirror production: every chunk is acked on PARSE COMPLETION so the
-      // backend's credit window throttles floods by the real parse rate (the id lands after
-      // openPty resolves; the readiness preamble rides the initial window).
-      let ackSessionId = 0;
-      const ack = (bytes: number) => {
-        if (ackSessionId > 0) void deps.sendAck(ackSessionId, bytes, deps.invoke).catch(() => {});
-      };
-      const onBytes: PtyBytesHandler = (bytes) => {
-        router.ingest(bytes);
-        if (router.phase === "typing") {
-          // The measured tail: chunk parsed (write callback) → next frame (rAF) → close samples.
-          terminal.write(bytes, () => {
-            ack(bytes.length);
-            deps.raf((t1) => router.closeSamples(bytes.length, t1));
-          });
-        } else {
-          terminal.write(bytes, () => ack(bytes.length));
-        }
-      };
-      const { sessionId } = await withTimeout(
-        deps.openPty(onBytes, 24, 80, deps.invoke),
-        INVOKE_TIMEOUT_MS,
-        "open_pty",
-        deps,
-      );
-      ackSessionId = sessionId;
-      const send = (data: string) =>
-        withTimeout(
-          deps.sendInput(sessionId, data, deps.invoke),
-          INVOKE_TIMEOUT_MS,
-          "pty_write",
-          deps,
-        );
-
-      // Readiness (D4): configure the tty + start the echo discipline; wait for the CONTIGUOUS
-      // marker (the echoed command carries the split form and cannot match).
-      await send(READY_LINE);
-      await waitFor(
-        () => router.sawMarker(READY_MARKER),
-        SCENARIO.readinessTimeoutMs,
-        "readiness",
-        deps,
-      );
-      router.phase = "discard"; // trailing marker-echo noise must not count as warmup bytes
-      await deps.delay(SCENARIO.settleMs);
-
-      // Warmup: prove the echo loop is live at the scenario pace; samples discarded.
-      router.phase = "warmup";
-      for (let i = 0; i < SCENARIO.warmupKeys; i += 1) {
-        void send("x").catch(() => {});
-        await deps.delay(SCENARIO.typingPaceMs);
-      }
-      await waitFor(
-        () => router.warmupBytes >= SCENARIO.warmupKeys,
-        SCENARIO.drainTimeoutMs,
-        "warmup echoes",
-        deps,
-      );
-
-      // Typing latency: N paced keys through the production input path (D5: FIFO matching).
-      router.phase = "typing";
-      for (let i = 0; i < SCENARIO.typingKeys; i += 1) {
-        router.push(deps.now());
-        void send("x").catch(() => {});
-        await deps.delay(SCENARIO.typingPaceMs);
-      }
-      await waitFor(
-        () => router.samples.length >= SCENARIO.typingKeys,
-        SCENARIO.drainTimeoutMs,
-        "typing echoes to drain",
-        deps,
-      );
-      body.scenarios.typing = summarize(router.samples);
+      const channel = await openPerfPty(mounted, deps);
+      body.scenarios.typing = await measureTyping(channel, deps, SCENARIO);
 
       // End `cat` (ISIG survived -icanon), settle back to the shell.
-      router.phase = "collect";
-      await send("\x03");
+      channel.router.phase = "collect";
+      await channel.send("\x03");
       await deps.delay(SCENARIO.settleMs);
 
-      // Scroll throughput: seq burst, sampled send → completion marker.
-      router.resetText();
-      const seqSampler = startFrameSampling(deps);
-      await send(SEQ_LINE);
-      await waitFor(
-        () => router.sawMarker(SCROLL_MARKER),
-        SCENARIO.scrollTimeoutMs,
-        "seq scroll",
-        deps,
-      );
-      body.scenarios.scrollSeq = missedFrames(seqSampler.stop());
-
-      // Sustained stream: yes for a fixed window, then SIGINT.
-      const yesSampler = startFrameSampling(deps);
-      await send("yes\r");
-      await deps.delay(SCENARIO.yesDurationMs);
-      await send("\x03");
-      body.scenarios.scrollYes = missedFrames(yesSampler.stop());
-      await deps.delay(SCENARIO.settleMs);
-
-      // Scrollback interaction: page through the filled buffer both ways.
-      const pagingSampler = startFrameSampling(deps);
-      for (let i = 0; i < SCENARIO.pagingPages; i += 1) {
-        mounted.scrollPages(-1);
-        await deps.delay(SCENARIO.pagingPaceMs);
-      }
-      for (let i = 0; i < SCENARIO.pagingPages; i += 1) {
-        mounted.scrollPages(1);
-        await deps.delay(SCENARIO.pagingPaceMs);
-      }
-      body.scenarios.scrollbackPaging = missedFrames(pagingSampler.stop());
+      const scroll = await measureScroll(mounted, channel, deps, SCENARIO);
+      body.scenarios.scrollSeq = scroll.scrollSeq;
+      body.scenarios.scrollYes = scroll.scrollYes;
+      body.scenarios.scrollbackPaging = scroll.scrollbackPaging;
     }
   } catch (err) {
     error = err instanceof Error ? err.message : String(err);
@@ -359,6 +421,17 @@ export async function runPerf(config: PerfLaunchConfig, deps: PerfDeps): Promise
   // Re-read the renderer AFTER the scenarios (step-8 F2): a WebGL context loss mid-run flips the
   // handle to "dom", and the report must carry — and be judged on — the end-of-run value.
   if (mounted) body.renderer = mounted.renderer();
+  return finalizeReport(body, error, deps);
+}
+
+/** Judge the assembled body against the UNCHANGED budgets, wrap it in the on-disk report, and hand
+ *  it to `reportDone` (the backend writes JSON + exits 0/1). Shared by the single- and multi-pane
+ *  drivers so multi-pane is a LOAD condition, not a second report schema. */
+async function finalizeReport(
+  body: PerfReportBody,
+  error: string | undefined,
+  deps: PerfDeps,
+): Promise<PerfReport> {
   const verdict = evaluatePerf(body);
   const pass = verdict.ok && error === undefined;
   const report: PerfReport = {
@@ -381,23 +454,111 @@ export async function runPerf(config: PerfLaunchConfig, deps: PerfDeps): Promise
   return report;
 }
 
+/**
+ * Drive the NFR-1 scenarios under MULTI-PANE LOAD (trmx-103, v0.0.9 Beta hardening). Six panes are
+ * mounted in one webview; four (`streamPaneIndices`) run a `yes`/`seq` flood as background load
+ * (rendered — the busy neighborhood — but feeding no sampler), typing latency is measured in a
+ * fifth (`typingPaneIndex`) busy-adjacent, and the three scroll scenarios in a sixth
+ * (`scrollPaneIndex`). The report carries the SAME four scenario keys as `runPerf`, so
+ * `evaluatePerf` + `BUDGETS` judge it UNCHANGED. Resolves once `reportDone` has been called.
+ */
+export async function runPerfMultipane(
+  config: PerfLaunchConfig,
+  deps: PerfDeps,
+): Promise<PerfReport> {
+  const s = SCENARIO_MULTIPANE;
+  const body: PerfReportBody = {
+    schema: 1,
+    build: config.build,
+    renderer: "unmounted",
+    hasFocus: deps.hasFocus(),
+    scenarios: {},
+  };
+  let error: string | undefined;
+  const mounts: PerfMount[] = [];
+
+  try {
+    for (let i = 0; i < s.panes; i += 1) mounts.push(deps.mountPane(i));
+    const typingMount = mounts[s.typingPaneIndex];
+    const scrollMount = mounts[s.scrollPaneIndex];
+    // The report renderer is read from the pane under measurement (the typing pane).
+    body.renderer = typingMount.renderer();
+    // A DOM fallback invalidates every number — skip the scenarios entirely (same rule as runPerf).
+    if (typingMount.renderer() === "webgl") {
+      // Background LOAD: a PTY per streaming pane firing a `yes`/`seq` mix. The bytes render into
+      // their pane (real GPU/IPC load) but feed no sampler — a discard sink, not a measured
+      // scenario. Keep the stop closures to SIGINT the floods once the measurements are done.
+      const stopStreamers: Array<() => Promise<void>> = [];
+      for (const idx of s.streamPaneIndices) {
+        const streamer = await openPerfPty(mounts[idx], deps);
+        const floodCmd = idx % 2 === 0 ? SEQ_LINE : "yes\r"; // seq/yes mix across the four
+        await streamer.send(floodCmd);
+        stopStreamers.push(() => streamer.send("\x03").then(() => {}));
+      }
+
+      // Typing latency, measured busy-adjacent in its own pane.
+      const typingChannel = await openPerfPty(typingMount, deps);
+      body.scenarios.typing = await measureTyping(typingChannel, deps, s);
+      typingChannel.router.phase = "collect";
+      await typingChannel.send("\x03"); // end the typing pane's `cat`
+      await deps.delay(s.settleMs);
+
+      // Scroll throughput, measured in the sixth pane under the same background load.
+      const scrollChannel = await openPerfPty(scrollMount, deps);
+      const scroll = await measureScroll(scrollMount, scrollChannel, deps, s);
+      body.scenarios.scrollSeq = scroll.scrollSeq;
+      body.scenarios.scrollYes = scroll.scrollYes;
+      body.scenarios.scrollbackPaging = scroll.scrollbackPaging;
+
+      // Quiesce the floods (best-effort — a stuck streamer must not fail an otherwise-good run).
+      for (const stop of stopStreamers) await stop().catch(() => {});
+    }
+  } catch (err) {
+    error = err instanceof Error ? err.message : String(err);
+  }
+
+  // Re-read the measured pane's renderer AFTER the scenarios (step-8 F2 — context loss flips it).
+  const typingMount = mounts[s.typingPaneIndex];
+  if (typingMount) body.renderer = typingMount.renderer();
+  return finalizeReport(body, error, deps);
+}
+
+/** Mount the real xterm/WebGL pipeline into `container` (the production chokepoint), wrapped in the
+ *  PerfMount seam. Shared by `mount()` and `mountPane()` so every pane is a REAL terminal. */
+function mountPerfInto(container: HTMLElement): PerfMount {
+  const handle = mountTerminal(container, realDeps);
+  // Scrollback paging is an xterm capability the narrow seam deliberately does not carry for
+  // one consumer — the same localized-adapter pattern as useBackend's rows/cols read.
+  const t = handle.terminal as unknown as { scrollPages?: (pages: number) => void };
+  return {
+    terminal: handle.terminal,
+    renderer: () => handle.renderer, // live — flips on context loss (step-8 F2)
+    scrollPages: (pages) => t.scrollPages?.(pages),
+    dispose: () => handle.dispose(),
+  };
+}
+
+/** The `#root` mount container, or throw into the report path if it is missing. */
+function rootContainer(): HTMLElement {
+  const container = document.getElementById("root");
+  if (!container) throw new Error("perf: #root container missing");
+  return container;
+}
+
 /** The real, Tauri/xterm-backed deps used by the app entry (main.tsx `--perf` gate). */
 export function realPerfDeps(): PerfDeps {
   return {
     invoke: realInvoke,
-    mount: () => {
-      const container = document.getElementById("root");
-      if (!container) throw new Error("perf: #root container missing");
-      const handle = mountTerminal(container, realDeps);
-      // Scrollback paging is an xterm capability the narrow seam deliberately does not carry for
-      // one consumer — the same localized-adapter pattern as useBackend's rows/cols read.
-      const t = handle.terminal as unknown as { scrollPages?: (pages: number) => void };
-      return {
-        terminal: handle.terminal,
-        renderer: () => handle.renderer, // live — flips on context loss (step-8 F2)
-        scrollPages: (pages) => t.scrollPages?.(pages),
-        dispose: () => handle.dispose(),
-      };
+    mount: () => mountPerfInto(rootContainer()),
+    // trmx-103: pane 0 reuses `#root`; each further pane gets a fresh child slot so N real xterms
+    // coexist in one webview — the multi-pane grid the load scenario measures under.
+    mountPane: (index) => {
+      const root = rootContainer();
+      if (index === 0) return mountPerfInto(root);
+      const slot = document.createElement("div");
+      slot.dataset.perfPane = String(index);
+      root.appendChild(slot);
+      return mountPerfInto(slot);
     },
     openPty: (onBytes, rows, cols, invoke) => openPty(onBytes, rows, cols, undefined, invoke),
     sendInput: sendPtyInput,

@@ -5,23 +5,35 @@
 # scroll-throughput scenarios over the production PTY channel, writes a JSON report, and exits
 # 0/1 on budget pass/fail (docs/design/performance-protocol.md).
 #
-# Usage: scripts/perf.sh [--commit] [path-to-Termixion-binary] [out-dir]
+# Usage: scripts/perf.sh [--commit] [--scenario <single|multipane>] [path-to-Termixion-binary] [out-dir]
 #   binary default: target/release/bundle/macos/Termixion.app (the RECORDED numbers must come
 #   from release; the debug bundle is accepted for iteration with a loud warning)
 #     build it with:  (cd crates/termixion-tauri && cargo tauri build)
 #   out-dir default: a fresh mktemp -d
 #   --commit: merge machine identity into the report and copy it to
-#     docs/design/perf-results/<date>-v<version>.json — REFUSED unless the report says
+#     docs/design/perf-results/<date>-v<version>[-multipane].json — REFUSED unless the report says
 #     "build": "release" AND "pass": true (debug numbers and invalid/occluded runs are never
 #     the record; a rAF-throttled run behind a sleeping display fails exactly this way).
+#   --scenario: single (default — the trmx-78 single-pane run) or multipane (trmx-103, v0.0.9
+#     Beta hardening — 6 panes, 4 streaming under load; passed to the app via TERMIXION_PERF_SCENARIO
+#     and committed with a `-multipane` filename suffix). Same budgets either way.
 # Exit code: the app's own budget verdict (0 pass / 1 fail); --commit failures also exit 1.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
 COMMIT=0
-if [[ "${1:-}" == "--commit" ]]; then
-  COMMIT=1
-  shift
+SCENARIO=single
+while [[ "${1:-}" == --* ]]; do
+  case "$1" in
+    --commit) COMMIT=1; shift ;;
+    --scenario) SCENARIO="${2:-}"; shift 2 ;;
+    --scenario=*) SCENARIO="${1#--scenario=}"; shift ;;
+    *) echo "perf: unknown flag '$1'" >&2; exit 1 ;;
+  esac
+done
+if [[ "$SCENARIO" != "single" && "$SCENARIO" != "multipane" ]]; then
+  echo "perf: --scenario must be 'single' or 'multipane' (got '$SCENARIO')" >&2
+  exit 1
 fi
 
 APP="${1:-target/release/bundle/macos/Termixion.app}"
@@ -50,10 +62,11 @@ fi
 
 echo "perf: running $BIN"
 echo "perf: report dir $OUT"
+echo "perf: scenario $SCENARIO"
 echo "perf: keep the Termixion window frontmost and the display awake for the whole run (~2 min)."
 
 STATUS=0
-TERMIXION_PERF_OUT="$OUT" "$BIN" --perf || STATUS=$?
+TERMIXION_PERF_OUT="$OUT" TERMIXION_PERF_SCENARIO="$SCENARIO" "$BIN" --perf || STATUS=$?
 
 REPORT="$OUT/report.json"
 if [[ ! -s "$REPORT" ]]; then
@@ -77,7 +90,9 @@ EOF
 
 if [[ "$COMMIT" == 1 ]]; then
   VERSION="$(python3 -c "import json;print(json.load(open('app/package.json'))['version'])" 2>/dev/null || echo unknown)"
-  DEST="docs/design/perf-results/$(date +%Y-%m-%d)-v${VERSION}.json"
+  SUFFIX=""
+  [[ "$SCENARIO" == "multipane" ]] && SUFFIX="-multipane"
+  DEST="docs/design/perf-results/$(date +%Y-%m-%d)-v${VERSION}${SUFFIX}.json"
   mkdir -p docs/design/perf-results
   python3 - "$REPORT" "$DEST" <<'EOF'
 import json, subprocess, sys
