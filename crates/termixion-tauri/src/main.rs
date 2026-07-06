@@ -752,6 +752,10 @@ struct PerfConfig {
     build: &'static str,
 }
 
+/// The smoke watchdog (trmx-102): fail rather than hang if the webview never reports the sentinel. Bumped
+/// from 30 s so a slow headless webkit2gtk boot on Linux CI is not killed mid-flight (the happy path is <5 s).
+const SMOKE_WATCHDOG_SECS: u64 = 90;
+
 /// The perf watchdog (trmx-78): fail the run rather than hang if the webview driver never reports.
 /// 300 s ≈ 3× the harness's end-to-end schedule — the derivation is pinned in the tests below and
 /// quoted by docs/design/performance-protocol.md.
@@ -835,9 +839,11 @@ fn main() -> ExitCode {
     // trmx-101: a deterministic launch never opens the control socket (captured before smoke/perf move).
     let deterministic = smoke.is_some() || perf.is_some();
     if smoke.is_some() {
-        // Watchdog: fail the smoke (exit 1) rather than hang if the webview never reports back.
+        // Watchdog: fail the smoke (exit 1) rather than hang if the webview never reports back. Generous
+        // enough (trmx-102) that a slow headless webkit2gtk boot (software GL, no compositor, cold AppImage
+        // extract on Linux CI) is not mistaken for a hang — the happy path exits in <5 s regardless.
         std::thread::spawn(|| {
-            std::thread::sleep(Duration::from_secs(30));
+            std::thread::sleep(Duration::from_secs(SMOKE_WATCHDOG_SECS));
             eprintln!(
                 "termixion-smoke: FAIL — timed out waiting for the webview sentinel sequence"
             );

@@ -38,14 +38,17 @@ echo "smoke-linux: DIR=$DIR — running $APP --smoke under xvfb"
 #     without FUSE;
 #   - LIBGL_ALWAYS_SOFTWARE forces software GL (no GPU on the runner); GDK_BACKEND=x11 pins the backend;
 #     WEBKIT_DISABLE_COMPOSITING_MODE / _DMABUF_RENDERER avoid the headless-webkit GL/DMABUF crashes;
+#   - WEBKIT_FORCE_SANDBOX=0 lets webkit run without its bwrap sandbox (blocked/unavailable in CI);
 #   - NO_AT_BRIDGE silences the benign AT-SPI accessibility-bus warning.
-# `--smoke` is unambiguously the app's own argument. The app's 30 s watchdog fails-closed on a hang.
+# `--smoke` is unambiguously the app's own argument. The app's watchdog (90 s, generous for a slow headless
+# webkit boot) fails-closed on a genuine hang.
 xvfb-run -a --server-args="-screen 0 1280x1024x24" env \
   APPIMAGE_EXTRACT_AND_RUN=1 \
   LIBGL_ALWAYS_SOFTWARE=1 \
   GDK_BACKEND=x11 \
   WEBKIT_DISABLE_COMPOSITING_MODE=1 \
   WEBKIT_DISABLE_DMABUF_RENDERER=1 \
+  WEBKIT_FORCE_SANDBOX=0 \
   NO_AT_BRIDGE=1 \
   DIR="$DIR" \
   "$APP" --smoke
