@@ -42,5 +42,7 @@ export const white: ThemeTokens = {
     // trmx-90: per-pane badge watermark — translucent dark (text #1a1a1a) on the white background.
     badge: "rgba(26, 26, 26, 0.05)",
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
+    // trmx-98: find-bar highlights — translucent yellow match / warmer active (legible over every theme bg).
+    search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },
   },
 };

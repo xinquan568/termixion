@@ -45,6 +45,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     selectionBackground: "rgba(0,102,204,0.25)",
     badge: "rgba(26, 26, 26, 0.05)",
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
+    search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },
   },
   paper: {
     pane: { activeBorder: "#0066cc", inactiveBorder: "#d5d4d4" },
@@ -59,6 +60,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     selectionBackground: "rgba(0,102,204,0.25)",
     badge: "rgba(26, 26, 26, 0.05)",
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
+    search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },
   },
   mint: {
     pane: { activeBorder: "#1a6b4a", inactiveBorder: "#a8c9ad" },
@@ -73,6 +75,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     selectionBackground: "rgba(0,102,204,0.25)",
     badge: "rgba(45, 58, 53, 0.06)",
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
+    search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },
   },
   sepia: {
     pane: { activeBorder: "#8b4513", inactiveBorder: "#e0d5bc" },
@@ -87,6 +90,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     selectionBackground: "rgba(0,102,204,0.25)",
     badge: "rgba(92, 75, 55, 0.06)",
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
+    search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },
   },
   night: {
     pane: { activeBorder: "#58a6ff", inactiveBorder: "#3a3f46" },
@@ -101,6 +105,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     selectionBackground: "rgba(90, 168, 255, 0.22)",
     badge: "rgba(255, 255, 255, 0.08)",
     scrollbar: { idle: "rgba(255, 255, 255, 0.12)", hover: "rgba(255, 255, 255, 0.20)", active: "rgba(255, 255, 255, 0.30)" },
+    search: { match: "rgba(88, 166, 255, 0.22)", activeMatch: "rgba(88, 166, 255, 0.42)" },
   },
   solarized: {
     pane: { activeBorder: "#268bd2", inactiveBorder: "#0e4753" },
@@ -115,6 +120,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     selectionBackground: "rgba(38, 139, 210, 0.15)",
     badge: "rgba(147, 161, 161, 0.10)",
     scrollbar: { idle: "rgba(255, 255, 255, 0.12)", hover: "rgba(255, 255, 255, 0.20)", active: "rgba(255, 255, 255, 0.30)" },
+    search: { match: "rgba(38, 139, 210, 0.14)", activeMatch: "rgba(38, 139, 210, 0.20)" },
   },
 };
 
@@ -196,6 +202,10 @@ export const CONTRAST_GATES = {
   selectedText: 4.5,
   /** G4: cursor vs bg.primary — WCAG 1.4.11 UI-component contrast. */
   cursor: 3,
+  /** G6 (trmx-98): text.primary vs each search-highlight tint composited over bg.primary. A search
+   *  highlight is a TRANSIENT UI-component state (WCAG 1.4.11 = 3.0), not body text — the same floor as
+   *  the cursor (G4) and pane border (G5); a strict 4.5 is unreachable on low-contrast themes (solarized). */
+  searchText: 3,
 } as const;
 
 describe.each(THEME_IDS)("legibility gates (trmx-77) — %s", (id) => {
@@ -238,6 +248,19 @@ describe.each(THEME_IDS)("legibility gates (trmx-77) — %s", (id) => {
   it(`G5: pane activeBorder ≥ ${CONTRAST_GATES.cursor}:1 on the terminal background`, () => {
     expect(contrastRatio(theme.terminal.pane.activeBorder, bg)).toBeGreaterThanOrEqual(
       CONTRAST_GATES.cursor,
+    );
+  });
+
+  // trmx-98 (FR-1.5): a search-highlighted match must stay legible — text.primary vs each translucent
+  // find tint composited over the background (both match and the distinct active-match tint).
+  it(`G6: search highlights ≥ ${CONTRAST_GATES.searchText}:1 (foreground vs composited match & activeMatch)`, () => {
+    const match = compositeOver(theme.terminal.search.match, bg);
+    const activeMatch = compositeOver(theme.terminal.search.activeMatch, bg);
+    expect(contrastRatio(theme.color.text.primary, match)).toBeGreaterThanOrEqual(
+      CONTRAST_GATES.searchText,
+    );
+    expect(contrastRatio(theme.color.text.primary, activeMatch)).toBeGreaterThanOrEqual(
+      CONTRAST_GATES.searchText,
     );
   });
 

@@ -26,6 +26,7 @@ vi.mock("@xterm/xterm", () => ({
 vi.mock("@xterm/addon-webgl", () => ({ WebglAddon: vi.fn() }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: vi.fn() }));
 vi.mock("@xterm/addon-unicode-graphemes", () => ({ UnicodeGraphemesAddon: vi.fn() }));
+vi.mock("@xterm/addon-search", () => ({ SearchAddon: vi.fn() }));
 
 import { Terminal } from "@xterm/xterm";
 import { UnicodeGraphemesAddon } from "@xterm/addon-unicode-graphemes";

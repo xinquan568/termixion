@@ -69,6 +69,13 @@ export interface ThemeTokens {
      * against `bg.primary`), `inactiveBorder` is the subtle line between unfocused panes (border-derived).
      */
     pane: { activeBorder: string; inactiveBorder: string };
+    /**
+     * trmx-98 (FR-1.5): the in-pane find-bar highlight colors, fed to `@xterm/addon-search`'s
+     * decorations. `match` tints every match; `activeMatch` distinguishes the current one. Both are
+     * translucent so cell text stays legible (enforced by the catalog contrast gate) — a highlighter
+     * yellow for matches, a warmer active tint.
+     */
+    search: { match: string; activeMatch: string };
   };
 }
 

@@ -42,6 +42,10 @@ open a second picker (a theme / a script).
 | `pane.grow-up` | Grow Pane Up | Panes | — |
 | `pane.grow-down` | Grow Pane Down | Panes | — |
 | `terminal.clear-scrollback` | Clear Scrollback | Terminal | — |
+| `search.open` | Find | Search | `cmd+f` |
+| `search.next` | Find Next | Search | `cmd+g` |
+| `search.prev` | Find Previous | Search | `cmd+shift+g` |
+| `search.close` | Close Find | Search | — |
 | `theme.select` | Change Theme… | Appearance | — |
 | `script.run` | Run Script… | Scripts | — |
 | `app.command-palette` | Command Palette… | App | `cmd+shift+p` |

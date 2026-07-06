@@ -33,6 +33,8 @@ export interface ThemeSpec {
     ansi: AnsiPalette;
     scrollbar: { idle?: string; hover?: string; active?: string };
     pane: { activeBorder?: string; inactiveBorder?: string };
+    /** trmx-98: find-bar highlight colors — OMITTED when the author didn't set them (derived). */
+    search?: { match?: string; activeMatch?: string };
     cursor?: string;
     cursorAccent?: string;
     selectionBackground?: string;
@@ -104,6 +106,12 @@ export function deriveTheme(spec: ThemeSpec): ThemeTokens {
       pane: {
         activeBorder: spec.terminal.pane.activeBorder ?? accentPrimary,
         inactiveBorder: spec.terminal.pane.inactiveBorder ?? border,
+      },
+      // trmx-98 (FR-1.5): find-bar highlights. Default = the theme's yellow at low alpha for matches, a
+      // stronger warm tint for the active one — translucent so cell text stays legible; a spec value wins.
+      search: {
+        match: spec.terminal.search?.match ?? withAlpha(ansi.yellow, 0.28),
+        activeMatch: spec.terminal.search?.activeMatch ?? withAlpha(ansi.yellow, 0.45),
       },
     },
   };

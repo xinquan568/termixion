@@ -43,5 +43,7 @@ export const mint: ThemeTokens = {
     // trmx-90: per-pane badge watermark — translucent green-gray (text #2d3a35) on the mint background.
     badge: "rgba(45, 58, 53, 0.06)",
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
+    // trmx-98: find-bar highlights — translucent yellow match / warmer active (legible over every theme bg).
+    search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },
   },
 };

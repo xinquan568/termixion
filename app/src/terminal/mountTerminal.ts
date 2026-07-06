@@ -16,7 +16,7 @@
 /** The slice of an xterm `Terminal` this strategy drives (incl. the C-2 PTY I/O surface). */
 export interface TerminalLike {
   open(container: HTMLElement): void;
-  loadAddon(addon: AddonLike | FitLike): void;
+  loadAddon(addon: AddonLike | FitLike | SearchAddonLike): void;
   /** Write PTY output bytes into the terminal. The optional callback is xterm's own parse-
    *  completion signal (`write(data, cb)` — fires after the chunk is parsed), surfaced for the
    *  trmx-78 perf harness; production wiring keeps calling `write(bytes)` and fakes may ignore it. */
@@ -45,11 +45,31 @@ export interface FitLike {
   dispose(): void;
 }
 
-/** Factories for the terminal and its WebGL + fit addons — real ones in the app, fakes in tests. */
+/**
+ * trmx-98 (FR-1.5): the narrow `@xterm/addon-search` surface the app drives per pane (find bar). The
+ * addon searches the whole buffer incl. scrollback; `decorations` need `allowProposedApi` (already on).
+ */
+export interface SearchLike {
+  findNext(term: string, options?: unknown): boolean;
+  findPrevious(term: string, options?: unknown): boolean;
+  clearDecorations(): void;
+  onDidChangeResults(
+    handler: (e: { resultIndex: number; resultCount: number }) => void,
+  ): { dispose(): void };
+}
+
+/** The LOADABLE search addon (ITerminalAddon lifecycle) — what `loadAddon` accepts; the handle exposes
+ * only the narrower `SearchLike`. */
+export interface SearchAddonLike extends SearchLike {
+  dispose(): void;
+}
+
+/** Factories for the terminal and its WebGL + fit + search addons — real ones in the app, fakes in tests. */
 export interface MountDeps {
   createTerminal(): TerminalLike;
   createWebglAddon(): AddonLike;
   createFitAddon(): FitLike;
+  createSearchAddon(): SearchAddonLike;
 }
 
 /** Which renderer is currently active. */
@@ -60,6 +80,8 @@ export interface TerminalHandle {
   terminal: TerminalLike;
   /** `"webgl"` while the addon is active; flips to `"dom"` on fallback / context loss. */
   renderer: RendererKind;
+  /** trmx-98: the per-pane search surface (find bar) — findNext/findPrevious/clearDecorations/count. */
+  search: SearchLike;
   /** Re-fit the cell grid to the host element's current size — called on container/window resize. */
   fit(): void;
   dispose(): void;
@@ -82,6 +104,11 @@ export function mountTerminal(
   const fit = deps.createFitAddon();
   terminal.loadAddon(fit);
 
+  // trmx-98: the search addon is renderer-agnostic and always available (like fit), so it loads
+  // unconditionally. It powers the per-pane find bar; its decorations use the already-on allowProposedApi.
+  const search = deps.createSearchAddon();
+  terminal.loadAddon(search);
+
   // Declared outside the try so dispose/catch can tear down a WebGL addon that was created (and
   // possibly already registered with the terminal by loadAddon) before activation threw.
   let webgl: AddonLike | undefined;
@@ -91,9 +118,11 @@ export function mountTerminal(
   const handle: TerminalHandle = {
     terminal,
     renderer: "dom",
+    search,
     fit: () => fit.fit(),
     dispose: () => {
       webgl?.dispose();
+      search.dispose();
       fit.dispose();
       terminal.dispose();
     },

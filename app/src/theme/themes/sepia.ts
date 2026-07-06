@@ -42,5 +42,7 @@ export const sepia: ThemeTokens = {
     // trmx-90: per-pane badge watermark — translucent brown (text #5c4b37) on the warm sepia background.
     badge: "rgba(92, 75, 55, 0.06)",
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
+    // trmx-98: find-bar highlights — translucent yellow match / warmer active (legible over every theme bg).
+    search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },
   },
 };

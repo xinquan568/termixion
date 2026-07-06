@@ -53,5 +53,7 @@ export const solarized: ThemeTokens = {
       hover: "rgba(255, 255, 255, 0.20)",
       active: "rgba(255, 255, 255, 0.30)",
     },
+    // trmx-98: find-bar highlights — low-luminance accent tint (a bright warm highlight is illegible on this low-contrast dark bg).
+    search: { match: "rgba(38, 139, 210, 0.14)", activeMatch: "rgba(38, 139, 210, 0.20)" },
   },
 };

@@ -52,7 +52,7 @@ function fakeHandle(size?: { rows: number; cols: number }) {
   };
   const handle: TerminalHandle = {
     terminal,
-    renderer: "dom",
+    renderer: "dom", search: {} as never,
     fit() {},
     dispose() {},
   };

@@ -54,6 +54,10 @@
     "pane": {
       "activeBorder": "#58a6ff",
       "inactiveBorder": "#3a3f46"
+    },
+    "search": {
+      "match": "rgba(88, 166, 255, 0.22)",
+      "activeMatch": "rgba(88, 166, 255, 0.42)"
     }
   }
 }

@@ -13,6 +13,7 @@ function fakeCtx(over: Partial<CommandContext> = {}): CommandContext {
     splitBelowWithScript: vi.fn(), closePane: vi.fn(), focusPane: vi.fn(),
     nextPane: vi.fn(), prevPane: vi.fn(), setBadge: vi.fn(), growPane: vi.fn(),
     clearScrollback: vi.fn(), openSettings: vi.fn(), checkForUpdates: vi.fn(),
+    openSearch: vi.fn(), searchNext: vi.fn(), searchPrev: vi.fn(), closeSearch: vi.fn(),
     closeWindow: vi.fn(), openCommandPalette: vi.fn(), selectTheme: vi.fn(), runScript: vi.fn(),
     tabCount: () => 5, paneCount: () => 3,
     ...over,
@@ -34,6 +35,7 @@ describe("command registry — the frozen id set (stable public surface / FR-9.4
         "pane.focus-left", "pane.focus-right", "pane.focus-up", "pane.focus-down",
         "pane.grow-left", "pane.grow-right", "pane.grow-up", "pane.grow-down",
         "terminal.clear-scrollback", "theme.select", "script.run",
+        "search.open", "search.next", "search.prev", "search.close",
         "app.command-palette", "app.settings", "app.check-updates", "window.close",
       ].sort(),
     );
@@ -52,6 +54,10 @@ describe("command run() bodies call the right ctx method", () => {
     ["pane.split-right", "splitRight"],
     ["pane.set-badge", "setBadge"],
     ["terminal.clear-scrollback", "clearScrollback"],
+    ["search.open", "openSearch"], // trmx-98
+    ["search.next", "searchNext"],
+    ["search.prev", "searchPrev"],
+    ["search.close", "closeSearch"],
     ["app.settings", "openSettings"],
     ["app.check-updates", "checkForUpdates"],
     ["window.close", "closeWindow"],
