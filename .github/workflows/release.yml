@@ -196,6 +196,10 @@ jobs:
           echo "inspecting: $deb"
           dpkg-deb -I "$deb"                       # control + Depends must be present + sane
           dpkg-deb -I "$deb" | grep -qi '^ Depends:' || { echo "::error::.deb has no Depends"; exit 1; }
+          # Contents must carry the actual payload, not just metadata (a mispackaged .deb would else pass).
+          dpkg-deb --contents "$deb"
+          dpkg-deb --contents "$deb" | grep -q 'usr/bin/termixion' || { echo "::error::.deb is missing usr/bin/termixion"; exit 1; }
+          dpkg-deb --contents "$deb" | grep -q '\.desktop' || { echo "::error::.deb is missing the .desktop entry"; exit 1; }
 
       - name: Stage + upload Linux artifacts
         run: |
@@ -264,8 +268,8 @@ jobs:
             notes="UNSIGNED macOS (aarch64) personal-alpha build (trmx-49) — Gatekeeper will block it: approve under System Settings → Privacy & Security → \"Open Anyway\", or run \`xattr -d com.apple.quarantine /Applications/Termixion.app\`. Plus x86_64 Linux AppImage (\`chmod +x\` to run; on a FUSE-less host set \`APPIMAGE_EXTRACT_AND_RUN=1\`) + .deb. Auto-updates are signature-verified by the updater key (latest.json attached, both platforms). (Alpha — see CHANGELOG.md.)"
           fi
           gh release create "${{ github.ref_name }}" \
-            dist-macos/*.dmg dist-macos/*.app.tar.gz \
-            dist-linux/*.AppImage dist-linux/*.AppImage.tar.gz dist-linux/*.deb \
+            dist-macos/*.dmg dist-macos/*.app.tar.gz dist-macos/*.app.tar.gz.sig \
+            dist-linux/*.AppImage dist-linux/*.AppImage.tar.gz dist-linux/*.AppImage.tar.gz.sig dist-linux/*.deb \
             latest.json \
             --draft \
             --title "Termixion ${{ github.ref_name }}" \

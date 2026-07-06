@@ -1,10 +1,14 @@
 # Release runbook
 
-**Distribution (Alpha, Q-e / Q-g / Q1):** GitHub Releases only; one **Apple-silicon** (`aarch64`)
-artifact — `Termixion_0.0.1_aarch64.dmg` — built on GitHub-hosted `macos-14` (signed + notarized when
-the Apple secrets are configured; see **Unsigned mode** below). The pipeline is
-[`.github/workflows/release.yml`](../.github/workflows/release.yml) (E-2). It triggers on a pushed
-`v*` tag.
+**Distribution (Alpha):** GitHub Releases only. Since v0.0.9 (trmx-102, FR-1.7) each release ships **two
+platforms**: an **Apple-silicon** (`aarch64`) macOS `.dmg` built on `macos-14` (signed + notarized when the
+Apple secrets are configured; see **Unsigned mode** below) AND an **x86_64 Linux** `.AppImage` + `.deb`
+built on `ubuntu-22.04` (see the **Linux** section below). The pipeline
+[`.github/workflows/release.yml`](../.github/workflows/release.yml) (E-2) triggers on a pushed `v*` tag and
+runs **three jobs**: `build-macos` and `build-linux` each build + validate their installers and upload them
+as artifacts; a final **`publish`** job (which `needs` both) downloads them, assembles ONE `latest.json`
+with both `darwin-aarch64` + `linux-x86_64` updater entries (signed by the same minisign key), and creates
+the single draft Release. So Linux never races the macOS publish, and the release is created exactly once.
 
 > ⚠️ **The repo ships the pipeline but NOT the secrets.** Signing/notarization credentials live **only**
 > as GitHub Actions secrets (R5 / P0-2); `.gitignore` blocks `*.p12`/`*.p8`/`*.cer`/`*.mobileprovision`
@@ -61,13 +65,15 @@ xattr -d com.apple.quarantine /Applications/Termixion.app
 3. Tag and push: `git tag v0.0.1 && git push origin v0.0.1`. **The tag must be `v<crate version>`** —
    the gate asserts `github.ref_name == v<workspace.package version>`, so a tag that disagrees with the
    crate version (which names the `.dmg`) fails before building.
-4. The `release` workflow runs on `macos-14` in this order: signing-mode gate → metadata + tag gate →
-   build the `.dmg` (+ codesign + notarize + staple in signed mode) → **verify** (`stapler validate` +
-   `spctl` in signed mode; existence in unsigned mode)
-   → assemble the updater `latest.json` → only then create a **draft** release with the verified `.dmg`,
-   the signed updater artifact, and `latest.json` attached. **The release is NOT a prerelease** — the
-   auto-updater's `/releases/latest/` endpoint only resolves to the newest *full* release (trmx-48; see
-   the Auto-update section). The `--draft` gate still holds it for human sign-off.
+4. The `release` workflow runs **three jobs** (trmx-102): (a) **`build-macos`** (`macos-14`): signing-mode
+   gate → metadata + tag gate → build the `.dmg` (+ codesign + notarize + staple in signed mode) →
+   **verify** (`stapler validate` + `spctl` in signed mode; existence in unsigned mode) → upload the
+   `.dmg` + `.app.tar.gz(.sig)`. (b) **`build-linux`** (`ubuntu-22.04`): build the `.AppImage` + `.deb`,
+   validate the `.deb` (metadata + contents), upload the `.AppImage` + `.AppImage.tar.gz(.sig)` + `.deb`.
+   (c) **`publish`** (`needs` both): download both, assemble ONE `latest.json` (both platform entries, both
+   signatures verified) → create a **draft** release with every installer + updater artifact + `latest.json`
+   attached. **Not a prerelease** — the auto-updater's `/releases/latest/` endpoint resolves only to the
+   newest *full* release (trmx-48). The `--draft` gate holds it for human sign-off.
 5. Review the draft Release on GitHub, then **publish** it. (The job creates a draft on purpose so a
    human signs off on the first signed artifact — flip `--draft` off in the workflow's publish step once
    you trust the pipeline. Re-running the same tag: delete the prior draft Release first.)
