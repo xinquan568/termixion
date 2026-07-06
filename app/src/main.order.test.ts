@@ -60,6 +60,13 @@ describe("main.tsx startup ordering (trmx-80/89: hydrate → hydrateUserThemes �
     expect(perfIndex).toBeLessThan(mountIndex);
   });
 
+  it("both gates RETURN before createRoot, so App never mounts under --smoke/--perf (trmx-93: the startup script only runs on the normal terminal launch)", () => {
+    // Each gate's early `return` lands before the React mount — App (and its scripts.startup trigger)
+    // is unreachable on a deterministic smoke/perf launch, keeping those runs script-free.
+    expect(source.indexOf("return", smokeIndex)).toBeLessThan(mountIndex);
+    expect(source.indexOf("return", perfIndex)).toBeLessThan(mountIndex);
+  });
+
   it("has NO module-level applyStartupTheme call outside boot() (one code path for all launches)", () => {
     // Exactly one invocation in the whole file — the one inside boot() pinned above.
     expect(source.match(/applyStartupTheme\(/g)).toHaveLength(1);

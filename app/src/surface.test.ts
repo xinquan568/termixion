@@ -36,6 +36,7 @@ describe("resolveSurface", () => {
   it("exposes the section guard for other consumers (the settings:navigate path, trmx-53)", () => {
     expect(isSection("appearance")).toBe(true);
     expect(isSection("terminal")).toBe(true);
+    expect(isSection("scripts")).toBe(true);
     expect(isSection("about")).toBe(true);
     expect(isSection("nope")).toBe(false);
     expect(isSection(null)).toBe(false);

@@ -689,3 +689,31 @@
 .tx-theme-hint__link:hover {
   text-decoration: underline;
 }
+
+/* trmx-93 (FR-5) — the Scripts page: the folder action + the source-semantics hint (mirrors the
+ * theme page's actions/hint block). The startup Select + button reuse the existing tx-select/tx-btn. */
+.tx-scripts-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 14px 14px;
+}
+.tx-scripts-hint {
+  margin: 0;
+  color: var(--tx-text-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.tx-scripts-hint code {
+  padding: 1px 4px;
+  font-size: 11px;
+  background: var(--tx-bg-sunken);
+  border-radius: 3px;
+}
+.tx-scripts-hint__link {
+  color: var(--tx-primary);
+  text-decoration: none;
+}
+.tx-scripts-hint__link:hover {
+  text-decoration: underline;
+}

@@ -324,6 +324,7 @@ describe("registry shape", () => {
         "appearance.theme",
         "tabs.barPosition",
         "tabs.sideLabelOrientation",
+        "scripts.startup",
       ].sort(),
     );
   });
@@ -336,6 +337,48 @@ describe("registry shape", () => {
   it("never uses vi timers or real Tauri — pure seams only", () => {
     // (documentation-by-test: makeSettingsStore takes only injected seams)
     expect(vi.isFakeTimers()).toBe(false);
+  });
+});
+
+// trmx-93 (FR-5): scripts.startup — a free-string key exactly like terminal.fontFamily: default "",
+// any string is a valid value (a scripts-root relative path), validated at launch not here. This
+// guards the review finding-2 regression: a persisted script path must round-trip verbatim through
+// STORAGE_KEYS + parse() + coerce(), never coerced to a default like an enum key would be.
+describe("scripts.startup (trmx-93)", () => {
+  it("defaults to \"\" in both backends", () => {
+    expect(makeSettingsStore(fakeStorage()).get("scripts.startup")).toBe("");
+    expect(makeSettingsStore().get("scripts.startup")).toBe(""); // snapshot, pre-hydration
+  });
+
+  it("round-trips an arbitrary path verbatim (legacy storage mode)", () => {
+    const store = makeSettingsStore(fakeStorage());
+    store.set("scripts.startup", "work/proj-x.sh");
+    expect(store.get("scripts.startup")).toBe("work/proj-x.sh");
+    store.set("scripts.startup", "");
+    expect(store.get("scripts.startup")).toBe("");
+  });
+
+  it("reads an injected legacy-storage path unchanged (not coerced to a default)", () => {
+    const store = makeSettingsStore(
+      fakeStorage({ "termixion.scripts.startup": "demo/my proj.sh" }),
+    );
+    expect(store.get("scripts.startup")).toBe("demo/my proj.sh");
+  });
+
+  it("snapshot mode: set writes through config_write and broadcasts", async () => {
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    const bus = fakeBus();
+    const store = makeSettingsStore(undefined, bus, "settings");
+    store.set("scripts.startup", "work/proj-x.sh");
+    expect(store.get("scripts.startup")).toBe("work/proj-x.sh");
+    expect(backend.writes()).toContainEqual({ key: "scripts.startup", value: "work/proj-x.sh" });
+    expect(bus.events).toEqual([
+      {
+        event: SETTINGS_CHANGED_EVENT,
+        payload: { key: "scripts.startup", value: "work/proj-x.sh", source: "settings" },
+      },
+    ]);
   });
 });
 

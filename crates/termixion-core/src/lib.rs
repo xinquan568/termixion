@@ -14,17 +14,19 @@ pub mod fake;
 pub mod pty;
 pub mod pump;
 pub mod registry;
+pub mod scripts;
 pub mod session;
 pub mod theme;
 
 pub use config::{
     CheckFrequency, Config, ConfigWarning, CursorStyle, DEFAULT_TEMPLATE, LabelOrientation,
-    RegistryValue, TabBarPosition, TabsConfig, diff_configs, parse_config, parse_registry_pairs,
-    toml_path_for,
+    RegistryValue, ScriptsConfig, TabBarPosition, TabsConfig, diff_configs, parse_config,
+    parse_registry_pairs, toml_path_for,
 };
 pub use pty::{PtyBackend, PtyError, PtyFactory, PtyReader, PtySize, SessionSpec};
 pub use pump::pump;
 pub use registry::SessionRegistry;
+pub use scripts::{ScriptEntry, shape_scripts, shell_single_quote, source_command};
 pub use session::{Session, SessionId};
 pub use theme::{
     AccentSpec, AnsiSpec, BgSpec, ColorSpec, PaneSpec, ScrollbarSpec, SemanticSpec, TerminalSpec,

@@ -38,6 +38,14 @@ pub fn menu_action(id: &str) -> Option<MenuAction> {
         }),
         "settings" => Some(MenuAction::ShowSettings { section: None }),
         "shell-new-tab" => Some(MenuAction::EmitTabsAction("new")),
+        // trmx-93 (FR-5): open the script picker to create the surface running the chosen script.
+        "shell-new-tab-with-script" => Some(MenuAction::EmitTabsAction("new-with-script")),
+        "shell-split-right-with-script" => {
+            Some(MenuAction::EmitTabsAction("split-right-with-script"))
+        }
+        "shell-split-below-with-script" => {
+            Some(MenuAction::EmitTabsAction("split-below-with-script"))
+        }
         "shell-close-tab" => Some(MenuAction::EmitTabsAction("close")),
         // trmx-75: Rename Tab… — the frontend opens the inline rename input on the active tab.
         "shell-rename-tab" => Some(MenuAction::EmitTabsAction("rename")),
@@ -91,6 +99,14 @@ pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         true,
         Some("CmdOrCtrl+T"),
     )?;
+    // trmx-93 (FR-5): open the script picker, then run the chosen script in a fresh tab (⇧⌘T).
+    let new_tab_with_script = MenuItem::with_id(
+        handle,
+        "shell-new-tab-with-script",
+        "New Tab with Script…",
+        true,
+        Some("Shift+CmdOrCtrl+T"),
+    )?;
     let close_tab = MenuItem::with_id(
         handle,
         "shell-close-tab",
@@ -133,6 +149,22 @@ pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         true,
         Some("Shift+CmdOrCtrl+D"),
     )?;
+    // trmx-93 (FR-5): split, then run the chosen script in the new pane. Un-accelerated for now —
+    // the FR-9 command palette (#94) is the fast path; these stay discoverable menu items.
+    let split_right_with_script = MenuItem::with_id(
+        handle,
+        "shell-split-right-with-script",
+        "Split Right with Script…",
+        true,
+        None::<&str>,
+    )?;
+    let split_below_with_script = MenuItem::with_id(
+        handle,
+        "shell-split-below-with-script",
+        "Split Below with Script…",
+        true,
+        None::<&str>,
+    )?;
     let close_window = MenuItem::with_id(
         handle,
         "shell-close-window",
@@ -146,12 +178,15 @@ pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         true,
         &[
             &new_tab,
+            &new_tab_with_script,
             &close_tab,
             &rename_tab,
             &set_badge,
             &PredefinedMenuItem::separator(handle)?,
             &split_right,
             &split_below,
+            &split_right_with_script,
+            &split_below_with_script,
             &PredefinedMenuItem::separator(handle)?,
             &close_window,
         ],
@@ -312,6 +347,24 @@ mod tests {
         assert_eq!(
             menu_action("shell-split-below"),
             Some(MenuAction::EmitTabsAction("split-below"))
+        );
+    }
+
+    #[test]
+    fn shell_script_items_broadcast_their_script_verbs() {
+        // trmx-93 (FR-5): the "with Script…" items announce their intent; the frontend opens the
+        // script picker and runs the chosen script in a new tab / split pane.
+        assert_eq!(
+            menu_action("shell-new-tab-with-script"),
+            Some(MenuAction::EmitTabsAction("new-with-script"))
+        );
+        assert_eq!(
+            menu_action("shell-split-right-with-script"),
+            Some(MenuAction::EmitTabsAction("split-right-with-script"))
+        );
+        assert_eq!(
+            menu_action("shell-split-below-with-script"),
+            Some(MenuAction::EmitTabsAction("split-below-with-script"))
         );
     }
 

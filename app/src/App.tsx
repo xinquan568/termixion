@@ -85,9 +85,14 @@ import {
   onPtyExited,
   onSessionActivity,
   onTitleHint,
+  realInvoke,
+  sendPtyInput,
   setSessionTitle,
+  type InvokeFn,
   type SessionInfo,
 } from "./ipc/backend";
+import { ScriptPicker } from "./scripts/ScriptPicker";
+import { listScripts, type ScriptEntry } from "./scripts/scriptsBackend";
 import { realEventBus } from "./ipc/eventBus";
 import { installThemeHotReload } from "./theme/themeHotReload";
 import { makeCwdStore, type CwdStore } from "./terminal/osc7";
@@ -237,6 +242,10 @@ export interface AppProps {
   dragSchedule?: FrameSchedule;
   /** Injection seam for tests; defaults to the real themes hot-reload installer (trmx-89). */
   installHotReload?: typeof installThemeHotReload;
+  /** Injection seam for tests; defaults to the real `pty_write` (trmx-93 — sends a sourced script). */
+  sendInput?: (sessionId: number, data: string) => Promise<void>;
+  /** Injection seam for tests; the backend `invoke` for the script picker + startup resolution (trmx-93). */
+  invoke?: InvokeFn;
 }
 
 export function App({
@@ -252,6 +261,8 @@ export function App({
   mirrorTitle = setSessionTitle,
   dragSchedule = realFrameSchedule,
   installHotReload = installThemeHotReload,
+  sendInput = (sessionId, data) => sendPtyInput(sessionId, data),
+  invoke = realInvoke,
 }: AppProps = {}) {
   const { attachTerminal } = useBackend();
   const attachFn = attach ?? attachTerminal;
@@ -293,6 +304,11 @@ export function App({
   // Mirrors renamingTabId: while non-null, focus-follows-activation is SUPPRESSED (the input owns
   // the keyboard); commit/cancel clears it, handing focus back to the pane's terminal.
   const [badgingPaneId, setBadgingPaneId] = useState<PaneId | null>(null);
+  // trmx-93 (FR-5): which surface a "…with Script…" verb requested (null = the picker is closed).
+  // Opening the picker; on run it creates that surface with the chosen script pending; Esc cancels.
+  const [scriptPickerRequest, setScriptPickerRequest] = useState<"tab" | "right" | "below" | null>(
+    null,
+  );
   // trmx-84: the measured pane content area — `solveRects` bounds. Seeded to a usable default so a
   // headless render (jsdom, pre-layout) still lays panes out; the ResizeObserver below refreshes it
   // once the window has a real size (a 0×0 reading is ignored so it never clobbers the default).
@@ -308,6 +324,11 @@ export function App({
   const handlesRef = useRef(new Map<PaneId, TerminalHandle>()); // mounted terminals
   const sessionsRef = useRef(new Map<PaneId, number>()); // attached backend sessionIds
   const pendingCwdRef = useRef(new Map<PaneId, string | undefined>()); // cwd to seed the open with
+  // trmx-93 (FR-5): a script to source once its pane's session attaches, keyed by the pane's
+  // (predictable) nextPaneId and set SYNCHRONOUSLY before the creating dispatch — so the async
+  // startup resolution can never lose the race with attach (the send-step awaits the promise).
+  const pendingScriptRef = useRef(new Map<PaneId, Promise<{ sourceLine: string } | null>>());
+  const startupFiredRef = useRef(false); // trmx-93: the startup script fires at most once
   const readyCbsRef = useRef(new Map<PaneId, (handle: TerminalHandle) => void>()); // stable onReady per pane
   const oscTitleCbsRef = useRef(new Map<PaneId, (title: string) => void>()); // stable onOscTitle per pane
   const badgeCbsRef = useRef(new Map<PaneId, (badge: string | null) => void>()); // stable onBadge per pane (trmx-90)
@@ -327,8 +348,22 @@ export function App({
 
   // Latest-seam ref: the cached per-pane callbacks (stable identity — an inline arrow would remount
   // the terminal via TerminalView's effect deps) read the CURRENT seams through it.
-  const seamsRef = useRef({ attach: attachFn, closeWindow, closeSession, setWindowTitle, mirrorTitle });
-  seamsRef.current = { attach: attachFn, closeWindow, closeSession, setWindowTitle, mirrorTitle };
+  const seamsRef = useRef({
+    attach: attachFn,
+    closeWindow,
+    closeSession,
+    setWindowTitle,
+    mirrorTitle,
+    sendInput,
+  });
+  seamsRef.current = {
+    attach: attachFn,
+    closeWindow,
+    closeSession,
+    setWindowTitle,
+    mirrorTitle,
+    sendInput,
+  };
   boundsRef.current = bounds;
   renamingRef.current = renamingTabId;
   badgingRef.current = badgingPaneId;
@@ -341,11 +376,35 @@ export function App({
   }, [state]);
 
   // Boot: exactly ONE initial tab (one pane). The ref guards StrictMode's double effect-invocation.
+  // trmx-93 (FR-5): if a startup script is configured, attach it to the first pane BEFORE dispatching
+  // openTab — its promise is stored in pendingScriptRef keyed by the upcoming nextPaneId, and the
+  // attach send-step awaits it, so the async listScripts resolution never loses the race (finding 3).
+  // Smoke/perf are already excluded: main.tsx boot() returns before App renders on those launches.
   useEffect(() => {
     if (bootedRef.current) return;
     bootedRef.current = true;
-    if (stateRef.current.tabs.length === 0) dispatch({ kind: "openTab" });
-  }, []);
+    if (stateRef.current.tabs.length === 0) {
+      const startupPath = makeSettingsStore().get("scripts.startup");
+      if (startupPath && !startupFiredRef.current) {
+        startupFiredRef.current = true;
+        const upcoming = stateRef.current.nextPaneId;
+        pendingScriptRef.current.set(
+          upcoming,
+          listScripts(invoke).then((scripts) => {
+            const match = scripts.find((entry) => entry.relPath === startupPath);
+            if (!match) {
+              console.warn(
+                `[termixion] startup script "${startupPath}" not found in ~/.config/termixion/scripts/; starting a plain shell`,
+              );
+              return null;
+            }
+            return { sourceLine: match.sourceLine };
+          }),
+        );
+      }
+      dispatch({ kind: "openTab" });
+    }
+  }, [invoke]);
 
   // trmx-84: measure the pane content area for solveRects. Guarded for jsdom (no ResizeObserver) and
   // 0×0 readings, so tests keep the usable default bounds and real runtime tracks the window size.
@@ -409,6 +468,23 @@ export function App({
             if (paneAlive(tabId, paneId) && epochCurrent) {
               sessionsRef.current.set(paneId, info.sessionId);
               dispatch({ kind: "attachSession", tabId, paneId, sessionId: info.sessionId, title: info.title });
+              // trmx-93 (FR-5): if a script is pending for this pane (a picker run, or the startup
+              // script), source it now that the session is live. Consumed ONLY on the current epoch so
+              // a superseded StrictMode attach can't steal it; awaits the stored promise (startup's
+              // async resolution), then sends `source '<abs>'` + CR through the sendInput seam.
+              const pendingScript = pendingScriptRef.current.get(paneId);
+              if (pendingScript) {
+                pendingScriptRef.current.delete(paneId);
+                void pendingScript.then((resolved) => {
+                  if (resolved && paneAlive(tabId, paneId)) {
+                    seamsRef.current.sendInput(info.sessionId, `${resolved.sourceLine}\r`).catch(
+                      (err: unknown) => {
+                        console.error("[termixion] sourcing the script failed", err);
+                      },
+                    );
+                  }
+                });
+              }
             } else {
               // ORPHAN GUARD: the pane/tab closed mid-attach, OR this is a superseded (StrictMode)
               // mount — kill the session it will never show.
@@ -589,6 +665,27 @@ export function App({
     dispatch({ kind: "splitPane", tabId: tab.tabId, dir: treeDir });
   };
 
+  // trmx-93 (FR-5): run `entry` in a fresh surface. The chosen script is stored in pendingScriptRef
+  // keyed by the upcoming pane's (predictable) id SYNCHRONOUSLY before the creating dispatch — the
+  // same nextPaneId requestNewTab/requestSplit seed pendingCwdRef with, so cwd inheritance survives
+  // and the new pane's attach sources the script. For a split that won't fit we bail WITHOUT setting
+  // the pending script, so a no-op split can't leave a stale entry for the next pane to pick up.
+  const runScriptInSurface = (entry: ScriptEntry, surface: "tab" | "right" | "below") => {
+    const s = stateRef.current;
+    const upcoming = s.nextPaneId;
+    const pending = Promise.resolve<{ sourceLine: string } | null>({ sourceLine: entry.sourceLine });
+    if (surface === "tab") {
+      pendingScriptRef.current.set(upcoming, pending);
+      requestNewTab();
+      return;
+    }
+    const tab = s.activeTabId !== null ? s.tabs.find((t) => t.tabId === s.activeTabId) : undefined;
+    const treeDir: SplitDir = surface === "right" ? "row" : "column";
+    if (!tab || !canSplitFocused(tab, treeDir, boundsRef.current, MIN_PANE_PX)) return; // won't fit
+    pendingScriptRef.current.set(upcoming, pending);
+    requestSplit(surface);
+  };
+
   // trmx-86 (FR-3.5): move focus between panes of the ACTIVE tab. `nav-dir` picks the geometrically
   // nearest pane via paneInDirection over the current solved rects; `nav-cycle` steps the leaves order.
   // A null / same-as-current target is a no-op. Shared by the keymap AND the Window-menu verbs, and kept
@@ -688,6 +785,11 @@ export function App({
       else if (payload === "prev") dispatch({ kind: "prevTab" });
       else if (payload === "split-right") requestSplit("right");
       else if (payload === "split-below") requestSplit("below");
+      // trmx-93 (FR-5): open the script picker; on run it creates the requested surface + sources the
+      // chosen script (runScriptInSurface). The picker overlay is mounted while the request is non-null.
+      else if (payload === "new-with-script") setScriptPickerRequest("tab");
+      else if (payload === "split-right-with-script") setScriptPickerRequest("right");
+      else if (payload === "split-below-with-script") setScriptPickerRequest("below");
       // trmx-86: Window ▸ Select Pane / Next/Previous Pane verbs → the same pane-nav path as the keymap.
       else if (payload === "pane-left") requestPaneNav({ kind: "nav-dir", dir: "left" });
       else if (payload === "pane-right") requestPaneNav({ kind: "nav-dir", dir: "right" });
@@ -1101,6 +1203,17 @@ export function App({
         onRenameCancel={cancelRename}
       />
       <UpdateAuthorityHost />
+      {scriptPickerRequest !== null && (
+        <ScriptPicker
+          invoke={invoke}
+          onRun={(entry) => {
+            const surface = scriptPickerRequest;
+            setScriptPickerRequest(null);
+            runScriptInSurface(entry, surface);
+          }}
+          onCancel={() => setScriptPickerRequest(null)}
+        />
+      )}
     </main>
   );
 }

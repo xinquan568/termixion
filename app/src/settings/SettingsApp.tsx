@@ -36,8 +36,9 @@
 import { useEffect, useReducer, useState, type ReactNode } from "react";
 import { AboutSettings } from "./AboutSettings";
 import { AppearanceSettings } from "./AppearanceSettings";
+import { ScriptsSettings } from "./ScriptsSettings";
 import { TerminalSettings } from "./TerminalSettings";
-import { InfoIcon, PaletteIcon, SearchIcon, TerminalIcon } from "./icons";
+import { InfoIcon, PaletteIcon, ScriptIcon, SearchIcon, TerminalIcon } from "./icons";
 import { isSection, type SettingsSection } from "../surface";
 import type { AppInfo } from "../update/appInfo";
 import type { Opener } from "../update/opener";
@@ -81,6 +82,7 @@ export interface SettingsAppProps {
 const NAV: ReadonlyArray<{ id: SettingsSection; label: string; icon: ReactNode }> = [
   { id: "appearance", label: "Appearance", icon: <PaletteIcon /> },
   { id: "terminal", label: "Terminal", icon: <TerminalIcon /> },
+  { id: "scripts", label: "Scripts", icon: <ScriptIcon /> },
   { id: "about", label: "About", icon: <InfoIcon /> },
 ];
 
@@ -244,6 +246,8 @@ export function SettingsApp({
             />
           ) : section === "terminal" ? (
             <TerminalSettings settings={settings} />
+          ) : section === "scripts" ? (
+            <ScriptsSettings settings={settings} invoke={invoke} />
           ) : (
             <AboutSettings update={update} appInfo={appInfo} opener={opener} settings={settings} />
           )}

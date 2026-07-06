@@ -105,8 +105,13 @@ function renderApp(props: Partial<Parameters<typeof SettingsApp>[0]> = {}) {
 describe("SettingsApp shell", () => {
   it("puts Appearance FIRST in the nav, applies the persisted theme's vars on mount, and re-themes on a swatch click (trmx-53)", () => {
     renderApp();
-    const nav = screen.getAllByRole("button", { name: /Appearance|Terminal|About/ });
-    expect(nav.map((b) => b.textContent)).toEqual(["Appearance", "Terminal", "About"]);
+    const nav = screen.getAllByRole("button", { name: /Appearance|Terminal|Scripts|About/ });
+    expect(nav.map((b) => b.textContent)).toEqual([
+      "Appearance",
+      "Terminal",
+      "Scripts",
+      "About",
+    ]);
     // Mount applied the persisted theme (jsdom derivation → Night) to documentElement.
     expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#23262b");
 

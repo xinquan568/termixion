@@ -7,7 +7,7 @@
 // three contexts and never throws on junk.
 
 /** The pages the settings window knows; must match the SettingsApp nav. */
-export type SettingsSection = "appearance" | "terminal" | "about";
+export type SettingsSection = "appearance" | "terminal" | "scripts" | "about";
 
 export type Surface =
   | { kind: "terminal" }
@@ -15,7 +15,7 @@ export type Surface =
 
 /** Section guard — exported (trmx-53) so the settings:navigate path shares one source of truth. */
 export function isSection(v: unknown): v is SettingsSection {
-  return v === "appearance" || v === "terminal" || v === "about";
+  return v === "appearance" || v === "terminal" || v === "scripts" || v === "about";
 }
 
 /** Resolve the surface from a `window.location.search` string. */

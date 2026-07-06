@@ -18,6 +18,7 @@ test("?window=settings renders the settings surface with the vmark chrome", asyn
   // — but the settings shell: search field, both nav entries, centered title.
   await expect(page.getByPlaceholder("Search settings…")).toBeVisible();
   await expect(page.getByRole("button", { name: "Terminal" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Scripts" })).toBeVisible();
   await expect(page.getByRole("button", { name: "About" })).toBeVisible();
   await expect(page.locator(".tx-settings__title")).toHaveText("Settings");
 
@@ -48,6 +49,17 @@ test("?window=settings&section=about lands on the vmark-parity About page", asyn
   // The identity links, stacked with icons.
   await expect(page.getByRole("button", { name: "Website" })).toBeVisible();
   await expect(page.getByRole("button", { name: "GitHub" })).toBeVisible();
+});
+
+test("?window=settings&section=scripts lands on the Scripts page (trmx-93)", async ({ page }) => {
+  await page.goto("/?window=settings&section=scripts");
+
+  await expect(page.locator(".tx-nav-item--active")).toHaveText("Scripts");
+  // The Startup script row + its Select ("None" is present with no backend), and the folder action.
+  await expect(page.getByText("Run on launch", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Startup script")).toBeVisible();
+  await expect(page.getByRole("option", { name: "None" })).toBeAttached();
+  await expect(page.getByRole("button", { name: "Open scripts folder" })).toBeVisible();
 });
 
 test("?window=settings&section=appearance shows the Theme row; a swatch click re-themes the window live (trmx-53)", async ({
