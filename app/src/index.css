@@ -760,3 +760,81 @@ body {
   font-size: 13px;
   text-align: center;
 }
+
+/* ---------------------------------------------------------------------------
+ * trmx-98 (FR-1.5): the per-pane find bar — a compact interactive overlay docked
+ * top-right INSIDE the focused pane's rect (above the terminal, below nothing it
+ * needs to sit under). Unlike the badge/activity watermarks it takes pointer events.
+ * --------------------------------------------------------------------------- */
+.tx-find-bar {
+  position: absolute;
+  top: 6px;
+  right: 14px; /* clear of the Kitty scrollbar gutter */
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border: 1px solid var(--tx-border, rgba(128, 128, 128, 0.4));
+  border-radius: 6px;
+  background: var(--tx-bg-secondary, rgba(30, 30, 30, 0.96));
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  font-size: 12px;
+}
+.tx-find-bar__input {
+  width: 160px;
+  padding: 3px 6px;
+  border: 1px solid var(--tx-border, rgba(128, 128, 128, 0.4));
+  border-radius: 4px;
+  background: var(--tx-bg-primary, #1e1e1e);
+  color: var(--tx-text-primary, #ddd);
+  font: inherit;
+  outline: none;
+}
+.tx-find-bar__input:focus {
+  border-color: var(--tx-accent, #58a6ff);
+}
+.tx-find-bar__input--error {
+  border-color: var(--tx-semantic-error, #f85149);
+  box-shadow: 0 0 0 1px var(--tx-semantic-error, #f85149);
+}
+.tx-find-bar__count {
+  min-width: 34px;
+  text-align: center;
+  color: var(--tx-text-secondary, #9aa0a6);
+  font-variant-numeric: tabular-nums;
+}
+.tx-find-bar__toggle,
+.tx-find-bar__nav,
+.tx-find-bar__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--tx-text-secondary, #9aa0a6);
+  font: inherit;
+  cursor: pointer;
+}
+.tx-find-bar__toggle:hover,
+.tx-find-bar__nav:hover,
+.tx-find-bar__close:hover {
+  background: var(--tx-bg-primary, rgba(255, 255, 255, 0.06));
+  color: var(--tx-text-primary, #ddd);
+}
+.tx-find-bar__toggle--on {
+  border-color: var(--tx-accent, #58a6ff);
+  color: var(--tx-accent, #58a6ff);
+}
+.tx-find-bar__nav {
+  font-size: 16px;
+  line-height: 1;
+}
+.tx-find-bar__close {
+  font-size: 15px;
+  line-height: 1;
+}

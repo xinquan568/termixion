@@ -79,6 +79,8 @@ describe("deriveTheme", () => {
           active: "rgba(255, 255, 255, 0.3)",
         },
         pane: { activeBorder: "#0000ff", inactiveBorder: "#8e8e8e" },
+        // trmx-98: withAlpha(ansi.yellow #ffff00, 0.28 / 0.45)
+        search: { match: "rgba(255, 255, 0, 0.28)", activeMatch: "rgba(255, 255, 0, 0.45)" },
       },
     });
   });
@@ -98,7 +100,16 @@ describe("deriveTheme", () => {
       new Set(["error", "errorBg", "success"]),
     );
     expect(new Set(Object.keys(t.terminal))).toEqual(
-      new Set(["ansi", "cursor", "cursorAccent", "selectionBackground", "badge", "scrollbar", "pane"]),
+      new Set([
+        "ansi",
+        "cursor",
+        "cursorAccent",
+        "selectionBackground",
+        "badge",
+        "scrollbar",
+        "pane",
+        "search",
+      ]),
     );
     expect(Object.keys(t.terminal.ansi)).toHaveLength(16);
     expect(new Set(Object.keys(t.terminal.scrollbar))).toEqual(
@@ -107,6 +118,7 @@ describe("deriveTheme", () => {
     expect(new Set(Object.keys(t.terminal.pane))).toEqual(
       new Set(["activeBorder", "inactiveBorder"]),
     );
+    expect(new Set(Object.keys(t.terminal.search))).toEqual(new Set(["match", "activeMatch"]));
   });
 
   it("emits only valid CSS color strings (dark and light minimal specs)", () => {

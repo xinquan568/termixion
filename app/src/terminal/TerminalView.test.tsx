@@ -61,7 +61,7 @@ describe("TerminalView", () => {
     const dispose = vi.fn();
     const handle: TerminalHandle = {
       terminal: {} as never,
-      renderer: "webgl",
+      renderer: "webgl", search: {} as never,
       fit: vi.fn(),
       dispose,
     };
@@ -94,7 +94,7 @@ describe("TerminalView", () => {
   // on) and live-toggled via settings:changed.
   it("attaches auto-copy-on-select when the setting is on (default) and detaches on unmount", () => {
     __resetSettingsForTest();
-    const handle: TerminalHandle = { terminal: {} as never, renderer: "webgl", fit: vi.fn(), dispose: vi.fn() };
+    const handle: TerminalHandle = { terminal: {} as never, renderer: "webgl", search: {} as never, fit: vi.fn(), dispose: vi.fn() };
     const mount = vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(() => handle);
     const detach = vi.fn();
     const attachCopyOnSelect = vi.fn<AttachCopyOnSelect>(() => detach);
@@ -118,7 +118,7 @@ describe("TerminalView", () => {
   it("does NOT attach auto-copy-on-select when terminal.copyOnSelect is off", () => {
     __resetSettingsForTest();
     makeSettingsStore().set("terminal.copyOnSelect", false);
-    const handle: TerminalHandle = { terminal: {} as never, renderer: "webgl", fit: vi.fn(), dispose: vi.fn() };
+    const handle: TerminalHandle = { terminal: {} as never, renderer: "webgl", search: {} as never, fit: vi.fn(), dispose: vi.fn() };
     const attachCopyOnSelect = vi.fn<AttachCopyOnSelect>(() => () => {});
     render(
       <TerminalView
@@ -137,7 +137,7 @@ describe("TerminalView", () => {
   it("live-toggles auto-copy-on-select via settings:changed (detach off, re-attach on)", () => {
     __resetSettingsForTest();
     // A minimal `.options` so the sibling settings handlers (theme/font/…) don't crash on the fire below.
-    const handle: TerminalHandle = { terminal: { options: {} } as never, renderer: "webgl", fit: vi.fn(), dispose: vi.fn() };
+    const handle: TerminalHandle = { terminal: { options: {} } as never, renderer: "webgl", search: {} as never, fit: vi.fn(), dispose: vi.fn() };
     let fireSettings: ((payload: unknown) => void) | undefined;
     const observeSettings = vi.fn((onChange: (payload: unknown) => void) => {
       fireSettings = onChange;
@@ -173,7 +173,7 @@ describe("TerminalView", () => {
   it("calls onReady with the mounted handle so the parent can attach a PTY (C-2)", () => {
     const handle: TerminalHandle = {
       terminal: {} as never,
-      renderer: "dom",
+      renderer: "dom", search: {} as never,
       fit: vi.fn(),
       dispose: vi.fn(),
     };
@@ -202,7 +202,7 @@ describe("TerminalView", () => {
     const fit = vi.fn();
     const handle: TerminalHandle = {
       terminal: {} as never,
-      renderer: "webgl",
+      renderer: "webgl", search: {} as never,
       fit,
       dispose: vi.fn(),
     };
@@ -249,7 +249,7 @@ describe("TerminalView", () => {
     const dispose = vi.fn();
     const handle: TerminalHandle = {
       terminal: { id: "real-terminal" } as never,
-      renderer: "webgl",
+      renderer: "webgl", search: {} as never,
       fit: vi.fn(),
       dispose: vi.fn(),
     };
@@ -286,7 +286,7 @@ describe("TerminalView", () => {
     const fit = vi.fn(() => calls.push("fit"));
     const handle: TerminalHandle = {
       terminal: {} as never,
-      renderer: "webgl",
+      renderer: "webgl", search: {} as never,
       fit,
       dispose: vi.fn(),
     };
@@ -330,7 +330,7 @@ describe("TerminalView", () => {
     const fit = vi.fn(() => calls.push("fit"));
     const handle: TerminalHandle = {
       terminal: {} as never,
-      renderer: "webgl",
+      renderer: "webgl", search: {} as never,
       fit,
       dispose: vi.fn(),
     };
@@ -384,7 +384,7 @@ describe("TerminalView", () => {
     const fit = vi.fn();
     const handle: TerminalHandle = {
       terminal: {} as never,
-      renderer: "webgl",
+      renderer: "webgl", search: {} as never,
       fit,
       dispose: vi.fn(),
     };
@@ -435,7 +435,7 @@ describe("TerminalView", () => {
     const fit = vi.fn();
     const handle: TerminalHandle = {
       terminal: {} as never,
-      renderer: "webgl",
+      renderer: "webgl", search: {} as never,
       fit,
       dispose: vi.fn(),
     };
@@ -481,7 +481,7 @@ describe("TerminalView", () => {
     const terminal = { options: {} as { theme?: unknown } };
     const handle: TerminalHandle = {
       terminal: terminal as never,
-      renderer: "webgl",
+      renderer: "webgl", search: {} as never,
       fit: vi.fn(),
       dispose: vi.fn(),
     };
@@ -552,7 +552,7 @@ describe("TerminalView", () => {
     const terminal = { options: {} as { cursorStyle?: string; cursorBlink?: boolean } };
     const handle: TerminalHandle = {
       terminal: terminal as never,
-      renderer: "webgl",
+      renderer: "webgl", search: {} as never,
       fit: vi.fn(),
       dispose: vi.fn(),
     };
@@ -607,7 +607,7 @@ describe("TerminalView", () => {
   it("stops observing settings broadcasts on unmount (trmx-51/53: no leaked listener)", () => {
     const handle: TerminalHandle = {
       terminal: { options: {} } as never,
-      renderer: "webgl",
+      renderer: "webgl", search: {} as never,
       fit: vi.fn(),
       dispose: vi.fn(),
     };
@@ -639,7 +639,7 @@ describe("TerminalView", () => {
     const teardown = vi.fn();
     const handle: TerminalHandle = {
       terminal: { id: "real-terminal" } as never,
-      renderer: "webgl",
+      renderer: "webgl", search: {} as never,
       fit: vi.fn(),
       dispose: vi.fn(),
     };
@@ -748,7 +748,7 @@ describe("TerminalView", () => {
     };
     const handle: TerminalHandle = {
       terminal: fakeTerminal as never,
-      renderer: "dom",
+      renderer: "dom", search: {} as never,
       fit: vi.fn(),
       dispose: vi.fn(),
     };
@@ -774,7 +774,7 @@ describe("TerminalView", () => {
   it("threads onBadge through the attachOscIntegrations seam; absent stays undefined (trmx-90)", () => {
     const handle: TerminalHandle = {
       terminal: { id: "real-terminal" } as never,
-      renderer: "webgl",
+      renderer: "webgl", search: {} as never,
       fit: vi.fn(),
       dispose: vi.fn(),
     };
@@ -815,7 +815,7 @@ describe("TerminalView", () => {
   it("passes the injected per-tab cwdStore through the OSC seam (trmx-74)", () => {
     const handle: TerminalHandle = {
       terminal: { id: "real-terminal" } as never,
-      renderer: "webgl",
+      renderer: "webgl", search: {} as never,
       fit: vi.fn(),
       dispose: vi.fn(),
     };
@@ -881,7 +881,7 @@ describe("TerminalView", () => {
     };
     const handle: TerminalHandle = {
       terminal: fakeTerminal as never,
-      renderer: "dom",
+      renderer: "dom", search: {} as never,
       fit: vi.fn(),
       dispose: vi.fn(),
     };
@@ -909,7 +909,7 @@ describe("TerminalView", () => {
   it("threads onOscTitle through the attachOscIntegrations seam; absent stays undefined (trmx-75)", () => {
     const handle: TerminalHandle = {
       terminal: { id: "real-terminal" } as never,
-      renderer: "webgl",
+      renderer: "webgl", search: {} as never,
       fit: vi.fn(),
       dispose: vi.fn(),
     };
@@ -957,7 +957,7 @@ describe("TerminalView", () => {
     const fit = vi.fn();
     const handle: TerminalHandle = {
       terminal: terminal as never,
-      renderer: "webgl",
+      renderer: "webgl", search: {} as never,
       fit,
       dispose: vi.fn(),
     };
@@ -1023,7 +1023,7 @@ describe("TerminalView", () => {
     const teardown = vi.fn();
     const handle: TerminalHandle = {
       terminal: { id: "real-terminal" } as never,
-      renderer: "webgl",
+      renderer: "webgl", search: {} as never,
       fit: vi.fn(),
       dispose: vi.fn(),
     };

@@ -31,6 +31,11 @@ export interface CommandContext {
   growPane(dir: "left" | "right" | "up" | "down"): void; // trmx-94 (FR-3.3)
   // terminal (trmx-94)
   clearScrollback(): void;
+  // search (trmx-98, FR-1.5) — open/close the focused pane's find bar; next/prev route to its controller
+  openSearch(): void;
+  searchNext(): void;
+  searchPrev(): void;
+  closeSearch(): void;
   // app / window (trmx-94 — routed through dispatch, not the Rust menu shortcuts)
   openSettings(): void;
   checkForUpdates(): void;
@@ -102,6 +107,11 @@ export function buildCommands(): Command[] {
     })),
     // --- terminal ---
     { id: "terminal.clear-scrollback", title: "Clear Scrollback", category: "Terminal", run: (c) => c.clearScrollback() },
+    // trmx-98 (FR-1.5): in-pane search. open (⌘F) / next (⌘G) / prev (⇧⌘G) / close (Esc via palette/×).
+    { id: "search.open", title: "Find", category: "Search", run: (c) => c.openSearch() },
+    { id: "search.next", title: "Find Next", category: "Search", run: (c) => c.searchNext() },
+    { id: "search.prev", title: "Find Previous", category: "Search", run: (c) => c.searchPrev() },
+    { id: "search.close", title: "Close Find", category: "Search", run: (c) => c.closeSearch() },
     // --- theme / script (parameterized: a second palette page) ---
     { id: "theme.select", title: "Change Theme…", category: "Appearance", param: "theme", run: (c, arg) => arg && c.selectTheme(arg) },
     { id: "script.run", title: "Run Script…", category: "Scripts", param: "script", run: (c, arg) => arg && c.runScript(arg) },

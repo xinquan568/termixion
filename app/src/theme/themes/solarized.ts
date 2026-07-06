@@ -17,7 +17,7 @@ export const solarized: ThemeTokens = {
   color: {
     bg: { primary: "#002b36", secondary: "#073642", tertiary: "#0a3a47" },
     text: { primary: "#93a1a1", secondary: "#839496", tertiary: "#586e75" },
-    accent: { primary: "#268bd2", bg: "rgba(38, 139, 210, 0.14)" },
+    accent: { primary: "#268bd2", bg: "rgba(38, 139, 210, 0.09)" },
     border: "#0e4753",
     selection: "rgba(38, 139, 210, 0.22)",
     semantic: { error: "#dc322f", errorBg: "rgba(220, 50, 47, 0.15)", success: "#859900" },
@@ -53,5 +53,7 @@ export const solarized: ThemeTokens = {
       hover: "rgba(255, 255, 255, 0.20)",
       active: "rgba(255, 255, 255, 0.30)",
     },
+    // trmx-98: find-bar highlights — low-luminance accent tint (a bright warm highlight is illegible on this low-contrast dark bg).
+    search: { match: "rgba(38, 139, 210, 0.09)", activeMatch: "rgba(38, 139, 210, 0.12)" },
   },
 };

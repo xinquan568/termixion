@@ -79,6 +79,7 @@ import {
 } from "./settings/settingsStore";
 import { describeTarget } from "./tabs/tabKeymap";
 import { isRegisteredThemeId, isUserThemeIdShape, resolveTheme } from "./theme/registry";
+import { FindBar, type SearchController } from "./search/FindBar";
 import { withAlpha } from "./theme/colorMath";
 import { useBackend } from "./ipc/useBackend";
 import {
@@ -316,6 +317,13 @@ export function App({
   // Mirrors renamingTabId: while non-null, focus-follows-activation is SUPPRESSED (the input owns
   // the keyboard); commit/cancel clears it, handing focus back to the pane's terminal.
   const [badgingPaneId, setBadgingPaneId] = useState<PaneId | null>(null);
+  // trmx-98 (FR-1.5): the set of panes with an OPEN find bar (per-pane isolation — two in a split).
+  // Like badgingPaneId, an open bar SUPPRESSES focus-follows for its pane (the input owns the keyboard).
+  const [openSearchPanes, setOpenSearchPanes] = useState<Set<PaneId>>(() => new Set());
+  // trmx-98: live search-highlight colors (theme tokens) fed to the addon decorations.
+  const [searchColors, setSearchColors] = useState(
+    () => resolveTheme(makeSettingsStore().get("appearance.theme")).terminal.search,
+  );
   // trmx-93 (FR-5): which surface a "…with Script…" verb requested (null = the picker is closed).
   // Opening the picker; on run it creates that surface with the chosen script pending; Esc cancels.
   const [scriptPickerRequest, setScriptPickerRequest] = useState<"tab" | "right" | "below" | null>(
@@ -364,6 +372,8 @@ export function App({
   const activityTimersRef = useRef(new Map<PaneId, ReturnType<typeof setTimeout>>());
   const renamingRef = useRef(renamingTabId); // out-of-render read for the onReady focus guard
   const badgingRef = useRef(badgingPaneId); // out-of-render read for the onReady focus guard (trmx-90)
+  const openSearchRef = useRef(openSearchPanes); // out-of-render read for the onReady focus guard (trmx-98)
+  const searchControllersRef = useRef(new Map<PaneId, SearchController>()); // trmx-98: per-pane find bars
   const bootedRef = useRef(false);
 
   // Latest-seam ref: the cached per-pane callbacks (stable identity — an inline arrow would remount
@@ -387,6 +397,7 @@ export function App({
   boundsRef.current = bounds;
   renamingRef.current = renamingTabId;
   badgingRef.current = badgingPaneId;
+  openSearchRef.current = openSearchPanes;
 
   // Keep stateRef pointed at the latest COMMITTED state for the out-of-render callbacks (attach
   // resolutions, event subscriptions) — an effect, not a render assignment, so a discarded render
@@ -492,7 +503,8 @@ export function App({
           activeTab &&
           activeTab.focusedPaneId === paneId &&
           renamingRef.current === null &&
-          badgingRef.current === null
+          badgingRef.current === null &&
+          !openSearchRef.current.has(paneId) // trmx-98: an open find bar owns the keyboard
         ) {
           (handle.terminal as unknown as { focus?: () => void } | undefined)?.focus?.();
         }
@@ -630,6 +642,14 @@ export function App({
     if (activityTimer !== undefined) clearTimeout(activityTimer);
     activityTimersRef.current.delete(paneId);
     activityStatesRef.current.delete(paneId);
+    // trmx-98: drop this pane's find-bar state so a closed pane leaves no open bar / stale controller.
+    searchControllersRef.current.delete(paneId);
+    setOpenSearchPanes((prev) => {
+      if (!prev.has(paneId)) return prev;
+      const next = new Set(prev);
+      next.delete(paneId);
+      return next;
+    });
     if (sessionId !== undefined && !opts?.alreadyExited) {
       seamsRef.current.closeSession(sessionId).catch((err: unknown) => {
         console.error("[termixion] close pty failed", err);
@@ -817,6 +837,28 @@ export function App({
       const handle = handlesRef.current.get(tab.focusedPaneId);
       (handle?.terminal as unknown as { clear?: () => void } | undefined)?.clear?.();
     },
+    // trmx-98 (FR-1.5): open the focused pane's find bar (or focus it if already open). The bar renders
+    // as a pane-host child and registers its controller into searchControllersRef on mount.
+    openSearch: () => {
+      const tab = getActiveTab();
+      if (!tab) return;
+      const paneId = tab.focusedPaneId;
+      const controller = searchControllersRef.current.get(paneId);
+      if (controller) controller.focus();
+      else setOpenSearchPanes((prev) => new Set(prev).add(paneId));
+    },
+    searchNext: () => {
+      const tab = getActiveTab();
+      if (tab) searchControllersRef.current.get(tab.focusedPaneId)?.next();
+    },
+    searchPrev: () => {
+      const tab = getActiveTab();
+      if (tab) searchControllersRef.current.get(tab.focusedPaneId)?.prev();
+    },
+    closeSearch: () => {
+      const tab = getActiveTab();
+      if (tab) searchControllersRef.current.get(tab.focusedPaneId)?.close();
+    },
     openSettings: () => {
       invoke("open_settings_window", { section: null }).catch((err: unknown) =>
         console.error("[termixion] open settings failed", err),
@@ -1002,6 +1044,7 @@ export function App({
       else if (key === "appearance.theme" && (isRegisteredThemeId(value) || isUserThemeIdShape(value))) {
         setBadgeColor(resolveTheme(value).terminal.badge);
         setActivityColor(activityColorFor(value));
+        setSearchColors(resolveTheme(value).terminal.search); // trmx-98: re-tint the find highlights
       }
     });
     return stopSettings;
@@ -1050,9 +1093,11 @@ export function App({
     // grab so the ⇧⌘B input keeps focus; commit/cancel clears badgingPaneId → this re-runs.
     if (renamingTabId !== null || badgingPaneId !== null) return;
     if (activeFocusedPaneId === null) return;
+    // trmx-98: an open find bar on the focused pane owns the keyboard — don't grab it back to the terminal.
+    if (openSearchPanes.has(activeFocusedPaneId)) return;
     const terminal = handlesRef.current.get(activeFocusedPaneId)?.terminal;
     (terminal as unknown as { focus?: () => void } | undefined)?.focus?.();
-  }, [state.activeTabId, activeFocusedPaneId, renamingTabId, badgingPaneId]);
+  }, [state.activeTabId, activeFocusedPaneId, renamingTabId, badgingPaneId, openSearchPanes]);
 
   // trmx-75: the NATIVE window title is the ACTIVE tab's (focused pane) effective title — background
   // tabs/panes never reach it. Undefined = no tabs yet (boot) — leave the window alone.
@@ -1285,6 +1330,37 @@ export function App({
                         onCancel={cancelBadge}
                       />
                     )}
+                    {/* trmx-98 (FR-1.5): the per-pane find bar. Rendered only when open AND the pane's
+                        terminal handle (with its search addon) is ready. */}
+                    {openSearchPanes.has(paneId) &&
+                      handlesRef.current.get(paneId)?.search &&
+                      (() => {
+                        const search = handlesRef.current.get(paneId)!.search;
+                        return (
+                          <FindBar
+                            key={`find-bar-${paneId}`}
+                            search={search}
+                            colors={searchColors}
+                            onClose={() => {
+                              search.clearDecorations();
+                              setOpenSearchPanes((prev) => {
+                                const next = new Set(prev);
+                                next.delete(paneId);
+                                return next;
+                              });
+                              (
+                                handlesRef.current.get(paneId)?.terminal as unknown as
+                                  | { focus?: () => void }
+                                  | undefined
+                              )?.focus?.();
+                            }}
+                            onRegister={(c) => {
+                              if (c) searchControllersRef.current.set(paneId, c);
+                              else searchControllersRef.current.delete(paneId);
+                            }}
+                          />
+                        );
+                      })()}
                   </div>
                 );
               })}

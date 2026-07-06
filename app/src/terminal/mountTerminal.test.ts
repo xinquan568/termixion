@@ -10,12 +10,13 @@ import {
   type AddonLike,
   type FitLike,
   type MountDeps,
+  type SearchAddonLike,
   type TerminalLike,
 } from "./mountTerminal";
 
 interface FakeTerminal extends TerminalLike {
   opened: HTMLElement | null;
-  addons: Array<AddonLike | FitLike>;
+  addons: Array<AddonLike | FitLike | SearchAddonLike>;
   disposed: boolean;
 }
 function fakeTerminal(): FakeTerminal {
@@ -72,6 +73,29 @@ function fakeFit(): FakeFit {
   };
 }
 
+// trmx-98: a fake search addon (loadable + narrow surface). Tracks disposal so the mount test can assert
+// it is loaded onto the terminal and torn down with the handle.
+interface FakeSearch {
+  disposed: boolean;
+  findNext(term: string): boolean;
+  findPrevious(term: string): boolean;
+  clearDecorations(): void;
+  onDidChangeResults(handler: (e: { resultIndex: number; resultCount: number }) => void): { dispose(): void };
+  dispose(): void;
+}
+function fakeSearch(): FakeSearch {
+  return {
+    disposed: false,
+    findNext: () => false,
+    findPrevious: () => false,
+    clearDecorations() {},
+    onDidChangeResults: () => ({ dispose() {} }),
+    dispose() {
+      this.disposed = true;
+    },
+  };
+}
+
 // mountTerminal only forwards the container to terminal.open(); the fake stores it, so a bare
 // object stands in for a real DOM node and keeps this a pure unit test.
 const container = {} as HTMLElement;
@@ -84,6 +108,7 @@ describe("mountTerminal", () => {
       createTerminal: () => term,
       createWebglAddon: () => webgl,
       createFitAddon: () => fakeFit(),
+      createSearchAddon: () => fakeSearch(),
     };
 
     const handle = mountTerminal(container, deps);
@@ -100,6 +125,7 @@ describe("mountTerminal", () => {
       createTerminal: () => term,
       createWebglAddon: () => fakeWebgl(),
       createFitAddon: () => fit,
+      createSearchAddon: () => fakeSearch(),
     };
 
     const handle = mountTerminal(container, deps);
@@ -111,12 +137,28 @@ describe("mountTerminal", () => {
     expect(handle.fit).toBeTypeOf("function");
   });
 
+  it("loads the search addon and exposes it on handle.search (trmx-98)", () => {
+    const term = fakeTerminal();
+    const search = fakeSearch();
+    const handle = mountTerminal(container, {
+      createTerminal: () => term,
+      createWebglAddon: () => fakeWebgl(),
+      createFitAddon: () => fakeFit(),
+      createSearchAddon: () => search,
+    });
+    expect(term.addons).toContain(search); // loaded onto the terminal (renderer-agnostic, like fit)
+    expect(handle.search).toBe(search); // and reachable so App can drive the find bar
+    handle.dispose();
+    expect(search.disposed).toBe(true); // torn down with the handle
+  });
+
   it("re-fits the grid when handle.fit() is called (resize path)", () => {
     const fit = fakeFit();
     const deps: MountDeps = {
       createTerminal: () => fakeTerminal(),
       createWebglAddon: () => fakeWebgl(),
       createFitAddon: () => fit,
+      createSearchAddon: () => fakeSearch(),
     };
 
     const handle = mountTerminal(container, deps);
@@ -136,6 +178,7 @@ describe("mountTerminal", () => {
         throw new Error("WebGL2 unavailable");
       },
       createFitAddon: () => fit,
+      createSearchAddon: () => fakeSearch(),
     };
 
     const handle = mountTerminal(container, deps);
@@ -152,6 +195,7 @@ describe("mountTerminal", () => {
         throw new Error("WebGL2 unavailable");
       },
       createFitAddon: () => fakeFit(),
+      createSearchAddon: () => fakeSearch(),
     };
 
     const handle = mountTerminal(container, deps);
@@ -173,6 +217,7 @@ describe("mountTerminal", () => {
       createTerminal: () => term,
       createWebglAddon: () => webgl,
       createFitAddon: () => fakeFit(),
+      createSearchAddon: () => fakeSearch(),
     };
 
     const handle = mountTerminal(container, deps);
@@ -190,6 +235,7 @@ describe("mountTerminal", () => {
       createTerminal: () => term,
       createWebglAddon: () => webgl,
       createFitAddon: () => fakeFit(),
+      createSearchAddon: () => fakeSearch(),
     };
 
     const handle = mountTerminal(container, deps);
@@ -212,6 +258,7 @@ describe("mountTerminal", () => {
       createTerminal: () => term,
       createWebglAddon: () => webgl,
       createFitAddon: () => fit,
+      createSearchAddon: () => fakeSearch(),
     });
     handle.dispose();
 

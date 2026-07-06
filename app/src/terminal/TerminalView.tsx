@@ -8,11 +8,13 @@ import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { FitAddon } from "@xterm/addon-fit";
+import { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 import {
   mountTerminal,
   type AddonLike,
   type FitLike,
+  type SearchAddonLike,
   type MountDeps,
   type TerminalHandle,
   type TerminalLike,
@@ -118,6 +120,8 @@ export const realDeps: MountDeps = {
     return new WebglAddon() as unknown as AddonLike;
   },
   createFitAddon: () => new FitAddon() as unknown as FitLike,
+  // trmx-98: the per-pane search addon (find bar). Renderer-agnostic; loaded unconditionally.
+  createSearchAddon: () => new SearchAddon() as unknown as SearchAddonLike,
 };
 
 /**

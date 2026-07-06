@@ -107,6 +107,11 @@ export function themeTokensToToml(tokens: ThemeTokens, sourceLabel?: string): st
   lines.push("[terminal.pane]");
   lines.push(`active_border = ${q(terminal.pane.activeBorder)}`);
   lines.push(`inactive_border = ${q(terminal.pane.inactiveBorder)}`);
+  lines.push("");
+  // trmx-98 (FR-1.5): the find-bar highlight colors.
+  lines.push("[terminal.search]");
+  lines.push(`match = ${q(terminal.search.match)}`);
+  lines.push(`active_match = ${q(terminal.search.activeMatch)}`);
 
   return lines.join("\n") + "\n";
 }

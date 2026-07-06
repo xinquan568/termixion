@@ -30,6 +30,11 @@ export const FULL_DEFAULT_KEYS: Readonly<Record<string, string>> = {
   "cmd+shift+d": "pane.split-below",
   "cmd+shift+b": "pane.set-badge",
   "cmd+shift+p": "app.command-palette",
+  // trmx-98 (FR-1.5): in-pane search. ⌘G/⇧⌘G fire globally when the TERMINAL is focused; while the find
+  // input is focused the FindBar handles them locally (the global keymap skips editable targets).
+  "cmd+f": "search.open",
+  "cmd+g": "search.next",
+  "cmd+shift+g": "search.prev",
   "cmd+shift+]": "tab.next",
   "cmd+shift+[": "tab.prev",
   "cmd+]": "pane.next",

@@ -51,5 +51,7 @@ export const night: ThemeTokens = {
       hover: "rgba(255, 255, 255, 0.20)",
       active: "rgba(255, 255, 255, 0.30)",
     },
+    // trmx-98: find-bar highlights — low-luminance accent tint (a bright warm highlight is illegible on this low-contrast dark bg).
+    search: { match: "rgba(88, 166, 255, 0.16)", activeMatch: "rgba(88, 166, 255, 0.24)" },
   },
 };

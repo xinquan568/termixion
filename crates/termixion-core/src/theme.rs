@@ -108,6 +108,7 @@ pub struct TerminalSpec {
     pub badge: Option<String>,
     pub scrollbar: ScrollbarSpec,
     pub pane: PaneSpec,
+    pub search: SearchSpec,
 }
 
 /// `[terminal.ansi]`: the 16-color ANSI palette. Every color is REQUIRED — the xterm terminal has no
@@ -152,6 +153,17 @@ pub struct PaneSpec {
     pub active_border: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inactive_border: Option<String>,
+}
+
+/// `[terminal.search]`: the find-bar highlight colors (both optional/derivable). trmx-98 (FR-1.5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchSpec {
+    // `match` is a Rust keyword — the raw identifier serializes as camelCase "match" for the frontend.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#match: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_match: Option<String>,
 }
 
 /// A non-fatal problem found while reading a theme file. `key` is always the TOML path (snake_case
@@ -295,6 +307,8 @@ struct Draft {
     scrollbar_active: Option<String>,
     pane_active_border: Option<String>,
     pane_inactive_border: Option<String>,
+    search_match: Option<String>,
+    search_active_match: Option<String>,
 }
 
 /// Collects the walk's outputs so the field readers stay small.
@@ -357,6 +371,10 @@ impl Draft {
                     pane: PaneSpec {
                         active_border: self.pane_active_border,
                         inactive_border: self.pane_inactive_border,
+                    },
+                    search: SearchSpec {
+                        r#match: self.search_match,
+                        active_match: self.search_active_match,
                     },
                 },
             }),
@@ -482,6 +500,7 @@ fn walk_terminal(value: &toml::Value, draft: &mut Draft, sink: &mut Sink) {
             "ansi" => walk_terminal_ansi(value, draft, sink),
             "scrollbar" => walk_terminal_scrollbar(value, draft, sink),
             "pane" => walk_terminal_pane(value, draft, sink),
+            "search" => walk_terminal_search(value, draft, sink),
             "cursor" => read_color(value, "terminal.cursor", &mut draft.cursor, sink),
             "cursor_accent" => read_color(
                 value,
@@ -573,6 +592,32 @@ fn walk_terminal_pane(value: &toml::Value, draft: &mut Draft, sink: &mut Sink) {
             ),
             _ => sink.warnings.push(ThemeWarning::UnknownKey {
                 key: format!("terminal.pane.{key}"),
+            }),
+        }
+    }
+}
+
+/// `[terminal.search]`: the find-bar highlight colors (trmx-98, FR-1.5) — both optional/derivable.
+fn walk_terminal_search(value: &toml::Value, draft: &mut Draft, sink: &mut Sink) {
+    let Some(table) = as_table_or_warn(value, "terminal.search", sink) else {
+        return;
+    };
+    for (key, value) in table {
+        match key.as_str() {
+            "match" => read_color(
+                value,
+                "terminal.search.match",
+                &mut draft.search_match,
+                sink,
+            ),
+            "active_match" => read_color(
+                value,
+                "terminal.search.active_match",
+                &mut draft.search_active_match,
+                sink,
+            ),
+            _ => sink.warnings.push(ThemeWarning::UnknownKey {
+                key: format!("terminal.search.{key}"),
             }),
         }
     }

@@ -59,3 +59,7 @@ active = "rgba(255, 255, 255, 0.30)"
 [terminal.pane]
 active_border = "#58a6ff"
 inactive_border = "#3a3f46"
+
+[terminal.search]
+match = "rgba(88, 166, 255, 0.22)"
+active_match = "rgba(88, 166, 255, 0.42)"
