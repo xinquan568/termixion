@@ -105,7 +105,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     selectionBackground: "rgba(90, 168, 255, 0.22)",
     badge: "rgba(255, 255, 255, 0.08)",
     scrollbar: { idle: "rgba(255, 255, 255, 0.12)", hover: "rgba(255, 255, 255, 0.20)", active: "rgba(255, 255, 255, 0.30)" },
-    search: { match: "rgba(88, 166, 255, 0.22)", activeMatch: "rgba(88, 166, 255, 0.42)" },
+    search: { match: "rgba(88, 166, 255, 0.16)", activeMatch: "rgba(88, 166, 255, 0.24)" },
   },
   solarized: {
     pane: { activeBorder: "#268bd2", inactiveBorder: "#0e4753" },
@@ -120,7 +120,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     selectionBackground: "rgba(38, 139, 210, 0.15)",
     badge: "rgba(147, 161, 161, 0.10)",
     scrollbar: { idle: "rgba(255, 255, 255, 0.12)", hover: "rgba(255, 255, 255, 0.20)", active: "rgba(255, 255, 255, 0.30)" },
-    search: { match: "rgba(38, 139, 210, 0.14)", activeMatch: "rgba(38, 139, 210, 0.20)" },
+    search: { match: "rgba(38, 139, 210, 0.09)", activeMatch: "rgba(38, 139, 210, 0.12)" },
   },
 };
 
@@ -202,10 +202,10 @@ export const CONTRAST_GATES = {
   selectedText: 4.5,
   /** G4: cursor vs bg.primary — WCAG 1.4.11 UI-component contrast. */
   cursor: 3,
-  /** G6 (trmx-98): text.primary vs each search-highlight tint composited over bg.primary. A search
-   *  highlight is a TRANSIENT UI-component state (WCAG 1.4.11 = 3.0), not body text — the same floor as
-   *  the cursor (G4) and pane border (G5); a strict 4.5 is unreachable on low-contrast themes (solarized). */
-  searchText: 3,
+  /** G6 (trmx-98): text.primary vs each search-highlight tint composited over bg.primary. The GLYPH is
+   *  drawn OVER the decoration, so this is body-text legibility (WCAG AA 4.5), not a UI-component state —
+   *  match & activeMatch tints stay low-alpha (esp. the low-contrast dark themes) so text keeps 4.5:1. */
+  searchText: 4.5,
 } as const;
 
 describe.each(THEME_IDS)("legibility gates (trmx-77) — %s", (id) => {

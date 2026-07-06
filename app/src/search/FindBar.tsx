@@ -88,10 +88,12 @@ export function FindBar({
   useEffect(() => {
     const controller: SearchController = {
       next: () => {
+        cancelDebounceRef.current(); // finding 1: don't let a queued debounce double-advance
         const s = stateRef.current;
         if (isSearchable(s)) search.findNext(s.query, searchOptions(s, colorsRef.current) as unknown);
       },
       prev: () => {
+        cancelDebounceRef.current();
         const s = stateRef.current;
         if (isSearchable(s))
           search.findPrevious(s.query, searchOptions(s, colorsRef.current) as unknown);
@@ -109,20 +111,47 @@ export function FindBar({
     inputRef.current?.focus();
   }, []);
 
+  // Cancel any pending debounced search — MUST run before an imperative next/prev, or the queued
+  // runSearch fires ~debounceMs later and double-advances, skipping a match (review finding 1).
+  const cancelRef = useRef<(() => void) | undefined>(undefined);
+  const cancelDebounce = () => {
+    cancelRef.current?.();
+    cancelRef.current = undefined;
+  };
+  const cancelDebounceRef = useRef(cancelDebounce);
+  cancelDebounceRef.current = cancelDebounce;
+
   // Debounced incremental search: re-run ~debounceMs after the query/toggles change; cancel a pending
   // run on the next change + on unmount (so a stale query never fires).
-  const cancelRef = useRef<(() => void) | undefined>(undefined);
   useEffect(() => {
     cancelRef.current?.();
     cancelRef.current = schedule(() => runSearchRef.current(), debounceMs);
     return () => cancelRef.current?.();
   }, [state.query, state.caseSensitive, state.regex, schedule, debounceMs]);
 
+  // trmx-98 (review finding 3): a live theme change re-tints EXISTING decorations without moving the
+  // active match — cancel the debounce and clear+re-highlight in place (findNext from the current cell).
+  const colorsKey = `${colors.match}|${colors.activeMatch}`;
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    if (!mountedRef.current) {
+      mountedRef.current = true;
+      return; // skip the initial mount (the debounce effect handles the first search)
+    }
+    cancelDebounceRef.current();
+    if (isSearchable(stateRef.current)) {
+      search.clearDecorations();
+      search.findNext(stateRef.current.query, searchOptions(stateRef.current, colorsRef.current) as unknown);
+    }
+  }, [colorsKey, search]);
+
   const next = () => {
+    cancelDebounce(); // supersede any pending incremental run
     if (isSearchable(stateRef.current))
       search.findNext(stateRef.current.query, searchOptions(stateRef.current, colorsRef.current) as unknown);
   };
   const prev = () => {
+    cancelDebounce();
     if (isSearchable(stateRef.current))
       search.findPrevious(stateRef.current.query, searchOptions(stateRef.current, colorsRef.current) as unknown);
   };

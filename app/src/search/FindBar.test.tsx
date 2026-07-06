@@ -109,6 +109,31 @@ describe("FindBar — search lifecycle", () => {
     expect(t.spies.clearDecorations).toHaveBeenCalled();
     expect(screen.queryByText(/\/\d/)).toBeNull();
   });
+  it("⌘G cancels a pending debounce so findNext fires exactly once (finding 1: no double-advance)", () => {
+    const t = setup();
+    fireEvent.change(t.input, { target: { value: "foo" } }); // schedules a debounced search
+    fireEvent.keyDown(t.input, { key: "g", metaKey: true }); // manual next — must cancel the pending run
+    t.sched.flush(); // the cancelled debounce must NOT fire a second findNext
+    expect(t.spies.findNext).toHaveBeenCalledTimes(1);
+  });
+  it("re-decorates in place when the theme colors change (finding 3)", () => {
+    const t = setup();
+    fireEvent.change(t.input, { target: { value: "foo" } });
+    t.sched.flush();
+    t.spies.clearDecorations.mockClear();
+    t.spies.findNext.mockClear();
+    t.utils.rerender(
+      <FindBar
+        search={t.api}
+        colors={{ match: "#0f0", activeMatch: "#0a0" }}
+        onClose={t.onClose}
+        onRegister={t.onRegister}
+        schedule={t.sched.schedule}
+      />,
+    );
+    expect(t.spies.clearDecorations).toHaveBeenCalled(); // cleared + re-highlighted with the new tint
+    expect(t.spies.findNext).toHaveBeenCalled();
+  });
   it("an invalid regex sets the error state and does not search (no throw)", () => {
     const t = setup();
     fireEvent.click(screen.getByLabelText("Use regular expression")); // regex on
