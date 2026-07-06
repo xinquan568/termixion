@@ -6,8 +6,14 @@
 // didn't change the selection copies nothing (no stale re-copy); cancel/blur aborts. Plus the ⌘C
 // byte-equality anchor. Uses a controllable fake `schedule` — deterministic, no real timers.
 import { describe, expect, it, vi } from "vitest";
-import { createCopyOnSelect, type Schedule } from "./copyOnSelect";
+import { attachCopyOnSelect, createCopyOnSelect, type Schedule } from "./copyOnSelect";
 import { handleCopyEvent, selectionText, type ClipboardEventLike } from "./clipboard";
+
+/** A schedule that runs the callback synchronously — for attach-level tests. */
+const syncSchedule: Schedule = (fn) => {
+  fn();
+  return () => {};
+};
 
 function fakeSchedule() {
   const pending: Array<{ fn: () => void; cancelled: boolean }> = [];
@@ -145,6 +151,59 @@ describe("createCopyOnSelect — keyboard/programmatic", () => {
     h.flush(); // the debounced copy fires
     expect(h.writeClipboard).toHaveBeenCalledTimes(1);
     expect(h.writeClipboard).toHaveBeenCalledWith("all");
+  });
+});
+
+describe("attachCopyOnSelect — DOM wiring", () => {
+  function domHarness(selectionValue: string) {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    let selCb: (() => void) | undefined;
+    const terminal = {
+      getSelection: () => selectionValue,
+      hasSelection: () => selectionValue !== "",
+      onSelectionChange: (cb: () => void) => {
+        selCb = cb;
+        return { dispose: () => {} };
+      },
+    };
+    const writeClipboard = vi.fn<(t: string) => void>();
+    return { host, terminal, writeClipboard, fireSelectionChange: () => selCb?.() };
+  }
+
+  it("falls back to document-level pointerup when setPointerCapture throws (release OUTSIDE the host)", () => {
+    const h = domHarness("selected text");
+    h.host.setPointerCapture = () => {
+      throw new Error("capture unavailable");
+    };
+    const teardown = attachCopyOnSelect(h.host, h.terminal, h.writeClipboard, syncSchedule);
+
+    h.host.dispatchEvent(new Event("pointerdown", { bubbles: true })); // capture throws → doc fallback armed
+    h.fireSelectionChange(); // a drag tick marks the gesture dirty
+    // Release OUTSIDE the host — dispatched on document, so ONLY the fallback can end the gesture.
+    document.dispatchEvent(new Event("pointerup", { bubbles: true }));
+
+    expect(h.writeClipboard).toHaveBeenCalledTimes(1);
+    expect(h.writeClipboard).toHaveBeenCalledWith("selected text");
+    teardown();
+    h.host.remove();
+  });
+
+  it("does not double-copy on an in-host release, and teardown removes all listeners", () => {
+    const h = domHarness("abc");
+    h.host.setPointerCapture = () => {}; // capture succeeds → no doc fallback
+    const teardown = attachCopyOnSelect(h.host, h.terminal, h.writeClipboard, syncSchedule);
+    h.host.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    h.fireSelectionChange();
+    h.host.dispatchEvent(new Event("pointerup", { bubbles: true }));
+    expect(h.writeClipboard).toHaveBeenCalledTimes(1);
+
+    teardown();
+    // After teardown a new gesture is inert (listeners gone).
+    h.host.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    h.host.dispatchEvent(new Event("pointerup", { bubbles: true }));
+    expect(h.writeClipboard).toHaveBeenCalledTimes(1);
+    h.host.remove();
   });
 });
 

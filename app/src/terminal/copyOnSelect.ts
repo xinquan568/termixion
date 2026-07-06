@@ -130,22 +130,49 @@ export function attachCopyOnSelect(
     schedule,
   });
 
-  const onPointerDown = (ev: PointerEvent) => {
-    machine.onPointerDown();
-    try {
-      host.setPointerCapture(ev.pointerId); // deliver pointerup/cancel even on a release outside the host
-    } catch {
-      // capture unavailable (jsdom / old engine) — the host pointerup still fires for in-host releases
-    }
-  };
   const onPointerUp = () => machine.onPointerUp();
   const onCancel = () => machine.onCancel();
+
+  // When pointer capture is unavailable, a release/cancel OUTSIDE the host would never reach the host
+  // listeners — leaving the gesture stuck "dragging". So we fall back to one-shot document-level
+  // pointerup/pointercancel that end the gesture wherever the pointer goes (review finding 1).
+  const doc = host.ownerDocument;
+  let clearDocFallback: (() => void) | undefined;
+  const installDocFallback = () => {
+    if (!doc || clearDocFallback) return;
+    const end = (run: () => void) => () => {
+      clearDocFallback?.();
+      run();
+    };
+    const onDocUp = end(onPointerUp);
+    const onDocCancel = end(onCancel);
+    doc.addEventListener("pointerup", onDocUp, true);
+    doc.addEventListener("pointercancel", onDocCancel, true);
+    clearDocFallback = () => {
+      doc.removeEventListener("pointerup", onDocUp, true);
+      doc.removeEventListener("pointercancel", onDocCancel, true);
+      clearDocFallback = undefined;
+    };
+  };
+
+  const onPointerDown = (ev: PointerEvent) => {
+    machine.onPointerDown();
+    clearDocFallback?.(); // a fresh gesture supersedes a leftover fallback
+    let captured = false;
+    try {
+      host.setPointerCapture(ev.pointerId); // deliver pointerup/cancel even on a release outside the host
+      captured = true;
+    } catch {
+      captured = false; // jsdom / old engine
+    }
+    if (!captured) installDocFallback();
+  };
 
   host.addEventListener("pointerdown", onPointerDown);
   host.addEventListener("pointerup", onPointerUp);
   host.addEventListener("pointercancel", onCancel);
   host.addEventListener("lostpointercapture", onCancel);
-  const win = host.ownerDocument?.defaultView;
+  const win = doc?.defaultView;
   win?.addEventListener("blur", onCancel);
   const selSub = terminal.onSelectionChange(() => machine.onSelectionChange());
 
@@ -155,6 +182,7 @@ export function attachCopyOnSelect(
     host.removeEventListener("pointercancel", onCancel);
     host.removeEventListener("lostpointercapture", onCancel);
     win?.removeEventListener("blur", onCancel);
+    clearDocFallback?.();
     selSub.dispose();
     machine.dispose();
   };
