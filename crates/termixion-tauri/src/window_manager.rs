@@ -57,6 +57,14 @@ fn apply_macos_titlebar<'a, R: Runtime>(
     builder
 }
 
+/// trmx-94 (FR-9): open the settings window from the FRONTEND — the command palette's `app.settings`
+/// (no section) and `app.check-updates` (`section = "about"`, where the update controls live). Same
+/// effect as the menu's ShowSettings path, reached through the command dispatch spine.
+#[tauri::command]
+pub fn open_settings_window(app: AppHandle, section: Option<String>) -> Result<(), String> {
+    show_settings_window(&app, section.as_deref()).map_err(|error| error.to_string())
+}
+
 /// Create or focus the singleton settings window; with `section`, land on (or navigate an already
 /// open window to) that page.
 pub fn show_settings_window<R: Runtime>(

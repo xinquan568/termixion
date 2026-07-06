@@ -13,6 +13,7 @@
 //! [`apply_file_text`]); the filesystem / `notify` edge around them is thin runtime glue
 //! (validated by the packaged smoke).
 
+use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -281,6 +282,23 @@ fn emissions_for(application: &FileApplication) -> Vec<(&'static str, JsonValue)
     emissions
 }
 
+/// trmx-94 (FR-9.3): the `[keys]` map read pieces. The map is NOT a flat registry pair (it's a
+/// dynamic chord→command map), so it rides its own read command + `keys:changed` watcher signal,
+/// mirroring themes:changed/scripts:changed. Pure: `read_keys_from` parses text → the raw map;
+/// `keys_map_changed` is the watcher's emit decision.
+fn read_keys_from(text: Option<&str>) -> BTreeMap<String, String> {
+    match text {
+        Some(text) => parse_config(text).0.keys,
+        None => BTreeMap::new(),
+    }
+}
+
+/// Whether the `[keys]` map differs between two configs — the `keys:changed` emit decision. The
+/// scalar `diff_configs`/`settings:changed` path is blind to the map, so the watcher needs this.
+fn keys_map_changed(old: &Config, new: &Config) -> bool {
+    old.keys != new.keys
+}
+
 /// What `config_read` returns to the webview.
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -378,6 +396,14 @@ pub fn config_read(state: State<'_, ConfigState>) -> ConfigReadResponse {
         Err(_) => eprintln!("termixion: config state poisoned; skipping diff-base update"),
     }
     response
+}
+
+/// trmx-94 (FR-9.3): read the `[keys]` map for the frontend keymap (chord → command id, or `"none"`).
+/// A missing file is an empty map. Re-read by the frontend on the `keys:changed` watcher signal.
+#[tauri::command]
+pub fn keys_read() -> BTreeMap<String, String> {
+    let text = std::fs::read_to_string(config_path()).ok();
+    read_keys_from(text.as_deref())
 }
 
 /// Persist one registry-keyed setting into the config file (comment-preserving, atomic,
@@ -491,7 +517,12 @@ fn on_config_file_event(app: &tauri::AppHandle, path: &Path) {
         return; // self-echo of our own write (D6)
     };
     // The pure decision, computed before `application.config` moves into the diff base.
-    let emissions = emissions_for(&application);
+    let mut emissions = emissions_for(&application);
+    // trmx-94: the scalar diff/settings:changed path is blind to the [keys] map — emit a bare
+    // keys:changed when the map changed so the frontend re-reads the effective keymap (live rebind).
+    if keys_map_changed(&inner.last, &application.config) {
+        emissions.push(("keys:changed", JsonValue::Null));
+    }
     inner.last = application.config;
     // An EXTERNAL edit was applied: clear the self-echo latch so a stale hash can never
     // suppress a later external edit that happens to restore our last-written bytes.
@@ -582,6 +613,33 @@ mod tests {
         );
         assert_eq!(application.config.terminal.font_size, 14);
         assert!(application.warnings.is_empty());
+    }
+
+    // trmx-94: the [keys] read + the keys:changed emit decision (the map is invisible to the scalar
+    // diff, so the watcher needs keys_map_changed).
+    #[test]
+    fn read_keys_from_parses_the_map_and_missing_is_empty() {
+        assert!(read_keys_from(None).is_empty());
+        let keys = read_keys_from(Some(
+            "[keys]\n\"cmd+d\" = \"pane.split-below\"\n\"cmd+j\" = \"none\"\n",
+        ));
+        assert_eq!(keys.get("cmd+d"), Some(&"pane.split-below".to_string()));
+        assert_eq!(keys.get("cmd+j"), Some(&"none".to_string()));
+    }
+
+    #[test]
+    fn keys_map_changed_detects_a_binding_edit_the_scalar_diff_misses() {
+        let old = parse_config("[terminal]\nfont_size = 12\n").0;
+        // Same scalars, but a [keys] entry added → scalar diff is empty, keys_map_changed is true.
+        let new =
+            parse_config("[terminal]\nfont_size = 12\n[keys]\n\"cmd+d\" = \"pane.split-below\"\n")
+                .0;
+        assert!(diff_configs(&old, &new).is_empty(), "no scalar changed");
+        assert!(keys_map_changed(&old, &new), "the [keys] map changed");
+        assert!(
+            !keys_map_changed(&new, &new),
+            "identical maps do not change"
+        );
     }
 
     #[test]

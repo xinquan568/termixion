@@ -60,6 +60,26 @@ writes it into the file ("derive once, then persist"). After that, the file valu
 that shell). A missing or unmatched value warns and starts a plain shell — never a blocked launch;
 never runs on the `--smoke`/`--perf` deterministic launches. See [scripts.md](scripts.md).
 
+## `[keys]` — keybindings (trmx-94, FR-9)
+
+Unlike the tables above, `[keys]` is an **open map** of chord → command id, so you can rebind (or
+unbind) any shortcut. It applies **live** (the file watcher rebuilds the effective keymap without a
+restart; native menu accelerators update on next launch).
+
+```toml
+[keys]
+"cmd+shift+enter" = "pane.split-below"   # rebind a command to a new chord
+"cmd+9" = "none"                          # unbind a default ("none")
+```
+
+- The **command ids** and their **default bindings** are listed in [commands.md](commands.md) (generated
+  from the registry). Open the **command palette** with `⇧⌘P` to run any command by keyboard.
+- **Chord syntax**: `cmd`/`meta`, `ctrl`, `alt`/`option`, `shift` + a key (letter, digit, or a named
+  key like `left`/`enter`/`space`), modifier-order-insensitive — e.g. `"shift+cmd+p"` ≡ `"cmd+shift+p"`.
+- **Rules** (each warns, never fails): a binding must include `cmd` (terminal keys stay the PTY's);
+  `⌘C`/`⌘V` are reserved for copy/paste and cannot be rebound; an invalid chord or a duplicate (last
+  wins) surfaces a warning.
+
 ## Tolerant parsing & warnings
 
 The parser **never fails hard**:
