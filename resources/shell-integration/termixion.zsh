@@ -13,8 +13,8 @@
 [[ -n "${__termixion_shell_integration:-}" ]] && return
 __termixion_shell_integration=1
 
-# Emit one OSC sequence terminated by ST (ESC \).
-__termixion_osc() { printf '\033]%s\033\\' "$1"; }
+# Emit one OSC sequence terminated by ST (ESC \). \134 is octal for backslash.
+__termixion_osc() { printf '\033]%s\033\134' "$1"; }
 
 # precmd runs after each command, before the prompt. Capture $? FIRST (before anything clobbers it) so the
 # D marker reports the real command exit code (which drives Termixion's failure flash).

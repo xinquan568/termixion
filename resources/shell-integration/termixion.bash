@@ -13,8 +13,9 @@
 [[ -n "${__termixion_shell_integration:-}" ]] && return
 __termixion_shell_integration=1
 
-# Emit one OSC sequence terminated by ST (ESC \).
-__termixion_osc() { printf '\033]%s\033\\' "$1"; }
+# Emit one OSC sequence terminated by ST (ESC \). \134 is octal for backslash (avoids a shellcheck
+# false positive on a doubled backslash).
+__termixion_osc() { printf '\033]%s\033\134' "$1"; }
 
 # PROMPT_COMMAND runs after each command, before the prompt. Capture $? FIRST (this function is PREPENDED
 # so it runs before any existing PROMPT_COMMAND) so the D marker reports the real command exit code.
@@ -48,6 +49,8 @@ if [[ -n "${__termixion_prev_debug}" ]]; then
   # Extract the prior command from `trap -- '<cmd>' DEBUG` and chain it before ours.
   __termixion_prev_debug="${__termixion_prev_debug#trap -- \'}"
   __termixion_prev_debug="${__termixion_prev_debug%\' DEBUG}"
+  # Intentional: expand the prior trap command NOW so it is embedded before ours (not re-resolved later).
+  # shellcheck disable=SC2064
   trap "${__termixion_prev_debug}; __termixion_preexec" DEBUG
 else
   trap '__termixion_preexec' DEBUG
