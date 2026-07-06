@@ -5,6 +5,13 @@ The user-facing changes to Termixion are documented here. The format follows
 [Semantic Versioning](https://semver.org). Auto-generated from Conventional Commits by git-cliff;
 internal changes (build / CI / tests / refactors / docs) live in the git history and the linked issues.
 
+## [0.0.8] - 2026-07-06
+
+### Added
+- Nested script folder, startup script & run-with-script picker (trmx-93) (#124)
+- Command registry, ⇧⌘P palette & user keybindings in [keys] (trmx-94) (#125)
+- Auto-copy selection to the clipboard, iTerm2-style (trmx-95) (#126)
+
 ## [0.0.7] - 2026-07-05
 
 ### Added
