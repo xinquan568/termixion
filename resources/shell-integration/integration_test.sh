@@ -45,13 +45,24 @@ bash --noprofile --norc -c '
 # non-interactive `bash -c` hides the trap from a sourced scope (a harness artifact, not a snippet bug).
 bash --noprofile --norc -c '
   set -u -T
-  trap ": PRIOR_TRAP_MARKER" DEBUG
+  __prior_ran=0
+  trap "__prior_ran=1" DEBUG
   source "'"$DIR"'/termixion.bash"
   d="$(trap -p DEBUG)"
-  trap - DEBUG
+  trap - DEBUG          # stop it firing during the direct checks below
   fail=0
   case "$d" in *"__termixion_debug"*) : ;; *) echo "FAIL chain-missing-ours"; fail=1 ;; esac
-  case "$d" in *"PRIOR_TRAP_MARKER"*) : ;; *) echo "FAIL chain-dropped-prior"; fail=1 ;; esac
+  case "$d" in *"__prior_ran=1"*) : ;; *) echo "FAIL chain-dropped-prior"; fail=1 ;; esac
+  # Prove BEHAVIOUR, not just trap text: invoke the composed trap body while armed → the prior body runs
+  # AND our detector emits C (the review-finding-2 gap). sq is a single quote (built via printf so no
+  # literal quote appears inside this single-quoted here-string).
+  sq="$(printf "\x27")"
+  body="${d#trap -- "$sq"}"; body="${body%"$sq" DEBUG}"
+  cf="$(mktemp)"; __prior_ran=0; __termixion_armed=1
+  eval "$body" > "$cf"
+  grep -q "133;C" "$cf" || { echo "FAIL chain-no-C-emitted"; fail=1; }
+  [ "$__prior_ran" = 1 ] || { echo "FAIL chain-prior-body-not-run"; fail=1; }
+  rm -f "$cf"
   [ "$fail" = 0 ] && echo "PASS bash-debug-chain"
 ' || exit 1
 
