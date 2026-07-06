@@ -21,8 +21,8 @@ fn to_pp_size(size: PtySize) -> portable_pty::PtySize {
 
 /// A live macOS PTY session: the master end (for resize), its reader/writer, and the child process.
 /// `reader` is an `Option` because [`PtyBackend::take_reader`] can move it onto a dedicated read
-/// thread (ADR-0001); once taken, the backend reads no output (the [`MacosPtyReader`] does).
-struct MacosPtyBackend {
+/// thread (ADR-0001); once taken, the backend reads no output (the [`UnixPtyReader`] does).
+struct UnixPtyBackend {
     master: Box<dyn MasterPty + Send>,
     reader: Option<Box<dyn Read + Send>>,
     writer: Box<dyn Write + Send>,
@@ -31,11 +31,11 @@ struct MacosPtyBackend {
 
 /// The blocking output half of a macOS PTY, moved onto its own thread for streaming. It holds only the
 /// reader, so EOF here cannot reap the child — the control side (`kill`/`Drop` on the backend) does.
-struct MacosPtyReader {
+struct UnixPtyReader {
     reader: Box<dyn Read + Send>,
 }
 
-impl PtyReader for MacosPtyReader {
+impl PtyReader for UnixPtyReader {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, PtyError> {
         self.reader
             .read(buf)
@@ -43,7 +43,7 @@ impl PtyReader for MacosPtyReader {
     }
 }
 
-impl PtyBackend for MacosPtyBackend {
+impl PtyBackend for UnixPtyBackend {
     fn write(&mut self, data: &[u8]) -> Result<usize, PtyError> {
         // write_all (not a single write) so a partial write never silently drops keystrokes — the
         // whole buffer is delivered or it errors.
@@ -98,11 +98,11 @@ impl PtyBackend for MacosPtyBackend {
     fn take_reader(&mut self) -> Option<Box<dyn PtyReader>> {
         self.reader
             .take()
-            .map(|reader| Box::new(MacosPtyReader { reader }) as Box<dyn PtyReader>)
+            .map(|reader| Box::new(UnixPtyReader { reader }) as Box<dyn PtyReader>)
     }
 }
 
-impl Drop for MacosPtyBackend {
+impl Drop for UnixPtyBackend {
     fn drop(&mut self) {
         // Best-effort reaping so a dropped session never leaves a zombie: if the child already
         // exited, reap it; otherwise kill and reap.
@@ -116,9 +116,9 @@ impl Drop for MacosPtyBackend {
 
 /// Spawns PTY-backed sessions on macOS via `portable-pty`.
 #[derive(Debug, Default)]
-pub struct MacosPtyFactory;
+pub struct UnixPtyFactory;
 
-impl PtyFactory for MacosPtyFactory {
+impl PtyFactory for UnixPtyFactory {
     fn spawn(&self, spec: &SessionSpec, size: PtySize) -> Result<Box<dyn PtyBackend>, PtyError> {
         let pty_system = native_pty_system();
         let pair = pty_system
@@ -168,7 +168,7 @@ impl PtyFactory for MacosPtyFactory {
             .take_writer()
             .map_err(|e| PtyError::Spawn(e.to_string()))?;
 
-        Ok(Box::new(MacosPtyBackend {
+        Ok(Box::new(UnixPtyBackend {
             master: pair.master,
             reader: Some(reader),
             writer,
@@ -188,9 +188,9 @@ pub trait Clipboard {
 /// macOS clipboard — a **stub** for v0.0.1. The real implementation (NSPasteboard) lands with the
 /// clipboard / auto-copy work (P1-7 / Beta); until then it reports `Unsupported`.
 #[derive(Debug, Default)]
-pub struct MacosClipboard;
+pub struct UnixClipboard;
 
-impl Clipboard for MacosClipboard {
+impl Clipboard for UnixClipboard {
     fn get_text(&self) -> std::io::Result<String> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
@@ -227,7 +227,7 @@ mod tests {
     /// Golden test: spawn a real `/bin/echo` through a real PTY and read its output back.
     #[test]
     fn echo_roundtrips_through_real_pty() {
-        let factory = MacosPtyFactory;
+        let factory = UnixPtyFactory;
         let mut spec = SessionSpec::shell("/bin/echo");
         spec.args.push("termixion-pty-ok".into());
 
@@ -248,7 +248,7 @@ mod tests {
         // come from the *child* (terminal ECHO would only ever show the raw lowercase input), and the
         // child exiting yields EOF so the read loop terminates — proving the full
         // write -> child -> read round-trip rather than line-discipline echo.
-        let factory = MacosPtyFactory;
+        let factory = UnixPtyFactory;
         let mut spec = SessionSpec::shell("/bin/sh");
         spec.args.push("-c".into());
         spec.args
@@ -270,7 +270,7 @@ mod tests {
     fn resize_and_kill_are_well_behaved() {
         // `cat` blocks reading stdin, so it stays alive — exercising kill() on a *live* child (and
         // its reap), then idempotent kill. No read (which would just see terminal echo).
-        let factory = MacosPtyFactory;
+        let factory = UnixPtyFactory;
         let spec = SessionSpec::shell("/bin/cat");
         let mut backend = factory
             .spawn(&spec, PtySize::new(24, 80))
@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn clipboard_stub_is_unsupported() {
-        let clip = MacosClipboard;
+        let clip = UnixClipboard;
         assert!(clip.get_text().is_err());
         assert!(clip.set_text("x").is_err());
     }
@@ -299,7 +299,7 @@ mod tests {
         std::fs::remove_dir_all(&missing).ok();
         assert!(!missing.exists(), "test cwd must not exist");
 
-        let factory = MacosPtyFactory;
+        let factory = UnixPtyFactory;
         let mut spec = SessionSpec::shell("/bin/echo");
         spec.cwd = Some(missing);
 
@@ -322,7 +322,7 @@ mod tests {
         let dir = std::env::temp_dir().join(&leaf);
         std::fs::create_dir_all(&dir).expect("mkdir test cwd");
 
-        let factory = MacosPtyFactory;
+        let factory = UnixPtyFactory;
         let mut spec = SessionSpec::shell("/bin/pwd");
         spec.cwd = Some(dir.clone());
         let mut backend = factory
@@ -351,7 +351,7 @@ mod tests {
             "parent env must not already define {var}"
         );
 
-        let factory = MacosPtyFactory;
+        let factory = UnixPtyFactory;
         let mut spec = SessionSpec::shell("/bin/sh");
         spec.args.push("-c".into());
         // ENV: proves the spec var arrived; PATH: present proves inherited env survived the layering.
@@ -389,7 +389,7 @@ mod tests {
         spec.args.push("printf 'TERM=[%s]' \"$TERM\"".into());
         spec.env = login.env;
 
-        let factory = MacosPtyFactory;
+        let factory = UnixPtyFactory;
         let mut backend = factory
             .spawn(&spec, PtySize::new(24, 80))
             .expect("spawn sh");
@@ -404,7 +404,7 @@ mod tests {
     /// taken once, and leaves the control side (kill) working.
     #[test]
     fn taken_reader_streams_output_and_is_taken_once() {
-        let factory = MacosPtyFactory;
+        let factory = UnixPtyFactory;
         let mut spec = SessionSpec::shell("/bin/echo");
         spec.args.push("termixion-reader-ok".into());
         let mut backend = factory.spawn(&spec, PtySize::new(24, 80)).expect("spawn");

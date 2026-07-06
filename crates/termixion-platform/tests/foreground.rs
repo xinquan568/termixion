@@ -7,14 +7,14 @@
 // hop. Same conventions as `session_lifecycle.rs`: rc-free `zsh -f`, a pump thread on the
 // blocking reader, deadline polls, and `ps -o stat=` no-zombie hygiene on EVERY captured pid.
 // macOS-only (the whole file compiles away elsewhere).
-#![cfg(target_os = "macos")]
+#![cfg(unix)]
 
 use std::process::Command;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use termixion_core::{PtyReader, PtySize, SessionRegistry, SessionSpec};
-use termixion_platform::{ForegroundProcess, MacosPtyFactory, foreground_process};
+use termixion_platform::{ForegroundProcess, UnixPtyFactory, foreground_process};
 
 /// The process state of `pid` via `ps -o stat=` — `None` if the pid is gone, else the state string
 /// (a leading `Z` means a zombie). We check the *zombie state* specifically, not mere existence,
@@ -123,7 +123,7 @@ fn poll_foreground_until(shell_pid: u32, want: &str) -> ForegroundProcess {
 /// tpgid demonstrably tracks foreground churn. Teardown leaves no zombie on EITHER captured pid.
 #[test]
 fn foreground_process_tracks_the_shells_foreground_round_trip() {
-    let factory = MacosPtyFactory;
+    let factory = UnixPtyFactory;
     let mut registry = SessionRegistry::new();
     let (id, reader) = registry
         .spawn(&factory, &rc_free_zsh(), PtySize::new(24, 80))

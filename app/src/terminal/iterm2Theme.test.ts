@@ -75,7 +75,9 @@ describe("iterm2Theme", () => {
 describe("iterm2TerminalOptions", () => {
   it("uses the macOS system monospaced font (SF Mono) at 12 with iTerm2's spacing and a solid non-blinking block cursor", () => {
     const opts = iterm2TerminalOptions("dark");
-    expect(ITERM2_FONT_FAMILY).toBe('ui-monospace, "SF Mono", Menlo, monospace');
+    expect(ITERM2_FONT_FAMILY).toBe(
+      'ui-monospace, "SF Mono", Menlo, "DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono", monospace',
+    );
     expect(ITERM2_FONT_SIZE).toBe(12);
     expect(opts.fontFamily).toBe(ITERM2_FONT_FAMILY);
     expect(opts.fontSize).toBe(12);

@@ -23,7 +23,7 @@ use std::time::Duration;
 use tauri::ipc::Channel;
 use tauri::{Emitter, Manager, State, WindowEvent};
 use termixion_core::{PtySize, SessionRegistry, SessionSpec};
-use termixion_platform::{MacosPtyFactory, foreground_process, is_busy};
+use termixion_platform::{PlatformPtyFactory, foreground_process, is_busy};
 
 mod config_io;
 mod control;
@@ -291,10 +291,24 @@ fn core_version() -> String {
 /// the requested cwd; a `--smoke` OR `--perf` run opens the deterministic rc-free `zsh -f`
 /// (ignoring any `cwd`) so the driven sequence is never garbled by the user's prompt / rc files /
 /// line editor — the transport (channel, pty_write, streaming) stays the production path.
+/// The deterministic smoke/perf shell: rc-free `zsh -f` if `/bin/zsh` is present, else `bash --norc
+/// --noprofile` (a zsh-less Linux box, trmx-102). Pure — takes an `exists` probe so both branches are
+/// unit-tested even though the CI runner always has zsh.
+fn smoke_shell(exists: impl Fn(&str) -> bool) -> (&'static str, &'static [&'static str]) {
+    if exists("/bin/zsh") {
+        ("/bin/zsh", &["-f"])
+    } else {
+        ("/bin/bash", &["--norc", "--noprofile"])
+    }
+}
+
 fn session_spec_for(smoke: bool, perf: bool, cwd: Option<String>) -> SessionSpec {
     if smoke || perf {
-        let mut s = SessionSpec::shell("/bin/zsh");
-        s.args.push("-f".into());
+        let (program, args) = smoke_shell(|p| std::path::Path::new(p).exists());
+        let mut s = SessionSpec::shell(program);
+        for a in args {
+            s.args.push((*a).into());
+        }
         s
     } else {
         let mut s = SessionSpec::login_shell();
@@ -507,7 +521,7 @@ fn open_pty(
         .registry
         .lock()
         .map_err(|_| "pty state poisoned".to_string())?
-        .spawn(&MacosPtyFactory, &spec, PtySize::new(rows, cols))
+        .spawn(&PlatformPtyFactory, &spec, PtySize::new(rows, cols))
         .map_err(|e| e.to_string())?;
 
     // trmx-75: a session now exists to watch — wake the title poller out of its zero-session
@@ -738,6 +752,10 @@ struct PerfConfig {
     build: &'static str,
 }
 
+/// The smoke watchdog (trmx-102): fail rather than hang if the webview never reports the sentinel. Bumped
+/// from 30 s so a slow headless webkit2gtk boot on Linux CI is not killed mid-flight (the happy path is <5 s).
+const SMOKE_WATCHDOG_SECS: u64 = 90;
+
 /// The perf watchdog (trmx-78): fail the run rather than hang if the webview driver never reports.
 /// 300 s ≈ 3× the harness's end-to-end schedule — the derivation is pinned in the tests below and
 /// quoted by docs/design/performance-protocol.md.
@@ -821,9 +839,11 @@ fn main() -> ExitCode {
     // trmx-101: a deterministic launch never opens the control socket (captured before smoke/perf move).
     let deterministic = smoke.is_some() || perf.is_some();
     if smoke.is_some() {
-        // Watchdog: fail the smoke (exit 1) rather than hang if the webview never reports back.
+        // Watchdog: fail the smoke (exit 1) rather than hang if the webview never reports back. Generous
+        // enough (trmx-102) that a slow headless webkit2gtk boot (software GL, no compositor, cold AppImage
+        // extract on Linux CI) is not mistaken for a hang — the happy path exits in <5 s regardless.
         std::thread::spawn(|| {
-            std::thread::sleep(Duration::from_secs(30));
+            std::thread::sleep(Duration::from_secs(SMOKE_WATCHDOG_SECS));
             eprintln!(
                 "termixion-smoke: FAIL — timed out waiting for the webview sentinel sequence"
             );
@@ -1318,10 +1338,22 @@ mod tests {
         // rc/prompt noise and a surprising working dir can never pollute the driven sequence.
         for (smoke, perf) in [(true, false), (false, true), (true, true)] {
             let spec = session_spec_for(smoke, perf, Some("/tmp/ignored".to_string()));
+            // The CI/dev host has /bin/zsh, so the live pick is zsh -f.
             assert_eq!(spec.program, OsStr::new("/bin/zsh"));
             assert_eq!(spec.args, vec![std::ffi::OsString::from("-f")]);
             assert_eq!(spec.cwd, None, "rc-free mode ignores cwd");
         }
+    }
+
+    #[test]
+    fn smoke_shell_falls_back_to_bash_when_zsh_is_absent() {
+        // zsh present → rc-free zsh -f (the CI path).
+        assert_eq!(smoke_shell(|_| true), ("/bin/zsh", &["-f"][..]));
+        // trmx-102: a zsh-less Linux box → bash --norc --noprofile (the branch the live CI never hits).
+        assert_eq!(
+            smoke_shell(|p| p != "/bin/zsh"),
+            ("/bin/bash", &["--norc", "--noprofile"][..])
+        );
     }
 
     #[test]

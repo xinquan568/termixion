@@ -110,19 +110,23 @@ impl SessionSpec {
     /// layers `spec.env` over the inherited environment): the inherited value describes whatever
     /// terminal Termixion runs *in*, not the xterm.js surface Termixion presents to its child.
     pub fn login_shell() -> Self {
-        let mut spec = Self::shell(login_shell_program(std::env::var_os("SHELL")));
+        let mut spec = Self::shell(login_shell_program(std::env::var_os("SHELL"), |p| {
+            std::path::Path::new(p).exists()
+        }));
         spec.env
             .push((OsString::from("TERM"), OsString::from(DEFAULT_TERM)));
         spec
     }
 }
 
-/// Pick the login-shell program: a non-empty `$SHELL`, else the macOS default `/bin/zsh`. Pure (takes
-/// the env value as an argument) so it is testable without mutating the process-global environment.
-fn login_shell_program(shell_env: Option<OsString>) -> OsString {
+/// Pick the login-shell program: a non-empty `$SHELL`, else `/bin/zsh` if present (the macOS default),
+/// else `/bin/bash` (the zsh-less-Linux fallback, trmx-102). Pure — takes the env value + an `exists`
+/// probe as arguments so it is testable without a real filesystem or the process-global environment.
+fn login_shell_program(shell_env: Option<OsString>, exists: impl Fn(&str) -> bool) -> OsString {
     match shell_env {
         Some(shell) if !shell.is_empty() => shell,
-        _ => OsString::from("/bin/zsh"),
+        _ if exists("/bin/zsh") => OsString::from("/bin/zsh"),
+        _ => OsString::from("/bin/bash"),
     }
 }
 
@@ -235,17 +239,24 @@ mod tests {
 
     #[test]
     fn login_shell_program_prefers_shell_env_then_falls_back() {
-        // The resolver is pure (takes the env value as an argument) so it tests without mutating the
-        // process-global environment.
+        // The resolver is pure (takes the env value + an `exists` probe) so it tests without a real
+        // filesystem or mutating the process-global environment. Any exists → $SHELL always wins.
+        let all = |_: &str| true;
         assert_eq!(
-            login_shell_program(Some(OsString::from("/opt/homebrew/bin/fish"))),
+            login_shell_program(Some(OsString::from("/opt/homebrew/bin/fish")), all),
             OsString::from("/opt/homebrew/bin/fish")
         );
-        // Unset or empty $SHELL falls back to the macOS default login shell.
-        assert_eq!(login_shell_program(None), OsString::from("/bin/zsh"));
+        // Unset/empty $SHELL: zsh present → /bin/zsh (the macOS default).
+        assert_eq!(login_shell_program(None, all), OsString::from("/bin/zsh"));
         assert_eq!(
-            login_shell_program(Some(OsString::new())),
+            login_shell_program(Some(OsString::new()), all),
             OsString::from("/bin/zsh")
+        );
+        // trmx-102: unset $SHELL AND no /bin/zsh (a zsh-less Linux box) → /bin/bash.
+        let no_zsh = |p: &str| p != "/bin/zsh";
+        assert_eq!(
+            login_shell_program(None, no_zsh),
+            OsString::from("/bin/bash")
         );
     }
 

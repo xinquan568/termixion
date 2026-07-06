@@ -8,14 +8,14 @@
 // `tests/foreground.rs`'s by-name round-trip. Same conventions as `session_lifecycle.rs`: rc-free
 // `zsh -f`, a pump thread on the blocking reader, deadline polls, and `ps -o stat=` no-zombie
 // hygiene on every captured pid. macOS-only (the whole file compiles away elsewhere).
-#![cfg(target_os = "macos")]
+#![cfg(unix)]
 
 use std::process::Command;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use termixion_core::{PtyReader, PtySize, Session, SessionSpec};
-use termixion_platform::{MacosPtyFactory, foreground_process, is_busy};
+use termixion_platform::{UnixPtyFactory, foreground_process, is_busy};
 
 /// The process state of `pid` via `ps -o stat=` — `None` if the pid is gone, else the state string
 /// (a leading `Z` means a zombie). We check the *zombie state* specifically, not mere existence,
@@ -114,7 +114,7 @@ fn poll_is_busy_until(shell_pid: u32, want: bool, deadline: Instant) -> Option<b
 /// the foreground → `Some(false)` again. Teardown leaves no zombie on EITHER captured pid.
 #[test]
 fn is_busy_tracks_the_shells_activity_round_trip() {
-    let factory = MacosPtyFactory;
+    let factory = UnixPtyFactory;
     let mut session = Session::spawn(1, &factory, &rc_free_zsh(), PtySize::new(24, 80))
         .expect("spawn an rc-free shell through the trait");
     let shell_pid = session.process_id().expect("a real PTY has a child pid");
@@ -182,7 +182,7 @@ fn is_busy_tracks_the_shells_activity_round_trip() {
 /// DEAD leader) would have returned `None` here and shown the pane idle — this pins that it does not.
 #[test]
 fn is_busy_reports_busy_for_a_pipeline_whose_leader_has_exited() {
-    let factory = MacosPtyFactory;
+    let factory = UnixPtyFactory;
     let mut session = Session::spawn(1, &factory, &rc_free_zsh(), PtySize::new(24, 80))
         .expect("spawn an rc-free shell through the trait");
     let shell_pid = session.process_id().expect("a real PTY has a child pid");

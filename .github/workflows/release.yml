@@ -1,45 +1,40 @@
-# Release (E-2): on a pushed `v*` tag, build the Apple-silicon app on macos-14 and publish a (draft)
-# GitHub Release with the `.dmg` + the signed updater artifacts.
+# Release (E-2): on a pushed `v*` tag, build the Apple-silicon app on macos-14 AND the x86_64 Linux
+# AppImage/.deb on ubuntu-22.04 (trmx-102, FR-1.7), then publish ONE (draft) GitHub Release with both
+# platforms' installers + updater artifacts + a merged latest.json.
 #
 # SIGNING IS DUAL-MODE (trmx-49), decided by the "Signing mode" gate from the Apple secrets alone:
-#   - ALL six APPLE_* secrets → signed + notarized + stapled (independently verified by stapler/spctl).
-#   - NONE                    → DELIBERATE unsigned personal-alpha build (0.0.x, audience = the
-#                               maintainer); Gatekeeper blocks the download until approved by hand.
+#   - ALL six APPLE_* secrets → signed + notarized + stapled macOS build (independently verified).
+#   - NONE                    → DELIBERATE unsigned personal-alpha macOS build (0.0.x).
 #   - a PARTIAL set           → fail fast — a half-configured release is never shipped.
-# TAURI_SIGNING_PRIVATE_KEY is ALWAYS required so the auto-updater can verify every update artifact.
-# Adding the six Apple secrets later upgrades the next tag to the signed path with no workflow edit
-# (see docs/RELEASE.md, "Unsigned mode").
+# TAURI_SIGNING_PRIVATE_KEY is ALWAYS required so the auto-updater can verify every update artifact (the
+# SAME minisign key signs both the macOS .app.tar.gz and the Linux .AppImage.tar.gz — trmx-102).
 #
-# In signed mode tauri-action drives Tauri's bundler, which — from the APPLE_* env — imports the cert
-# into an ephemeral keychain, codesigns with the Developer ID identity (hardened runtime), builds the
-# `.dmg`, notarizes via `notarytool`, and staples the ticket; the verify step then proves the staple.
+# Three jobs so Linux never races the macOS publish (each build UPLOADS artifacts; `publish` NEEDS both,
+# downloads them, assembles the two-platform latest.json, and creates the release exactly once).
 name: release
 
 on:
   push:
     tags: ["v*"]
 
-# Never run two release builds for the same tag at once; let an in-flight release finish.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
-  contents: write # create the GitHub Release + upload the .dmg
+  contents: write # create the GitHub Release + upload the installers
 
 jobs:
-  release:
-    name: build + package + publish (macos; signs + notarizes when configured)
+  build-macos:
+    name: build macos (signs + notarizes when configured)
     runs-on: macos-14
+    outputs:
+      signed: ${{ steps.mode.outputs.signed }}
     steps:
       - uses: actions/checkout@v4
 
       # Decide the signing mode BEFORE building (fail fast on a bad config). trmx-49: unsigned is a
-      # DELIBERATE state (zero Apple secrets) for the 0.0.x personal alpha — the original guarantee
-      # ("never ship unsigned by ACCIDENT") survives as the all-or-nothing check: any partial Apple
-      # config fails. trmx-48: TAURI_SIGNING_PRIVATE_KEY is required in BOTH modes so every release
-      # carries a signed updater artifact (the auto-updater can't verify unsigned updates). Its
-      # password is optional (a key may have none), so it is NOT in the required list.
+      # DELIBERATE state (zero Apple secrets). TAURI_SIGNING_PRIVATE_KEY is required in BOTH modes.
       - name: Signing mode (all six Apple secrets = signed; none = unsigned alpha; partial = fail)
         id: mode
         env:
@@ -66,9 +61,9 @@ jobs:
             echo "All six Apple signing secrets present — SIGNED + notarized release."
           elif [ "$n_present" -eq 0 ]; then
             echo "signed=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::No Apple signing secrets — deliberate UNSIGNED personal-alpha build (trmx-49). Gatekeeper will block the download until approved by hand; see docs/RELEASE.md (Unsigned mode)."
+            echo "::notice::No Apple signing secrets — deliberate UNSIGNED personal-alpha build (trmx-49)."
           else
-            echo "::error::Partial Apple signing config — missing: ${missing[*]}. Set ALL six Apple secrets or NONE (see docs/RELEASE.md). Refusing a half-configured release."
+            echo "::error::Partial Apple signing config — missing: ${missing[*]}. Set ALL six or NONE."
             exit 1
           fi
 
@@ -87,29 +82,14 @@ jobs:
       - name: Bootstrap cargo-tauri (§2.4)
         run: cargo install tauri-cli --version 2.11.3 --locked
 
-      # Identity + tag gate (E-2a): assert the pinned version / product name / bundle id AND that the
-      # pushed tag is v<workspace_version> — so the published asset name (Termixion_<version>_aarch64.dmg,
-      # derived from the crate version) can't disagree with a mismatched tag.
       - name: Release metadata + tag gate
         env:
           EXPECTED_TAG: ${{ github.ref_name }}
         run: bash scripts/check-release-metadata.sh
 
-      # Build only (NO release inputs): tauri-action runs Tauri's bundler. `--bundles app,dmg` overrides
-      # tauri.conf.json's local-only `["app"]` target. The `app` target must be EXPLICIT: updater
-      # artifacts hang off updater-enabled targets (app/appimage/msi/nsis), and with `--bundles dmg`
-      # alone the bundler builds the .app only as a dmg dependency, then CLEANS it and skips the
-      # .app.tar.gz(+.sig) with "no updater-enabled targets were built" (v0.0.1's first run failed
-      # there). We deliberately do NOT pass tagName here, so this step does NOT create a Release or
-      # upload anything — we publish ONLY the verified .dmg below (the build also leaves a .app under
-      # bundle/macos/, which must NOT be uploaded).
-      # trmx-48: `--config tauri.updater.conf.json` is a RELEASE-ONLY overlay that turns on
-      # `createUpdaterArtifacts` and supplies the updater endpoint + pubkey. It is applied ONLY here, so the
-      # default `cargo tauri build --debug` that ci.yml runs needs no signing key and stays green. The
-      # TAURI_SIGNING_PRIVATE_KEY(+password) env signs the produced updater artifact.
-      # trmx-49: TWO mode-gated copies of the step, because the unsigned build must not export the APPLE_*
-      # env AT ALL — the bundler keys off variable PRESENCE, and an empty-but-set APPLE_CERTIFICATE would
-      # make it attempt (and fail) the keychain import instead of skipping signing.
+      # --bundles app,dmg overrides tauri.conf's local-only ["app"]; the app target is EXPLICIT so the
+      # updater artifacts (.app.tar.gz+.sig) are produced. Two mode-gated copies: the unsigned build must
+      # NOT export APPLE_* at all (the bundler keys off variable presence).
       - name: Build, sign + notarize (tauri-action — signed mode)
         if: steps.mode.outputs.signed == 'true'
         uses: tauri-apps/tauri-action@v0
@@ -136,12 +116,8 @@ jobs:
           projectPath: crates/termixion-tauri
           args: --bundles app,dmg --config tauri.updater.conf.json
 
-      # Signed mode: independently prove the artifact is notarized + stapled BEFORE publishing — catches a
-      # silent signing/notarization gap that would otherwise ship a Gatekeeper-blocked dmg. Unsigned mode
-      # (trmx-49): stapler/spctl would rightly fail, so only assert the .dmg exists and log its (ad-hoc)
-      # signature state. Either way, exposes the .dmg path so the publish step uploads exactly that file.
+      # Signed: prove notarized + stapled BEFORE publishing. Unsigned: assert existence + log the ad-hoc sig.
       - name: Verify artifact (stapler + Gatekeeper when signed; existence when unsigned)
-        id: verify
         env:
           SIGNED: ${{ steps.mode.outputs.signed }}
         run: |
@@ -153,59 +129,148 @@ jobs:
             xcrun stapler validate "$dmg"
             spctl --assess --type open --context context:primary-signature -vvv "$dmg"
           else
-            echo "::notice::UNSIGNED personal-alpha build — skipping stapler/spctl (they require notarization). Gatekeeper will block this dmg until approved by hand (docs/RELEASE.md, Unsigned mode)."
+            echo "::notice::UNSIGNED personal-alpha build — skipping stapler/spctl. Gatekeeper will block until approved by hand."
             codesign -dvv "$dmg" 2>&1 || true
           fi
-          echo "dmg=$dmg" >> "$GITHUB_OUTPUT"
 
-      # trmx-48: assemble the updater manifest (latest.json) from the signed updater artifact so the
-      # in-app auto-updater (endpoint = releases/latest/download/latest.json) can find and verify updates.
-      # The .app.tar.gz + its .sig are produced by createUpdaterArtifacts (the release-only overlay above).
-      - name: Assemble updater manifest (latest.json)
+      # Stage exactly the files publish needs into one dir, then upload as an artifact (no publish here).
+      - name: Stage + upload macOS artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist-macos
+          cp "$(find target -name 'Termixion_*_aarch64.dmg' -print -quit)" dist-macos/
+          cp "$(find target -name '*.app.tar.gz' -print -quit)" dist-macos/
+          cp "$(find target -name '*.app.tar.gz.sig' -print -quit)" dist-macos/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-macos
+          path: dist-macos/
+          if-no-files-found: error
+
+  build-linux:
+    name: build linux (x86_64 AppImage + .deb)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tauri Linux system deps (webkit2gtk 4.1 + gtk)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
+            build-essential curl wget file libssl-dev libxdo-dev
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install "$(sed -nE 's/^channel = "([^"]+)".*/\1/p' rust-toolchain.toml)"
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.6.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+      - name: Bootstrap cargo-tauri (§2.4)
+        run: cargo install tauri-cli --version 2.11.3 --locked
+      - name: Release metadata + tag gate
+        env:
+          EXPECTED_TAG: ${{ github.ref_name }}
+        run: bash scripts/check-release-metadata.sh
+
+      # The SAME minisign key signs the Linux updater tarball. appimage is updater-enabled (produces the
+      # .AppImage.tar.gz+.sig); deb is install-only.
+      - name: Build (tauri-action — appimage + deb, signed updater tarball)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: crates/termixion-tauri
+          args: --bundles appimage,deb --config tauri.updater.conf.json
+
+      - name: Validate the .deb dependency metadata
+        run: |
+          set -euo pipefail
+          deb=$(find target -name '*.deb' -print -quit)
+          if [ -z "$deb" ]; then echo "::error::no .deb produced under target/"; exit 1; fi
+          echo "inspecting: $deb"
+          dpkg-deb -I "$deb"                       # control + Depends must be present + sane
+          dpkg-deb -I "$deb" | grep -qi '^ Depends:' || { echo "::error::.deb has no Depends"; exit 1; }
+          # Contents must carry the actual payload, not just metadata (a mispackaged .deb would else pass).
+          dpkg-deb --contents "$deb"
+          dpkg-deb --contents "$deb" | grep -q 'usr/bin/termixion' || { echo "::error::.deb is missing usr/bin/termixion"; exit 1; }
+          dpkg-deb --contents "$deb" | grep -q '\.desktop' || { echo "::error::.deb is missing the .desktop entry"; exit 1; }
+
+      - name: Stage + upload Linux artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist-linux
+          cp "$(find target -name '*.AppImage' -print -quit)" dist-linux/
+          cp "$(find target -name '*.AppImage.tar.gz' -print -quit)" dist-linux/
+          cp "$(find target -name '*.AppImage.tar.gz.sig' -print -quit)" dist-linux/
+          cp "$(find target -name '*.deb' -print -quit)" dist-linux/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux
+          path: dist-linux/
+          if-no-files-found: error
+
+  publish:
+    name: publish draft release (both platforms + merged latest.json)
+    needs: [build-macos, build-linux]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-macos
+          path: dist-macos
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-linux
+          path: dist-linux
+
+      # Assemble ONE latest.json carrying BOTH platform entries (only after both artifact sets exist).
+      # The SAME minisign key signed both; verify each signature is present + non-empty.
+      - name: Assemble merged updater manifest (latest.json — darwin-aarch64 + linux-x86_64)
         id: updater
         run: |
           set -euo pipefail
-          artifact=$(find target -name '*.app.tar.gz' -print -quit)
-          sig=$(find target -name '*.app.tar.gz.sig' -print -quit)
-          if [ -z "$artifact" ] || [ -z "$sig" ]; then
-            echo "::error::updater artifact/signature not found under target/ (createUpdaterArtifacts must be on)."
-            exit 1
-          fi
+          mac_art=$(find dist-macos -name '*.app.tar.gz' -print -quit)
+          mac_sig=$(find dist-macos -name '*.app.tar.gz.sig' -print -quit)
+          lin_art=$(find dist-linux -name '*.AppImage.tar.gz' -print -quit)
+          lin_sig=$(find dist-linux -name '*.AppImage.tar.gz.sig' -print -quit)
+          for f in "$mac_art" "$mac_sig" "$lin_art" "$lin_sig"; do
+            if [ -z "$f" ] || [ ! -s "$f" ]; then echo "::error::missing/empty updater artifact or signature: '$f'"; exit 1; fi
+          done
+          base="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}"
           version="${GITHUB_REF_NAME#v}"
-          url="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/$(basename "$artifact")"
           pub_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           jq -n --arg version "$version" --arg pub_date "$pub_date" \
-                --arg sig "$(cat "$sig")" --arg url "$url" \
+                --arg msig "$(cat "$mac_sig")" --arg murl "$base/$(basename "$mac_art")" \
+                --arg lsig "$(cat "$lin_sig")" --arg lurl "$base/$(basename "$lin_art")" \
             '{version: $version, pub_date: $pub_date,
-              platforms: {"darwin-aarch64": {signature: $sig, url: $url}}}' > latest.json
-          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
-          echo "manifest=latest.json" >> "$GITHUB_OUTPUT"
-          echo "wrote latest.json for $version"
+              platforms: {
+                "darwin-aarch64": {signature: $msig, url: $murl},
+                "linux-x86_64":   {signature: $lsig, url: $lurl}
+              }}' > latest.json
+          echo "wrote latest.json for $version (darwin-aarch64 + linux-x86_64)"
 
-      # Publish a DRAFT release with the verified .dmg PLUS the signed updater artifact + latest.json.
-      # Draft so a human signs off on the first signed build; flip to a direct publish once you trust the
-      # flow. Re-running an existing tag: delete the prior draft Release first (gh release create won't
-      # clobber). latest.json must be an asset so the fixed endpoint resolves.
-      #
-      # trmx-48: NOT a prerelease. The in-app updater endpoint is `releases/latest/download/latest.json`,
-      # and GitHub's `/releases/latest` resolves only to the newest *full* (non-prerelease) published
-      # release — a prerelease would never be found. So update-bearing alpha builds ship as full releases
-      # (the `--draft` gate still holds them for human sign-off until published). See docs/RELEASE.md.
-      - name: Publish draft release (verified .dmg + updater artifact + latest.json)
+      - name: Publish draft release (both installers + updater artifacts + latest.json)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SIGNED: ${{ steps.mode.outputs.signed }}
+          SIGNED: ${{ needs.build-macos.outputs.signed }}
         run: |
           set -euo pipefail
           if [ "$SIGNED" = "true" ]; then
-            notes="Signed + notarized Apple-silicon build. Download the .dmg below. Auto-update artifacts (latest.json) are attached. (Alpha — see CHANGELOG.md.)"
+            notes="Signed + notarized macOS (aarch64) build + x86_64 Linux AppImage/.deb. Auto-update artifacts (latest.json, both platforms) attached. (Alpha — see CHANGELOG.md.)"
           else
-            notes="UNSIGNED Apple-silicon build (personal alpha, trmx-49) — macOS Gatekeeper will block it: after copying Termixion.app to /Applications, approve it under System Settings → Privacy & Security → \"Open Anyway\", or run \`xattr -d com.apple.quarantine /Applications/Termixion.app\`. Auto-updates remain signature-verified by the updater key (latest.json attached). (Alpha — see CHANGELOG.md.)"
+            notes="UNSIGNED macOS (aarch64) personal-alpha build (trmx-49) — Gatekeeper will block it: approve under System Settings → Privacy & Security → \"Open Anyway\", or run \`xattr -d com.apple.quarantine /Applications/Termixion.app\`. Plus x86_64 Linux AppImage (\`chmod +x\` to run; on a FUSE-less host set \`APPIMAGE_EXTRACT_AND_RUN=1\`) + .deb. Auto-updates are signature-verified by the updater key (latest.json attached, both platforms). (Alpha — see CHANGELOG.md.)"
           fi
           gh release create "${{ github.ref_name }}" \
-            "${{ steps.verify.outputs.dmg }}" \
-            "${{ steps.updater.outputs.artifact }}" \
-            "${{ steps.updater.outputs.manifest }}" \
+            dist-macos/*.dmg dist-macos/*.app.tar.gz dist-macos/*.app.tar.gz.sig \
+            dist-linux/*.AppImage dist-linux/*.AppImage.tar.gz dist-linux/*.AppImage.tar.gz.sig dist-linux/*.deb \
+            latest.json \
             --draft \
             --title "Termixion ${{ github.ref_name }}" \
             --notes "$notes"

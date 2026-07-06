@@ -4,14 +4,14 @@
 // C-1 acceptance: the full core `Session` lifecycle driven through the trait against a real macOS
 // PTY — spawn the login shell, resize, write, read back, tear down with no zombie. macOS-only (the
 // whole file compiles away elsewhere), since it uses the `termixion-platform` macOS backend.
-#![cfg(target_os = "macos")]
+#![cfg(unix)]
 
 use std::process::Command;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use termixion_core::{PtyReader, PtySize, Session, SessionRegistry, SessionSpec};
-use termixion_platform::MacosPtyFactory;
+use termixion_platform::UnixPtyFactory;
 
 /// The process state of `pid` via `ps -o stat=` — `None` if the pid is gone, else the state string
 /// (a leading `Z` means a zombie). We check the *zombie state* specifically, not mere existence,
@@ -30,7 +30,7 @@ fn process_state(pid: u32) -> Option<String> {
 }
 
 fn assert_no_zombie(pid: u32) {
-    // A killed child must be REAPED AND GONE — teardown (MacosPtyBackend::kill) waits on the child
+    // A killed child must be REAPED AND GONE — teardown (UnixPtyBackend::kill) waits on the child
     // synchronously, so `ps` must stop reporting the pid. A persistent `Z…` state is the classic
     // zombie leak; a persistent *live* state is worse (the kill never landed / an orphan survived)
     // and must fail just as loudly — merely "not a zombie" would hide a still-running child
@@ -58,7 +58,7 @@ fn assert_no_zombie(pid: u32) {
 
 #[test]
 fn session_lifecycle_through_the_trait_leaves_no_zombie() {
-    let factory = MacosPtyFactory;
+    let factory = UnixPtyFactory;
     // A deterministic, rc-free interactive shell. A golden integration test must NOT source the
     // developer's / CI's shell rc files: they run prompt/precmd hooks (often git-aware ones) that
     // misbehave when this very test runs inside a `git push` pre-push hook. `zsh -f` (NO_RCS) skips
@@ -123,7 +123,7 @@ fn session_lifecycle_through_the_trait_leaves_no_zombie() {
 /// landed on the PTY (the spawn size was 24×80, and the echoed command text contains no digits).
 #[test]
 fn resize_winsize_is_observed_by_the_child() {
-    let factory = MacosPtyFactory;
+    let factory = UnixPtyFactory;
     // The same deterministic, rc-free interactive shell as the lifecycle test (see the rationale
     // there): `zsh -f` (NO_RCS) skips all startup files, so a dev/CI rc hook can never garble or
     // hang this golden test.
@@ -260,7 +260,7 @@ fn read_until(rx: &mpsc::Receiver<Vec<u8>>, needle: &str, deadline: Instant) -> 
 /// `close(id1)` must reap pid1 while session 2 stays alive AND still answers a round-trip.
 #[test]
 fn registry_close_reaps_only_its_own_child() {
-    let factory = MacosPtyFactory;
+    let factory = UnixPtyFactory;
     let mut registry = SessionRegistry::new();
     let (id1, reader1) = registry
         .spawn(&factory, &rc_free_zsh(), PtySize::new(24, 80))
@@ -342,7 +342,7 @@ fn registry_spawn_honors_spec_cwd() {
         .expect("canonicalize the temp cwd (macOS /tmp is a symlink into /private)");
     let needle = dir.to_str().expect("the temp cwd path is valid UTF-8");
 
-    let factory = MacosPtyFactory;
+    let factory = UnixPtyFactory;
     let mut registry = SessionRegistry::new();
     let mut spec = rc_free_zsh();
     spec.cwd = Some(dir.clone());
@@ -372,7 +372,7 @@ fn registry_spawn_honors_spec_cwd() {
 /// the unpumped readers on the test thread cannot deadlock the kill.
 #[test]
 fn registry_kill_all_leaves_no_zombies() {
-    let factory = MacosPtyFactory;
+    let factory = UnixPtyFactory;
     let mut registry = SessionRegistry::new();
     let (id1, _reader1) = registry
         .spawn(&factory, &rc_free_zsh(), PtySize::new(24, 80))
