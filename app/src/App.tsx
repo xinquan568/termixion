@@ -1310,13 +1310,16 @@ export function App({
   };
 
   // Cleanup on unmount: a mid-drag unmount must not leave a queued frame to dispatch into a dead
-  // reducer, and (trmx-91) no pending activity timer may fire a dispatch after unmount either.
+  // reducer, and (trmx-91/99) no pending activity OR flash timer may fire a setState after unmount.
   useEffect(() => {
     const activityTimers = activityTimersRef.current;
+    const flashTimers = activityFlashTimersRef.current;
     return () => {
       if (frameCancelRef.current) frameCancelRef.current();
       for (const timer of activityTimers.values()) clearTimeout(timer);
       activityTimers.clear();
+      for (const timer of flashTimers.values()) clearTimeout(timer);
+      flashTimers.clear();
     };
   }, []);
 

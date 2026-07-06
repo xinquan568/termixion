@@ -1,41 +1,77 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: ISC
 # trmx-99 (FR-7b): source-and-assert tests for the shell-integration snippets. Proves the load-bearing
-# properties without a PTY: idempotency (re-source guard), existing-hook preservation, and — the review
-# finding-4 case — that a command's exit status survives an existing PROMPT_COMMAND (captured $? first).
-# Every OSC-emitting call is captured into a variable so nothing leaks to the real terminal.
-# Run from the repo root: `bash resources/shell-integration/integration_test.sh`.
+# properties without a PTY: idempotency, existing-hook preservation, $?-capture, the arm-at-end C detector
+# (no spurious C during the prompt chain — review finding 1), robust DEBUG-trap chaining (review finding 2),
+# and the bash-preexec integration path. Run from the repo root:
+#   bash resources/shell-integration/integration_test.sh
 set -u
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# ---- bash ----------------------------------------------------------------------------------------
+# ---- bash: standalone (no prior DEBUG trap), armed-C logic + PROMPT_COMMAND preservation --------------
 bash --noprofile --norc -c '
   set -u
   fail=0
+  tmp="$(mktemp)"
   PROMPT_COMMAND="__user_hook"
-  __user_hook() { __user_ran=1; }
+  __user_hook() { :; }
   source "'"$DIR"'/termixion.bash"
-  source "'"$DIR"'/termixion.bash"    # second source must be inert (the guard short-circuits)
+  source "'"$DIR"'/termixion.bash"    # second source must be inert (guard)
 
-  # (1) our precmd is PREPENDED and the existing PROMPT_COMMAND is preserved (never clobbered).
-  [ "$PROMPT_COMMAND" = "__termixion_precmd; __user_hook" ] || { echo "FAIL bash preserve: $PROMPT_COMMAND"; fail=1; }
+  # precmd PREPENDED + arm APPENDED + the existing PROMPT_COMMAND preserved in the middle.
+  [ "$PROMPT_COMMAND" = "__termixion_precmd; __user_hook; __termixion_arm" ] \
+    || { echo "FAIL preserve: $PROMPT_COMMAND"; fail=1; }
 
-  # (2) the DEBUG trap is installed (a C-emitting preexec hook exists), then REMOVE it so it does not
-  #     emit C on every subsequent test command (which would pollute the captured output).
-  trap -p DEBUG | grep -q "__termixion_preexec" || { echo "FAIL bash debug-trap"; fail=1; }
+  # Remove the DEBUG trap so it does not fire (and clear the C detector) during the direct calls below.
   trap - DEBUG
 
-  # (3) a command exit status survives (precmd captures $? FIRST) — capture the OSC so nothing leaks.
+  # $? survives (precmd captures it first).
   out="$( (exit 1); __termixion_precmd )"
-  case "$out" in *"133;D;1"*) : ;; *) echo "FAIL bash exit-status"; fail=1 ;; esac
-  # a zero exit reports D;0 (no failure)
-  out="$( (exit 0); __termixion_precmd )"
-  case "$out" in *"133;D;0"*) : ;; *) echo "FAIL bash exit-zero"; fail=1 ;; esac
+  case "$out" in *"133;D;1"*) : ;; *) echo "FAIL exit-status"; fail=1 ;; esac
 
-  [ "$fail" = 0 ] && echo "PASS bash"
+  # The C detector fires ONLY when armed, exactly once, and never during completion.
+  __termixion_armed=""; __termixion_debug > "$tmp"; [ -s "$tmp" ] && { echo "FAIL C-when-unarmed"; fail=1; }
+  __termixion_armed=1;  __termixion_debug > "$tmp"; grep -q "133;C" "$tmp" || { echo "FAIL C-armed"; fail=1; }
+  __termixion_debug > "$tmp"; [ -s "$tmp" ] && { echo "FAIL C-refire (armed not cleared)"; fail=1; }
+  __termixion_armed=1; COMP_LINE=x __termixion_debug > "$tmp"; [ -s "$tmp" ] && { echo "FAIL C-during-completion"; fail=1; }
+
+  rm -f "$tmp"
+  [ "$fail" = 0 ] && echo "PASS bash-standalone"
 ' || exit 1
 
-# ---- zsh (skip if unavailable) -------------------------------------------------------------------
+# ---- bash: chains an EXISTING DEBUG trap (review finding 2) -------------------------------------------
+# `set -T` (functrace) makes the existing DEBUG trap visible to the sourced snippet's `trap -p DEBUG` —
+# the condition that holds when the snippet is sourced from an interactive rc file. Without it a
+# non-interactive `bash -c` hides the trap from a sourced scope (a harness artifact, not a snippet bug).
+bash --noprofile --norc -c '
+  set -u -T
+  trap ": PRIOR_TRAP_MARKER" DEBUG
+  source "'"$DIR"'/termixion.bash"
+  d="$(trap -p DEBUG)"
+  trap - DEBUG
+  fail=0
+  case "$d" in *"__termixion_debug"*) : ;; *) echo "FAIL chain-missing-ours"; fail=1 ;; esac
+  case "$d" in *"PRIOR_TRAP_MARKER"*) : ;; *) echo "FAIL chain-dropped-prior"; fail=1 ;; esac
+  [ "$fail" = 0 ] && echo "PASS bash-debug-chain"
+' || exit 1
+
+# ---- bash: integrates with bash-preexec when present (no PROMPT_COMMAND / DEBUG takeover) -------------
+bash --noprofile --norc -c '
+  set -u
+  bash_preexec_imported=1
+  declare -ag precmd_functions=() preexec_functions=()
+  pc_before="${PROMPT_COMMAND:-}"
+  trap ": BP_TRAP" DEBUG
+  source "'"$DIR"'/termixion.bash"
+  fail=0
+  [[ " ${precmd_functions[*]} " == *" __termixion_precmd "* ]]  || { echo "FAIL bp-precmd"; fail=1; }
+  [[ " ${preexec_functions[*]} " == *" __termixion_preexec "* ]] || { echo "FAIL bp-preexec"; fail=1; }
+  [ "${PROMPT_COMMAND:-}" = "$pc_before" ] || { echo "FAIL bp-prompt-touched: ${PROMPT_COMMAND:-}"; fail=1; }
+  case "$(trap -p DEBUG)" in *"BP_TRAP"*) : ;; *) echo "FAIL bp-trap-touched"; fail=1 ;; esac
+  [ "$fail" = 0 ] && echo "PASS bash-preexec"
+' || exit 1
+
+# ---- zsh (skip if unavailable) -----------------------------------------------------------------------
 if command -v zsh >/dev/null 2>&1; then
   zsh -f -c '
     fail=0

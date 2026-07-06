@@ -7,51 +7,60 @@
 #   Install:  add  `source ~/.config/termixion/shell-integration/termixion.bash`  near the END of ~/.bashrc
 #             (after other prompt tools, so it wraps them).
 #
-# Idempotent (safe to source repeatedly) and preserves your existing PROMPT_COMMAND and DEBUG trap.
+# Idempotent (safe to source repeatedly) and preserves your existing PROMPT_COMMAND and DEBUG trap. If
+# bash-preexec is already loaded, we hook its arrays instead of touching PROMPT_COMMAND / the DEBUG trap.
 
 # Re-source guard.
 [[ -n "${__termixion_shell_integration:-}" ]] && return
 __termixion_shell_integration=1
 
-# Emit one OSC sequence terminated by ST (ESC \). \134 is octal for backslash (avoids a shellcheck
-# false positive on a doubled backslash).
+# Emit one OSC sequence terminated by ST (ESC \). \134 is octal for backslash.
 __termixion_osc() { printf '\033]%s\033\134' "$1"; }
 
-# PROMPT_COMMAND runs after each command, before the prompt. Capture $? FIRST (this function is PREPENDED
-# so it runs before any existing PROMPT_COMMAND) so the D marker reports the real command exit code.
+# Runs after each command, before the prompt. Capture $? FIRST so the D marker reports the real exit code.
 __termixion_precmd() {
   local __ec=$?
   __termixion_osc "133;D;${__ec}"           # previous command finished (with exit code)
   __termixion_osc "7;file://${HOSTNAME}${PWD}"   # report cwd (OSC 7)
   __termixion_osc "133;A"                   # prompt start
   __termixion_osc "133;B"                   # command-input start
-  __termixion_preexec_done=""               # re-arm the once-per-prompt C guard
 }
 
-# The DEBUG trap fires before EVERY simple command — including PROMPT_COMMAND's own body. Emit C exactly
-# once per user command line, and never for the prompt hook itself.
-__termixion_preexec() {
-  # Skip while the prompt command runs, and during completion.
-  [[ -n "${COMP_LINE:-}" ]] && return
-  [[ "${BASH_COMMAND}" == "__termixion_precmd"* ]] && return
-  [[ "${BASH_COMMAND}" == "${PROMPT_COMMAND}" ]] && return
-  [[ -n "${__termixion_preexec_done:-}" ]] && return
-  __termixion_preexec_done=1
-  __termixion_osc "133;C"                   # command output start (running)
-}
+# Runs just before a user command executes → the command is now RUNNING.
+__termixion_preexec() { __termixion_osc "133;C"; }
 
-# PREPEND to PROMPT_COMMAND (capture $? first), preserving any existing value (it runs after ours).
-PROMPT_COMMAND="__termixion_precmd${PROMPT_COMMAND:+; ${PROMPT_COMMAND}}"
-
-# Chain the DEBUG trap: preserve the user's prior trap command (if any), then run ours.
-__termixion_prev_debug="$(trap -p DEBUG)"
-if [[ -n "${__termixion_prev_debug}" ]]; then
-  # Extract the prior command from `trap -- '<cmd>' DEBUG` and chain it before ours.
-  __termixion_prev_debug="${__termixion_prev_debug#trap -- \'}"
-  __termixion_prev_debug="${__termixion_prev_debug%\' DEBUG}"
-  # Intentional: expand the prior trap command NOW so it is embedded before ours (not re-resolved later).
-  # shellcheck disable=SC2064
-  trap "${__termixion_prev_debug}; __termixion_preexec" DEBUG
+if [[ -n "${bash_preexec_imported:-}${__bp_imported:-}" ]]; then
+  # bash-preexec is present — reuse its hook arrays. It owns all the DEBUG/PROMPT_COMMAND subtlety
+  # (fire preexec exactly once per command, skip completion, restore $? for precmd), so we just append.
+  precmd_functions+=(__termixion_precmd)
+  preexec_functions+=(__termixion_preexec)
 else
-  trap '__termixion_preexec' DEBUG
+  # Standalone. The C detector is ARMED only at the very END of the prompt-command chain, so the DEBUG
+  # trap never fires C while the prompt (our precmd + any existing PROMPT_COMMAND) is rendering — it fires
+  # exactly once, for the next real command the user runs.
+  __termixion_arm() { __termixion_armed=1; }
+  __termixion_debug() {
+    [[ -n "${COMP_LINE:-}" ]] && return       # skip tab-completion (DEBUG fires there too)
+    [[ -n "${__termixion_armed:-}" ]] || return  # unset → inside the prompt chain / already fired
+    __termixion_armed=""                      # fire once per command
+    __termixion_preexec
+  }
+  # precmd runs FIRST (captures $?); __termixion_arm runs LAST (after any existing PROMPT_COMMAND).
+  PROMPT_COMMAND="__termixion_precmd${PROMPT_COMMAND:+; ${PROMPT_COMMAND}}; __termixion_arm"
+
+  # Chain any existing DEBUG trap (preserve its body), else install ours. `trap -p DEBUG` prints
+  # `trap -- '<body>' DEBUG`; grep isolates that line from any output the prior trap emits, and the
+  # `#*trap -- '` strip tolerates a leading noise line. When sourced from an interactive rc file the
+  # existing trap is visible here (the same assumption bash-preexec makes); if none is found we install
+  # ours cleanly.
+  __termixion_prev_debug="$(trap -p DEBUG 2>/dev/null | grep -F 'trap -- ' | head -n1)"
+  if [[ -n "${__termixion_prev_debug}" ]]; then
+    __termixion_prev_debug="${__termixion_prev_debug#*trap -- \'}"
+    __termixion_prev_debug="${__termixion_prev_debug%\' DEBUG}"
+    # Intentional: expand the prior trap body NOW so it is embedded before ours (SC2064 is expected).
+    # shellcheck disable=SC2064
+    trap "${__termixion_prev_debug}; __termixion_debug" DEBUG
+  else
+    trap '__termixion_debug' DEBUG
+  fi
 fi
