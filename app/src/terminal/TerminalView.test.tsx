@@ -11,6 +11,7 @@ import {
   realAttachOscIntegrations,
   type AttachOscIntegrations,
   type AttachClipboard,
+  type AttachCopyOnSelect,
   type ResizeObservation,
   type AttachScrollbar,
 } from "./TerminalView";
@@ -18,6 +19,7 @@ import type { MountDeps, TerminalHandle } from "./mountTerminal";
 import type { AttachScrollbarHandle } from "./scrollbar";
 import { buildXtermTheme } from "../theme/buildXtermTheme";
 import { currentCwd, makeCwdStore } from "./osc7";
+import { __resetSettingsForTest, makeSettingsStore } from "../settings/settingsStore";
 
 // A no-op resize seam for tests that don't care about the resize path.
 const noopObserve: ResizeObservation = () => () => {};
@@ -34,6 +36,10 @@ const noopAttachOsc: AttachOscIntegrations = () => () => {};
 
 // A no-op clipboard seam (trmx-66) for tests that don't exercise it.
 const noopAttachClipboard: AttachClipboard = () => () => {};
+
+// A no-op auto-copy-on-select seam (trmx-95) for tests that don't exercise it (the real one calls
+// terminal.onSelectionChange, absent on the fake `{}` terminals these tests mount).
+const noopAttachCopyOnSelect: AttachCopyOnSelect = () => () => {};
 
 // trmx-67: resize fits are coalesced onto animation frames. Tests that just want "a resize fits"
 // inject an immediate frame (fire the callback now; cancel is a no-op) so firing the captured
@@ -70,6 +76,7 @@ describe("TerminalView", () => {
         attachScrollbar={noopAttachScrollbar}
         attachOscIntegrations={noopAttachOsc}
         attachClipboard={noopAttachClipboard}
+        attachCopyOnSelect={noopAttachCopyOnSelect}
       />,
     );
 
@@ -81,6 +88,86 @@ describe("TerminalView", () => {
 
     unmount();
     expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  // trmx-95 (FR-8): auto-copy-on-select is attached per pane, gated by terminal.copyOnSelect (default
+  // on) and live-toggled via settings:changed.
+  it("attaches auto-copy-on-select when the setting is on (default) and detaches on unmount", () => {
+    __resetSettingsForTest();
+    const handle: TerminalHandle = { terminal: {} as never, renderer: "webgl", fit: vi.fn(), dispose: vi.fn() };
+    const mount = vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(() => handle);
+    const detach = vi.fn();
+    const attachCopyOnSelect = vi.fn<AttachCopyOnSelect>(() => detach);
+
+    const { unmount } = render(
+      <TerminalView
+        mount={mount}
+        observeResize={noopObserve}
+        attachScrollbar={noopAttachScrollbar}
+        attachOscIntegrations={noopAttachOsc}
+        attachClipboard={noopAttachClipboard}
+        attachCopyOnSelect={attachCopyOnSelect}
+      />,
+    );
+    expect(attachCopyOnSelect).toHaveBeenCalledTimes(1);
+    expect(attachCopyOnSelect.mock.calls[0][0]).toBe(mount.mock.calls[0][0]); // the host
+    unmount();
+    expect(detach).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT attach auto-copy-on-select when terminal.copyOnSelect is off", () => {
+    __resetSettingsForTest();
+    makeSettingsStore().set("terminal.copyOnSelect", false);
+    const handle: TerminalHandle = { terminal: {} as never, renderer: "webgl", fit: vi.fn(), dispose: vi.fn() };
+    const attachCopyOnSelect = vi.fn<AttachCopyOnSelect>(() => () => {});
+    render(
+      <TerminalView
+        mount={vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(() => handle)}
+        observeResize={noopObserve}
+        attachScrollbar={noopAttachScrollbar}
+        attachOscIntegrations={noopAttachOsc}
+        attachClipboard={noopAttachClipboard}
+        attachCopyOnSelect={attachCopyOnSelect}
+      />,
+    );
+    expect(attachCopyOnSelect).not.toHaveBeenCalled();
+    __resetSettingsForTest(); // don't leak the off value to other tests
+  });
+
+  it("live-toggles auto-copy-on-select via settings:changed (detach off, re-attach on)", () => {
+    __resetSettingsForTest();
+    // A minimal `.options` so the sibling settings handlers (theme/font/…) don't crash on the fire below.
+    const handle: TerminalHandle = { terminal: { options: {} } as never, renderer: "webgl", fit: vi.fn(), dispose: vi.fn() };
+    let fireSettings: ((payload: unknown) => void) | undefined;
+    const observeSettings = vi.fn((onChange: (payload: unknown) => void) => {
+      fireSettings = onChange;
+      return () => {};
+    });
+    const detach = vi.fn();
+    const attachCopyOnSelect = vi.fn<AttachCopyOnSelect>(() => detach);
+
+    render(
+      <TerminalView
+        mount={vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(() => handle)}
+        observeResize={noopObserve}
+        attachScrollbar={noopAttachScrollbar}
+        observeSettings={observeSettings}
+        attachOscIntegrations={noopAttachOsc}
+        attachClipboard={noopAttachClipboard}
+        attachCopyOnSelect={attachCopyOnSelect}
+      />,
+    );
+    expect(attachCopyOnSelect).toHaveBeenCalledTimes(1); // on by default
+
+    fireSettings?.({ key: "terminal.copyOnSelect", value: false, source: "settings" });
+    expect(detach).toHaveBeenCalledTimes(1); // toggled off → listeners removed
+
+    fireSettings?.({ key: "terminal.copyOnSelect", value: true, source: "settings" });
+    expect(attachCopyOnSelect).toHaveBeenCalledTimes(2); // toggled on → re-attached
+
+    // An unrelated settings change does not re-toggle.
+    fireSettings?.({ key: "appearance.theme", value: "sepia", source: "settings" });
+    expect(attachCopyOnSelect).toHaveBeenCalledTimes(2);
   });
 
   it("calls onReady with the mounted handle so the parent can attach a PTY (C-2)", () => {
@@ -103,6 +190,7 @@ describe("TerminalView", () => {
         attachScrollbar={noopAttachScrollbar}
         attachOscIntegrations={noopAttachOsc}
         attachClipboard={noopAttachClipboard}
+        attachCopyOnSelect={noopAttachCopyOnSelect}
       />,
     );
 
@@ -137,6 +225,7 @@ describe("TerminalView", () => {
         attachScrollbar={noopAttachScrollbar}
         attachOscIntegrations={noopAttachOsc}
         attachClipboard={noopAttachClipboard}
+        attachCopyOnSelect={noopAttachCopyOnSelect}
         resizeSchedule={immediateFrame}
       />,
     );
@@ -179,6 +268,7 @@ describe("TerminalView", () => {
         attachScrollbar={attachScrollbar}
         attachOscIntegrations={noopAttachOsc}
         attachClipboard={noopAttachClipboard}
+        attachCopyOnSelect={noopAttachCopyOnSelect}
       />,
     );
 
@@ -223,6 +313,7 @@ describe("TerminalView", () => {
         attachScrollbar={attachScrollbar}
         attachOscIntegrations={noopAttachOsc}
         attachClipboard={noopAttachClipboard}
+        attachCopyOnSelect={noopAttachCopyOnSelect}
         resizeSchedule={immediateFrame}
       />,
     );
@@ -273,6 +364,7 @@ describe("TerminalView", () => {
         attachScrollbar={attachScrollbar}
         attachOscIntegrations={noopAttachOsc}
         attachClipboard={noopAttachClipboard}
+        attachCopyOnSelect={noopAttachCopyOnSelect}
         resizeSchedule={resizeSchedule}
       />,
     );
@@ -325,6 +417,7 @@ describe("TerminalView", () => {
         attachScrollbar={attachScrollbar}
         attachOscIntegrations={noopAttachOsc}
         attachClipboard={noopAttachClipboard}
+        attachCopyOnSelect={noopAttachCopyOnSelect}
         resizeSchedule={resizeSchedule}
       />,
     );
@@ -369,6 +462,7 @@ describe("TerminalView", () => {
         attachScrollbar={noopAttachScrollbar}
         attachOscIntegrations={noopAttachOsc}
         attachClipboard={noopAttachClipboard}
+        attachCopyOnSelect={noopAttachCopyOnSelect}
         resizeSchedule={resizeSchedule}
       />,
     );
@@ -419,6 +513,7 @@ describe("TerminalView", () => {
         observeSettings={observeSettings}
         attachOscIntegrations={noopAttachOsc}
         attachClipboard={noopAttachClipboard}
+        attachCopyOnSelect={noopAttachCopyOnSelect}
       />,
     );
 
@@ -484,6 +579,7 @@ describe("TerminalView", () => {
         observeSettings={observeSettings}
         attachOscIntegrations={noopAttachOsc}
         attachClipboard={noopAttachClipboard}
+        attachCopyOnSelect={noopAttachCopyOnSelect}
       />,
     );
     expect(observeSettings).toHaveBeenCalledTimes(1);
@@ -530,6 +626,7 @@ describe("TerminalView", () => {
         observeSettings={observeSettings}
         attachOscIntegrations={noopAttachOsc}
         attachClipboard={noopAttachClipboard}
+        attachCopyOnSelect={noopAttachCopyOnSelect}
       />,
     );
 
@@ -557,6 +654,7 @@ describe("TerminalView", () => {
         observeResize={noopObserve}
         attachScrollbar={noopAttachScrollbar}
         attachOscIntegrations={attachOsc}
+        attachCopyOnSelect={noopAttachCopyOnSelect}
       />,
     );
 
@@ -663,6 +761,7 @@ describe("TerminalView", () => {
         observeResize={noopObserve}
         attachScrollbar={noopAttachScrollbar}
         attachClipboard={noopAttachClipboard}
+        attachCopyOnSelect={noopAttachCopyOnSelect}
         onBadge={onBadge}
       />,
     );
@@ -690,6 +789,7 @@ describe("TerminalView", () => {
         attachScrollbar={noopAttachScrollbar}
         attachOscIntegrations={attachOsc}
         attachClipboard={noopAttachClipboard}
+        attachCopyOnSelect={noopAttachCopyOnSelect}
         onBadge={onBadge}
       />,
     );
@@ -705,6 +805,7 @@ describe("TerminalView", () => {
         attachScrollbar={noopAttachScrollbar}
         attachOscIntegrations={attachOscAbsent}
         attachClipboard={noopAttachClipboard}
+        attachCopyOnSelect={noopAttachCopyOnSelect}
       />,
     );
     expect(attachOscAbsent).toHaveBeenCalledTimes(1);
@@ -731,6 +832,7 @@ describe("TerminalView", () => {
         attachScrollbar={noopAttachScrollbar}
         attachOscIntegrations={attachOsc}
         attachClipboard={noopAttachClipboard}
+        attachCopyOnSelect={noopAttachCopyOnSelect}
         cwdStore={store}
       />,
     );
@@ -794,6 +896,7 @@ describe("TerminalView", () => {
         observeResize={noopObserve}
         attachScrollbar={noopAttachScrollbar}
         attachClipboard={noopAttachClipboard}
+        attachCopyOnSelect={noopAttachCopyOnSelect}
         onOscTitle={onOscTitle}
       />,
     );
@@ -823,6 +926,7 @@ describe("TerminalView", () => {
         attachScrollbar={noopAttachScrollbar}
         attachOscIntegrations={attachOsc}
         attachClipboard={noopAttachClipboard}
+        attachCopyOnSelect={noopAttachCopyOnSelect}
         onOscTitle={onOscTitle}
       />,
     );
@@ -838,6 +942,7 @@ describe("TerminalView", () => {
         attachScrollbar={noopAttachScrollbar}
         attachOscIntegrations={attachOscAbsent}
         attachClipboard={noopAttachClipboard}
+        attachCopyOnSelect={noopAttachCopyOnSelect}
       />,
     );
     expect(attachOscAbsent).toHaveBeenCalledTimes(1);
@@ -880,6 +985,7 @@ describe("TerminalView", () => {
         observeSettings={observeSettings}
         attachOscIntegrations={noopAttachOsc}
         attachClipboard={noopAttachClipboard}
+        attachCopyOnSelect={noopAttachCopyOnSelect}
       />,
     );
 
@@ -933,6 +1039,7 @@ describe("TerminalView", () => {
         attachScrollbar={noopAttachScrollbar}
         attachOscIntegrations={noopAttachOsc}
         attachClipboard={attachClipboard}
+        attachCopyOnSelect={noopAttachCopyOnSelect}
       />,
     );
 

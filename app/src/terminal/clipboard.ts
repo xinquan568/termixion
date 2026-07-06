@@ -42,13 +42,23 @@ export function sanitizePaste(text: string): string {
 }
 
 /**
+ * trmx-95: the ONE "selection → clipboard string" extraction, shared by ⌘C ([`handleCopyEvent`]) and
+ * auto-copy-on-select (`copyOnSelect.ts`). It is just `terminal.getSelection()` (xterm joins selected
+ * rows with `\n` and unwraps soft-wrapped logical lines) — a single source of truth so an auto-copy
+ * is BYTE-IDENTICAL to a ⌘C for the same selection (a divergence would be a trust bug).
+ */
+export function selectionText(terminal: CopyTerminalLike): string {
+  return terminal.getSelection();
+}
+
+/**
  * ⌘C / Edit→Copy. With a selection: write it as text/plain and own the event. Without: attempt NO
  * write (suppressing default + propagation keeps xterm's element handler from writing either), so
  * the platform preserves whatever is on the clipboard.
  */
 export function handleCopyEvent(ev: ClipboardEventLike, terminal: CopyTerminalLike): void {
   if (terminal.hasSelection()) {
-    ev.clipboardData?.setData("text/plain", terminal.getSelection());
+    ev.clipboardData?.setData("text/plain", selectionText(terminal));
   }
   ev.preventDefault();
   ev.stopPropagation();

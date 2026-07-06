@@ -131,9 +131,11 @@ impl ValueKind {
 /// core's `toml_path_for` (pinned by test).
 fn value_kind_for(registry_key: &str) -> Option<ValueKind> {
     match registry_key {
-        "update.autoCheck" | "update.autoDownload" | "terminal.cursorBlink" => {
-            Some(ValueKind::Bool)
-        }
+        "update.autoCheck"
+        | "update.autoDownload"
+        | "terminal.cursorBlink"
+        | "terminal.activityIndicator"
+        | "terminal.copyOnSelect" => Some(ValueKind::Bool),
         "terminal.scrollbackLines" | "terminal.fontSize" => Some(ValueKind::Int),
         "update.checkFrequency"
         | "terminal.cursorStyle"
@@ -803,6 +805,8 @@ mod tests {
             ("update.autoDownload", ValueKind::Bool),
             ("terminal.cursorStyle", ValueKind::Str),
             ("terminal.cursorBlink", ValueKind::Bool),
+            ("terminal.activityIndicator", ValueKind::Bool),
+            ("terminal.copyOnSelect", ValueKind::Bool),
             ("terminal.scrollbackLines", ValueKind::Int),
             ("terminal.fontFamily", ValueKind::Str),
             ("terminal.fontSize", ValueKind::Int),

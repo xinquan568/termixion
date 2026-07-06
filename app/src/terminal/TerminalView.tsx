@@ -41,6 +41,8 @@ import {
   type CopyTerminalLike,
   type PasteTerminalLike,
 } from "./clipboard";
+import { attachCopyOnSelect, type SelectionTerminalLike } from "./copyOnSelect";
+import { copyOnSelectEnabled, copyOnSelectSettingChange } from "./copyOnSelectSettings";
 import { makeLinkHandler, realOpenUrl } from "./linkHandler";
 import {
   attachWindowTitle,
@@ -233,6 +235,16 @@ export const realAttachClipboard: AttachClipboard = (host, terminal) =>
   );
 
 /**
+ * trmx-95 (FR-8): bind auto-copy-on-select for a pane — a mouse selection lands on the clipboard on
+ * pointerup (iTerm2-style), through the SAME `realWriteClipboard` sink OSC 52 uses (byte-identical to
+ * ⌘C). Injectable for tests; only attached while `terminal.copyOnSelect` is on (gated in the effect).
+ */
+export type AttachCopyOnSelect = (host: HTMLElement, terminal: TerminalLike) => () => void;
+
+export const realAttachCopyOnSelect: AttachCopyOnSelect = (host, terminal) =>
+  attachCopyOnSelect(host, terminal as unknown as SelectionTerminalLike, realWriteClipboard);
+
+/**
  * trmx-51: observe cross-window `settings:changed` broadcasts (the settings window editing cursor
  * style/blink, or a reset's default-value broadcast) and invoke `onChange(payload)`; returns a
  * teardown. Injectable for tests; the default listens over the Tauri event bus and is a no-op in a
@@ -295,6 +307,8 @@ export interface TerminalViewProps {
   onBadge?: (badge: string | null) => void;
   /** Injection seam for tests; defaults to the real ⌘C/⌘V clipboard guards (trmx-66). */
   attachClipboard?: AttachClipboard;
+  /** Injection seam for tests; defaults to the real auto-copy-on-select wiring (trmx-95). */
+  attachCopyOnSelect?: AttachCopyOnSelect;
   /**
    * Injection seam for tests; the frame source for resize coalescing (trmx-67). Defaults to
    * requestAnimationFrame — tests inject an immediate or manually-fired schedule so the
@@ -312,6 +326,7 @@ export function TerminalView({
   observeSettings = realObserveSettings,
   attachOscIntegrations = defaultAttachOscIntegrations,
   attachClipboard = realAttachClipboard,
+  attachCopyOnSelect = realAttachCopyOnSelect,
   cwdStore,
   onOscTitle,
   onBadge,
@@ -339,6 +354,19 @@ export function TerminalView({
     const detachOsc = attachOscIntegrations(handle.terminal, cwdStore, onOscTitle, onBadge);
     // trmx-66: owned ⌘C/⌘V — capture-phase guards on the host (sanitized paste, no-clear copy).
     const detachClipboard = attachClipboard(host, handle.terminal);
+    // trmx-95 (FR-8): auto-copy-on-select — attached per pane ONLY while terminal.copyOnSelect is on,
+    // and live-toggled below via settings:changed (attach on/off without a remount). Same clipboard
+    // sink as ⌘C, so the two produce byte-identical text.
+    let detachCopyOnSelect: (() => void) | undefined;
+    const syncCopyOnSelect = (enabled: boolean) => {
+      if (enabled && !detachCopyOnSelect) {
+        detachCopyOnSelect = attachCopyOnSelect(host, handle.terminal);
+      } else if (!enabled && detachCopyOnSelect) {
+        detachCopyOnSelect();
+        detachCopyOnSelect = undefined;
+      }
+    };
+    syncCopyOnSelect(copyOnSelectEnabled(makeSettingsStore()));
     // Keep the grid filling the host as the window resizes (issue 2): a size change re-fits, which
     // makes xterm fire onResize → the PTY grid is resized to match (wired in useBackend). Recompute
     // the scrollbar AFTER the fit so it reads the freshly-resized rows/cols (trmx-41).
@@ -385,6 +413,9 @@ export function TerminalView({
         }
         scrollbar.recompute();
       }
+      // trmx-95: a live copy-on-select toggle attaches/detaches the auto-copy listeners in place.
+      const copyOnSelectChange = copyOnSelectSettingChange(payload);
+      if (copyOnSelectChange !== null) syncCopyOnSelect(copyOnSelectChange);
     });
     return () => {
       stopObserving();
@@ -393,11 +424,12 @@ export function TerminalView({
       // teardown must not touch the disposed terminal.
       coalescer.dispose();
       detachClipboard();
+      detachCopyOnSelect?.();
       detachOsc();
       scrollbar.dispose();
       handle.dispose();
     };
-  }, [mount, deps, onReady, observeResize, attachScrollbar, observeSettings, attachOscIntegrations, attachClipboard, cwdStore, onOscTitle, onBadge, resizeSchedule]);
+  }, [mount, deps, onReady, observeResize, attachScrollbar, observeSettings, attachOscIntegrations, attachClipboard, attachCopyOnSelect, cwdStore, onOscTitle, onBadge, resizeSchedule]);
 
   return <div ref={hostRef} data-testid="terminal" className="terminal-host" />;
 }

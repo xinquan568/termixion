@@ -167,6 +167,8 @@ pub struct TerminalConfig {
     pub font_size: u32,
     /// Show an animated line while a command runs (trmx-91).
     pub activity_indicator: bool,
+    /// Auto-copy the mouse selection to the clipboard, iTerm2-style (trmx-95).
+    pub copy_on_select: bool,
 }
 
 impl Default for TerminalConfig {
@@ -178,6 +180,7 @@ impl Default for TerminalConfig {
             font_family: String::new(),
             font_size: 12,
             activity_indicator: true,
+            copy_on_select: true,
         }
     }
 }
@@ -323,6 +326,7 @@ pub const DEFAULT_TEMPLATE: &str = r##"# Termixion configuration (TOML).
 # font_family = ""                # "" = the platform default font stack
 # font_size = 12                  # 6..=72
 # activity_indicator = true       # animated line while a command runs
+# copy_on_select = true           # auto-copy the mouse selection to the clipboard (iTerm2-style)
 
 # [appearance]
 # theme = "white"                 # a theme id from the theme catalog
@@ -381,6 +385,7 @@ pub fn toml_path_for(registry_key: &str) -> Option<(&'static str, &'static str)>
         "terminal.fontFamily" => Some(("terminal", "font_family")),
         "terminal.fontSize" => Some(("terminal", "font_size")),
         "terminal.activityIndicator" => Some(("terminal", "activity_indicator")),
+        "terminal.copyOnSelect" => Some(("terminal", "copy_on_select")),
         "appearance.theme" => Some(("appearance", "theme")),
         "tabs.barPosition" => Some(("tabs", "bar_position")),
         "tabs.sideLabelOrientation" => Some(("tabs", "side_label_orientation")),
@@ -442,6 +447,11 @@ pub fn diff_configs(old: &Config, new: &Config) -> Vec<(String, RegistryValue)> 
         old.terminal.activity_indicator != new.terminal.activity_indicator,
         "terminal.activityIndicator",
         RegistryValue::Bool(new.terminal.activity_indicator),
+    );
+    push(
+        old.terminal.copy_on_select != new.terminal.copy_on_select,
+        "terminal.copyOnSelect",
+        RegistryValue::Bool(new.terminal.copy_on_select),
     );
     push(
         old.appearance.theme != new.appearance.theme,
@@ -612,6 +622,12 @@ fn walk_terminal(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
                 value,
                 ("terminal.activity_indicator", "terminal.activityIndicator"),
                 &mut config.terminal.activity_indicator,
+                sink,
+            ),
+            "copy_on_select" => read_bool(
+                value,
+                ("terminal.copy_on_select", "terminal.copyOnSelect"),
+                &mut config.terminal.copy_on_select,
                 sink,
             ),
             _ => sink.warnings.push(ConfigWarning::UnknownKey {
@@ -817,7 +833,7 @@ mod tests {
     use super::*;
 
     /// All 12 registry keys.
-    const REGISTRY_KEYS: [&str; 12] = [
+    const REGISTRY_KEYS: [&str; 13] = [
         "update.autoCheck",
         "update.checkFrequency",
         "update.autoDownload",
@@ -827,6 +843,7 @@ mod tests {
         "terminal.fontFamily",
         "terminal.fontSize",
         "terminal.activityIndicator",
+        "terminal.copyOnSelect",
         "appearance.theme",
         "tabs.barPosition",
         "tabs.sideLabelOrientation",
@@ -849,6 +866,7 @@ scrollback_lines = 5000
 font_family = "Menlo"
 font_size = 14
 activity_indicator = false
+copy_on_select = false
 
 [appearance]
 theme = "night"
@@ -878,6 +896,7 @@ side_label_orientation = "vertical"
                     font_family: "Menlo".to_string(),
                     font_size: 14,
                     activity_indicator: false,
+                    copy_on_select: false,
                 },
                 appearance: AppearanceConfig {
                     theme: "night".to_string(),
@@ -940,7 +959,7 @@ side_label_orientation = "vertical"
     fn full_file_yields_all_twelve_registry_pairs() {
         let (pairs, warnings) = parse_registry_pairs(FULL_NON_DEFAULT);
         assert_eq!(warnings, Vec::new());
-        assert_eq!(pairs.len(), 12);
+        assert_eq!(pairs.len(), 13);
         for key in REGISTRY_KEYS {
             assert!(value_for(&pairs, key).is_some(), "missing pair for {key}");
         }
@@ -975,6 +994,10 @@ side_label_orientation = "vertical"
         assert_eq!(
             value_for(&pairs, "terminal.fontSize"),
             Some(&RegistryValue::Int(14))
+        );
+        assert_eq!(
+            value_for(&pairs, "terminal.copyOnSelect"),
+            Some(&RegistryValue::Bool(false))
         );
         assert_eq!(
             value_for(&pairs, "terminal.activityIndicator"),
@@ -1100,6 +1123,33 @@ side_label_orientation = "vertical"
             value_for(&pairs, "terminal.activityIndicator"),
             Some(&RegistryValue::Bool(false))
         );
+    }
+
+    // trmx-95: terminal.copyOnSelect defaults to TRUE (iTerm2 parity); explicit false parses +
+    // surfaces the pair; a wrong-typed value keeps the default and warns (tolerant read_bool).
+    #[test]
+    fn copy_on_select_defaults_true_false_surfaces_and_wrong_type_warns() {
+        assert!(Config::default().terminal.copy_on_select);
+        let (config, warnings) = parse_config("[terminal]\n");
+        assert!(config.terminal.copy_on_select, "defaults to true");
+        assert_eq!(warnings, Vec::new());
+
+        let text = "[terminal]\ncopy_on_select = false\n";
+        let (config, _) = parse_config(text);
+        assert!(!config.terminal.copy_on_select);
+        let (pairs, _) = parse_registry_pairs(text);
+        assert_eq!(
+            value_for(&pairs, "terminal.copyOnSelect"),
+            Some(&RegistryValue::Bool(false))
+        );
+
+        // A non-bool value keeps the default (true) and warns; the key is absent from the pairs.
+        let (config, warnings) = parse_config("[terminal]\ncopy_on_select = \"yes\"\n");
+        assert!(config.terminal.copy_on_select);
+        assert!(matches!(
+            &warnings[0],
+            ConfigWarning::InvalidValue { key, .. } if key == "terminal.copy_on_select"
+        ));
     }
 
     // trmx-93: scripts.startup is a free string (""=unset). Present-only pair; wrong-type keeps the
@@ -1429,7 +1479,7 @@ side_label_orientation = "vertical"
     // 10. toml_path_for maps all 11 registry keys and rejects junk.
     #[test]
     fn toml_path_for_maps_every_registry_key() {
-        let expected: [(&str, (&str, &str)); 12] = [
+        let expected: [(&str, (&str, &str)); 13] = [
             ("update.autoCheck", ("update", "auto_check")),
             ("update.checkFrequency", ("update", "check_frequency")),
             ("update.autoDownload", ("update", "auto_download")),
@@ -1442,6 +1492,7 @@ side_label_orientation = "vertical"
                 "terminal.activityIndicator",
                 ("terminal", "activity_indicator"),
             ),
+            ("terminal.copyOnSelect", ("terminal", "copy_on_select")),
             ("appearance.theme", ("appearance", "theme")),
             ("tabs.barPosition", ("tabs", "bar_position")),
             (
@@ -1465,7 +1516,7 @@ side_label_orientation = "vertical"
     fn toml_path_for_round_trips_through_the_parser() {
         // A minimal file written at toml_path_for's answer must surface exactly
         // that registry key in the pairs.
-        let samples: [(&str, &str); 12] = [
+        let samples: [(&str, &str); 13] = [
             ("update.autoCheck", "false"),
             ("update.checkFrequency", "\"manual\""),
             ("update.autoDownload", "false"),
@@ -1475,6 +1526,7 @@ side_label_orientation = "vertical"
             ("terminal.fontFamily", "\"Menlo\""),
             ("terminal.fontSize", "20"),
             ("terminal.activityIndicator", "false"),
+            ("terminal.copyOnSelect", "false"),
             ("appearance.theme", "\"night\""),
             ("tabs.barPosition", "\"right\""),
             ("tabs.sideLabelOrientation", "\"vertical\""),
