@@ -151,22 +151,38 @@ test("⌘-drag re-docks a pane onto another's edge — the pane host survives (k
   await page.goto("/");
   await split(page); // panes 1 | 2 (pane 1 left, pane 2 right), focus 2
   const p1 = page.getByTestId("pane-host-1");
-  const p2 = page.getByTestId("pane-host-2");
   await expect(p1).toBeAttached();
   const before = (await p1.boundingBox())!;
-  const target = (await p2.boundingBox())!;
 
-  // ⌘-drag pane 1 onto pane 2's RIGHT edge → the tree flips to [2|1]. Hold Meta for the whole gesture.
-  await page.keyboard.down("Meta");
-  await page.mouse.move(before.x + before.width / 2, before.y + before.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(target.x + target.width * 0.9, target.y + target.height / 2, { steps: 8 });
-  await page.mouse.up();
-  await page.keyboard.up("Meta");
+  // ⌘-drag pane 1 onto pane 2's RIGHT edge → the tree flips to [2|1]. Playwright's page.mouse does not
+  // carry a held Meta modifier into pointer events, so dispatch the pointer sequence directly with
+  // `metaKey: true` (the same synthetic-event approach as `split()`'s keydown). The gesture reads client
+  // coords, so firing all three on the source pane (which pointer-captures) matches real capture routing.
+  await page.evaluate(() => {
+    const host = (id: number) => document.querySelector(`[data-testid="pane-host-${id}"]`)!;
+    const r2 = host(2).getBoundingClientRect();
+    const r1 = host(1).getBoundingClientRect();
+    const fire = (type: string, x: number, y: number) =>
+      host(1).dispatchEvent(
+        new PointerEvent(type, {
+          pointerId: 1,
+          clientX: x,
+          clientY: y,
+          button: 0,
+          metaKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    fire("pointerdown", r1.x + r1.width / 2, r1.y + r1.height / 2);
+    fire("pointermove", r2.x + r2.width * 0.9, r2.y + r2.height / 2); // past slop, over pane 2's right zone
+    fire("pointerup", r2.x + r2.width * 0.9, r2.y + r2.height / 2);
+  });
 
   // The SAME pane host is still attached (no remount) and has moved to the right half.
   await expect(p1).toBeAttached();
-  const after = (await p1.boundingBox())!;
-  expect(after.x).toBeGreaterThan(before.x + 20); // pane 1 moved rightward ([2|1])
+  await expect
+    .poll(async () => (await p1.boundingBox())!.x)
+    .toBeGreaterThan(before.x + 20); // pane 1 moved rightward ([2|1])
   await expect(page.locator(".pane-host")).toHaveCount(2); // still exactly two panes
 });

@@ -1433,7 +1433,13 @@ export function App({
       // Crossed slop → commit to a pickup: capture the pointer, raise the shield, drop any nascent xterm
       // selection the initial mousedown started, and arm the click swallow so xterm's link never fires.
       p.active = true;
-      (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+      // setPointerCapture throws (InvalidStateError) if the pointer isn't active — guard so a synthetic
+      // event sequence (tests) never breaks the gesture.
+      try {
+        (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+      } catch {
+        /* no active pointer to capture — the shield still isolates xterm */
+      }
       (handlesRef.current.get(p.paneId)?.terminal as unknown as { clearSelection?: () => void } | undefined)?.clearSelection?.();
       suppressClickRef.current = true;
       setPaneDragging(true);
@@ -1453,7 +1459,11 @@ export function App({
     }
     e.preventDefault();
     e.stopPropagation();
-    (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
+    try {
+      (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
+    } catch {
+      /* not captured — nothing to release */
+    }
     // Synchronously compute the FINAL zone from the release coords — a quick release before the rAF frame
     // fired must not commit a stale/null preview (the divider-drag guarantee).
     endPaneDrag(true, computeDropTarget(e.clientX, e.clientY));
