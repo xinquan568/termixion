@@ -144,7 +144,8 @@ describe("App scripting orchestration (trmx-93)", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(sendInput).not.toHaveBeenCalled();
-    expect(invoke).not.toHaveBeenCalled(); // no startup → never even asks for the catalog
+    // no startup → never asks for the SCRIPTS catalog (trmx-94: App does call keys_read on mount).
+    expect(invoke).not.toHaveBeenCalledWith("scripts_list");
   });
 
   it("a new-with-script verb opens the picker; Esc closes it", async () => {

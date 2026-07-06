@@ -76,7 +76,7 @@ import {
   type LabelOrientation,
   type TabBarPosition,
 } from "./settings/settingsStore";
-import { describeTarget, tabKeyAction } from "./tabs/tabKeymap";
+import { describeTarget } from "./tabs/tabKeymap";
 import { isRegisteredThemeId, isUserThemeIdShape, resolveTheme } from "./theme/registry";
 import { withAlpha } from "./theme/colorMath";
 import { useBackend } from "./ipc/useBackend";
@@ -93,6 +93,17 @@ import {
 } from "./ipc/backend";
 import { ScriptPicker } from "./scripts/ScriptPicker";
 import { listScripts, type ScriptEntry } from "./scripts/scriptsBackend";
+import { buildCommands, type Command, type CommandContext } from "./commands/registry";
+import { createDispatcher, type Dispatcher } from "./commands/dispatch";
+import {
+  FULL_DEFAULT_KEYS,
+  mergeKeymap,
+  resolve as resolveKeymap,
+} from "./commands/keymapDispatch";
+import { onKeysChanged, readKeys } from "./commands/keysBackend";
+import { CommandPalette } from "./commands/CommandPalette";
+import { growTarget } from "./commands/growPane";
+import { listThemes } from "./theme/registry";
 import { realEventBus } from "./ipc/eventBus";
 import { installThemeHotReload } from "./theme/themeHotReload";
 import { makeCwdStore, type CwdStore } from "./terminal/osc7";
@@ -309,6 +320,14 @@ export function App({
   const [scriptPickerRequest, setScriptPickerRequest] = useState<"tab" | "right" | "below" | null>(
     null,
   );
+  // trmx-94 (FR-9.2): the ⇧⌘P command palette open state.
+  const [showPalette, setShowPalette] = useState(false);
+  // trmx-94 (FR-9.3): the effective keymap (defaults ⊕ user [keys]). Seeded to the shipped defaults
+  // SYNCHRONOUSLY so keyboard shortcuts work on the first paint; the async keys_read + keys:changed
+  // rebuild it with the user's overrides.
+  const [keymap, setKeymap] = useState<Record<string, string>>(
+    () => mergeKeymap(FULL_DEFAULT_KEYS, []).keymap,
+  );
   // trmx-84: the measured pane content area — `solveRects` bounds. Seeded to a usable default so a
   // headless render (jsdom, pre-layout) still lays panes out; the ResizeObserver below refreshes it
   // once the window has a real size (a 0×0 reading is ignored so it never clobbers the default).
@@ -374,6 +393,23 @@ export function App({
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+
+  // trmx-94 (FR-9.3): load the user [keys] overrides + rebuild the effective keymap; re-read on a
+  // keys:changed watcher signal (live rebind). Inert without a Tauri runtime (readKeys resolves {}).
+  useEffect(() => {
+    let live = true;
+    const rebuild = () => {
+      readKeys(invoke).then((userKeys) => {
+        if (live) setKeymap(mergeKeymap(FULL_DEFAULT_KEYS, Object.entries(userKeys)).keymap);
+      });
+    };
+    rebuild();
+    const teardown = onKeysChanged(rebuild);
+    return () => {
+      live = false;
+      teardown();
+    };
+  }, [invoke]);
 
   // Boot: exactly ONE initial tab (one pane). The ref guards StrictMode's double effect-invocation.
   // trmx-93 (FR-5): if a startup script is configured, attach it to the first pane BEFORE dispatching
@@ -724,6 +760,120 @@ export function App({
   // The tab-strip × closes the WHOLE tab (all its panes), distinct from the ⌘W pane precedence.
   const requestCloseTab = (tabId: number) => closeTabInternal(tabId);
 
+  // trmx-94 (FR-9.1): the command platform. The CommandContext maps each command's `run` onto the
+  // existing request* funcs + a few new capabilities; menu verbs, keymap hits, and palette picks ALL
+  // route through `dispatch` (the single spine). The dispatcher is created ONCE (MRU persists) with a
+  // forwarding ctx that always calls the CURRENT request funcs via a ref.
+  const getActiveTab = () => {
+    const s = stateRef.current;
+    return s.activeTabId !== null ? s.tabs.find((t) => t.tabId === s.activeTabId) : undefined;
+  };
+  const commandCtx: CommandContext = {
+    newTab: requestNewTab,
+    closeActiveTab: requestCloseActive,
+    nextTab: () => dispatch({ kind: "nextTab" }),
+    prevTab: () => dispatch({ kind: "prevTab" }),
+    selectTab: (index) => dispatch({ kind: "selectIndex", index }),
+    renameActiveTab: () => {
+      const a = stateRef.current.activeTabId;
+      if (a !== null) setRenamingTabId(a);
+    },
+    newTabWithScript: () => setScriptPickerRequest("tab"),
+    splitRight: () => requestSplit("right"),
+    splitBelow: () => requestSplit("below"),
+    splitRightWithScript: () => setScriptPickerRequest("right"),
+    splitBelowWithScript: () => setScriptPickerRequest("below"),
+    closePane: requestCloseActive,
+    focusPane: (dir) => requestPaneNav({ kind: "nav-dir", dir }),
+    nextPane: () => requestPaneNav({ kind: "nav-cycle", delta: 1 }),
+    prevPane: () => requestPaneNav({ kind: "nav-cycle", delta: -1 }),
+    setBadge: () => {
+      const tab = getActiveTab();
+      if (tab) setBadgingPaneId(tab.focusedPaneId);
+    },
+    growPane: (dir) => {
+      const tab = getActiveTab();
+      if (!tab) return;
+      const target = growTarget(tab.tree, tab.focusedPaneId, dir);
+      if (target) dispatch({ kind: "setPaneRatio", tabId: tab.tabId, path: target.path, ratio: target.ratio });
+    },
+    clearScrollback: () => {
+      const tab = getActiveTab();
+      if (!tab) return;
+      const handle = handlesRef.current.get(tab.focusedPaneId);
+      (handle?.terminal as unknown as { clear?: () => void } | undefined)?.clear?.();
+    },
+    openSettings: () => {
+      invoke("open_settings_window", { section: null }).catch((err: unknown) =>
+        console.error("[termixion] open settings failed", err),
+      );
+    },
+    checkForUpdates: () => {
+      invoke("open_settings_window", { section: "about" }).catch((err: unknown) =>
+        console.error("[termixion] open settings (updates) failed", err),
+      );
+    },
+    closeWindow: () => seamsRef.current.closeWindow(),
+    openCommandPalette: () => setShowPalette(true),
+    selectTheme: (id) => makeSettingsStore().set("appearance.theme", id),
+    runScript: (sourceLine) => {
+      const tab = getActiveTab();
+      const sessionId = tab ? sessionsRef.current.get(tab.focusedPaneId) : undefined;
+      if (sessionId !== undefined) {
+        seamsRef.current.sendInput(sessionId, `${sourceLine}\r`).catch((err: unknown) =>
+          console.error("[termixion] run script failed", err),
+        );
+      }
+    },
+    tabCount: () => stateRef.current.tabs.length,
+    paneCount: () => {
+      const tab = getActiveTab();
+      return tab ? tabPaneIds(tab).length : 0;
+    },
+  };
+  const commandCtxRef = useRef(commandCtx);
+  commandCtxRef.current = commandCtx;
+  const keymapRef = useRef(keymap);
+  keymapRef.current = keymap;
+  const dispatcherRef = useRef<Dispatcher | null>(null);
+  if (dispatcherRef.current === null) {
+    // Forward every command-ctx call to the CURRENT implementation (which reads fresh state/refs).
+    const forwarding = new Proxy({} as CommandContext, {
+      get(_target, prop: string) {
+        return (...args: unknown[]) =>
+          (commandCtxRef.current as unknown as Record<string, (...a: unknown[]) => unknown>)[prop](
+            ...args,
+          );
+      },
+    });
+    dispatcherRef.current = createDispatcher(buildCommands(), forwarding);
+  }
+  const commandsRef = useRef<Command[]>(buildCommands());
+
+  // trmx-94: the menu verb → command-id map. Menu clicks (and the trmx-74/84/86/90/93 verbs) route
+  // through `dispatch` so every action goes through the one spine (FR-9.1).
+  const VERB_TO_COMMAND: Record<string, string> = {
+    new: "tab.new",
+    close: "tab.close",
+    next: "tab.next",
+    prev: "tab.prev",
+    "split-right": "pane.split-right",
+    "split-below": "pane.split-below",
+    "new-with-script": "tab.new-with-script",
+    "split-right-with-script": "pane.split-right-with-script",
+    "split-below-with-script": "pane.split-below-with-script",
+    "pane-left": "pane.focus-left",
+    "pane-right": "pane.focus-right",
+    "pane-up": "pane.focus-up",
+    "pane-down": "pane.focus-down",
+    "pane-next": "pane.next",
+    "pane-prev": "pane.prev",
+    rename: "tab.rename",
+    "set-badge": "pane.set-badge",
+    palette: "app.command-palette",
+    "clear-scrollback": "terminal.clear-scrollback",
+  };
+
   // trmx-75: the rename intents. Start = activate + flip into rename; commit writes the FOCUSED
   // pane's manual title (empty → clear-to-auto); cancel drops the edit. Commit/cancel clearing
   // `renamingTabId` re-runs the focus effect, handing the keyboard back to the focused pane.
@@ -784,35 +934,11 @@ export function App({
       }
     });
     const stopTabsAction = observeTabsAction((payload) => {
-      // Events are untrusted input: only the exact verb strings act; junk is inert.
-      if (payload === "new") requestNewTab();
-      else if (payload === "close") requestCloseActive();
-      else if (payload === "next") dispatch({ kind: "nextTab" });
-      else if (payload === "prev") dispatch({ kind: "prevTab" });
-      else if (payload === "split-right") requestSplit("right");
-      else if (payload === "split-below") requestSplit("below");
-      // trmx-93 (FR-5): open the script picker; on run it creates the requested surface + sources the
-      // chosen script (runScriptInSurface). The picker overlay is mounted while the request is non-null.
-      else if (payload === "new-with-script") setScriptPickerRequest("tab");
-      else if (payload === "split-right-with-script") setScriptPickerRequest("right");
-      else if (payload === "split-below-with-script") setScriptPickerRequest("below");
-      // trmx-86: Window ▸ Select Pane / Next/Previous Pane verbs → the same pane-nav path as the keymap.
-      else if (payload === "pane-left") requestPaneNav({ kind: "nav-dir", dir: "left" });
-      else if (payload === "pane-right") requestPaneNav({ kind: "nav-dir", dir: "right" });
-      else if (payload === "pane-up") requestPaneNav({ kind: "nav-dir", dir: "up" });
-      else if (payload === "pane-down") requestPaneNav({ kind: "nav-dir", dir: "down" });
-      else if (payload === "pane-next") requestPaneNav({ kind: "nav-cycle", delta: 1 });
-      else if (payload === "pane-prev") requestPaneNav({ kind: "nav-cycle", delta: -1 });
-      else if (payload === "rename") {
-        const active = stateRef.current.activeTabId;
-        if (active !== null) setRenamingTabId(active);
-      }
-      // trmx-90: ⇧⌘B → open the badge editor on the ACTIVE tab's FOCUSED pane (seeded with its badge).
-      else if (payload === "set-badge") {
-        const s = stateRef.current;
-        const tab = s.tabs.find((t) => t.tabId === s.activeTabId);
-        if (tab) setBadgingPaneId(tab.focusedPaneId);
-      }
+      // trmx-94 (FR-9.1): menu verbs are untrusted input — map the exact verb string to a command id
+      // and route it through the single `dispatch` spine (junk / unknown verbs are inert).
+      if (typeof payload !== "string") return;
+      const commandId = VERB_TO_COMMAND[payload];
+      if (commandId) dispatcherRef.current?.dispatch(commandId);
     });
     return () => {
       stopExited();
@@ -882,27 +1008,15 @@ export function App({
   // non-terminal editables and foreign chords, so nothing else is intercepted.
   useEffect(() => {
     const onKeyDown = (ev: KeyboardEvent) => {
-      const action = tabKeyAction(ev, describeTarget(ev.target));
-      if (!action) return;
+      // trmx-94 (FR-9.3): resolve the chord to a WEBVIEW-owned command via the effective keymap
+      // (defaults ⊕ user [keys]); native-menu chords (⌘T/⌘W/…) and ⌘C/⌘V resolve null here. A
+      // resolved command is fully owned by the app: preventDefault + stopImmediatePropagation so the
+      // chord never leaks a byte to xterm / the PTY (the trmx-86 pane-nav discipline, now uniform).
+      const commandId = resolveKeymap(ev, describeTarget(ev.target), keymapRef.current);
+      if (!commandId) return;
       ev.preventDefault();
-      if (action.kind === "select-index") dispatch({ kind: "selectIndex", index: action.index });
-      else if (action.kind === "split") requestSplit(action.dir);
-      else if (action.kind === "set-badge") {
-        // trmx-90: ⇧⌘B opens the badge editor on the focused pane. stopImmediatePropagation so the
-        // chord never leaks a byte to xterm (the pane-nav discipline); the same editor the menu's
-        // set-badge verb opens.
-        ev.stopImmediatePropagation();
-        const s = stateRef.current;
-        const tab = s.tabs.find((t) => t.tabId === s.activeTabId);
-        if (tab) setBadgingPaneId(tab.focusedPaneId);
-      } else {
-        // trmx-86: a pane-nav chord must ALSO be kept from xterm (stopImmediatePropagation) — even at an
-        // edge no-op — so ⌥⌘-arrows / ⌘]/⌘[ never leak a byte to the PTY. preventDefault alone doesn't
-        // stop xterm's own textarea keydown listener; halting propagation from this capture-phase
-        // listener does.
-        ev.stopImmediatePropagation();
-        requestPaneNav(action);
-      }
+      ev.stopImmediatePropagation();
+      dispatcherRef.current?.dispatch(commandId);
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
@@ -1218,6 +1332,20 @@ export function App({
             runScriptInSurface(entry, surface);
           }}
           onCancel={() => setScriptPickerRequest(null)}
+        />
+      )}
+      {showPalette && (
+        <CommandPalette
+          commands={commandsRef.current}
+          dispatch={(id, arg) => {
+            dispatcherRef.current?.dispatch(id, arg);
+          }}
+          recentCommandIds={dispatcherRef.current?.recentCommandIds() ?? []}
+          ctx={commandCtxRef.current}
+          keymap={keymap}
+          themes={listThemes().map((entry) => ({ id: entry.id, title: entry.label }))}
+          invoke={invoke}
+          onClose={() => setShowPalette(false)}
         />
       )}
     </main>

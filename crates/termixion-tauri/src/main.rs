@@ -907,6 +907,8 @@ fn main() -> ExitCode {
             config_io::config_read,
             config_io::config_write,
             config_io::config_reset_all,
+            config_io::keys_read,
+            window_manager::open_settings_window,
             themes_io::themes_read,
             themes_io::themes_write,
             themes_io::themes_open_dir,

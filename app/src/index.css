@@ -673,3 +673,90 @@ body {
   font-size: 13px;
   text-align: center;
 }
+
+/*
+ * trmx-94 (FR-9.2) — the command palette reuses the trmx-93 script-picker overlay chassis; these
+ * rules mirror the tx-script-picker overlay (centered modal, themed via --tx-*) and add the command
+ * row layout: title on the left, category dimmed, the current binding right-aligned in a chip.
+ */
+.tx-command-palette-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12vh;
+  background: rgba(0, 0, 0, 0.35);
+}
+.tx-command-palette {
+  width: min(560px, 90vw);
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  color: var(--tx-text);
+  background: var(--tx-bg);
+  border: 1px solid var(--tx-border);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+.tx-command-palette__input {
+  padding: 12px 14px;
+  font:
+    14px -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  color: var(--tx-text);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--tx-border);
+  outline: none;
+}
+.tx-command-palette__list {
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  overflow-y: auto;
+}
+.tx-command-palette__item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.tx-command-palette__item--active {
+  color: var(--tx-bg);
+  background: var(--tx-primary);
+}
+.tx-command-palette__title {
+  font-weight: 600;
+}
+.tx-command-palette__category {
+  color: var(--tx-text-2);
+  font-size: 12px;
+}
+.tx-command-palette__hint {
+  margin-left: auto;
+  padding: 1px 6px;
+  color: var(--tx-text-2);
+  font-size: 11px;
+  background: var(--tx-bg-sunken);
+  border-radius: 4px;
+}
+.tx-command-palette__item--active .tx-command-palette__title,
+.tx-command-palette__item--active .tx-command-palette__category,
+.tx-command-palette__item--active .tx-command-palette__hint {
+  color: var(--tx-bg);
+  background: transparent;
+  opacity: 0.9;
+}
+.tx-command-palette__empty {
+  padding: 16px;
+  color: var(--tx-text-2);
+  font-size: 13px;
+  text-align: center;
+}

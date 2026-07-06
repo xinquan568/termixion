@@ -10,6 +10,7 @@
 //! text in. Warnings carry the TOML path in their `key` (that is the spelling the user can
 //! actually fix in the file).
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::RangeInclusive;
 
@@ -234,6 +235,12 @@ pub struct Config {
     pub appearance: AppearanceConfig,
     pub tabs: TabsConfig,
     pub scripts: ScriptsConfig,
+    /// trmx-94 (FR-9.3): the `[keys]` table — an OPEN map of chord string → command id (or the
+    /// literal `"none"` to unbind a default). Unlike every other table this is a DYNAMIC map, not a
+    /// fixed schema, so it is read tolerantly (a non-string value warns and is skipped) and surfaced
+    /// to the frontend as a map (via the tauri `keys_read` command), not as flat registry pairs.
+    /// Chord-syntax and command validation live in the frontend keymap; core only stores the raw map.
+    pub keys: BTreeMap<String, String>,
 }
 
 /// A value in the frontend settings registry's wire shape (untagged: `true`, `14`, `"night"`).
@@ -327,6 +334,23 @@ pub const DEFAULT_TEMPLATE: &str = r##"# Termixion configuration (TOML).
 # [scripts]
 # startup = ""                    # a script under ~/.config/termixion/scripts/ to run in the first
                                   # tab on launch, e.g. "work/proj-x.sh" ("" = none)
+
+# [keys]                          # chord = "command.id" — rebind any shortcut; = "none" to unbind.
+# "cmd+t" = "tab.new"             # See docs/commands.md for every command id + its default binding.
+# "cmd+w" = "tab.close"
+# "cmd+shift+w" = "window.close"
+# "cmd+shift+t" = "tab.new-with-script"
+# "cmd+shift+p" = "app.command-palette"
+# "cmd+d" = "pane.split-right"
+# "cmd+shift+d" = "pane.split-below"
+# "cmd+shift+b" = "pane.set-badge"
+# "cmd+]" = "pane.next"
+# "cmd+[" = "pane.prev"
+# "cmd+shift+]" = "tab.next"
+# "cmd+shift+[" = "tab.prev"
+# "cmd+alt+left" = "pane.focus-left"
+# "cmd+1" = "tab.select-1"        # …through "cmd+9" = "tab.select-9"
+# "cmd+," = "app.settings"
 "##;
 
 /// Tolerantly parse `text` into a typed [`Config`]. Never panics, never hard-fails:
@@ -477,6 +501,19 @@ fn parse_full(text: &str) -> (Config, Vec<(String, RegistryValue)>, Vec<ConfigWa
         warnings: Vec::new(),
     };
     for (name, value) in &table {
+        // trmx-94: `[keys]` is a DYNAMIC map (arbitrary chord keys), not a fixed-schema table — read
+        // it separately from the hand-rolled per-key walks below.
+        if name == "keys" {
+            match value.as_table() {
+                Some(inner) => walk_keys(inner, &mut config, &mut sink),
+                None => sink.warnings.push(ConfigWarning::InvalidValue {
+                    key: "keys".to_string(),
+                    got: describe_value(value),
+                    expected: "a table of chord = command entries".to_string(),
+                }),
+            }
+            continue;
+        }
         let walk_table: Option<fn(&toml::Table, &mut Config, &mut Sink)> = match name.as_str() {
             "update" => Some(walk_update),
             "terminal" => Some(walk_terminal),
@@ -595,6 +632,24 @@ fn walk_scripts(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
             ),
             _ => sink.warnings.push(ConfigWarning::UnknownKey {
                 key: format!("scripts.{key}"),
+            }),
+        }
+    }
+}
+
+/// Read the `[keys]` map (trmx-94): each entry is `chord = command-id` (or `"none"` to unbind). Any
+/// chord key is allowed (validation is the frontend's job); a non-string value warns and is skipped.
+/// Stored raw in `config.keys` (a BTreeMap → deterministic order); NOT surfaced as registry pairs.
+fn walk_keys(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
+    for (chord, value) in table {
+        match value.as_str() {
+            Some(command) => {
+                config.keys.insert(chord.clone(), command.to_string());
+            }
+            None => sink.warnings.push(ConfigWarning::InvalidValue {
+                key: format!("keys.{chord}"),
+                got: describe_value(value),
+                expected: "a command id string".to_string(),
             }),
         }
     }
@@ -832,7 +887,52 @@ side_label_orientation = "vertical"
                     side_label_orientation: LabelOrientation::Vertical,
                 },
                 scripts: ScriptsConfig::default(),
+                keys: BTreeMap::new(),
             }
+        );
+    }
+
+    // trmx-94: the [keys] dynamic map — string values stored raw; a non-string value warns + skips;
+    // any chord key is allowed (validation is frontend-side); the template documents it commented.
+    #[test]
+    fn keys_table_reads_string_entries_and_warns_on_non_string() {
+        let text = "[keys]\n\"cmd+shift+enter\" = \"pane.split-below\"\n\"cmd+d\" = \"none\"\n\"cmd+x\" = 3\n";
+        let (config, warnings) = parse_config(text);
+        assert_eq!(
+            config.keys.get("cmd+shift+enter"),
+            Some(&"pane.split-below".to_string())
+        );
+        assert_eq!(config.keys.get("cmd+d"), Some(&"none".to_string()));
+        assert!(
+            !config.keys.contains_key("cmd+x"),
+            "a non-string value is skipped"
+        );
+        assert_eq!(warnings.len(), 1);
+        assert!(matches!(
+            &warnings[0],
+            ConfigWarning::InvalidValue { key, .. } if key == "keys.cmd+x"
+        ));
+        // The [keys] map does not surface as flat registry pairs.
+        let (pairs, _) = parse_registry_pairs(text);
+        assert!(
+            pairs.is_empty(),
+            "keys entries are a map, not registry pairs"
+        );
+    }
+
+    #[test]
+    fn keys_table_defaults_empty_and_a_non_table_warns() {
+        assert!(Config::default().keys.is_empty());
+        let (config, warnings) = parse_config("keys = 5\n");
+        assert!(config.keys.is_empty());
+        assert_eq!(warnings.len(), 1);
+        assert!(matches!(
+            &warnings[0],
+            ConfigWarning::InvalidValue { key, .. } if key == "keys"
+        ));
+        assert!(
+            DEFAULT_TEMPLATE.contains("# [keys]"),
+            "the template must document the [keys] table (commented)"
         );
     }
 

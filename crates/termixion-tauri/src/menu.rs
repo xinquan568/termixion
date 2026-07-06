@@ -64,8 +64,105 @@ pub fn menu_action(id: &str) -> Option<MenuAction> {
         "window-pane-down" => Some(MenuAction::EmitTabsAction("pane-down")),
         "window-pane-next" => Some(MenuAction::EmitTabsAction("pane-next")),
         "window-pane-prev" => Some(MenuAction::EmitTabsAction("pane-prev")),
+        // trmx-94 (FR-9): the command palette (⇧⌘P) + clear scrollback. Verbs route through the
+        // frontend dispatch spine like every other command-backed item.
+        "shell-command-palette" => Some(MenuAction::EmitTabsAction("palette")),
+        "shell-clear-scrollback" => Some(MenuAction::EmitTabsAction("clear-scrollback")),
         _ => None,
     }
+}
+
+// ---------------------------------------------------------------------------
+// trmx-94 (FR-9.3): native accelerators are built from the EFFECTIVE keymap (defaults ⊕ `[keys]`),
+// so a user rebind/unbind of a chord actually changes/removes the native menu accelerator (a static
+// one would still fire a chord the user unbound). Pure helpers, unit-tested.
+// ---------------------------------------------------------------------------
+
+use std::collections::BTreeMap;
+
+/// The command-backed menu items whose accelerator is user-configurable: `(menu_id, command_id,
+/// default_chord)`. The default chords mirror the frontend `FULL_DEFAULT_KEYS`.
+const MENU_COMMAND_CHORDS: &[(&str, &str, &str)] = &[
+    ("shell-new-tab", "tab.new", "cmd+t"),
+    ("shell-close-tab", "tab.close", "cmd+w"),
+    ("shell-close-window", "window.close", "cmd+shift+w"),
+    (
+        "shell-new-tab-with-script",
+        "tab.new-with-script",
+        "cmd+shift+t",
+    ),
+    ("shell-set-badge", "pane.set-badge", "cmd+shift+b"),
+    ("shell-split-right", "pane.split-right", "cmd+d"),
+    ("shell-split-below", "pane.split-below", "cmd+shift+d"),
+    (
+        "shell-command-palette",
+        "app.command-palette",
+        "cmd+shift+p",
+    ),
+    ("settings", "app.settings", "cmd+,"),
+    ("window-next-tab", "tab.next", "cmd+shift+]"),
+    ("window-prev-tab", "tab.prev", "cmd+shift+["),
+];
+
+/// Convert a chord string ("cmd+shift+p") to a Tauri accelerator ("Shift+CmdOrCtrl+P"): `cmd`→
+/// `CmdOrCtrl`, `shift`→`Shift`, `alt`→`Alt`, `ctrl`→`Control`; a single-letter key is upper-cased.
+fn to_tauri_accel(chord: &str) -> String {
+    let mut mods: Vec<&str> = Vec::new();
+    let mut key = String::new();
+    for part in chord.split('+') {
+        match part {
+            "cmd" | "meta" => mods.push("CmdOrCtrl"),
+            "shift" => mods.push("Shift"),
+            "alt" | "option" => mods.push("Alt"),
+            "ctrl" | "control" => mods.push("Control"),
+            other => {
+                key = if other.chars().count() == 1 {
+                    other.to_uppercase()
+                } else {
+                    // Named keys map to Tauri's spellings (Left/Right/Up/Down/Enter/…): capitalize.
+                    let mut chars = other.chars();
+                    match chars.next() {
+                        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                        None => String::new(),
+                    }
+                };
+            }
+        }
+    }
+    mods.push(&key);
+    mods.join("+")
+}
+
+/// The effective accelerator for a menu item, given its command + default chord and the user `[keys]`
+/// map. A REBIND (a user chord maps to the command) wins; otherwise the default stands UNLESS it was
+/// unbound (`"none"`) or reassigned to another command (then the item loses its accelerator → None).
+fn effective_accelerator(
+    command_id: &str,
+    default_chord: &str,
+    keys: &BTreeMap<String, String>,
+) -> Option<String> {
+    // A user rebind — the first (deterministic BTreeMap order) chord mapped to this command.
+    for (chord, cmd) in keys {
+        if cmd == command_id {
+            return Some(to_tauri_accel(chord));
+        }
+    }
+    match keys.get(default_chord).map(String::as_str) {
+        Some("none") => None,                       // explicitly unbound
+        Some(other) if other != command_id => None, // the default chord now belongs to another command
+        _ => Some(to_tauri_accel(default_chord)),   // the default stands
+    }
+}
+
+/// The accelerator for a command-backed menu item id under the current `[keys]` map (None if the id
+/// is not command-backed or the chord was unbound).
+fn accel_for(menu_id: &str, keys: &BTreeMap<String, String>) -> Option<String> {
+    MENU_COMMAND_CHORDS
+        .iter()
+        .find(|(id, _, _)| *id == menu_id)
+        .and_then(|(_, command_id, default_chord)| {
+            effective_accelerator(command_id, default_chord, keys)
+        })
 }
 
 /// Build the full application menu. The app submenu leads with the custom About/Settings items;
@@ -73,8 +170,16 @@ pub fn menu_action(id: &str) -> Option<MenuAction> {
 /// the predefined items a terminal window expects (copy/paste, minimize) plus the trmx-74 tab
 /// cycling — but NOT the predefined close item, whose ⌘W accelerator belongs to Close Tab now.
 pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+    // trmx-94: native accelerators come from the EFFECTIVE keymap (defaults ⊕ user [keys]).
+    let keys = crate::config_io::keys_read();
     let about = MenuItem::with_id(handle, "about", "About Termixion", true, None::<&str>)?;
-    let settings = MenuItem::with_id(handle, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
+    let settings = MenuItem::with_id(
+        handle,
+        "settings",
+        "Settings…",
+        true,
+        accel_for("settings", &keys).as_deref(),
+    )?;
 
     let app_menu = Submenu::with_items(
         handle,
@@ -97,7 +202,7 @@ pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         "shell-new-tab",
         "New Tab",
         true,
-        Some("CmdOrCtrl+T"),
+        accel_for("shell-new-tab", &keys).as_deref(),
     )?;
     // trmx-93 (FR-5): open the script picker, then run the chosen script in a fresh tab (⇧⌘T).
     let new_tab_with_script = MenuItem::with_id(
@@ -105,14 +210,14 @@ pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         "shell-new-tab-with-script",
         "New Tab with Script…",
         true,
-        Some("Shift+CmdOrCtrl+T"),
+        accel_for("shell-new-tab-with-script", &keys).as_deref(),
     )?;
     let close_tab = MenuItem::with_id(
         handle,
         "shell-close-tab",
         "Close Tab",
         true,
-        Some("CmdOrCtrl+W"),
+        accel_for("shell-close-tab", &keys).as_deref(),
     )?;
     // trmx-75: manual rename, directly below Close Tab. Deliberately NO accelerator — the fast
     // path is double-clicking the tab label; the menu item exists for discoverability and for
@@ -131,7 +236,7 @@ pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         "shell-set-badge",
         "Set Badge…",
         true,
-        Some("Shift+CmdOrCtrl+B"),
+        accel_for("shell-set-badge", &keys).as_deref(),
     )?;
     // trmx-84 (FR-3.2): split the focused pane. ⌘D adds a pane to the right, ⇧⌘D below. The
     // frontend pane manager owns the layout tree; the menu only announces the split intent.
@@ -140,14 +245,14 @@ pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         "shell-split-right",
         "Split Right",
         true,
-        Some("CmdOrCtrl+D"),
+        accel_for("shell-split-right", &keys).as_deref(),
     )?;
     let split_below = MenuItem::with_id(
         handle,
         "shell-split-below",
         "Split Below",
         true,
-        Some("Shift+CmdOrCtrl+D"),
+        accel_for("shell-split-below", &keys).as_deref(),
     )?;
     // trmx-93 (FR-5): split, then run the chosen script in the new pane. Un-accelerated for now —
     // the FR-9 command palette (#94) is the fast path; these stay discoverable menu items.
@@ -170,7 +275,22 @@ pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         "shell-close-window",
         "Close Window",
         true,
-        Some("Shift+CmdOrCtrl+W"),
+        accel_for("shell-close-window", &keys).as_deref(),
+    )?;
+    // trmx-94 (FR-9.2): the command palette (⇧⌘P, keymap-driven) + Clear Scrollback (palette/menu-only).
+    let command_palette = MenuItem::with_id(
+        handle,
+        "shell-command-palette",
+        "Command Palette…",
+        true,
+        accel_for("shell-command-palette", &keys).as_deref(),
+    )?;
+    let clear_scrollback = MenuItem::with_id(
+        handle,
+        "shell-clear-scrollback",
+        "Clear Scrollback",
+        true,
+        None::<&str>,
     )?;
     let shell_menu = Submenu::with_items(
         handle,
@@ -182,6 +302,9 @@ pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &close_tab,
             &rename_tab,
             &set_badge,
+            &PredefinedMenuItem::separator(handle)?,
+            &command_palette,
+            &clear_scrollback,
             &PredefinedMenuItem::separator(handle)?,
             &split_right,
             &split_below,
@@ -214,14 +337,14 @@ pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         "window-prev-tab",
         "Show Previous Tab",
         true,
-        Some("Shift+CmdOrCtrl+["),
+        accel_for("window-prev-tab", &keys).as_deref(),
     )?;
     let next_tab = MenuItem::with_id(
         handle,
         "window-next-tab",
         "Show Next Tab",
         true,
-        Some("Shift+CmdOrCtrl+]"),
+        accel_for("window-next-tab", &keys).as_deref(),
     )?;
     // trmx-86 (FR-3.5): keyboard pane navigation. Directional focus with ⌥⌘-arrows, cyclic with ⌘] / ⌘[
     // (shift-free, so distinct from the ⇧⌘[ / ⇧⌘] tab cycling above). The frontend pane manager owns
@@ -365,6 +488,62 @@ mod tests {
         assert_eq!(
             menu_action("shell-split-below-with-script"),
             Some(MenuAction::EmitTabsAction("split-below-with-script"))
+        );
+    }
+
+    #[test]
+    fn shell_command_items_broadcast_their_verbs() {
+        // trmx-94 (FR-9): the command palette + clear scrollback announce their intent; the frontend
+        // routes them through the dispatch spine.
+        assert_eq!(
+            menu_action("shell-command-palette"),
+            Some(MenuAction::EmitTabsAction("palette"))
+        );
+        assert_eq!(
+            menu_action("shell-clear-scrollback"),
+            Some(MenuAction::EmitTabsAction("clear-scrollback"))
+        );
+    }
+
+    #[test]
+    fn to_tauri_accel_converts_chords() {
+        assert_eq!(to_tauri_accel("cmd+t"), "CmdOrCtrl+T");
+        assert_eq!(to_tauri_accel("cmd+shift+p"), "CmdOrCtrl+Shift+P");
+        assert_eq!(to_tauri_accel("cmd+alt+left"), "CmdOrCtrl+Alt+Left");
+    }
+
+    #[test]
+    fn effective_accelerator_honors_rebind_and_none_unbind() {
+        use std::collections::BTreeMap;
+        // No overrides → the default stands.
+        let empty = BTreeMap::new();
+        assert_eq!(
+            effective_accelerator("pane.split-right", "cmd+d", &empty),
+            Some("CmdOrCtrl+D".to_string())
+        );
+        // A "none" unbind → the item loses its accelerator (a static one would still fire ⌘D).
+        let mut unbound = BTreeMap::new();
+        unbound.insert("cmd+d".to_string(), "none".to_string());
+        assert_eq!(
+            effective_accelerator("pane.split-right", "cmd+d", &unbound),
+            None
+        );
+        // A rebind → the new chord becomes the accelerator.
+        let mut rebound = BTreeMap::new();
+        rebound.insert(
+            "cmd+shift+enter".to_string(),
+            "pane.split-right".to_string(),
+        );
+        assert_eq!(
+            effective_accelerator("pane.split-right", "cmd+d", &rebound),
+            Some("CmdOrCtrl+Shift+Enter".to_string())
+        );
+        // The default chord reassigned to ANOTHER command → this item loses its accelerator.
+        let mut reassigned = BTreeMap::new();
+        reassigned.insert("cmd+d".to_string(), "tab.new".to_string());
+        assert_eq!(
+            effective_accelerator("pane.split-right", "cmd+d", &reassigned),
+            None
         );
     }
 
