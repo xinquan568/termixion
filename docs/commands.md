@@ -41,10 +41,10 @@ open a second picker (a theme / a script).
 | `pane.grow-right` | Grow Pane Right | Panes | — |
 | `pane.grow-up` | Grow Pane Up | Panes | — |
 | `pane.grow-down` | Grow Pane Down | Panes | — |
-| `pane.move-left` | Move Pane Left | Panes | `ctrl+alt+cmd+left` |
-| `pane.move-right` | Move Pane Right | Panes | `ctrl+alt+cmd+right` |
-| `pane.move-up` | Move Pane Up | Panes | `ctrl+alt+cmd+up` |
-| `pane.move-down` | Move Pane Down | Panes | `ctrl+alt+cmd+down` |
+| `pane.move-left` | Move Pane Left | Panes | `cmd+ctrl+alt+left` |
+| `pane.move-right` | Move Pane Right | Panes | `cmd+ctrl+alt+right` |
+| `pane.move-up` | Move Pane Up | Panes | `cmd+ctrl+alt+up` |
+| `pane.move-down` | Move Pane Down | Panes | `cmd+ctrl+alt+down` |
 | `terminal.clear-scrollback` | Clear Scrollback | Terminal | — |
 | `search.open` | Find | Search | `cmd+f` |
 | `search.next` | Find Next | Search | `cmd+g` |
