@@ -37,9 +37,12 @@ import {
   canSplit as canSplitTree,
   leafNode,
   leaves,
+  moveLeaf,
   removeLeaf,
   setRatio as setRatioTree,
   splitLeaf,
+  swapLeaves,
+  type DropEdge,
   type LayoutNode,
   type MinSize,
   type PaneId,
@@ -47,6 +50,7 @@ import {
   type SplitDir,
   type SplitPath,
 } from "../panes/layoutTree";
+import { movePaneDirectional, type Direction } from "../panes/paneNav";
 
 /** One pane: the backend session it is bound to (null while opening), its layered title + badge. */
 export interface PaneState {
@@ -107,6 +111,16 @@ export type TabsAction =
   | { kind: "moveTab"; from: number; to: number }
   // trmx-84 (FR-3.1/3.2): pane transitions.
   | { kind: "splitPane"; tabId: number; dir: SplitDir }
+  // trmx-100 (FR-3.4): mouse re-dock — move `paneId` onto `targetPaneId`'s zone (edge = new split, center
+  // = swap). App only dispatches for a non-null actionable target. Keyboard: `movePaneDir` (directional).
+  | {
+      kind: "redockPane";
+      tabId: number;
+      paneId: number;
+      targetPaneId: number;
+      zone: DropEdge | "center";
+    }
+  | { kind: "movePaneDir"; tabId: number; paneId: number; dir: Direction; bounds: Rect }
   | { kind: "closePane"; tabId: number; paneId: number }
   | { kind: "focusPane"; tabId: number; paneId: number }
   | { kind: "setPaneRatio"; tabId: number; path: SplitPath; ratio: number }
@@ -272,6 +286,40 @@ export function reduceTabs(state: TabsState, action: TabsAction): TabsState {
         tabs: state.tabs.map((t) => (t.tabId === tab.tabId ? nextTab : t)),
         nextPaneId: state.nextPaneId + 1,
       };
+    }
+
+    case "redockPane": {
+      const tab = state.tabs.find((t) => t.tabId === action.tabId);
+      if (!tab) return state;
+      if (!tab.panes[action.paneId] || !tab.panes[action.targetPaneId]) return state; // unknown — no-op
+      const tree =
+        action.zone === "center"
+          ? swapLeaves(tab.tree, action.paneId, action.targetPaneId)
+          : moveLeaf(tab.tree, action.paneId, action.targetPaneId, action.zone);
+      if (tree === tab.tree) return state; // === no-op (self/degenerate/structurally identical)
+      // The moved pane keeps focus (so chained moves feel natural + the survival invariant holds).
+      const nextTab: Tab = {
+        ...tab,
+        tree,
+        focusedPaneId: action.paneId,
+        title: tab.panes[action.paneId].title,
+      };
+      return replaceTab(state, tab.tabId, nextTab);
+    }
+
+    case "movePaneDir": {
+      const tab = state.tabs.find((t) => t.tabId === action.tabId);
+      if (!tab) return state;
+      if (!tab.panes[action.paneId]) return state; // unknown pane — no-op
+      const tree = movePaneDirectional(tab.tree, action.paneId, action.dir, action.bounds);
+      if (tree === tab.tree) return state; // no neighbor / structural no-op — === no-op
+      const nextTab: Tab = {
+        ...tab,
+        tree,
+        focusedPaneId: action.paneId, // the moved pane stays focused (keyboard moves chain)
+        title: tab.panes[action.paneId].title,
+      };
+      return replaceTab(state, tab.tabId, nextTab);
     }
 
     case "closePane": {

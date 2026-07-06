@@ -22,7 +22,7 @@ import type { TerminalHandle } from "./terminal/mountTerminal";
 // a program's OSC 0/2 title); `unmounts` counts stub cleanups (must stay 0 across tab switches).
 const recorder = vi.hoisted(() => ({
   mounts: [] as Array<{
-    handle: { terminal: { focus: () => void } };
+    handle: { terminal: { focus: () => void; clearSelection: () => void } };
     cwdStore: { get(): string | null; set(cwd: string): void } | undefined;
     onOscTitle: ((title: string) => void) | undefined;
     onBadge: ((badge: string | null) => void) | undefined;
@@ -53,7 +53,7 @@ vi.mock("./terminal/TerminalView", async () => {
     }) => {
       useEffect(() => {
         const handle = {
-          terminal: { focus: vi.fn() },
+          terminal: { focus: vi.fn(), clearSelection: vi.fn() },
           renderer: "dom",
           fit: () => {},
           dispose: () => {},
@@ -1260,6 +1260,91 @@ describe("App divider drag (trmx-85)", () => {
     ctx.view.unmount();
     expect(ctx.frame.hasPending()).toBe(false); // the unmount cleanup cancelled it
     expect(() => ctx.frame.flush()).not.toThrow(); // flushing after unmount is a safe no-op
+  });
+});
+
+// trmx-100 (FR-3.4): ⌘-drag to re-dock a pane. Capture-phase pickup past a slop threshold; a five-zone
+// drop target restructures the tree; sessions survive (no remount); a sub-slop ⌘-click is left alone.
+describe("App drag re-dock panes (trmx-100)", () => {
+  const cmdD = () => fireEvent.keyDown(document.body, { key: "d", metaKey: true });
+  const paneLeft = (id: number) => Number.parseInt(screen.getByTestId(`pane-host-${id}`).style.left, 10);
+  async function splitOnce(ctx: ReturnType<typeof renderApp>) {
+    await resolveAttach(ctx.calls[0], { sessionId: 1, title: "one" });
+    cmdD(); // panes 1 | 2 — pane 1 left=0, pane 2 left≈401
+    return { one: screen.getByTestId("pane-host-1"), two: screen.getByTestId("pane-host-2") };
+  }
+
+  it("⌘-drags pane 1 onto pane 2's right edge → flips to [2|1], no remount, moved pane focused", async () => {
+    const ctx = renderApp();
+    const { one } = await splitOnce(ctx);
+    expect(paneLeft(1)).toBe(0); // pane 1 starts on the left
+    fireEvent.pointerDown(one, { pointerId: 1, clientX: 100, clientY: 300, button: 0, metaKey: true });
+    fireEvent.pointerMove(one, { pointerId: 1, clientX: 760, clientY: 300 }); // past slop, over pane 2 right
+    await act(async () => ctx.frame.flush());
+    await act(async () => {
+      fireEvent.pointerUp(one, { pointerId: 1, clientX: 760, clientY: 300 });
+    });
+    expect(paneLeft(1)).toBeGreaterThan(200); // pane 1 is now on the RIGHT ([2|1])
+    expect(paneLeft(2)).toBe(0); // pane 2 moved to the left
+    expect(recorder.unmounts).toBe(0); // sessions survived — no terminal remounted
+  });
+
+  it("raises the shield + clears the xterm selection on pickup; removes the shield on drop", async () => {
+    const ctx = renderApp();
+    const { one } = await splitOnce(ctx);
+    const clearSel = recorder.mounts[0].handle.terminal.clearSelection as ReturnType<typeof vi.fn>;
+    expect(screen.queryByTestId("pane-redock-overlay")).not.toBeInTheDocument();
+    fireEvent.pointerDown(one, { pointerId: 1, clientX: 100, clientY: 300, button: 0, metaKey: true });
+    fireEvent.pointerMove(one, { pointerId: 1, clientX: 600, clientY: 300 }); // past slop
+    expect(screen.getByTestId("pane-redock-overlay")).toBeInTheDocument();
+    expect(clearSel).toHaveBeenCalled();
+    await act(async () => {
+      fireEvent.pointerUp(one, { pointerId: 1, clientX: 600, clientY: 300 });
+    });
+    expect(screen.queryByTestId("pane-redock-overlay")).not.toBeInTheDocument();
+  });
+
+  it("a sub-slop ⌘-click does NOT pick up (no shield, no re-dock)", async () => {
+    const ctx = renderApp();
+    const { one } = await splitOnce(ctx);
+    fireEvent.pointerDown(one, { pointerId: 1, clientX: 100, clientY: 300, button: 0, metaKey: true });
+    fireEvent.pointerMove(one, { pointerId: 1, clientX: 102, clientY: 301 }); // within slop (< 4px)
+    expect(screen.queryByTestId("pane-redock-overlay")).not.toBeInTheDocument();
+    fireEvent.pointerUp(one, { pointerId: 1, clientX: 102, clientY: 301 });
+    expect(paneLeft(1)).toBe(0); // unchanged — a plain ⌘-click, no re-dock
+  });
+
+  it("pointerup commits the final zone from the release coords even if the frame never fired", async () => {
+    const ctx = renderApp();
+    const { one } = await splitOnce(ctx);
+    fireEvent.pointerDown(one, { pointerId: 1, clientX: 100, clientY: 300, button: 0, metaKey: true });
+    fireEvent.pointerMove(one, { pointerId: 1, clientX: 760, clientY: 300 }); // queues a frame
+    await act(async () => {
+      fireEvent.pointerUp(one, { pointerId: 1, clientX: 760, clientY: 300 }); // release before flush
+    });
+    expect(paneLeft(2)).toBe(0); // the drop WAS committed on release ([2|1])
+    expect(ctx.frame.hasPending()).toBe(false);
+  });
+
+  it("Escape cancels an in-flight drag (tree unchanged)", async () => {
+    const ctx = renderApp();
+    const { one } = await splitOnce(ctx);
+    fireEvent.pointerDown(one, { pointerId: 1, clientX: 100, clientY: 300, button: 0, metaKey: true });
+    fireEvent.pointerMove(one, { pointerId: 1, clientX: 760, clientY: 300 });
+    expect(screen.getByTestId("pane-redock-overlay")).toBeInTheDocument();
+    await act(async () => fireEvent.keyDown(window, { key: "Escape" }));
+    expect(screen.queryByTestId("pane-redock-overlay")).not.toBeInTheDocument();
+    expect(paneLeft(1)).toBe(0); // unchanged
+  });
+
+  it("pointercancel aborts the drag (no re-dock)", async () => {
+    const ctx = renderApp();
+    const { one } = await splitOnce(ctx);
+    fireEvent.pointerDown(one, { pointerId: 1, clientX: 100, clientY: 300, button: 0, metaKey: true });
+    fireEvent.pointerMove(one, { pointerId: 1, clientX: 760, clientY: 300 });
+    await act(async () => fireEvent.pointerCancel(one, { pointerId: 1, clientX: 760, clientY: 300 }));
+    expect(screen.queryByTestId("pane-redock-overlay")).not.toBeInTheDocument();
+    expect(paneLeft(1)).toBe(0); // unchanged
   });
 });
 

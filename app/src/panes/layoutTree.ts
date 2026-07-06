@@ -307,3 +307,118 @@ export function canSplit(
   const half = Math.floor(avail / 2);
   return half >= min.height && avail - half >= min.height && r.width >= min.width;
 }
+
+// ---------------------------------------------------------------------------
+// trmx-100 (FR-3.4): re-dock ops — move a pane onto another pane's edge (a new split) or swap two panes.
+// Pure tree mutations that REUSE the moved leaf's paneId, so App's keyed pane host + its live PTY survive
+// with zero remount (the trmx-84 invariant). Every op keeps the `===`-returns-same-tree no-op convention
+// the reducer relies on (`splitLeaf`/`removeLeaf`/`setRatio`).
+// ---------------------------------------------------------------------------
+
+/** Which edge of a target pane a moved pane docks onto. */
+export type DropEdge = "left" | "right" | "top" | "bottom";
+
+/** Edge → the split axis + which side the moved pane takes. left/top = first; right/bottom = second. */
+const EDGE_SPEC: Record<DropEdge, { dir: SplitDir; movedFirst: boolean }> = {
+  left: { dir: "row", movedFirst: true },
+  right: { dir: "row", movedFirst: false },
+  top: { dir: "column", movedFirst: true },
+  bottom: { dir: "column", movedFirst: false },
+};
+
+/**
+ * Structural equality: same leaf ids in the same positions, same split dir/ratio, recursively. Used to
+ * detect a re-dock that reconstructs an identical tree (an adjacent facing-edge move) so `moveLeaf` can
+ * return the ORIGINAL reference and preserve the reducer's `===` no-op short-circuit.
+ */
+export function sameTree(a: LayoutNode, b: LayoutNode): boolean {
+  if (a === b) return true;
+  if (a.kind === "leaf" || b.kind === "leaf") {
+    return a.kind === "leaf" && b.kind === "leaf" && a.paneId === b.paneId;
+  }
+  return (
+    a.dir === b.dir &&
+    a.ratio === b.ratio &&
+    sameTree(a.first, b.first) &&
+    sameTree(a.second, b.second)
+  );
+}
+
+// Replace `targetPaneId`'s leaf with a 50/50 split placing `moved` on the chosen side; ===-safe elsewhere.
+function insertBeside(
+  node: LayoutNode,
+  targetPaneId: PaneId,
+  moved: Leaf,
+  dir: SplitDir,
+  movedFirst: boolean,
+): LayoutNode {
+  if (node.kind === "leaf") {
+    if (node.paneId !== targetPaneId) return node;
+    return movedFirst
+      ? { kind: "split", dir, ratio: 0.5, first: moved, second: node }
+      : { kind: "split", dir, ratio: 0.5, first: node, second: moved };
+  }
+  const first = insertBeside(node.first, targetPaneId, moved, dir, movedFirst);
+  if (first !== node.first) return { ...node, first };
+  const second = insertBeside(node.second, targetPaneId, moved, dir, movedFirst);
+  if (second !== node.second) return { ...node, second };
+  return node;
+}
+
+/**
+ * Move `paneId`'s leaf to dock on `targetPaneId`'s `edge` (a new 50/50 split): remove it (sibling
+ * promotion) then re-insert against the POST-removal tree. Reuses the moved paneId (survival). Returns the
+ * SAME tree (===) on any no-op: pane===target, either unknown, or a result structurally identical to the
+ * input (an adjacent facing-edge move).
+ */
+export function moveLeaf(
+  tree: LayoutNode,
+  paneId: PaneId,
+  targetPaneId: PaneId,
+  edge: DropEdge,
+): LayoutNode {
+  if (paneId === targetPaneId) return tree;
+  if (findLeaf(tree, paneId) === null || findLeaf(tree, targetPaneId) === null) return tree;
+  const removed = removeLeaf(tree, paneId);
+  if (removed.tree === null) return tree; // guarded: target exists, so removal can't empty the tree
+  const { dir, movedFirst } = EDGE_SPEC[edge];
+  const next = insertBeside(removed.tree, targetPaneId, leafNode(paneId), dir, movedFirst);
+  return sameTree(next, tree) ? tree : next;
+}
+
+/**
+ * Swap two panes' positions in place — structure and ratios unchanged, only the two paneIds trade slots
+ * (the center drop zone). Returns the SAME tree (===) when `a===b` or either is unknown.
+ */
+export function swapLeaves(tree: LayoutNode, a: PaneId, b: PaneId): LayoutNode {
+  if (a === b) return tree;
+  if (findLeaf(tree, a) === null || findLeaf(tree, b) === null) return tree;
+  const swap = (node: LayoutNode): LayoutNode => {
+    if (node.kind === "leaf") {
+      if (node.paneId === a) return leafNode(b);
+      if (node.paneId === b) return leafNode(a);
+      return node;
+    }
+    const first = swap(node.first);
+    const second = swap(node.second);
+    if (first === node.first && second === node.second) return node;
+    return { ...node, first, second };
+  };
+  return swap(tree);
+}
+
+/**
+ * Would docking a pane on `targetPaneId`'s `edge` (a 50/50 split of its solved rect) keep BOTH halves at
+ * least `min`? A thin reuse of `canSplit`'s min-size/divider math — App consults it to disable an edge
+ * drop zone whose insert would under-size a pane. Center-swap needs no guard (rects unchanged).
+ */
+export function canDropEdge(
+  tree: LayoutNode,
+  targetPaneId: PaneId,
+  edge: DropEdge,
+  bounds: Rect,
+  min: MinSize = MIN_PANE_PX,
+  divider = DEFAULT_DIVIDER_PX,
+): boolean {
+  return canSplit(tree, targetPaneId, EDGE_SPEC[edge].dir, bounds, min, divider);
+}

@@ -29,6 +29,7 @@ export interface CommandContext {
   prevPane(): void;
   setBadge(): void;
   growPane(dir: "left" | "right" | "up" | "down"): void; // trmx-94 (FR-3.3)
+  movePane(dir: "left" | "right" | "up" | "down"): void; // trmx-100 (FR-3.4) — re-dock the focused pane
   // terminal (trmx-94)
   clearScrollback(): void;
   // search (trmx-98, FR-1.5) — open/close the focused pane's find bar; next/prev route to its controller
@@ -103,6 +104,14 @@ export function buildCommands(): Command[] {
       title: `Grow Pane ${dir[0].toUpperCase()}${dir.slice(1)}`,
       category: "Panes",
       run: (c: CommandContext) => c.growPane(dir),
+      when: (c: CommandContext) => c.paneCount() > 1,
+    })),
+    // trmx-100 (FR-3.4): re-dock the focused pane onto its neighbor's far edge in that direction (a flip).
+    ...DIRS.map((dir) => ({
+      id: `pane.move-${dir}`,
+      title: `Move Pane ${dir[0].toUpperCase()}${dir.slice(1)}`,
+      category: "Panes",
+      run: (c: CommandContext) => c.movePane(dir),
       when: (c: CommandContext) => c.paneCount() > 1,
     })),
     // --- terminal ---

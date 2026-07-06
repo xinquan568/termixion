@@ -7,9 +7,28 @@
 // commands (v0.0.8) can call the same functions. Consumes the trmx-84 seams: `solveRects` pane rects
 // (directional) and `leaves` (cyclic). No wrap on directional (edges are no-ops); wrap on cyclic.
 
-import { leaves, type LayoutNode, type PaneId, type PaneRect, type Rect } from "./layoutTree";
+import {
+  DEFAULT_DIVIDER_PX,
+  leaves,
+  moveLeaf,
+  solveRects,
+  type DropEdge,
+  type LayoutNode,
+  type PaneId,
+  type PaneRect,
+  type Rect,
+} from "./layoutTree";
 
 export type Direction = "left" | "right" | "up" | "down";
+
+// trmx-100: a directional move docks onto the neighbor's FAR edge in the direction of travel (a real
+// flip), not its facing edge (which would rebuild the same layout).
+const DIR_TO_EDGE: Record<Direction, DropEdge> = {
+  left: "left",
+  right: "right",
+  up: "top",
+  down: "bottom",
+};
 
 // Overlap (px) of two rects projected onto one axis; > 0 means they share a span on that axis.
 function overlap(a: Rect, b: Rect, axis: "x" | "y"): number {
@@ -74,4 +93,21 @@ export function nextPane(tree: LayoutNode, fromPaneId: PaneId, delta: 1 | -1): P
   if (i === -1) return null;
   const n = order.length;
   return order[(i + delta + n) % n];
+}
+
+/**
+ * trmx-100 (FR-3.4, keyboard parity): re-dock `paneId` onto its geometric neighbor's FAR edge in `dir` —
+ * `[A|B]`, move-right on A → `[B|A]` (a real flip). Resolves the neighbor via `paneInDirection`; NO
+ * neighbor in `dir` (an edge pane) → the SAME tree (===, a true no-op). Composes the pure `moveLeaf`.
+ */
+export function movePaneDirectional(
+  tree: LayoutNode,
+  paneId: PaneId,
+  dir: Direction,
+  bounds: Rect,
+  divider = DEFAULT_DIVIDER_PX,
+): LayoutNode {
+  const target = paneInDirection(solveRects(tree, bounds, divider).panes, paneId, dir);
+  if (target === null) return tree;
+  return moveLeaf(tree, paneId, target, DIR_TO_EDGE[dir]);
 }

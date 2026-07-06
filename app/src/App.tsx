@@ -47,6 +47,7 @@ import {
   tabPaneIds,
 } from "./tabs/tabState";
 import {
+  canDropEdge,
   MIN_PANE_PX,
   setRatio as setRatioTree,
   solveRects,
@@ -56,6 +57,7 @@ import {
   type SplitDir,
 } from "./panes/layoutTree";
 import { grabOffsetOf, ratioForDrag, RESET_RATIO } from "./panes/dividerDrag";
+import { dropZone, type DropZone } from "./panes/dropZone";
 import { nextPane, paneInDirection, type Direction } from "./panes/paneNav";
 import { activeDividerKeys, dividerKey } from "./panes/paneChrome";
 import { BadgeOverlay } from "./panes/BadgeOverlay";
@@ -907,6 +909,19 @@ export function App({
       if (tooSmall) return;
       dispatch({ kind: "setPaneRatio", tabId: tab.tabId, path: target.path, ratio: target.ratio });
     },
+    movePane: (dir) => {
+      // trmx-100 (FR-3.4): re-dock the focused pane onto its neighbor's far edge in `dir` (a flip). The
+      // reducer no-ops when there is no neighbor / the result is structurally identical.
+      const tab = getActiveTab();
+      if (!tab) return;
+      dispatch({
+        kind: "movePaneDir",
+        tabId: tab.tabId,
+        paneId: tab.focusedPaneId,
+        dir,
+        bounds: boundsRef.current,
+      });
+    },
     clearScrollback: () => {
       const tab = getActiveTab();
       if (!tab) return;
@@ -1323,6 +1338,157 @@ export function App({
     };
   }, []);
 
+  // trmx-100 (FR-3.4): ⌘-drag a pane to re-dock it. Modeled on the divider drag: ephemeral state in refs
+  // + two useState (the shield + the drop preview). Capture-phase so an over-slop move is intercepted
+  // BEFORE xterm starts a selection/link click; a sub-slop ⌘-press falls through so a plain ⌘-click still
+  // opens a link. `endPaneDrag` is the SINGLE termination path (pointerup / Esc / outside / pointercancel /
+  // lostpointercapture / unmount), clearing the pending frame + preview + shield.
+  const PANE_DRAG_SLOP = 4;
+  const [paneDragging, setPaneDragging] = useState(false);
+  const [dropPreview, setDropPreview] = useState<{ paneId: PaneId; zone: DropZone } | null>(null);
+  const pickupRef = useRef<{
+    pointerId: number;
+    tabId: number;
+    paneId: PaneId;
+    originX: number;
+    originY: number;
+    active: boolean;
+  } | null>(null);
+  const paneDragFrameRef = useRef<(() => void) | null>(null);
+  const pendingPointerRef = useRef<{ x: number; y: number } | null>(null);
+  const suppressClickRef = useRef(false);
+
+  // Which pane + zone the pointer is over (content-relative coords, solveRects space). Null when outside
+  // any pane, over the SOURCE pane itself, or on an edge whose 50/50 insert would under-size a pane.
+  const computeDropTarget = (clientX: number, clientY: number): { paneId: PaneId; zone: DropZone } | null => {
+    const p = pickupRef.current;
+    if (!p) return null;
+    const tab = stateRef.current.tabs.find((t) => t.tabId === p.tabId);
+    if (!tab) return null;
+    const contentRect = contentRef.current?.getBoundingClientRect();
+    const cx = clientX - (contentRect?.left ?? 0);
+    const cy = clientY - (contentRect?.top ?? 0);
+    const solved = solveRects(tab.tree, boundsRef.current);
+    const hit = solved.panes.find(
+      (pr) =>
+        cx >= pr.rect.x &&
+        cx < pr.rect.x + pr.rect.width &&
+        cy >= pr.rect.y &&
+        cy < pr.rect.y + pr.rect.height,
+    );
+    if (!hit || hit.paneId === p.paneId) return null; // outside, or the source pane itself
+    const zone = dropZone(hit.rect, { x: cx, y: cy });
+    if (zone !== "center" && !canDropEdge(tab.tree, hit.paneId, zone, boundsRef.current)) return null;
+    return { paneId: hit.paneId, zone };
+  };
+
+  const schedulePaneHoverFlush = () => {
+    if (paneDragFrameRef.current) return; // coalesce into the pending frame
+    paneDragFrameRef.current = dragScheduleRef.current(() => {
+      paneDragFrameRef.current = null;
+      const pt = pendingPointerRef.current;
+      if (pt) setDropPreview(computeDropTarget(pt.x, pt.y));
+    });
+  };
+
+  const endPaneDrag = (commit: boolean, target?: { paneId: PaneId; zone: DropZone } | null) => {
+    const p = pickupRef.current;
+    if (paneDragFrameRef.current) {
+      paneDragFrameRef.current();
+      paneDragFrameRef.current = null;
+    }
+    if (commit && p && target) {
+      dispatch({
+        kind: "redockPane",
+        tabId: p.tabId,
+        paneId: p.paneId,
+        targetPaneId: target.paneId,
+        zone: target.zone,
+      });
+    }
+    pickupRef.current = null;
+    pendingPointerRef.current = null;
+    setDropPreview(null);
+    setPaneDragging(false);
+  };
+
+  const onPanePointerDownCapture = (tabId: number, paneId: PaneId) => (e: ReactPointerEvent) => {
+    if (e.button !== 0 || !e.metaKey) return; // only ⌘ + primary starts a pickup candidate
+    // Record the origin but do NOT preventDefault yet — a sub-slop ⌘-click must still open an OSC 8 link.
+    pickupRef.current = { pointerId: e.pointerId, tabId, paneId, originX: e.clientX, originY: e.clientY, active: false };
+  };
+
+  const onPanePointerMoveCapture = (e: ReactPointerEvent) => {
+    const p = pickupRef.current;
+    if (!p || p.pointerId !== e.pointerId) return;
+    if (!p.active) {
+      if (Math.abs(e.clientX - p.originX) < PANE_DRAG_SLOP && Math.abs(e.clientY - p.originY) < PANE_DRAG_SLOP) {
+        return; // still under the slop threshold — could be a click
+      }
+      // Crossed slop → commit to a pickup: capture the pointer, raise the shield, drop any nascent xterm
+      // selection the initial mousedown started, and arm the click swallow so xterm's link never fires.
+      p.active = true;
+      (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+      (handlesRef.current.get(p.paneId)?.terminal as unknown as { clearSelection?: () => void } | undefined)?.clearSelection?.();
+      suppressClickRef.current = true;
+      setPaneDragging(true);
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    pendingPointerRef.current = { x: e.clientX, y: e.clientY };
+    schedulePaneHoverFlush();
+  };
+
+  const onPanePointerUpCapture = (e: ReactPointerEvent) => {
+    const p = pickupRef.current;
+    if (!p || p.pointerId !== e.pointerId) return;
+    if (!p.active) {
+      pickupRef.current = null; // a sub-slop ⌘-click — let it through (the link opens)
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
+    // Synchronously compute the FINAL zone from the release coords — a quick release before the rAF frame
+    // fired must not commit a stale/null preview (the divider-drag guarantee).
+    endPaneDrag(true, computeDropTarget(e.clientX, e.clientY));
+  };
+
+  const onPanePointerCancel = () => {
+    if (pickupRef.current?.active) endPaneDrag(false);
+    else pickupRef.current = null;
+  };
+
+  // Swallow the one synthetic click after a real pickup so xterm's OSC 8 link `activate` never fires.
+  const onPaneClickCapture = (e: ReactMouseEvent) => {
+    if (suppressClickRef.current) {
+      e.preventDefault();
+      e.stopPropagation();
+      suppressClickRef.current = false;
+    }
+  };
+
+  // Esc cancels an in-flight pane drag (tree + focus unchanged). Only while dragging.
+  useEffect(() => {
+    if (!paneDragging) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        endPaneDrag(false);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [paneDragging]);
+
+  // Cancel a pending pane-drag frame on unmount (no dispatch into a dead reducer).
+  useEffect(() => {
+    return () => {
+      if (paneDragFrameRef.current) paneDragFrameRef.current();
+    };
+  }, []);
+
   // trmx-81: the position class + the strip's axis. The JSX order NEVER changes (hosts first, strip
   // LAST): barLayoutFor's flex direction moves the bar; the keyed pane hosts stay put (keep-alive).
   const barLayout = barLayoutFor(barPosition);
@@ -1365,7 +1531,8 @@ export function App({
                   <div
                     key={paneId}
                     className={
-                      paneId === tab.focusedPaneId ? "pane-host pane-host--focused" : "pane-host"
+                      `pane-host${paneId === tab.focusedPaneId ? " pane-host--focused" : ""}` +
+                      (paneDragging && pickupRef.current?.paneId === paneId ? " pane-host--lifted" : "")
                     }
                     data-testid={`pane-host-${paneId}`}
                     style={{
@@ -1382,6 +1549,13 @@ export function App({
                         dispatch({ kind: "focusPane", tabId: tab.tabId, paneId });
                       }
                     }}
+                    // trmx-100: ⌘-drag to re-dock (capture phase — intercept before xterm selects/links).
+                    onPointerDownCapture={onPanePointerDownCapture(tab.tabId, paneId)}
+                    onPointerMoveCapture={onPanePointerMoveCapture}
+                    onPointerUpCapture={onPanePointerUpCapture}
+                    onPointerCancel={onPanePointerCancel}
+                    onLostPointerCapture={onPanePointerCancel}
+                    onClickCapture={onPaneClickCapture}
                   >
                     <TerminalView
                       onReady={readyFor(tab.tabId, paneId)}
@@ -1476,6 +1650,34 @@ export function App({
                   onDoubleClick={onDividerDoubleClick(tab.tabId, d.path)}
                 />
               ))}
+              {/* trmx-100: the drop-zone preview — the highlighted half (edge) or whole pane (center-swap)
+                  of the hovered target, in the accent color at low alpha. Active tab + live drag only. */}
+              {tab.tabId === state.activeTabId &&
+                dropPreview &&
+                (() => {
+                  const target = solved.panes.find((p) => p.paneId === dropPreview.paneId);
+                  if (!target) return null;
+                  const r = target.rect;
+                  const z = dropPreview.zone;
+                  const pr =
+                    z === "center"
+                      ? r
+                      : z === "left"
+                        ? { ...r, width: r.width / 2 }
+                        : z === "right"
+                          ? { ...r, x: r.x + r.width / 2, width: r.width / 2 }
+                          : z === "top"
+                            ? { ...r, height: r.height / 2 }
+                            : { ...r, y: r.y + r.height / 2, height: r.height / 2 };
+                  return (
+                    <div
+                      className="pane-drop-preview"
+                      data-testid="pane-drop-preview"
+                      data-zone={z}
+                      style={{ position: "absolute", left: pr.x, top: pr.y, width: pr.width, height: pr.height }}
+                    />
+                  );
+                })()}
             </div>
           );
         })}
@@ -1487,6 +1689,9 @@ export function App({
             data-testid="pane-drag-overlay"
           />
         )}
+        {/* trmx-100: while ⌘-dragging a pane, a transparent shield owns the pointer so xterm (and any
+            mouse-mode app like htop) sees no stray events. Cleared on every endPaneDrag path. */}
+        {paneDragging && <div className="pane-redock-overlay" data-testid="pane-redock-overlay" />}
       </div>
       <TabStrip
         tabs={state.tabs}

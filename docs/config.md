@@ -83,6 +83,12 @@ restart; native menu accelerators update on next launch).
 
 - The **command ids** and their **default bindings** are listed in [commands.md](commands.md) (generated
   from the registry). Open the **command palette** with `⇧⌘P` to run any command by keyboard.
+- **Re-dock panes (trmx-100, FR-3.4).** Rearrange the split layout with the mouse: **⌘-drag** anywhere in a
+  pane to pick it up, then drop on the highlighted zone of another pane — the four edge-halves dock it
+  left/right/above/below, the center **swaps** the two panes. `Esc` (or a drop outside any pane) cancels;
+  the dragged pane keeps its running session (no restart). The keyboard equivalent is **`pane.move-*`**
+  (default `⌃⌥⌘`-arrows), which flips the focused pane past its neighbor in that direction. A plain
+  ⌘-**click** still opens an OSC 8 link — only a drag past a few pixels picks the pane up.
 - **Chord syntax**: `cmd`/`meta`, `ctrl`, `alt`/`option`, `shift` + a key (letter, digit, or a named
   key like `left`/`enter`/`space`), modifier-order-insensitive — e.g. `"shift+cmd+p"` ≡ `"cmd+shift+p"`.
 - **Rules** (each warns, never fails): a binding must include `cmd` (terminal keys stay the PTY's);

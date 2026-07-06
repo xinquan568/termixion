@@ -144,3 +144,29 @@ test("the focused pane's dividers render active; a focus flip moves the active c
   await expect(page.locator(".pane-divider--active")).toHaveCount(1);
   await expect(page.locator(".pane-divider--inactive")).toHaveCount(1);
 });
+
+test("⌘-drag re-docks a pane onto another's edge — the pane host survives (keep-alive)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await split(page); // panes 1 | 2 (pane 1 left, pane 2 right), focus 2
+  const p1 = page.getByTestId("pane-host-1");
+  const p2 = page.getByTestId("pane-host-2");
+  await expect(p1).toBeAttached();
+  const before = (await p1.boundingBox())!;
+  const target = (await p2.boundingBox())!;
+
+  // ⌘-drag pane 1 onto pane 2's RIGHT edge → the tree flips to [2|1]. Hold Meta for the whole gesture.
+  await page.keyboard.down("Meta");
+  await page.mouse.move(before.x + before.width / 2, before.y + before.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(target.x + target.width * 0.9, target.y + target.height / 2, { steps: 8 });
+  await page.mouse.up();
+  await page.keyboard.up("Meta");
+
+  // The SAME pane host is still attached (no remount) and has moved to the right half.
+  await expect(p1).toBeAttached();
+  const after = (await p1.boundingBox())!;
+  expect(after.x).toBeGreaterThan(before.x + 20); // pane 1 moved rightward ([2|1])
+  await expect(page.locator(".pane-host")).toHaveCount(2); // still exactly two panes
+});
