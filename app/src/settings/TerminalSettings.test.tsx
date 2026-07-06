@@ -8,7 +8,7 @@
 // trmx-80 (FR-13) adds the scrollback/font trio below them: Scrollback (clamped numeric field),
 // Font Family (empty = the platform default stack, named in the placeholder), Font Size (stepper).
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { TerminalSettings } from "./TerminalSettings";
 import { ITERM2_FONT_FAMILY } from "../terminal/iterm2Theme";
 import {
@@ -254,5 +254,13 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
     expect((screen.getByRole("textbox", { name: "Font Size" }) as HTMLInputElement).value).toBe(
       "16",
     );
+  });
+
+  it("the Shell integration Reveal button invokes shell_integration_reveal (trmx-99)", () => {
+    const invoke = vi.fn(() => Promise.resolve());
+    render(<TerminalSettings settings={makeSettingsStore(fakeStorage())} invoke={invoke} />);
+    expect(screen.getByText("Shell integration")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Reveal snippets" }));
+    expect(invoke).toHaveBeenCalledWith("shell_integration_reveal");
   });
 });

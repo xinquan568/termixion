@@ -55,6 +55,7 @@ import {
 import { attachOsc52, realWriteClipboard, type Osc52TerminalLike } from "./osc52";
 import { attachOsc7, defaultCwdStore, type CwdStore, type Osc7TerminalLike } from "./osc7";
 import { attachOsc1337, type Osc1337TerminalLike } from "./osc1337";
+import { attachOsc133, type Osc133TerminalLike, type PromptTransition } from "./osc133";
 import {
   applyCursorSettingsChange,
   cursorTerminalOptions,
@@ -170,6 +171,7 @@ export type AttachOscIntegrations = (
   cwdStore?: CwdStore,
   onTitle?: (title: string) => void,
   onBadge?: (badge: string | null) => void,
+  onPromptMarker?: (transition: PromptTransition) => void,
 ) => () => void;
 
 export function realAttachOscIntegrations(
@@ -180,6 +182,9 @@ export function realAttachOscIntegrations(
     // trmx-90: the per-pane badge sink. Optional (defaulted to a no-op below): unlike title/clipboard
     // a badge has no standalone edge, so a caller with no pane layer simply drops SetBadgeFormat.
     setBadge?: (badge: string | null) => void;
+    // trmx-99 (FR-7b): the per-pane OSC 133 prompt-marker sink. Optional — with no pane layer the
+    // markers are parsed (consumed, kept inert) but drive nothing.
+    setPromptMarker?: (transition: PromptTransition) => void;
   } = { setTitle: realSetWindowTitle, writeClipboard: realWriteClipboard },
   cwdStore: CwdStore = defaultCwdStore,
 ): () => void {
@@ -198,11 +203,17 @@ export function realAttachOscIntegrations(
     terminal as unknown as Osc1337TerminalLike,
     sinks.setBadge ?? (() => {}),
   );
+  // trmx-99 (FR-7b): OSC 133 prompt markers → the per-pane sink (no-op consumer when no pane layer).
+  const detach133 = attachOsc133(
+    terminal as unknown as Osc133TerminalLike,
+    sinks.setPromptMarker ?? (() => {}),
+  );
   return () => {
     detachTitle();
     detach52();
     detach7();
     detach1337();
+    detach133();
   };
 }
 
@@ -211,18 +222,26 @@ export function realAttachOscIntegrations(
 // change identity every render and remount the terminal via the effect deps (trmx-74). trmx-75:
 // a caller-provided title sink REPLACES realSetWindowTitle (the tab layer owns the window title
 // now — only the active tab's effective title may reach it, from App's window-title effect).
-const defaultAttachOscIntegrations: AttachOscIntegrations = (terminal, cwdStore, onTitle, onBadge) =>
+const defaultAttachOscIntegrations: AttachOscIntegrations = (
+  terminal,
+  cwdStore,
+  onTitle,
+  onBadge,
+  onPromptMarker,
+) =>
   realAttachOscIntegrations(
     terminal,
     // No tab/pane layer at all → the full default sinks (window title, real clipboard, no-op badge).
     // Otherwise build the sinks: onTitle REPLACES the window title (else stays realSetWindowTitle),
-    // onBadge feeds the pane's badge slot (trmx-90; absent → osc1337 no-op).
-    onTitle === undefined && onBadge === undefined
+    // onBadge feeds the pane's badge slot (trmx-90; absent → osc1337 no-op); onPromptMarker feeds the
+    // pane's OSC 133 activity (trmx-99; absent → no-op).
+    onTitle === undefined && onBadge === undefined && onPromptMarker === undefined
       ? undefined
       : {
           setTitle: onTitle ?? realSetWindowTitle,
           writeClipboard: realWriteClipboard,
           setBadge: onBadge,
+          setPromptMarker: onPromptMarker,
         },
     cwdStore,
   );
@@ -314,6 +333,12 @@ export interface TerminalViewProps {
    * has no destination (a no-op — a badge is meaningless without the pane layer).
    */
   onBadge?: (badge: string | null) => void;
+  /**
+   * Where this terminal's OSC 133 prompt markers land (trmx-99, FR-7b): App injects a per-PANE callback
+   * (cached, like onBadge) that latches the pane to the osc133 source and drives its activity line +
+   * exit-code flash. Omitted → the markers are parsed and consumed but drive nothing.
+   */
+  onPromptMarker?: (transition: PromptTransition) => void;
   /** Injection seam for tests; defaults to the real ⌘C/⌘V clipboard guards (trmx-66). */
   attachClipboard?: AttachClipboard;
   /** Injection seam for tests; defaults to the real auto-copy-on-select wiring (trmx-95). */
@@ -339,6 +364,7 @@ export function TerminalView({
   cwdStore,
   onOscTitle,
   onBadge,
+  onPromptMarker,
   resizeSchedule,
 }: TerminalViewProps) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -360,7 +386,7 @@ export function TerminalView({
     // into this tab's injected store when the tab layer provides one, trmx-74). trmx-75: when the
     // tab layer provides onOscTitle, OSC titles go THERE (the tab's `osc` source) instead of the
     // native window. trmx-90: onBadge routes OSC 1337 SetBadgeFormat into THIS pane's badge slot.
-    const detachOsc = attachOscIntegrations(handle.terminal, cwdStore, onOscTitle, onBadge);
+    const detachOsc = attachOscIntegrations(handle.terminal, cwdStore, onOscTitle, onBadge, onPromptMarker);
     // trmx-66: owned ⌘C/⌘V — capture-phase guards on the host (sanitized paste, no-clear copy).
     const detachClipboard = attachClipboard(host, handle.terminal);
     // trmx-95 (FR-8): auto-copy-on-select — attached per pane ONLY while terminal.copyOnSelect is on,
@@ -438,7 +464,7 @@ export function TerminalView({
       scrollbar.dispose();
       handle.dispose();
     };
-  }, [mount, deps, onReady, observeResize, attachScrollbar, observeSettings, attachOscIntegrations, attachClipboard, attachCopyOnSelect, cwdStore, onOscTitle, onBadge, resizeSchedule]);
+  }, [mount, deps, onReady, observeResize, attachScrollbar, observeSettings, attachOscIntegrations, attachClipboard, attachCopyOnSelect, cwdStore, onOscTitle, onBadge, onPromptMarker, resizeSchedule]);
 
   return <div ref={hostRef} data-testid="terminal" className="terminal-host" />;
 }

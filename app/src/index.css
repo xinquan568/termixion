@@ -838,3 +838,27 @@ body {
   font-size: 15px;
   line-height: 1;
 }
+
+/* trmx-99 (FR-7b): the Settings → Terminal "Shell integration" install block. */
+.tx-shell-integration {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0;
+}
+.tx-shell-integration__hint {
+  margin: 0;
+  color: var(--tx-text-secondary, #9aa0a6);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.tx-shell-integration__line {
+  display: block;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--tx-bg-secondary, rgba(0, 0, 0, 0.06));
+  font-family: var(--tx-mono, ui-monospace, monospace);
+  font-size: 12px;
+  user-select: all;
+  overflow-x: auto;
+}

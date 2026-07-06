@@ -16,6 +16,7 @@ import { useState } from "react";
 import { NumberField, SettingRow, SettingsGroup, Select, TextField, Toggle } from "./components";
 import { ITERM2_FONT_FAMILY } from "../terminal/iterm2Theme";
 import { SETTING_RANGES, type CursorStyle, type SettingsStore } from "./settingsStore";
+import { realInvoke, type InvokeFn } from "../ipc/backend";
 
 const CURSOR_STYLE_OPTIONS: ReadonlyArray<{ value: CursorStyle; label: string }> = [
   { value: "bar", label: "Bar │" },
@@ -28,9 +29,11 @@ const FONT_SIZE_RANGE = SETTING_RANGES["terminal.fontSize"];
 
 export interface TerminalSettingsProps {
   settings: SettingsStore;
+  /** Injected for tests; the real edge writes + reveals the shell-integration snippets (trmx-99). */
+  invoke?: InvokeFn;
 }
 
-export function TerminalSettings({ settings }: TerminalSettingsProps) {
+export function TerminalSettings({ settings, invoke = realInvoke }: TerminalSettingsProps) {
   const [cursorStyle, setCursorStyle] = useState<CursorStyle>(() =>
     settings.get("terminal.cursorStyle"),
   );
@@ -139,6 +142,33 @@ export function TerminalSettings({ settings }: TerminalSettingsProps) {
             }}
           />
         </SettingRow>
+      </SettingsGroup>
+
+      {/* trmx-99 (FR-7b): shell integration — a manual, documented install (we never edit rc files). */}
+      <SettingsGroup title="Shell integration">
+        <div className="tx-shell-integration">
+          <p className="tx-shell-integration__hint">
+            Install the OSC 133 snippet for an accurate activity indicator (exact command windows +
+            an exit-code failure flash). Reveal the snippets, then add one line to your shell rc file:
+          </p>
+          <code className="tx-shell-integration__line">
+            source ~/.config/termixion/shell-integration/termixion.zsh
+          </code>
+          <code className="tx-shell-integration__line">
+            source ~/.config/termixion/shell-integration/termixion.bash
+          </code>
+          <button
+            type="button"
+            className="tx-btn"
+            onClick={() => {
+              invoke("shell_integration_reveal").catch((err: unknown) =>
+                console.error("[termixion] reveal shell integration failed", err),
+              );
+            }}
+          >
+            Reveal snippets
+          </button>
+        </div>
       </SettingsGroup>
     </div>
   );
