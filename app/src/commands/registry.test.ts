@@ -47,6 +47,8 @@ describe("command registry — the frozen id set (stable public surface / FR-9.4
 describe("command run() bodies call the right ctx method", () => {
   it.each([
     ["tab.new", "newTab"],
+    ["tab.close", "closeActiveTab"], // closes the WHOLE tab (finding 4)
+    ["pane.close", "closePane"], // closes the focused pane (⌘W)
     ["pane.split-right", "splitRight"],
     ["pane.set-badge", "setBadge"],
     ["terminal.clear-scrollback", "clearScrollback"],
@@ -82,9 +84,11 @@ describe("command run() bodies call the right ctx method", () => {
 });
 
 describe("when guards", () => {
-  it("tab.select-N is available only when enough tabs exist", () => {
-    expect(byId("tab.select-9").when!(fakeCtx({ tabCount: () => 3 }))).toBe(false);
-    expect(byId("tab.select-9").when!(fakeCtx({ tabCount: () => 9 }))).toBe(true);
+  it("tab.select-1..8 need that many tabs; ⌘9 (select-9) is the iTerm 'last tab' for any nonzero count", () => {
+    expect(byId("tab.select-8").when!(fakeCtx({ tabCount: () => 3 }))).toBe(false);
+    // tab.select-9 selects the LAST tab, so it is available with any nonzero count (finding 5).
+    expect(byId("tab.select-9").when!(fakeCtx({ tabCount: () => 3 }))).toBe(true);
+    expect(byId("tab.select-9").when!(fakeCtx({ tabCount: () => 0 }))).toBe(false);
   });
 
   it("pane nav/close/grow need >1 (or >0) panes", () => {

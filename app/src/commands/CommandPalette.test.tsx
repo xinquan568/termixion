@@ -25,8 +25,9 @@ describe("orderedCommands (pure)", () => {
     const ordered = orderedCommands(commands, ["pane.split-right"], fewTabs);
     const ids = ordered.map((c) => c.id);
     expect(ids[0]).toBe("pane.split-right"); // MRU first
-    expect(ids).not.toContain("tab.select-9"); // when(2 tabs) → false, hidden
+    expect(ids).not.toContain("tab.select-8"); // when(2 tabs) → false, hidden (needs 8 tabs)
     expect(ids).toContain("tab.select-1");
+    expect(ids).toContain("tab.select-9"); // ⌘9 = last tab, available at any nonzero count
   });
 });
 

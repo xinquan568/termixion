@@ -73,7 +73,9 @@ export function buildCommands(): Command[] {
       title: `Select Tab ${i + 1}`,
       category: "Tabs",
       run: (c: CommandContext) => c.selectTab(i),
-      when: (c: CommandContext) => c.tabCount() > i,
+      // ⌘9 (index 8) selects the LAST tab for any nonzero count (iTerm2 behavior, the reducer maps
+      // index 8 → last); ⌘1..⌘8 need that many tabs (review finding 5).
+      when: (c: CommandContext) => (i === 8 ? c.tabCount() > 0 : c.tabCount() > i),
     })),
     // --- panes ---
     { id: "pane.split-right", title: "Split Right", category: "Panes", run: (c) => c.splitRight() },

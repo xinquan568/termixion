@@ -19,9 +19,9 @@ export { describeTarget, type KeyTarget };
 
 /** The full default keymap (canonical chord → command id) — the shipped `[keys]` defaults. */
 export const FULL_DEFAULT_KEYS: Readonly<Record<string, string>> = {
-  // native-menu-owned (the menu enforces via accelerators; null in the webview)
+  // Primary shortcuts that also carry a native menu accelerator (macOS arbitrates in packaged).
   "cmd+t": "tab.new",
-  "cmd+w": "tab.close",
+  "cmd+w": "pane.close", // ⌘W closes the FOCUSED PANE (pane precedence); the last pane closes the tab
   "cmd+shift+w": "window.close",
   "cmd+,": "app.settings",
   // webview-enforced fallback set (trmx-74/84/90) + the palette
@@ -49,32 +49,22 @@ export const FULL_DEFAULT_KEYS: Readonly<Record<string, string>> = {
   "cmd+9": "tab.select-9",
 };
 
-/** The command ids the WEBVIEW keymap enforces (everything NOT owned by a native menu accelerator).
- * A chord mapping to a command outside this set resolves null (the native menu is its enforcer). */
-export const WEBVIEW_COMMANDS: ReadonlySet<string> = new Set([
-  "tab.new-with-script",
-  "pane.split-right",
-  "pane.split-below",
-  "pane.set-badge",
-  "app.command-palette",
-  "tab.next",
-  "tab.prev",
-  "pane.next",
-  "pane.prev",
-  "pane.focus-left",
-  "pane.focus-right",
-  "pane.focus-up",
-  "pane.focus-down",
-  "tab.select-1",
-  "tab.select-2",
-  "tab.select-3",
-  "tab.select-4",
-  "tab.select-5",
-  "tab.select-6",
-  "tab.select-7",
-  "tab.select-8",
-  "tab.select-9",
-]);
+/** Parameterized commands are only reachable through the palette's two-level page (a bare chord would
+ * run them with no argument — a no-op), so the webview keymap does not resolve them. */
+export const PALETTE_ONLY_COMMANDS: ReadonlySet<string> = new Set(["theme.select", "script.run"]);
+
+/**
+ * Whether the WEBVIEW keymap enforces a command id. Every command EXCEPT the palette-parameterized
+ * ones is webview-enforceable — so a user `[keys]` binding for ANY of them (incl. those with no native
+ * menu accelerator: pane.grow-*, terminal.clear-scrollback, tab.rename, app.check-updates, …) actually
+ * fires. ⌘C/⌘V are safe because `validateBinding` refuses them, so they never enter the keymap. A
+ * command that ALSO has a native menu accelerator (⌘T/⌘D/⇧⌘P/…) is arbitrated by macOS in the packaged
+ * build (the menu consumes its chord before the webview); in dev/e2e/tests there is no menu, so the
+ * webview is the single enforcer — which is exactly what the keyboard-only e2e needs.
+ */
+export function isWebviewOwned(id: string): boolean {
+  return !PALETTE_ONLY_COMMANDS.has(id);
+}
 
 export interface MergedKeymap {
   /** The effective canonical-chord → command-id map. */
@@ -131,6 +121,6 @@ export function resolve(ev: ChordEvent, target: KeyTarget, keymap: Record<string
   if (target.isEditableTarget && !target.isTerminalTarget) return null;
   const id = keymap[canonicalChordFromEvent(ev)];
   if (!id) return null;
-  if (!WEBVIEW_COMMANDS.has(id)) return null; // the native menu enforces this chord
+  if (!isWebviewOwned(id)) return null; // the native menu / palette enforces this command
   return id;
 }

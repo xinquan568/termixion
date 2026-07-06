@@ -48,6 +48,7 @@ import {
 } from "./tabs/tabState";
 import {
   MIN_PANE_PX,
+  setRatio as setRatioTree,
   solveRects,
   type DividerRect,
   type PaneId,
@@ -770,7 +771,12 @@ export function App({
   };
   const commandCtx: CommandContext = {
     newTab: requestNewTab,
-    closeActiveTab: requestCloseActive,
+    // trmx-94: tab.close closes the WHOLE active tab; pane.close (⌘W) closes the focused pane
+    // (pane precedence — the last pane closing takes the tab). Distinct commands (review finding 4).
+    closeActiveTab: () => {
+      const a = stateRef.current.activeTabId;
+      if (a !== null) closeTabInternal(a);
+    },
     nextTab: () => dispatch({ kind: "nextTab" }),
     prevTab: () => dispatch({ kind: "prevTab" }),
     selectTab: (index) => dispatch({ kind: "selectIndex", index }),
@@ -795,7 +801,15 @@ export function App({
       const tab = getActiveTab();
       if (!tab) return;
       const target = growTarget(tab.tree, tab.focusedPaneId, dir);
-      if (target) dispatch({ kind: "setPaneRatio", tabId: tab.tabId, path: target.path, ratio: target.ratio });
+      if (!target) return;
+      // trmx-94 (review finding 6): reject a grow that would push a sibling below MIN_PANE_PX — the
+      // same pixel floor the divider drag enforces (the reducer only clamps the numeric MIN_RATIO).
+      const solved = solveRects(setRatioTree(tab.tree, target.path, target.ratio), boundsRef.current);
+      const tooSmall = solved.panes.some(
+        (pane) => pane.rect.width < MIN_PANE_PX.width || pane.rect.height < MIN_PANE_PX.height,
+      );
+      if (tooSmall) return;
+      dispatch({ kind: "setPaneRatio", tabId: tab.tabId, path: target.path, ratio: target.ratio });
     },
     clearScrollback: () => {
       const tab = getActiveTab();
@@ -854,7 +868,7 @@ export function App({
   // through `dispatch` so every action goes through the one spine (FR-9.1).
   const VERB_TO_COMMAND: Record<string, string> = {
     new: "tab.new",
-    close: "tab.close",
+    close: "pane.close", // the ⌘W "Close Tab" menu item closes the focused pane (pane precedence)
     next: "tab.next",
     prev: "tab.prev",
     "split-right": "pane.split-right",
@@ -872,6 +886,10 @@ export function App({
     "set-badge": "pane.set-badge",
     palette: "app.command-palette",
     "clear-scrollback": "terminal.clear-scrollback",
+    // trmx-94 (review finding 7): Settings + Close Window route through dispatch too (not the Rust
+    // ShowSettings/CloseMainWindow shortcuts), so every command-backed menu action is on the spine.
+    "app-settings": "app.settings",
+    "window-close": "window.close",
   };
 
   // trmx-75: the rename intents. Start = activate + flip into rename; commit writes the FOCUSED

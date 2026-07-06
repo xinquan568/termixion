@@ -97,10 +97,12 @@ describe("App command platform (trmx-94)", () => {
     expect(screen.queryByTestId("command-palette")).toBeNull();
   });
 
-  it("a native-menu chord (⌘T) is NOT intercepted by the webview keymap", () => {
-    renderApp();
+  it("⌘T opens a new tab via the webview keymap (macOS arbitrates the native accelerator in packaged)", async () => {
+    const { calls } = renderApp();
+    await waitFor(() => expect(calls.length).toBe(1)); // first tab's pane
     const t = key("t", { metaKey: true });
-    expect(t.defaultPrevented).toBe(false); // the native menu owns ⌘T
+    expect(t.defaultPrevented).toBe(true); // resolved → handled
+    await waitFor(() => expect(calls.length).toBe(2)); // the new tab's pane attaches
   });
 
   it("a chord typed into a focused non-terminal input is inert", () => {

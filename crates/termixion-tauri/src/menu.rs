@@ -24,8 +24,6 @@ pub enum MenuAction {
     /// "split-right" / "split-below") as a `tabs:action` event — the frontend tab/pane manager owns
     /// the state, so the menu only announces intent (trmx-74; split verbs trmx-84; badge verb trmx-90).
     EmitTabsAction(&'static str),
-    /// Close the main terminal window (⇧⌘W) — ⌘W closes a tab now, not the window (trmx-74).
-    CloseMainWindow,
 }
 
 /// Map a chosen menu item id to its action: "About Termixion" opens Settings on the About page;
@@ -36,7 +34,10 @@ pub fn menu_action(id: &str) -> Option<MenuAction> {
         "about" => Some(MenuAction::ShowSettings {
             section: Some("about"),
         }),
-        "settings" => Some(MenuAction::ShowSettings { section: None }),
+        // trmx-94 (FR-9): Settings routes through the frontend dispatch spine (app.settings), not the
+        // Rust ShowSettings shortcut — so palette + menu share one path. (About stays ShowSettings: it
+        // is not a command, just a shortcut to the About page.)
+        "settings" => Some(MenuAction::EmitTabsAction("app-settings")),
         "shell-new-tab" => Some(MenuAction::EmitTabsAction("new")),
         // trmx-93 (FR-5): open the script picker to create the surface running the chosen script.
         "shell-new-tab-with-script" => Some(MenuAction::EmitTabsAction("new-with-script")),
@@ -54,7 +55,9 @@ pub fn menu_action(id: &str) -> Option<MenuAction> {
         // trmx-84 (FR-3.2): split the focused pane — right (⌘D) or below (⇧⌘D).
         "shell-split-right" => Some(MenuAction::EmitTabsAction("split-right")),
         "shell-split-below" => Some(MenuAction::EmitTabsAction("split-below")),
-        "shell-close-window" => Some(MenuAction::CloseMainWindow),
+        // trmx-94 (FR-9): Close Window routes through dispatch (window.close) — the frontend's
+        // closeWindow seam closes the main window, same as the last-tab-close path.
+        "shell-close-window" => Some(MenuAction::EmitTabsAction("window-close")),
         "window-next-tab" => Some(MenuAction::EmitTabsAction("next")),
         "window-prev-tab" => Some(MenuAction::EmitTabsAction("prev")),
         // trmx-86 (FR-3.5): keyboard pane navigation — directional (⌥⌘-arrows) + cyclic (⌘] / ⌘[).
@@ -84,7 +87,8 @@ use std::collections::BTreeMap;
 /// default_chord)`. The default chords mirror the frontend `FULL_DEFAULT_KEYS`.
 const MENU_COMMAND_CHORDS: &[(&str, &str, &str)] = &[
     ("shell-new-tab", "tab.new", "cmd+t"),
-    ("shell-close-tab", "tab.close", "cmd+w"),
+    // trmx-94: ⌘W closes the FOCUSED PANE (pane precedence); tab.close (whole tab) is palette-only.
+    ("shell-close-tab", "pane.close", "cmd+w"),
     ("shell-close-window", "window.close", "cmd+shift+w"),
     (
         "shell-new-tab-with-script",
@@ -133,17 +137,51 @@ fn to_tauri_accel(chord: &str) -> String {
     mods.join("+")
 }
 
+/// Whether a chord may back a NATIVE accelerator — mirrors the frontend `keychord.validateBinding`
+/// so a hostile `[keys]` file can't steal ⌘C/⌘V or a terminal key via the menu: it must carry `cmd`
+/// (or `ctrl+shift`), must not be the ⌘C/⌘V clipboard chords, and must have exactly one valid key.
+fn chord_is_bindable(chord: &str) -> bool {
+    let (mut cmd, mut ctrl, mut alt, mut shift) = (false, false, false, false);
+    let mut key: Option<String> = None;
+    for part in chord.split('+') {
+        match part {
+            "cmd" | "meta" => cmd = true,
+            "ctrl" | "control" => ctrl = true,
+            "alt" | "option" | "opt" => alt = true,
+            "shift" => shift = true,
+            other if !other.is_empty() => {
+                if key.is_some() {
+                    return false; // two keys
+                }
+                key = Some(other.to_lowercase());
+            }
+            _ => return false, // empty part
+        }
+    }
+    let Some(key) = key else { return false }; // no key
+    // Must carry cmd (or ctrl+shift) — non-cmd terminal chords are not bindable.
+    if !(cmd || (ctrl && shift)) {
+        return false;
+    }
+    // ⌘C / ⌘V (cmd-only) are reserved for copy/paste.
+    if cmd && !ctrl && !alt && !shift && (key == "c" || key == "v") {
+        return false;
+    }
+    true
+}
+
 /// The effective accelerator for a menu item, given its command + default chord and the user `[keys]`
-/// map. A REBIND (a user chord maps to the command) wins; otherwise the default stands UNLESS it was
-/// unbound (`"none"`) or reassigned to another command (then the item loses its accelerator → None).
+/// map. A REBIND (a valid user chord maps to the command) wins; otherwise the default stands UNLESS it
+/// was unbound (`"none"`) or reassigned to another command (then the item loses its accelerator).
 fn effective_accelerator(
     command_id: &str,
     default_chord: &str,
     keys: &BTreeMap<String, String>,
 ) -> Option<String> {
-    // A user rebind — the first (deterministic BTreeMap order) chord mapped to this command.
+    // A user rebind — the first (deterministic BTreeMap order) VALID chord mapped to this command. An
+    // invalid/hostile chord (⌘C/⌘V, non-cmd, malformed) is skipped so it never becomes an accelerator.
     for (chord, cmd) in keys {
-        if cmd == command_id {
+        if cmd == command_id && chord_is_bindable(chord) {
             return Some(to_tauri_accel(chord));
         }
     }
@@ -354,42 +392,42 @@ pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         "window-pane-left",
         "Select Pane Left",
         true,
-        Some("Alt+CmdOrCtrl+Left"),
+        None::<&str>,
     )?;
     let pane_right = MenuItem::with_id(
         handle,
         "window-pane-right",
         "Select Pane Right",
         true,
-        Some("Alt+CmdOrCtrl+Right"),
+        None::<&str>,
     )?;
     let pane_up = MenuItem::with_id(
         handle,
         "window-pane-up",
         "Select Pane Above",
         true,
-        Some("Alt+CmdOrCtrl+Up"),
+        None::<&str>,
     )?;
     let pane_down = MenuItem::with_id(
         handle,
         "window-pane-down",
         "Select Pane Below",
         true,
-        Some("Alt+CmdOrCtrl+Down"),
+        None::<&str>,
     )?;
     let pane_next = MenuItem::with_id(
         handle,
         "window-pane-next",
         "Select Next Pane",
         true,
-        Some("CmdOrCtrl+]"),
+        None::<&str>,
     )?;
     let pane_prev = MenuItem::with_id(
         handle,
         "window-pane-prev",
         "Select Previous Pane",
         true,
-        Some("CmdOrCtrl+["),
+        None::<&str>,
     )?;
     let window_menu = Submenu::with_items(
         handle,
@@ -428,10 +466,11 @@ mod tests {
     }
 
     #[test]
-    fn settings_opens_the_settings_window_default_page() {
+    fn settings_routes_through_dispatch() {
+        // trmx-94 (FR-9): Settings routes through the command spine (app.settings), not ShowSettings.
         assert_eq!(
             menu_action("settings"),
-            Some(MenuAction::ShowSettings { section: None })
+            Some(MenuAction::EmitTabsAction("app-settings"))
         );
     }
 
@@ -545,6 +584,18 @@ mod tests {
             effective_accelerator("pane.split-right", "cmd+d", &reassigned),
             None
         );
+        // A HOSTILE rebind to ⌘C is refused — it must NOT become a native accelerator (else the menu
+        // would steal clipboard input). The default stands. (finding 2)
+        let mut hostile = BTreeMap::new();
+        hostile.insert("cmd+c".to_string(), "pane.split-right".to_string());
+        assert_eq!(
+            effective_accelerator("pane.split-right", "cmd+d", &hostile),
+            Some("CmdOrCtrl+D".to_string())
+        );
+        assert!(
+            !chord_is_bindable("cmd+c") && !chord_is_bindable("cmd+v") && !chord_is_bindable("a")
+        );
+        assert!(chord_is_bindable("cmd+shift+enter") && chord_is_bindable("cmd+d"));
     }
 
     #[test]
@@ -576,11 +627,22 @@ mod tests {
     }
 
     #[test]
-    fn close_window_closes_the_main_window_not_a_tab() {
-        // trmx-74: ⌘W belongs to Close Tab; the window itself closes via ⇧⌘W.
+    fn close_window_routes_through_dispatch() {
+        // trmx-94 (FR-9): Close Window (⇧⌘W) emits the window-close verb → dispatch(window.close).
         assert_eq!(
             menu_action("shell-close-window"),
-            Some(MenuAction::CloseMainWindow)
+            Some(MenuAction::EmitTabsAction("window-close"))
+        );
+        // Settings routes through dispatch too (About stays a ShowSettings shortcut).
+        assert_eq!(
+            menu_action("settings"),
+            Some(MenuAction::EmitTabsAction("app-settings"))
+        );
+        assert_eq!(
+            menu_action("about"),
+            Some(MenuAction::ShowSettings {
+                section: Some("about")
+            })
         );
     }
 

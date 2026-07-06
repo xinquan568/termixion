@@ -6,7 +6,7 @@
 // webview; the trmx-74 fallback chords (⌘D/⌘1-9/⌥⌘-arrows/⌘]/⌘[) resolve their ids; plus override/
 // unbind/conflict and the editable/terminal-target guard.
 import { describe, expect, it } from "vitest";
-import { FULL_DEFAULT_KEYS, mergeKeymap, resolve, WEBVIEW_COMMANDS } from "./keymapDispatch";
+import { FULL_DEFAULT_KEYS, isWebviewOwned, mergeKeymap, resolve } from "./keymapDispatch";
 import type { KeyTarget } from "../tabs/tabKeymap";
 import type { ChordEvent } from "./keychord";
 
@@ -46,17 +46,25 @@ describe("resolve — ported tabKeymap webview cases", () => {
   });
 });
 
-describe("resolve — the two-surface split (native-menu chords are NULL in the webview)", () => {
-  it("⌘T / ⌘W / ⌘, are owned by the native menu → null here", () => {
-    expect(resolve(cmd("t"), PAGE, DEFAULTS)).toBeNull();
-    expect(resolve(cmd("w"), PAGE, DEFAULTS)).toBeNull();
-    expect(resolve(cmd(","), PAGE, DEFAULTS)).toBeNull();
-    // ...even though they ARE in the effective keymap (the SSOT):
-    expect(DEFAULTS["cmd+t"]).toBe("tab.new");
+describe("resolve — the webview enforces all non-palette commands (macOS arbitrates native accels)", () => {
+  it("⌘T / ⌘W / ⌘, resolve their commands (they also have native accelerators; the OS arbitrates)", () => {
+    expect(resolve(cmd("t"), PAGE, DEFAULTS)).toBe("tab.new");
+    expect(resolve(cmd("w"), PAGE, DEFAULTS)).toBe("pane.close"); // ⌘W = close focused pane
+    expect(resolve(cmd(","), PAGE, DEFAULTS)).toBe("app.settings");
   });
-  it("⌘C / ⌘V are never intercepted (clipboard, trmx-66)", () => {
+  it("a user binding for a NON-native command (pane.grow-*) resolves (finding 1)", () => {
+    const { keymap } = mergeKeymap(FULL_DEFAULT_KEYS, [["cmd+alt+shift+right", "pane.grow-right"]]);
+    expect(resolve(cmd("ArrowRight", { altKey: true, shiftKey: true }), PAGE, keymap)).toBe("pane.grow-right");
+  });
+  it("⌘C / ⌘V are never in the keymap (refused at bind) → null (clipboard, trmx-66)", () => {
     expect(resolve(cmd("c"), PAGE, DEFAULTS)).toBeNull();
     expect(resolve(cmd("v"), TERMINAL, DEFAULTS)).toBeNull();
+  });
+  it("palette-parameterized commands are NOT webview-resolved", () => {
+    const { keymap } = mergeKeymap(FULL_DEFAULT_KEYS, [["cmd+shift+k", "theme.select"]]);
+    expect(resolve(cmd("k", { shiftKey: true }), PAGE, keymap)).toBeNull();
+    expect(isWebviewOwned("theme.select")).toBe(false);
+    expect(isWebviewOwned("pane.grow-right")).toBe(true);
   });
   it("bare digits / ctrl-digits / unmapped chords → null", () => {
     expect(resolve(ev("1"), PAGE, DEFAULTS)).toBeNull();
@@ -105,8 +113,7 @@ describe("mergeKeymap — user [keys] overrides", () => {
 });
 
 describe("keymap wiring invariants", () => {
-  it("every WEBVIEW_COMMANDS id appears in the default keymap", () => {
-    const mapped = new Set(Object.values(FULL_DEFAULT_KEYS));
-    for (const id of WEBVIEW_COMMANDS) expect(mapped.has(id)).toBe(true);
+  it("the default keymap targets only palette-excluded commands the webview can enforce", () => {
+    for (const id of Object.values(FULL_DEFAULT_KEYS)) expect(isWebviewOwned(id)).toBe(true);
   });
 });

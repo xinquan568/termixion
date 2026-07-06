@@ -874,19 +874,12 @@ fn main() -> ExitCode {
                         eprintln!("termixion: failed to open the settings window: {err}");
                     }
                 }
-                // trmx-74: the frontend tab manager owns tab state, so the menu just broadcasts
-                // the intent ("new"/"close"/"next"/"prev") as a `tabs:action` event.
+                // trmx-74/94: the frontend owns tab/pane/window/settings state, so the menu broadcasts
+                // the intent as a `tabs:action` event; App routes it through the command dispatch spine
+                // (incl. window-close → window.close and app-settings → app.settings, trmx-94 finding 7).
                 Some(menu::MenuAction::EmitTabsAction(action)) => {
                     if let Err(err) = app.emit("tabs:action", action) {
                         eprintln!("termixion: failed to emit tabs:action ({action}): {err}");
-                    }
-                }
-                // trmx-74: ⌘W closes a tab now; Close Window (⇧⌘W) closes the main window, which
-                // kills every session via the CloseRequested handler below.
-                Some(menu::MenuAction::CloseMainWindow) => {
-                    if let Some(window) = app.get_webview_window(window_manager::MAIN_WINDOW_LABEL)
-                    {
-                        let _ = window.close();
                     }
                 }
                 None => {}

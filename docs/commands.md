@@ -11,7 +11,7 @@ open a second picker (a theme / a script).
 | Command ID | Title | Category | Default binding |
 | ---------- | ----- | -------- | --------------- |
 | `tab.new` | New Tab | Tabs | `cmd+t` |
-| `tab.close` | Close Tab | Tabs | `cmd+w` |
+| `tab.close` | Close Tab | Tabs | — |
 | `tab.next` | Next Tab | Tabs | `cmd+shift+]` |
 | `tab.prev` | Previous Tab | Tabs | `cmd+shift+[` |
 | `tab.rename` | Rename Tab… | Tabs | — |
@@ -29,7 +29,7 @@ open a second picker (a theme / a script).
 | `pane.split-below` | Split Below | Panes | `cmd+shift+d` |
 | `pane.split-right-with-script` | Split Right with Script… | Panes | — |
 | `pane.split-below-with-script` | Split Below with Script… | Panes | — |
-| `pane.close` | Close Pane | Panes | — |
+| `pane.close` | Close Pane | Panes | `cmd+w` |
 | `pane.next` | Next Pane | Panes | `cmd+]` |
 | `pane.prev` | Previous Pane | Panes | `cmd+[` |
 | `pane.set-badge` | Set Badge… | Panes | `cmd+shift+b` |
