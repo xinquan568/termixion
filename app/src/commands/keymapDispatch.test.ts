@@ -41,6 +41,12 @@ describe("resolve — ported tabKeymap webview cases", () => {
     expect(resolve(cmd("]"), PAGE, DEFAULTS)).toBe("pane.next");
     expect(resolve(cmd("[", { shiftKey: true }), PAGE, DEFAULTS)).toBe("tab.prev");
   });
+  it("⌃⌥⌘arrows → pane.move-* (trmx-100; canonical chord order resolves)", () => {
+    expect(resolve(cmd("ArrowLeft", { ctrlKey: true, altKey: true }), PAGE, DEFAULTS)).toBe("pane.move-left");
+    expect(resolve(cmd("ArrowRight", { ctrlKey: true, altKey: true }), PAGE, DEFAULTS)).toBe("pane.move-right");
+    expect(resolve(cmd("ArrowUp", { ctrlKey: true, altKey: true }), TERMINAL, DEFAULTS)).toBe("pane.move-up");
+    expect(resolve(cmd("ArrowDown", { ctrlKey: true, altKey: true }), TERMINAL, DEFAULTS)).toBe("pane.move-down");
+  });
   it("⇧⌘P → app.command-palette", () => {
     expect(resolve(cmd("p", { shiftKey: true }), PAGE, DEFAULTS)).toBe("app.command-palette");
   });

@@ -677,3 +677,64 @@ describe("paneBySessionId / tabBySessionId / tabPaneIds / canSplitFocused", () =
     expect(canSplitFocused(s.tabs[0], "row", tiny, { width: 80, height: 60 })).toBe(false);
   });
 });
+
+// trmx-100 (FR-3.4): the re-dock reducer actions.
+describe("redockPane / movePaneDir (trmx-100 FR-3.4)", () => {
+  const BOUNDS = { x: 0, y: 0, width: 800, height: 600 };
+  // Open a tab and split it into panes 1 | 2 (focus 2), then focus 1.
+  const twoPane = () => {
+    let s = run({ kind: "openTab" }, { kind: "splitPane", tabId: 1, dir: "row" });
+    s = reduceTabs(s, { kind: "focusPane", tabId: 1, paneId: 1 });
+    return s;
+  };
+
+  it("redockPane center swaps two panes and focuses the moved pane", () => {
+    const s = reduceTabs(twoPane(), {
+      kind: "redockPane",
+      tabId: 1,
+      paneId: 1,
+      targetPaneId: 2,
+      zone: "center",
+    });
+    // panes 1 and 2 traded slots; the moved pane (1) keeps focus
+    expect(s.tabs[0].focusedPaneId).toBe(1);
+    expect(leaves(s.tabs[0].tree)).toEqual([2, 1]); // was [1,2]
+    expect(Object.keys(s.tabs[0].panes).map(Number).sort()).toEqual([1, 2]); // sessions survive
+  });
+
+  it("redockPane onto an edge re-docks (flip) and preserves the pane set", () => {
+    const s = reduceTabs(twoPane(), {
+      kind: "redockPane",
+      tabId: 1,
+      paneId: 1,
+      targetPaneId: 2,
+      zone: "right", // move 1 to the right of 2 → [2|1]
+    });
+    expect(leaves(s.tabs[0].tree)).toEqual([2, 1]);
+    expect(s.tabs[0].focusedPaneId).toBe(1);
+  });
+
+  it("redockPane is a no-op (same state) for an unknown pane or a structural no-op", () => {
+    const s = twoPane();
+    expect(reduceTabs(s, { kind: "redockPane", tabId: 1, paneId: 9, targetPaneId: 2, zone: "left" })).toBe(s);
+    // moving 1 onto 2's LEFT edge reproduces [1|2] → structural no-op → same state ref
+    expect(reduceTabs(s, { kind: "redockPane", tabId: 1, paneId: 1, targetPaneId: 2, zone: "left" })).toBe(s);
+  });
+
+  it("movePaneDir flips a two-pane row and keeps the moved pane focused", () => {
+    const s = reduceTabs(twoPane(), {
+      kind: "movePaneDir",
+      tabId: 1,
+      paneId: 1,
+      dir: "right",
+      bounds: BOUNDS,
+    });
+    expect(leaves(s.tabs[0].tree)).toEqual([2, 1]); // [1|2] move-right → [2|1]
+    expect(s.tabs[0].focusedPaneId).toBe(1);
+  });
+
+  it("movePaneDir is a === no-op when there is no neighbor in the direction", () => {
+    const s = twoPane(); // 1 is leftmost
+    expect(reduceTabs(s, { kind: "movePaneDir", tabId: 1, paneId: 1, dir: "left", bounds: BOUNDS })).toBe(s);
+  });
+});

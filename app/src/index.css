@@ -159,6 +159,26 @@ body {
   cursor: row-resize;
 }
 
+/* trmx-100 (FR-3.4): drag to re-dock. The shield owns the pointer during a ⌘-drag (grab cursor); the
+   lifted source pane dims; the drop preview highlights the target half/whole in the accent border color. */
+.pane-redock-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  cursor: grabbing;
+}
+.pane-host--lifted {
+  opacity: 0.55;
+}
+.pane-drop-preview {
+  z-index: 4; /* above pane hosts + the shield, below the badge editor (6) / scrollbar (10) */
+  pointer-events: none;
+  background: color-mix(in srgb, var(--tx-pane-active-border) 22%, transparent);
+  border: 2px solid var(--tx-pane-active-border);
+  box-sizing: border-box;
+  border-radius: 2px;
+}
+
 .terminal-host {
   width: 100%;
   height: 100%;
