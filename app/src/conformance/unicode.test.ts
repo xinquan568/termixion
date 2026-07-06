@@ -14,7 +14,7 @@ import { openTerm, feed, feedBytes, utf8Bytes, cellAt, cursor, line } from "./dr
 const CJK = "一"; // 一  U+4E00 CJK UNIFIED — East-Asian Wide, 2 cells
 const FULLWIDTH_A = "Ａ"; // Ａ U+FF21 FULLWIDTH LATIN A — Wide, 2 cells
 const HALFWIDTH_KANA = "ｱ"; // ｱ U+FF71 HALFWIDTH KATAKANA A — Narrow, 1 cell
-const E_ACUTE_COMBINING = "é"; // e + U+0301 COMBINING ACUTE — combining is width 0 → 1 cell
+const E_ACUTE_COMBINING = "e\u0301"; // e + U+0301 COMBINING ACUTE — combining is width 0 → 1 cell
 const ZWJ_FAMILY = "\u{1F468}‍\u{1F469}‍\u{1F467}‍\u{1F466}"; // 👨‍👩‍👧‍👦 one cluster, 2 cells
 const FLAG_JP = "\u{1F1EF}\u{1F1F5}"; // 🇯🇵 regional-indicator pair → one cluster, 2 cells
 const THUMB_SKINTONE = "\u{1F44D}\u{1F3FD}"; // 👍🏽 base + Fitzpatrick modifier → one cluster, 2 cells
@@ -75,7 +75,25 @@ describe("unicode — erase/overwrite of wide cells (xterm semantics)", () => {
     await feed(term, "X"); // a narrow char overwrites the wide char's lead half
     expect(cellAt(term, 0, 0).text).toBe("X");
     expect(cellAt(term, 0, 0).width).toBe(1);
-    expect(cellAt(term, 0, 1).text.trim()).toBe(""); // the orphaned trailing half is blanked
+    // The orphaned trailing half becomes a NORMAL blank cell (width 1), NOT a leftover width-0 spacer —
+    // a stale spacer would also have blank text, so width is the discriminating assertion.
+    expect(cellAt(term, 0, 1)).toMatchObject({ text: "", width: 1 });
+  });
+
+  it("overwriting the TRAILING half of a wide char also blanks the orphan lead half", async () => {
+    const term = openTerm();
+    await feed(term, CJK); // (0,0) lead + (0,1) spacer
+    await feed(term, "\x1b[1;2H"); // to col 2 (0-based 1) — the trailing half
+    await feed(term, "Y");
+    expect(cellAt(term, 0, 1).text).toBe("Y");
+    expect(cellAt(term, 0, 0)).toMatchObject({ text: "", width: 1 }); // the orphaned lead half is blanked
+  });
+
+  it("EL (erase-line) across a wide char clears both halves", async () => {
+    const term = openTerm();
+    await feed(term, `AB${CJK}CD`); // A B 一(2) C D
+    await feed(term, "\x1b[1;1H\x1b[0K"); // CUP home + EL-to-right
+    expect(line(term, 0).trim()).toBe(""); // whole line cleared, no orphaned wide-char half survives
   });
 });
 

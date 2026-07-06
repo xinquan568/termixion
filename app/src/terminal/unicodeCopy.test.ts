@@ -45,7 +45,7 @@ async function renderedTerm(text: string): Promise<Terminal> {
 const CJK3 = "一二三"; // three 2-cell CJK ideographs
 const ZWJ_FAMILY = "\u{1F468}‍\u{1F469}‍\u{1F467}‍\u{1F466}"; // 👨‍👩‍👧‍👦
 const FLAG_JP = "\u{1F1EF}\u{1F1F5}"; // 🇯🇵
-const E_ACUTE = "é"; // e + U+0301 combining
+const E_ACUTE = "e\u0301"; // DECOMPOSED: e + U+0301 combining acute (the combining case)
 
 describe("unicode copy — getSelection() round-trips clusters exactly", () => {
   it("CJK: a 3-ideograph run selects back byte-for-byte (6 cells → 3 runes)", async () => {

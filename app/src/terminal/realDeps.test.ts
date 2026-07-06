@@ -122,7 +122,9 @@ describe("realDeps.createTerminal (the display chokepoint)", () => {
       unicode: { activeVersion: string };
     };
     expect(vi.mocked(UnicodeGraphemesAddon)).toHaveBeenCalledTimes(1); // the addon was instantiated
-    expect(term.loadAddon).toHaveBeenCalledTimes(1); // and loaded onto THIS terminal
+    const addonInstance = vi.mocked(UnicodeGraphemesAddon).mock.instances[0];
+    expect(term.loadAddon).toHaveBeenCalledTimes(1);
+    expect(term.loadAddon).toHaveBeenCalledWith(addonInstance); // THAT instance was loaded onto THIS terminal
     expect(term.unicode.activeVersion).toBe(GRAPHEMES_VERSION); // and made the active Unicode version
   });
 
