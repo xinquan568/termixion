@@ -94,8 +94,10 @@ describe("buildLsSnapshot", () => {
       { id: 1, sessionId: 100, title: "zsh", cwd: "/home", busy: false, focused: false },
       { id: 2, sessionId: 101, title: "vim", cwd: null, busy: true, focused: true },
     ]);
-    // The `ls` wire shape is a PUBLIC contract (docs/remote-control.md); pin it to a committed golden so a
-    // change to the snapshot is a conscious, reviewed protocol change.
+    // The `ls` wire shape is a PUBLIC contract (docs/remote-control.md). It is authored ENTIRELY in TS
+    // (Rust bridges the request and passes the JSON result back opaquely — there is no Rust `ls` struct to
+    // drift against), so this TS golden is the authoritative shape pin: a change to the snapshot must be a
+    // conscious, reviewed protocol change.
     expect(snap).toEqual(lsShapeGolden);
   });
 });

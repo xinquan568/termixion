@@ -818,6 +818,8 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // trmx-101: a deterministic launch never opens the control socket (captured before smoke/perf move).
+    let deterministic = smoke.is_some() || perf.is_some();
     if smoke.is_some() {
         // Watchdog: fail the smoke (exit 1) rather than hang if the webview never reports back.
         std::thread::spawn(|| {
@@ -847,8 +849,10 @@ fn main() -> ExitCode {
         // trmx-80 (FR-13): the config backbone's state — the file-watch diff base + the
         // self-echo latch for our own writes.
         .manage(config_io::ConfigState::default())
-        // trmx-101 (FR-9.4): the opt-in external control channel's socket-listener state.
-        .manage(control::ControlState::default())
+        // trmx-101 (FR-9.4): the opt-in external control channel's socket-listener state. A --smoke/--perf
+        // launch is deterministic → the control socket NEVER opens (baked into ControlState, so EVERY
+        // apply path — initial load, config write/reset, the watcher — is forced off).
+        .manage(control::ControlState::new(deterministic))
         // trmx-48/trmx-51: install the app menu; "About Termixion" / "Settings…" open the
         // standalone Settings window (About lands on the About page). trmx-74 adds the Shell
         // submenu + Window tab-cycling items; trmx-75 adds Rename Tab… and spawns the

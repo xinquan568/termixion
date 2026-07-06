@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -48,14 +48,23 @@ pub struct ControlState {
     listener: Mutex<Option<ListenerHandle>>,
     pending: Pending,
     next_id: Arc<AtomicU64>,
+    /// A deterministic launch (`--smoke`/`--perf`) NEVER opens the socket, from ANY apply path.
+    deterministic: bool,
 }
 
 impl Default for ControlState {
     fn default() -> Self {
+        Self::new(false)
+    }
+}
+
+impl ControlState {
+    pub fn new(deterministic: bool) -> Self {
         Self {
             listener: Mutex::new(None),
             pending: Arc::new(Mutex::new(HashMap::new())),
             next_id: Arc::new(AtomicU64::new(1)),
+            deterministic,
         }
     }
 }
@@ -64,13 +73,15 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// The default socket path: `<xdg|~/.config>/termixion/control.sock`. Pure (env-free).
+/// The default socket path: `<xdg|~/.config>/termixion/control/control.sock`. A DEDICATED `control/`
+/// subdir (not the shared `termixion/` config dir, which other subsystems create `0755`) so its parent can
+/// be tightened to `0700` without touching the rest of the config tree (review finding 3). Pure (env-free).
 pub fn socket_path_from(xdg_config_home: Option<&str>, home: &str) -> PathBuf {
     let base = match xdg_config_home.filter(|d| !d.is_empty()) {
         Some(xdg) => PathBuf::from(xdg),
         None => Path::new(home).join(".config"),
     };
-    base.join("termixion").join("control.sock")
+    base.join("termixion").join("control").join("control.sock")
 }
 
 /// Resolve the effective socket path: the `socket_path` override if set, else the XDG default.
@@ -83,22 +94,31 @@ fn resolve_socket_path(cfg: &RemoteControlConfig) -> PathBuf {
     socket_path_from(xdg.as_deref(), &home)
 }
 
-/// Ensure `dir` is a private (`0700`, not group-/world-writable) directory, creating it if absent. Refuses
-/// to downgrade the posture: an existing group-/world-accessible dir is an error (falls back to the default).
+/// Ensure `dir` is a private, current-uid-owned directory with mode `0700`. Creates it if absent; if it
+/// EXISTS as a real directory we own, TIGHTENS it to `0700` (so a `0755` config dir created by another
+/// subsystem still yields a private socket dir — review finding 3); rejects a symlink, a non-directory, or
+/// a foreign-owned directory (review finding 5) rather than trusting/loosening it.
 fn ensure_private_dir(dir: &Path) -> Result<(), String> {
-    match std::fs::metadata(dir) {
+    match std::fs::symlink_metadata(dir) {
         Ok(md) => {
-            if !md.is_dir() {
+            let ft = md.file_type();
+            if ft.is_symlink() {
+                return Err(format!("{} is a symlink; refusing", dir.display()));
+            }
+            if !ft.is_dir() {
                 return Err(format!("{} is not a directory", dir.display()));
             }
-            let mode = md.permissions().mode() & 0o777;
-            if mode & 0o077 != 0 {
+            let euid = unsafe { libc::geteuid() };
+            if md.uid() != euid {
                 return Err(format!(
-                    "{} is group/world-accessible (mode {mode:o}); refusing to place a control socket there",
-                    dir.display()
+                    "{} is owned by uid {} (not {euid}); refusing",
+                    dir.display(),
+                    md.uid()
                 ));
             }
-            Ok(())
+            // We own it → tighten to 0700 (drops any group/world bits).
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+                .map_err(|e| format!("could not chmod {}: {e}", dir.display()))
         }
         Err(_) => {
             std::fs::create_dir_all(dir)
@@ -117,14 +137,22 @@ fn create_socket(path: &Path) -> Result<UnixListener, String> {
         .parent()
         .ok_or_else(|| "socket path has no parent".to_string())?;
     ensure_private_dir(parent)?;
-    if path.exists() {
+    // Only ever touch a SOCKET node at `path` (review finding 4): never delete a regular file / symlink /
+    // directory a misconfigured socket_path might point at.
+    if let Ok(md) = std::fs::symlink_metadata(path) {
+        if !md.file_type().is_socket() {
+            return Err(format!(
+                "{} exists and is not a socket; refusing to touch it",
+                path.display()
+            ));
+        }
         if UnixStream::connect(path).is_ok() {
             return Err(format!(
                 "{} is a live control socket (another instance?); not clobbering",
                 path.display()
             ));
         }
-        let _ = std::fs::remove_file(path); // stale — reclaim
+        let _ = std::fs::remove_file(path); // a stale SOCKET — reclaim
     }
     let listener =
         UnixListener::bind(path).map_err(|e| format!("bind {} failed: {e}", path.display()))?;
@@ -139,8 +167,11 @@ fn create_socket(path: &Path) -> Result<UnixListener, String> {
 /// Apply the desired remote-control state idempotently. Called from initial load, config write/reset, and
 /// the file watcher — enable a not-listening socket, disable a listening one, no-op otherwise.
 pub fn apply_remote_control(app: &AppHandle, desired: &RemoteControlConfig, state: &ControlState) {
+    // A --smoke/--perf launch NEVER opens the socket, no matter which apply path calls in (review finding
+    // 2): the deterministic-off policy lives here, not only at the initial-load call site.
+    let want_enabled = desired.enabled && !state.deterministic;
     let mut guard = lock(&state.listener);
-    match (desired.enabled, guard.is_some()) {
+    match (want_enabled, guard.is_some()) {
         (true, false) => {
             let path = resolve_socket_path(desired);
             match create_socket(&path) {
@@ -161,6 +192,8 @@ pub fn apply_remote_control(app: &AppHandle, desired: &RemoteControlConfig, stat
         }
         (false, true) => {
             if let Some(handle) = guard.take() {
+                // Flip the SHARED stop flag first: the acceptor stops accepting AND every in-flight
+                // per-connection worker stops processing further requests (review finding 1).
                 handle.stop.store(true, Ordering::SeqCst);
                 let _ = handle.thread.join();
                 let _ = std::fs::remove_file(&handle.path);
@@ -200,7 +233,10 @@ fn spawn_acceptor(
                     let app = app.clone();
                     let pending = pending.clone();
                     let next_id = next_id.clone();
-                    std::thread::spawn(move || handle_connection(stream, app, pending, next_id));
+                    let stop = stop.clone();
+                    std::thread::spawn(move || {
+                        handle_connection(stream, app, pending, next_id, stop)
+                    });
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(ACCEPT_POLL);
@@ -216,6 +252,7 @@ fn handle_connection(
     app: AppHandle,
     pending: Pending,
     next_id: Arc<AtomicU64>,
+    stop: Arc<AtomicBool>,
 ) {
     let _ = stream.set_read_timeout(Some(READ_IDLE_TIMEOUT));
     let mut writer = match stream.try_clone() {
@@ -224,6 +261,10 @@ fn handle_connection(
     };
     let reader = BufReader::new(stream);
     for line in reader.lines() {
+        // Stop processing an in-flight connection the moment remote control is disabled (review finding 1).
+        if stop.load(Ordering::SeqCst) {
+            break;
+        }
         let line = match line {
             Ok(l) => l,
             Err(_) => break, // idle timeout / EOF → close
@@ -371,36 +412,61 @@ mod tests {
     }
 
     #[test]
-    fn socket_path_prefers_xdg_then_home_default() {
+    fn socket_path_uses_a_dedicated_private_subdir() {
         assert_eq!(
             socket_path_from(Some("/x/cfg"), "/home/u"),
-            PathBuf::from("/x/cfg/termixion/control.sock")
+            PathBuf::from("/x/cfg/termixion/control/control.sock")
         );
         assert_eq!(
             socket_path_from(None, "/home/u"),
-            PathBuf::from("/home/u/.config/termixion/control.sock")
+            PathBuf::from("/home/u/.config/termixion/control/control.sock")
         );
         assert_eq!(
             socket_path_from(Some(""), "/home/u"),
-            PathBuf::from("/home/u/.config/termixion/control.sock")
+            PathBuf::from("/home/u/.config/termixion/control/control.sock")
         );
     }
 
     #[test]
-    fn ensure_private_dir_creates_0700_and_rejects_world_writable() {
+    fn ensure_private_dir_creates_and_tightens_a_0700_dir_we_own() {
         let dir = tmp_dir("priv");
         std::fs::remove_dir_all(&dir).ok();
+        // absent → created 0700
         ensure_private_dir(&dir).expect("create");
-        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o700);
-        // widen it → rejected
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
-        assert!(ensure_private_dir(&dir).is_err());
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        // a 0755 dir we own (like the shared config dir) is TIGHTENED to 0700, not rejected (finding 3).
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        ensure_private_dir(&dir).expect("tighten");
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
-    fn create_socket_sets_0600_and_0700_and_reclaims_stale_but_not_live() {
+    fn ensure_private_dir_rejects_a_symlink_and_a_non_directory() {
+        let base = tmp_dir("sym");
+        std::fs::remove_dir_all(&base).ok();
+        std::fs::create_dir_all(&base).unwrap();
+        // a symlink where a dir is expected → rejected (finding 5)
+        let real = base.join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = base.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(ensure_private_dir(&link).is_err());
+        // a regular file → rejected
+        let file = base.join("afile");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(ensure_private_dir(&file).is_err());
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn create_socket_sets_perms_reclaims_stale_socket_but_not_a_live_one_or_a_regular_file() {
         let dir = tmp_dir("sock");
         std::fs::remove_dir_all(&dir).ok();
         let path = dir.join("control.sock");
@@ -415,9 +481,21 @@ mod tests {
         );
         // A LIVE listener must NOT be clobbered.
         assert!(create_socket(&path).is_err());
-        // Drop the live listener → the file is now stale → reclaimable.
+        // Drop the live listener → the file is now a STALE socket → reclaimable.
         drop(listener);
-        let _relisten = create_socket(&path).expect("reclaim stale");
+        let relisten = create_socket(&path).expect("reclaim stale socket");
+        drop(relisten);
+        // A NON-socket at the path (a regular file) is REFUSED, never deleted (finding 4).
+        std::fs::remove_file(&path).ok();
+        std::fs::write(&path, b"not a socket").unwrap();
+        assert!(create_socket(&path).is_err());
+        assert!(path.exists(), "the regular file must NOT have been deleted");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn control_state_records_the_deterministic_flag() {
+        assert!(!ControlState::default().deterministic);
+        assert!(ControlState::new(true).deterministic);
     }
 }
