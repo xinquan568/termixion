@@ -39,6 +39,9 @@ export function TerminalSettings({ settings }: TerminalSettingsProps) {
   );
   // trmx-91: the FR-7a activity indicator on/off (default on) — App shows/hides the per-pane green
   // line live when this broadcasts settings:changed.
+  const [copyOnSelect, setCopyOnSelect] = useState<boolean>(() =>
+    settings.get("terminal.copyOnSelect"),
+  );
   const [activityIndicator, setActivityIndicator] = useState<boolean>(() =>
     settings.get("terminal.activityIndicator"),
   );
@@ -71,6 +74,19 @@ export function TerminalSettings({ settings }: TerminalSettingsProps) {
             onChange={(value) => {
               setCursorBlink(value);
               settings.set("terminal.cursorBlink", value);
+            }}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Copy on Select"
+          description="Automatically copy the mouse selection to the clipboard (iTerm2-style)"
+        >
+          <Toggle
+            checked={copyOnSelect}
+            label="Copy on Select"
+            onChange={(value) => {
+              setCopyOnSelect(value);
+              settings.set("terminal.copyOnSelect", value);
             }}
           />
         </SettingRow>

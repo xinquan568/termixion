@@ -318,6 +318,7 @@ describe("registry shape", () => {
         "terminal.cursorStyle",
         "terminal.cursorBlink",
         "terminal.activityIndicator",
+        "terminal.copyOnSelect",
         "terminal.scrollbackLines",
         "terminal.fontFamily",
         "terminal.fontSize",

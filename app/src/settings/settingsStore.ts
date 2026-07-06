@@ -74,6 +74,8 @@ export interface SettingsValues {
   "terminal.cursorBlink": boolean;
   /** trmx-91: show the per-pane activity line while a session runs a foreground job. */
   "terminal.activityIndicator": boolean;
+  /** trmx-95: auto-copy the mouse selection to the clipboard, iTerm2-style (default on). */
+  "terminal.copyOnSelect": boolean;
   /** trmx-80 (FR-13): scrollback capacity in lines (was the fixed SCROLLBACK_LINES constant). */
   "terminal.scrollbackLines": number;
   /** trmx-80 (FR-13): terminal font family; "" means "use the platform default stack". */
@@ -128,6 +130,8 @@ export const SETTING_DEFAULTS: SettingsValues = {
   "terminal.cursorBlink": false,
   // trmx-91: the activity line is ON by default (off keeps the poller running for titles).
   "terminal.activityIndicator": true,
+  // trmx-95: auto-copy selection ON by default (iTerm2 parity).
+  "terminal.copyOnSelect": true,
   "terminal.scrollbackLines": 10_000,
   "terminal.fontFamily": "",
   "terminal.fontSize": 12,
@@ -161,6 +165,7 @@ const STORAGE_KEYS: Record<SettingKey, string> = {
   "terminal.cursorStyle": "termixion.terminal.cursorStyle",
   "terminal.cursorBlink": "termixion.terminal.cursorBlink",
   "terminal.activityIndicator": "termixion.terminal.activityIndicator",
+  "terminal.copyOnSelect": "termixion.terminal.copyOnSelect",
   "terminal.scrollbackLines": "termixion.terminal.scrollbackLines",
   "terminal.fontFamily": "termixion.terminal.fontFamily",
   "terminal.fontSize": "termixion.terminal.fontSize",

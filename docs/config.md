@@ -36,6 +36,7 @@ tables; internally each maps 1:1 to a camelCase registry key (the mapping is own
 | `terminal.cursor_style` | `terminal.cursorStyle` | string | `"underline"` | `bar` · `block` · `underline` | immediate |
 | `terminal.cursor_blink` | `terminal.cursorBlink` | bool | `false` | — | immediate |
 | `terminal.activity_indicator` | `terminal.activityIndicator` | bool | `true` | — | immediate⁴ |
+| `terminal.copy_on_select` | `terminal.copyOnSelect` | bool | `true` | — | immediate (attaches/detaches per pane)⁶ |
 | `terminal.scrollback_lines` | `terminal.scrollbackLines` | integer | `10000` | `0`–`200000` (clamped) | immediate¹ |
 | `terminal.font_family` | `terminal.fontFamily` | string | `""` | any font stack; `""` = platform default² | immediate (re-measure + refit) |
 | `terminal.font_size` | `terminal.fontSize` | integer | `12` | `6`–`72` (clamped) | immediate (re-measure + refit) |
@@ -59,6 +60,11 @@ writes it into the file ("derive once, then persist"). After that, the file valu
 ⁵ The startup script is **sourced** in the first tab on launch (a `cd`/alias/env it sets persists in
 that shell). A missing or unmatched value warns and starts a plain shell — never a blocked launch;
 never runs on the `--smoke`/`--perf` deterministic launches. See [scripts.md](scripts.md).
+
+⁶ Copy-on-select (trmx-95, FR-8): a completed mouse selection is copied to the clipboard on release,
+iTerm2-style — no ⌘C needed, byte-identical to ⌘C. An empty/collapsed selection never overwrites the
+clipboard. With it on, ⌘C still works and an app's OSC 52 write can land in between — **last write
+wins**, matching iTerm2. Toggling it live attaches/detaches the listeners per pane (no restart).
 
 ## `[keys]` — keybindings (trmx-94, FR-9)
 

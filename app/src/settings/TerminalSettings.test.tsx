@@ -45,16 +45,21 @@ describe("TerminalSettings", () => {
     expect(screen.getByText("Lines of history kept per terminal")).toBeInTheDocument();
     expect(screen.getByText("Font Family")).toBeInTheDocument();
     expect(screen.getByText("Font Size")).toBeInTheDocument();
-    // trmx-91: the Activity Indicator toggle sits below Cursor Blink.
+    // trmx-95: the Copy on Select toggle sits below Cursor Blink; trmx-91's Activity Indicator follows.
+    expect(screen.getByText("Copy on Select")).toBeInTheDocument();
+    expect(
+      screen.getByText("Automatically copy the mouse selection to the clipboard (iTerm2-style)"),
+    ).toBeInTheDocument();
     expect(screen.getByText("Activity Indicator")).toBeInTheDocument();
     expect(screen.getByText("Show a green line while a command is running")).toBeInTheDocument();
-    // EXACTLY these six rows (no Shell / Panel / Line Height).
+    // EXACTLY these seven rows (no Shell / Panel / Line Height).
     const rows = container.querySelectorAll(".tx-setting-row");
-    expect(rows).toHaveLength(6);
+    expect(rows).toHaveLength(7);
     const labels = [...rows].map((r) => r.querySelector(".tx-setting-row__label")?.textContent);
     expect(labels).toEqual([
       "Cursor Style",
       "Cursor Blink",
+      "Copy on Select",
       "Activity Indicator",
       "Scrollback",
       "Font Family",
@@ -87,6 +92,15 @@ describe("TerminalSettings", () => {
     expect(toggle).toHaveAttribute("aria-checked", "true"); // default on
     fireEvent.click(toggle);
     expect(store.get("terminal.activityIndicator")).toBe(false); // toggled off, persisted
+  });
+
+  it("defaults Copy on Select to ON and persists a toggle (trmx-95)", () => {
+    const store = makeSettingsStore(fakeStorage());
+    render(<TerminalSettings settings={store} />);
+    const toggle = screen.getByRole("switch", { name: "Copy on Select" });
+    expect(toggle).toHaveAttribute("aria-checked", "true"); // default on (iTerm2 parity)
+    fireEvent.click(toggle);
+    expect(store.get("terminal.copyOnSelect")).toBe(false); // toggled off, persisted
   });
 
   it("persists a cursor style change and broadcasts it for the live terminal", () => {
