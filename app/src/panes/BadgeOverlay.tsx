@@ -35,10 +35,13 @@ import {
 
 // The default measurer, created LAZILY once per module (a canvas context is not free, and module
 // evaluation must not touch the DOM — App imports this file in environments that render nothing).
-// `undefined` = not yet attempted; `null` = attempted, no 2d context (jsdom) → fallback size.
-let defaultMeasure: BadgeMeasure | null | undefined;
+// Only a SUCCESSFUL probe is cached: a real webview succeeds on the first badge render and never
+// re-probes, while a null probe (no 2d context — jsdom) is re-attempted on the next render, so an
+// environment that gains a canvas later (a test installing a stub context) is picked up instead of
+// being pinned to a stale null forever (step-8 review-1's App-level geometry pin depends on this).
+let defaultMeasure: BadgeMeasure | null = null;
 function getDefaultMeasure(): BadgeMeasure | null {
-  if (defaultMeasure === undefined) defaultMeasure = makeCanvasBadgeMeasure();
+  if (!defaultMeasure) defaultMeasure = makeCanvasBadgeMeasure();
   return defaultMeasure;
 }
 
