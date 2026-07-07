@@ -771,6 +771,81 @@ fn perf_scenario<I: IntoIterator<Item = String>>(
     }
 }
 
+/// trmx-146: a terminal CLI query resolved from argv — answered BEFORE the Tauri builder runs.
+#[derive(Debug, PartialEq)]
+enum CliQuery {
+    /// No query — proceed to a normal (or smoke/perf) launch.
+    None,
+    /// `--version` / `-V`: print [`version_line`] and exit 0.
+    Version,
+    /// `--help` / `-h`: print [`usage`] and exit 0.
+    Help,
+    /// An unrecognized `--flag`: print [`usage`] to stderr and exit 2 — a typo'd query
+    /// (`--verison`) must never silently launch a GUI (the same fail-fast discipline as
+    /// [`launch_modes`]'s MissingDir).
+    UnknownFlag(String),
+}
+
+/// Resolve the launcher CLI query. Precedence (pinned by tests): Help > Version > UnknownFlag >
+/// None — help/version are terminal queries and win over both the known launch flags and any
+/// unknown token; the first unknown `--flag` is the one reported. Tolerated unconditionally:
+/// every non-`--` token (legacy LaunchServices `-psn_<n>`, bare paths, `--scenario`'s value) and
+/// single-dash tokens other than the exact `-V`/`-h`, so a Finder/`open` launch can never be
+/// rejected. The `ctl` subcommand is forked off in `main()` BEFORE this runs (trmx-101 keeps
+/// precedence); pure, for testing (the `smoke_mode`/`perf_mode` discipline).
+fn cli_query<I: IntoIterator<Item = String>>(args: I) -> CliQuery {
+    const KNOWN_FLAGS: [&str; 3] = ["--smoke", "--perf", "--scenario"];
+    let mut help = false;
+    let mut version = false;
+    let mut unknown: Option<String> = None;
+    for a in args {
+        match a.as_str() {
+            "--help" | "-h" => help = true,
+            "--version" | "-V" => version = true,
+            s if s.starts_with("--") => {
+                let name = s.split('=').next().unwrap_or(s);
+                if !KNOWN_FLAGS.contains(&name) && unknown.is_none() {
+                    unknown = Some(s.to_string());
+                }
+            }
+            _ => {} // non-`--` tokens are never ours to reject
+        }
+    }
+    if help {
+        CliQuery::Help
+    } else if version {
+        CliQuery::Version
+    } else if let Some(flag) = unknown {
+        CliQuery::UnknownFlag(flag)
+    } else {
+        CliQuery::None
+    }
+}
+
+/// The `--version` line: the binary's compile-time truth (workspace-inherited version).
+fn version_line() -> String {
+    format!("termixion {}", env!("CARGO_PKG_VERSION"))
+}
+
+/// The `--help` text. `ctl` is documented generically — `run_ctl` has no help path today, so
+/// pointing at `ctl --help` would mislead (plan §4). The smoke/perf/scenario flags are CI-internal
+/// contracts: documented so they are not mystery flags, flagged so nobody treats them as public.
+fn usage() -> String {
+    [
+        version_line().as_str(),
+        "",
+        "USAGE:",
+        "  termixion                       launch the app",
+        "  termixion ctl <command>         send a command to a running instance's control socket",
+        "  termixion --version | -V        print the version and exit",
+        "  termixion --help | -h           print this help and exit",
+        "",
+        "internal (CI harness; require env vars, exit non-zero without them):",
+        "  --smoke · --perf · --scenario <single|multipane>",
+    ]
+    .join("\n")
+}
+
 /// What `perf_config` returns to the webview (trmx-78): where to have the report written, which
 /// build produced it (budgets are only recorded from `release`), and which scenario to drive
 /// (trmx-103 — `single`|`multipane`). camelCase for the frontend.
@@ -896,6 +971,24 @@ fn main() -> ExitCode {
     // request, print the response, exit. An EARLY fork, before the tauri app is ever built.
     if std::env::args().nth(1).as_deref() == Some("ctl") {
         return control::run_ctl(std::env::args());
+    }
+    // trmx-146: --version/--help (and unknown-`--flag` rejection) answered here, after the ctl
+    // fork and before ANY Tauri machinery — a CLI probe must exit cleanly, never side-effect a
+    // second GUI instance (no window, no PTY, no updater, no watchdog threads).
+    match cli_query(std::env::args().skip(1)) {
+        CliQuery::Version => {
+            println!("{}", version_line());
+            return ExitCode::SUCCESS;
+        }
+        CliQuery::Help => {
+            println!("{}", usage());
+            return ExitCode::SUCCESS;
+        }
+        CliQuery::UnknownFlag(flag) => {
+            eprintln!("termixion: unrecognized flag '{flag}'\n\n{}", usage());
+            return ExitCode::from(2);
+        }
+        CliQuery::None => {}
     }
     let resolved = launch_modes(
         smoke_mode(
@@ -1106,6 +1199,91 @@ mod tests {
     use std::sync::mpsc;
 
     use super::*;
+
+    /// trmx-146: argv → CliQuery, as a plain Vec<String> (same convention as the smoke/perf tests).
+    fn q(args: &[&str]) -> CliQuery {
+        cli_query(args.iter().map(|s| (*s).to_string()))
+    }
+
+    #[test]
+    fn cli_query_recognizes_version_and_help_in_both_spellings() {
+        assert_eq!(q(&["--version"]), CliQuery::Version);
+        assert_eq!(q(&["-V"]), CliQuery::Version);
+        assert_eq!(q(&["--help"]), CliQuery::Help);
+        assert_eq!(q(&["-h"]), CliQuery::Help);
+    }
+
+    #[test]
+    fn cli_query_precedence_is_help_over_version_over_unknown() {
+        // trmx-146 (plan §2): Help > Version > UnknownFlag > None — a caller who asked an
+        // answerable question gets the answer; version/help are terminal queries and beat both
+        // the known launch flags and any unknown token.
+        assert_eq!(q(&["--version", "--help"]), CliQuery::Help);
+        assert_eq!(q(&["--help", "--version"]), CliQuery::Help);
+        assert_eq!(q(&["--smoke", "--version"]), CliQuery::Version);
+        assert_eq!(q(&["--help", "--bogus"]), CliQuery::Help);
+        assert_eq!(q(&["--bogus", "--help"]), CliQuery::Help);
+        assert_eq!(q(&["--version", "--bogus"]), CliQuery::Version);
+    }
+
+    #[test]
+    fn cli_query_rejects_the_first_unknown_double_dash_flag() {
+        assert_eq!(q(&["--bogus"]), CliQuery::UnknownFlag("--bogus".into()));
+        // First offender reported when several are present.
+        assert_eq!(
+            q(&["--bogus", "--other"]),
+            CliQuery::UnknownFlag("--bogus".into())
+        );
+        // A typo'd query must NOT silently launch a GUI (the trmx-146 bug in a hat).
+        assert_eq!(q(&["--verison"]), CliQuery::UnknownFlag("--verison".into()));
+    }
+
+    #[test]
+    fn cli_query_tolerates_known_flags_platform_args_and_plain_tokens() {
+        // The CI-internal launch flags stay recognized (value and `=` forms of --scenario).
+        assert_eq!(q(&["--smoke"]), CliQuery::None);
+        assert_eq!(q(&["--perf"]), CliQuery::None);
+        assert_eq!(q(&["--scenario", "multipane"]), CliQuery::None);
+        assert_eq!(q(&["--scenario=multipane"]), CliQuery::None);
+        // Platform-injected argv must never be rejected: legacy LaunchServices -psn_<n>,
+        // bare paths, and single-dash tokens other than the exact -V/-h.
+        assert_eq!(q(&["-psn_0_12345"]), CliQuery::None);
+        assert_eq!(q(&["some/path"]), CliQuery::None);
+        assert_eq!(q(&["-x"]), CliQuery::None);
+        assert_eq!(q(&[]), CliQuery::None);
+    }
+
+    #[test]
+    fn version_line_carries_the_compiled_crate_version() {
+        let line = version_line();
+        assert!(line.starts_with("termixion "), "got: {line}");
+        assert!(line.contains(env!("CARGO_PKG_VERSION")), "got: {line}");
+    }
+
+    #[test]
+    fn usage_documents_the_public_surface_and_flags_the_internal_one() {
+        let text = usage();
+        for needle in [
+            "termixion",
+            "ctl <command>",
+            "--version",
+            "--help",
+            "internal",
+        ] {
+            assert!(text.contains(needle), "usage() must mention {needle:?}");
+        }
+        // trmx-146 (plan §4): run_ctl has no help path — usage must not advertise one.
+        assert!(
+            !text.contains("ctl --help"),
+            "usage() must not point at nonexistent ctl --help"
+        );
+        for internal in ["--smoke", "--perf", "--scenario"] {
+            assert!(
+                text.contains(internal),
+                "internal flag {internal:?} documented-but-flagged"
+            );
+        }
+    }
 
     #[test]
     fn close_action_gates_only_the_unauthorized_pty_owner() {
