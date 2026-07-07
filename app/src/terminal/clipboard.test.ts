@@ -8,6 +8,12 @@
 // defaultPrevented — so the host-capture guards must stopPropagation() or a sanitized paste would
 // be followed by xterm's unsanitized one. Two separate origin cases pin exactly that.
 import { describe, it, expect, vi } from "vitest";
+
+// trmx-145: clipboard.ts now defaults its write sink to the native clipboard-manager plugin —
+// hoisted mock (realDeps.test.ts pattern) so the default-sink threading test can observe the IPC.
+const writeTextMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: writeTextMock }));
+
 import {
   sanitizePaste,
   handleCopyEvent,
@@ -44,22 +50,29 @@ describe("sanitizePaste (the ESC[201~ bracket-escape rail)", () => {
 });
 
 describe("handleCopyEvent", () => {
-  it("with a selection: writes text/plain from getSelection and owns the event", () => {
+  it("with a selection: writes the selection through the NATIVE sink, never the event's setData", () => {
+    // trmx-145: the event-pasteboard write (clipboardData.setData) is the mojibake path — WKWebView
+    // delivers those bytes to other apps re-decoded as MacRoman. The guard must hand the selection
+    // to the injected native sink and leave the DOM pasteboard untouched.
     const ev = fakeEvent();
+    const writeClipboard = vi.fn();
     const term = { hasSelection: () => true, getSelection: () => "line1\nline2" };
-    handleCopyEvent(ev, term);
-    expect(ev.clipboardData.setData).toHaveBeenCalledWith("text/plain", "line1\nline2");
+    handleCopyEvent(ev, term, writeClipboard);
+    expect(writeClipboard).toHaveBeenCalledWith("line1\nline2");
+    expect(ev.clipboardData.setData).not.toHaveBeenCalled();
     expect(ev.preventDefault).toHaveBeenCalledTimes(1);
     expect(ev.stopPropagation).toHaveBeenCalledTimes(1);
   });
 
   it("without a selection: attempts NO write and suppresses default + propagation", () => {
-    // Contract: no setData at all — neither we nor xterm's element handler write anything, so the
-    // platform preserves the existing clipboard (end-to-end confirmation is the packaged checklist;
-    // a fake event can only prove "no write attempted").
+    // Contract: no write at all — neither the sink nor setData — so the platform preserves the
+    // existing clipboard (end-to-end confirmation is the packaged checklist; fakes can only prove
+    // "no write attempted").
     const ev = fakeEvent();
+    const writeClipboard = vi.fn();
     const term = { hasSelection: () => false, getSelection: () => "" };
-    handleCopyEvent(ev, term);
+    handleCopyEvent(ev, term, writeClipboard);
+    expect(writeClipboard).not.toHaveBeenCalled();
     expect(ev.clipboardData.setData).not.toHaveBeenCalled();
     expect(ev.preventDefault).toHaveBeenCalledTimes(1);
     expect(ev.stopPropagation).toHaveBeenCalledTimes(1);
@@ -118,6 +131,28 @@ describe("attachClipboardGuards (host-capture binding — the propagation pins)"
     getSelection: () => "sel",
     paste: vi.fn(),
   };
+
+  it("threads an injected sink to the copy guard with the exact selection", () => {
+    const { host, xtermEl } = makeDom();
+    const writeClipboard = vi.fn();
+    const dispose = attachClipboardGuards(host, term, writeClipboard);
+    dispatchFrom(xtermEl, "copy");
+    expect(writeClipboard).toHaveBeenCalledWith("sel");
+    dispose();
+    host.remove();
+  });
+
+  it("defaults the sink to the native plugin write — production ⌘C reaches the pasteboard over IPC", () => {
+    // trmx-145: no injected sink → the guard must fall back to writeClipboardText (the
+    // clipboard-manager IPC), NOT to any WKWebView pasteboard API.
+    const { host, xtermEl } = makeDom();
+    writeTextMock.mockClear();
+    const dispose = attachClipboardGuards(host, term);
+    dispatchFrom(xtermEl, "copy");
+    expect(writeTextMock).toHaveBeenCalledWith("sel");
+    dispose();
+    host.remove();
+  });
 
   for (const originName of ["xterm-element", "textarea"] as const) {
     it(`origin ${originName}: the guard intercepts copy+paste and xterm's would-be handler never fires`, () => {
@@ -189,9 +224,9 @@ describe("multi-line fidelity through the REAL xterm selection (integration)", (
       await new Promise<void>((r) => term.write("line1\r\nline2", () => r()));
       term.selectAll();
       const ev = fakeEvent();
-      handleCopyEvent(ev, term);
-      const payload = (ev.clipboardData.setData as ReturnType<typeof vi.fn>).mock
-        .calls[0]?.[1] as string;
+      const writeClipboard = vi.fn();
+      handleCopyEvent(ev, term, writeClipboard);
+      const payload = writeClipboard.mock.calls[0]?.[0] as string;
       expect(payload).toContain("line1");
       expect(payload).toContain("line2");
       expect(payload).toMatch(/line1\n/); // the break survives as \n

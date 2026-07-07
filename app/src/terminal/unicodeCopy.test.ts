@@ -8,10 +8,10 @@
 // API — and asserts `terminal.getSelection()`, which is what the shared `selectionText` (trmx-66/95)
 // and BOTH ⌘C + auto-copy read. (jsdom runs xterm's SelectionService given a matchMedia stub; the
 // packaged manual checklist still covers real mouse-drag selection + the system clipboard.)
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 import { Terminal } from "@xterm/xterm";
 import { activateUnicodeGraphemes } from "./unicodeGraphemes";
-import { selectionText, type CopyTerminalLike } from "./clipboard";
+import { selectionText, handleCopyEvent, type CopyTerminalLike } from "./clipboard";
 
 beforeAll(() => {
   // xterm's renderer calls window.matchMedia on open(); jsdom omits it.
@@ -86,5 +86,24 @@ describe("unicode copy — getSelection() round-trips clusters exactly", () => {
     expect(selectionText(term as unknown as CopyTerminalLike)).toBe(term.getSelection());
     expect(term.getSelection()).toContain(CJK3);
     expect(term.getSelection()).toContain(ZWJ_FAMILY);
+  });
+
+  it("trmx-145 acceptance: the ⌘C path hands the sink byte-identical UTF-8 (— stays e2 80 94)", async () => {
+    // The issue's acceptance string: multibyte BMP (— × →), the LITERAL mojibake sequence ‚Äî (a
+    // guard against any "fix" that double-converts), CJK, a composed accent, and an astral emoji.
+    const ACCEPTANCE = "— × → ‚Äî 中文 café 🚀";
+    const term = await renderedTerm(ACCEPTANCE);
+    term.selectAll();
+    const writeClipboard = vi.fn();
+    handleCopyEvent(
+      { clipboardData: null, preventDefault: () => {}, stopPropagation: () => {} },
+      term as unknown as CopyTerminalLike,
+      writeClipboard,
+    );
+    const captured = writeClipboard.mock.calls[0]?.[0] as string;
+    expect(captured).toBe(term.getSelection()); // the sink gets EXACTLY the selection bytes
+    expect(captured).toContain(ACCEPTANCE);
+    // The bytes the pasteboard must carry for the em dash — the character the bug turned into ‚Äî.
+    expect([...new TextEncoder().encode("—")]).toEqual([0xe2, 0x80, 0x94]);
   });
 });

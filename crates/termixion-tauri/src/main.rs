@@ -944,6 +944,10 @@ fn main() -> ExitCode {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
+        // trmx-145: the native pasteboard write — every frontend copy path (⌘C guard, auto-copy-on-
+        // select, OSC 52) writes through this plugin's IPC, never the WKWebView pasteboard APIs
+        // (whose writes reach other apps UTF-8-bytes-decoded-as-MacRoman: "—" pasted as "‚Äî").
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(PtyState::default())
         .manage(SpecialLaunch {
             smoke,

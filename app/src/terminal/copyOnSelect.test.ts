@@ -212,11 +212,12 @@ describe("byte-equality anchor: auto-copy string == ⌘C string", () => {
     const term = { hasSelection: () => true, getSelection: () => "line one   \nline two  " };
     let written = "";
     const ev: ClipboardEventLike = {
-      clipboardData: { getData: () => "", setData: (_t, v) => (written = v) },
+      clipboardData: { getData: () => "", setData: () => {} },
       preventDefault: () => {},
       stopPropagation: () => {},
     };
-    handleCopyEvent(ev, term);
+    // trmx-145: ⌘C writes through the injected native sink, not the event's setData.
+    handleCopyEvent(ev, term, (text) => (written = text));
     expect(selectionText(term)).toBe(written); // auto-copy would write exactly the ⌘C bytes
   });
 });

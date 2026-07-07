@@ -58,18 +58,12 @@ function setClipboardFromOsc52(data: string, writeClipboard: (text: string) => v
 }
 
 /**
- * The production sink: the async Clipboard API, failures swallowed — a clipboard set must never
- * surface as a terminal error (jsdom has no `navigator.clipboard` at all; WKWebView may refuse
- * `writeText` in a packaged app). Verifying the write inside the packaged .app is a manual
- * checklist item; the tauri clipboard-manager plugin is the documented fallback if WKWebView
- * refuses.
+ * The production sink — since trmx-145 the NATIVE clipboard write (the clipboard-manager plugin
+ * over Tauri IPC), re-exported so OSC 52, auto-copy-on-select, and the ⌘C guard share ONE function
+ * object. The webview's `navigator.clipboard.writeText` is retired here: its writes reached other
+ * apps UTF-8-re-decoded-as-MacRoman (the trmx-145 mojibake), and it could refuse gesture-less
+ * writes in a packaged app — the IPC path has neither problem. Failure tolerance (swallowed sync +
+ * async errors) lives on the sink itself; verifying the write inside the packaged .app remains a
+ * manual checklist item.
  */
-export function realWriteClipboard(text: string): void {
-  try {
-    void navigator.clipboard?.writeText(text).catch(() => {
-      // swallowed — see above
-    });
-  } catch {
-    // swallowed — a synchronous refusal (no Clipboard API at all) is equally non-fatal
-  }
-}
+export { writeClipboardText as realWriteClipboard } from "./nativeClipboard";

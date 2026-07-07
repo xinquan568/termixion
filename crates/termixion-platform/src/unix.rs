@@ -185,8 +185,11 @@ pub trait Clipboard {
     fn set_text(&self, text: &str) -> std::io::Result<()>;
 }
 
-/// macOS clipboard — a **stub** for v0.0.1. The real implementation (NSPasteboard) lands with the
-/// clipboard / auto-copy work (P1-7 / Beta); until then it reports `Unsupported`.
+/// macOS clipboard — still a **stub**. The shipped clipboard write rides the official
+/// clipboard-manager plugin in the Tauri shell (trmx-145 — every frontend copy path goes over its
+/// IPC, bypassing the WKWebView pasteboard bridge that mojibake'd non-ASCII); this trait remains
+/// the seam for a future non-Tauri embedding (P1-7), and until such an impl exists it reports
+/// `Unsupported`.
 #[derive(Debug, Default)]
 pub struct UnixClipboard;
 

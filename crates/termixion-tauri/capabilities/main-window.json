@@ -1,11 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/capability/2",
   "identifier": "main-window",
-  "description": "Main-window-only grants (trmx-74): core:window:allow-close lets the tab manager close the window when the last tab closes. Scoped to main so the settings window gains no close-by-script surface it does not need.",
+  "description": "Main-window-only grants (trmx-74): core:window:allow-close lets the tab manager close the window when the last tab closes. Scoped to main so the settings window gains no close-by-script surface it does not need. trmx-145 adds clipboard-manager:allow-write-text \u2014 WRITE-ONLY (no read grant, matching the OSC 52 write-only stance) and main-only, so terminal copies reach the native pasteboard while the settings window gains no clipboard surface at all.",
   "windows": [
     "main"
   ],
   "permissions": [
-    "core:window:allow-close"
+    "core:window:allow-close",
+    "clipboard-manager:allow-write-text"
   ]
 }
