@@ -318,6 +318,7 @@ describe("registry shape", () => {
         "terminal.cursorStyle",
         "terminal.cursorBlink",
         "terminal.activityIndicator",
+        "terminal.confirmClose",
         "terminal.copyOnSelect",
         "terminal.scrollbackLines",
         "terminal.fontFamily",
@@ -590,6 +591,108 @@ describe("tabs.sideLabelOrientation (trmx-82)", () => {
     expect(
       getConfigWarnings().some(
         (w) => w.source === "client" && w.message.includes("tabs.sideLabelOrientation"),
+      ),
+    ).toBe(true);
+  });
+});
+
+// trmx-144: terminal.confirmClose — the close-confirmation tri-state (pane/tab close + quit). A
+// plain enum key exactly like terminal.cursorStyle: default "when-busy", only the three members
+// ("never" | "when-busy" | "always") parse/coerce, junk falls to the default.
+describe("terminal.confirmClose (trmx-144)", () => {
+  it('defaults to "when-busy" in both backends', () => {
+    expect(makeSettingsStore(fakeStorage()).get("terminal.confirmClose")).toBe("when-busy");
+    expect(makeSettingsStore().get("terminal.confirmClose")).toBe("when-busy"); // snapshot, pre-hydration
+  });
+
+  it("round-trips all three values (legacy storage mode)", () => {
+    const store = makeSettingsStore(fakeStorage());
+    for (const value of ["never", "when-busy", "always"] as const) {
+      store.set("terminal.confirmClose", value);
+      expect(store.get("terminal.confirmClose")).toBe(value);
+    }
+  });
+
+  it("treats a junk persisted value as the default (enum parse-with-fallback)", () => {
+    const store = makeSettingsStore(
+      fakeStorage({ "termixion.terminal.confirmClose": "sometimes" }),
+    );
+    expect(store.get("terminal.confirmClose")).toBe("when-busy");
+  });
+
+  it("snapshot mode: set validates, writes through config_write, and broadcasts; junk is rejected", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    const bus = fakeBus();
+    const store = makeSettingsStore(undefined, bus, "settings");
+    store.set("terminal.confirmClose", "always");
+    expect(store.get("terminal.confirmClose")).toBe("always");
+    expect(backend.writes()).toContainEqual({ key: "terminal.confirmClose", value: "always" });
+    expect(bus.events).toEqual([
+      {
+        event: SETTINGS_CHANGED_EVENT,
+        payload: { key: "terminal.confirmClose", value: "always", source: "settings" },
+      },
+    ]);
+    // Junk (a bad cast at runtime) is dropped whole: no snapshot change, no write, no broadcast.
+    bus.events.length = 0;
+    const writesBefore = backend.writes().length;
+    store.set("terminal.confirmClose", "sometimes" as never);
+    expect(store.get("terminal.confirmClose")).toBe("always");
+    expect(backend.writes().length).toBe(writesBefore);
+    expect(bus.events).toEqual([]);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it("hydration seeds a valid file value; an invalid one falls to the default + client warning", async () => {
+    const backend = fakeConfigBackend({
+      values: { "terminal.confirmClose": "never", "appearance.theme": "white" },
+    });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    expect(makeSettingsStore().get("terminal.confirmClose")).toBe("never");
+
+    __resetSettingsForTest();
+    const junk = fakeConfigBackend({
+      values: { "terminal.confirmClose": "sometimes", "appearance.theme": "white" },
+    });
+    await hydrateSettings({ invoke: junk.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    expect(makeSettingsStore().get("terminal.confirmClose")).toBe("when-busy");
+    expect(
+      getConfigWarnings().some(
+        (w) => w.source === "client" && w.message.includes("terminal.confirmClose"),
+      ),
+    ).toBe(true);
+
+    // Wrong TYPE entirely (a number) is rejected by coerce the same way.
+    __resetSettingsForTest();
+    const wrongType = fakeConfigBackend({
+      values: { "terminal.confirmClose": 7, "appearance.theme": "white" },
+    });
+    await hydrateSettings({ invoke: wrongType.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    expect(makeSettingsStore().get("terminal.confirmClose")).toBe("when-busy");
+  });
+
+  it("live settings:changed applies a valid value; junk is inert (config-file junk warns)", async () => {
+    const bus = fakeListenBus();
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    await hydrateSettings({ invoke: backend.invoke, bus, storage: fakeStorage() });
+    const store = makeSettingsStore();
+    bus.fire(SETTINGS_CHANGED_EVENT, {
+      key: "terminal.confirmClose",
+      value: "always",
+      source: "config-file",
+    });
+    expect(store.get("terminal.confirmClose")).toBe("always");
+    bus.fire(SETTINGS_CHANGED_EVENT, {
+      key: "terminal.confirmClose",
+      value: "sometimes",
+      source: "config-file",
+    });
+    expect(store.get("terminal.confirmClose")).toBe("always"); // the junk value never landed
+    expect(
+      getConfigWarnings().some(
+        (w) => w.source === "client" && w.message.includes("terminal.confirmClose"),
       ),
     ).toBe(true);
   });

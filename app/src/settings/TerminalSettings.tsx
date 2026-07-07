@@ -13,15 +13,35 @@
 // (a ± stepper bounded by the registry range). The fields clamp with SETTING_RANGES so the value
 // shown is exactly the value persisted (the registry would clamp again anyway — same contract).
 import { useState } from "react";
-import { NumberField, SettingRow, SettingsGroup, Select, TextField, Toggle } from "./components";
+import {
+  NumberField,
+  SegmentedControl,
+  SettingRow,
+  SettingsGroup,
+  Select,
+  TextField,
+  Toggle,
+} from "./components";
 import { ITERM2_FONT_FAMILY } from "../terminal/iterm2Theme";
-import { SETTING_RANGES, type CursorStyle, type SettingsStore } from "./settingsStore";
+import {
+  SETTING_RANGES,
+  type ConfirmClose,
+  type CursorStyle,
+  type SettingsStore,
+} from "./settingsStore";
 import { realInvoke, type InvokeFn } from "../ipc/backend";
 
 const CURSOR_STYLE_OPTIONS: ReadonlyArray<{ value: CursorStyle; label: string }> = [
   { value: "bar", label: "Bar │" },
   { value: "block", label: "Block █" },
   { value: "underline", label: "Underline ▁" },
+];
+
+// trmx-144: the close-confirmation tri-state (pane close, tab close, quit alike).
+const CONFIRM_CLOSE_OPTIONS: ReadonlyArray<{ value: ConfirmClose; label: string }> = [
+  { value: "never", label: "Never" },
+  { value: "when-busy", label: "When busy" },
+  { value: "always", label: "Always" },
 ];
 
 const SCROLLBACK_RANGE = SETTING_RANGES["terminal.scrollbackLines"];
@@ -47,6 +67,10 @@ export function TerminalSettings({ settings, invoke = realInvoke }: TerminalSett
   );
   const [activityIndicator, setActivityIndicator] = useState<boolean>(() =>
     settings.get("terminal.activityIndicator"),
+  );
+  // trmx-144: confirm-before-closing tri-state (default "when-busy").
+  const [confirmClose, setConfirmClose] = useState<ConfirmClose>(() =>
+    settings.get("terminal.confirmClose"),
   );
   const [scrollback, setScrollback] = useState<number>(() =>
     settings.get("terminal.scrollbackLines"),
@@ -103,6 +127,20 @@ export function TerminalSettings({ settings, invoke = realInvoke }: TerminalSett
             onChange={(value) => {
               setActivityIndicator(value);
               settings.set("terminal.activityIndicator", value);
+            }}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Confirm before closing"
+          description='Applies when closing a pane, a tab, or quitting; "When busy" prompts only when a program is still running'
+        >
+          <SegmentedControl
+            value={confirmClose}
+            options={CONFIRM_CLOSE_OPTIONS}
+            label="Confirm before closing"
+            onChange={(value) => {
+              setConfirmClose(value);
+              settings.set("terminal.confirmClose", value);
             }}
           />
         </SettingRow>

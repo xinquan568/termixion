@@ -9,8 +9,10 @@
 import type { Command, CommandContext } from "./registry";
 
 export interface Dispatcher {
-  /** Run a command by id. Returns true if it ran (found + guard passed), false (inert) otherwise. */
-  dispatch(id: string, arg?: string): boolean;
+  /** Run a command by id. Returns true if it ran (found + guard passed), false (inert) otherwise.
+   * `source` (trmx-144) tags the dispatch origin — "user" (default) for user gestures, "remote" for
+   * control-channel requests — surfaced to `run`/`when` as `ctx.origin`. */
+  dispatch(id: string, arg?: string, source?: "user" | "remote"): boolean;
   /** Session MRU: the command ids run this session, most-recent first, deduped. */
   recentCommandIds(): string[];
   /** The command for an id (for the palette's binding hints + param lookup), or undefined. */
@@ -28,17 +30,24 @@ export function createDispatcher(commands: Command[], ctx: CommandContext): Disp
   };
 
   return {
-    dispatch(id, arg) {
+    dispatch(id, arg, source = "user") {
       const cmd = byId.get(id);
       if (!cmd) {
         console.warn(`[termixion] dispatch: unknown command "${id}"`);
         return false;
       }
-      if (cmd.when && !cmd.when(ctx)) {
+      // trmx-144: inject the per-dispatch origin. App's ctx is a forwarding Proxy over an EMPTY
+      // object (its get-trap returns forwarding functions), so it must NOT be spread — this
+      // delegating wrapper answers `origin` itself and Reflect.gets everything else, which still
+      // fires the underlying proxy's trap so every command method keeps forwarding.
+      const callCtx = new Proxy(ctx, {
+        get: (t, p) => (p === "origin" ? source : Reflect.get(t, p)),
+      });
+      if (cmd.when && !cmd.when(callCtx)) {
         // A guarded-off command (e.g. tab.select-9 with only 3 tabs) is inert, not an error.
         return false;
       }
-      cmd.run(ctx, arg);
+      cmd.run(callCtx, arg);
       record(id);
       return true;
     },

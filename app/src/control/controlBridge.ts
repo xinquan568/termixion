@@ -71,8 +71,10 @@ export interface ControlReply {
 
 /** The seams a control request drives — all App-owned, injected so the router is pure + testable. */
 export interface ControlDeps {
-  /** Dispatch a registry command by id (the SAME path as a keypress); returns whether it ran. */
-  dispatch: (id: string, arg?: string) => boolean;
+  /** Dispatch a registry command by id (the SAME path as a keypress); returns whether it ran.
+   * `source` (trmx-144, optional — defaults to "user" downstream) tags the dispatch origin; the
+   * router passes "remote" so close commands bypass the busy-close confirm for ctl requests. */
+  dispatch: (id: string, arg?: string, source?: "user" | "remote") => boolean;
   /** Whether a command id exists in the registry (distinguishes unknown from `when`-refused). */
   hasCommand: (id: string) => boolean;
   /** Build the `ls` snapshot. */
@@ -100,5 +102,6 @@ export function routeControlRequest(
   // A registry command. `get(id) === undefined` ⇒ unknown; ran=false with a known id ⇒ when-refused.
   if (!deps.hasCommand(cmd)) return { ok: false, error: "unknown-command" };
   const arg = typeof args.arg === "string" ? args.arg : undefined;
-  return deps.dispatch(cmd, arg) ? { ok: true } : { ok: false, error: "not-applicable" };
+  // trmx-144: control-channel dispatches are tagged "remote" (bypass the busy-close confirm).
+  return deps.dispatch(cmd, arg, "remote") ? { ok: true } : { ok: false, error: "not-applicable" };
 }

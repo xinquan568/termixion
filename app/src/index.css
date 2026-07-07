@@ -882,3 +882,88 @@ body {
   user-select: all;
   overflow-x: auto;
 }
+
+/*
+ * trmx-144 — the confirm-before-close dialog: a small centered modal on the tx-command-palette
+ * overlay pattern (fixed inset-0 rgba backdrop, themed --tx-* box). z-index 40 tops the palette
+ * (20) and the rename overlay (30): a close confirmation must never sit under another overlay.
+ * The destructive button uses the theme's semantic error pair (--tx-error / --tx-on-error).
+ */
+.tx-confirm-close-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 18vh;
+  background: rgba(0, 0, 0, 0.35);
+}
+.tx-confirm-close {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(420px, 90vw);
+  padding: 16px 18px;
+  font:
+    13px -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  color: var(--tx-text);
+  background: var(--tx-bg);
+  border: 1px solid var(--tx-border);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+.tx-confirm-close__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.tx-confirm-close__programs {
+  margin: 0;
+  color: var(--tx-text-2);
+}
+.tx-confirm-close__programs code {
+  padding: 1px 5px;
+  color: var(--tx-text);
+  background: var(--tx-bg-sunken);
+  border: 1px solid var(--tx-border);
+  border-radius: 4px;
+}
+.tx-confirm-close__check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--tx-text-2);
+  cursor: pointer;
+  user-select: none;
+}
+.tx-confirm-close__check input {
+  accent-color: var(--tx-primary);
+}
+.tx-confirm-close__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+.tx-confirm-close__btn {
+  padding: 5px 14px;
+  font: inherit;
+  color: var(--tx-text);
+  background: transparent;
+  border: 1px solid var(--tx-border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.tx-confirm-close__btn:focus-visible {
+  outline: 2px solid var(--tx-primary);
+  outline-offset: 1px;
+}
+.tx-confirm-close__btn--danger {
+  color: var(--tx-on-error, #fff);
+  background: var(--tx-error);
+  border-color: var(--tx-error);
+}

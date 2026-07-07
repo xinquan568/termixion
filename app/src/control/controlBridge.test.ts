@@ -27,12 +27,12 @@ describe("routeControlRequest", () => {
   it("dispatches a registry command by id (the same path as a keypress) → ok:true", () => {
     const d = deps();
     expect(routeControlRequest({ cmd: "pane.split-right" }, d)).toEqual({ ok: true });
-    expect(d.dispatch).toHaveBeenCalledWith("pane.split-right", undefined);
+    expect(d.dispatch).toHaveBeenCalledWith("pane.split-right", undefined, "remote");
   });
   it("passes a string arg (theme.select) through", () => {
     const d = deps();
     routeControlRequest({ cmd: "theme.select", args: { arg: "night" } }, d);
-    expect(d.dispatch).toHaveBeenCalledWith("theme.select", "night");
+    expect(d.dispatch).toHaveBeenCalledWith("theme.select", "night", "remote");
   });
   it("unknown id → unknown-command; a known but refused command → not-applicable", () => {
     expect(routeControlRequest({ cmd: "nope.nope" }, deps())).toEqual({
@@ -64,6 +64,11 @@ describe("routeControlRequest", () => {
     expect(
       routeControlRequest({ cmd: "send-text", args: { text: "x" } }, deps({ sendText: () => false })),
     ).toEqual({ ok: false, error: "no-such-pane" });
+  });
+  it("dispatches registry commands with source 'remote' (trmx-144: bypasses the busy-close confirm)", () => {
+    const d = deps();
+    routeControlRequest({ cmd: "pane.close" }, d);
+    expect(d.dispatch).toHaveBeenCalledWith("pane.close", undefined, "remote");
   });
   it("junk (missing cmd) → ok:false, never throws", () => {
     expect(routeControlRequest({}, deps())).toEqual({ ok: false, error: "missing-cmd" });
