@@ -1527,6 +1527,13 @@ describe("App per-pane badges (trmx-90)", () => {
     const badge = within(screen.getByTestId("pane-host-1")).getByTestId("pane-badge");
     expect(badge.style.color).not.toBe("");
     expect(badge).toHaveTextContent("db");
+    // trmx-149: the glyph-edge stroke is tinted from the SAME theme's background (bg.primary) —
+    // App threads it as outlineColor. Assert it carries a color, not the empty default (the exact
+    // token value belongs to the theme suite, not here).
+    expect(badge.style.webkitTextStroke).not.toBe("");
+    // jsdom has no canvas 2d context → the default measurer is null → the fit falls back to 28px
+    // (no crash with real pane-rect geometry threaded).
+    expect(badge.style.fontSize).toBe("28px");
   });
 
   // review-1: the badge color must repaint on a SAME-ID trmx-89 hot reload — the designer edits their

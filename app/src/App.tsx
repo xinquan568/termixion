@@ -143,11 +143,11 @@ const realFrameSchedule: FrameSchedule = (cb) => {
 /** The default content bounds before the real ResizeObserver measures the pane area (px). */
 const DEFAULT_BOUNDS: Rect = { x: 0, y: 0, width: 800, height: 600 };
 
-// trmx-90: cols/rows fallbacks for the badge threshold + font sizing before the terminal has fit (or
+// trmx-90: cols fallback for the badge's narrow-pane threshold before the terminal has fit (or
 // under a headless test stub with no metrics) — a sane wide default so a freshly-set badge still shows
 // (a badge is only ever set once a live terminal exists, so this window is effectively pre-mount only).
+// trmx-149 dropped the rows twin: font sizing now fits the pane RECT (iTerm2's box), not cell metrics.
 const FALLBACK_BADGE_COLS = 80;
-const FALLBACK_BADGE_ROWS = 24;
 
 // trmx-91: the activity line's alpha over the theme's semantic-success tint — faint enough to sit
 // quietly at a pane's top edge, strong enough to read as "busy". Applied to `color.semantic.success`
@@ -408,6 +408,12 @@ export function App({
   // stale color while the terminal repaints. resolveTheme is total, so any id resolves to a color.
   const [badgeColor, setBadgeColor] = useState<string>(
     () => resolveTheme(makeSettingsStore().get("appearance.theme")).terminal.badge,
+  );
+  // trmx-149: the badge's glyph-edge STROKE color — the active theme's background (bg.primary),
+  // iTerm2's edge treatment so the watermark separates from same-tint glyphs beneath it. Tracked as
+  // RESOLVED state exactly like badgeColor (same same-id hot-reload staleness trap, review-1).
+  const [badgeOutlineColor, setBadgeOutlineColor] = useState<string>(
+    () => resolveTheme(makeSettingsStore().get("appearance.theme")).color.bg.primary,
   );
   // trmx-91: whether the per-pane activity line is enabled (terminal.activityIndicator, default true),
   // seeded from the shared settings snapshot and kept live over settings:changed. When off, the line
@@ -1397,6 +1403,7 @@ export function App({
       // same id, review-1). Same untrusted-payload discipline as barPosition; resolveTheme is total.
       else if (key === "appearance.theme" && (isRegisteredThemeId(value) || isUserThemeIdShape(value))) {
         setBadgeColor(resolveTheme(value).terminal.badge);
+        setBadgeOutlineColor(resolveTheme(value).color.bg.primary); // trmx-149: re-tint the stroke
         setActivityColor(activityColorFor(value));
         setActivityErrorColor(activityErrorColorFor(value)); // trmx-99: re-tint the exit-code flash
         setSearchColors(resolveTheme(value).terminal.search); // trmx-98: re-tint the find highlights
@@ -1794,17 +1801,16 @@ export function App({
             >
               {solved.panes.map(({ paneId, rect }) => {
                 const pane = tab.panes[paneId];
-                // trmx-90: cell metrics for the badge overlay — cols (the narrow-pane threshold) + the
-                // cell height in px (the font is ~2× it), read off the mounted terminal (a localized
-                // cast, like the scrollbar's ScrollbarTerminalLike) with sane fallbacks before the
-                // first fit / under a headless stub. Reactive enough: a resize/split/badge change
-                // re-renders App and re-reads these, and a badge only ever lands on a live terminal.
+                // trmx-90: the badge's narrow-pane threshold reads cols off the mounted terminal (a
+                // localized cast, like the scrollbar's ScrollbarTerminalLike) with a sane fallback
+                // before the first fit / under a headless stub. Reactive enough: a resize/split/badge
+                // change re-renders App and re-reads it, and a badge only ever lands on a live
+                // terminal. trmx-149: font SIZING no longer needs cell metrics — the iTerm2 fit-to-box
+                // model runs on the pane rect itself (BadgeOverlay gets rect.width/height below).
                 const metrics = handlesRef.current.get(paneId)?.terminal as unknown as
-                  | { cols?: number; rows?: number }
+                  | { cols?: number }
                   | undefined;
                 const cellsWide = metrics?.cols ?? FALLBACK_BADGE_COLS;
-                const rows = metrics?.rows ?? FALLBACK_BADGE_ROWS;
-                const cellHeightPx = rows > 0 ? rect.height / rows : 0;
                 return (
                   <div
                     key={paneId}
@@ -1853,12 +1859,16 @@ export function App({
                       color={flashingPanes.has(paneId) ? activityErrorColor : activityColor}
                     />
                     {/* trmx-90: the translucent badge watermark (top-right, click-through). Hidden by
-                        BadgeOverlay itself when the pane has no badge or is too narrow. */}
+                        BadgeOverlay itself when the pane has no badge or is too narrow. trmx-149: it
+                        fits iTerm2's box (0.5 × width, 0.2 × height) over THIS pane's rect, with the
+                        glyph stroke in the theme background. */}
                     <BadgeOverlay
                       badge={pane.badge}
                       cellsWide={cellsWide}
-                      cellHeightPx={cellHeightPx}
+                      paneWidthPx={rect.width}
+                      paneHeightPx={rect.height}
                       color={badgeColor}
+                      outlineColor={badgeOutlineColor}
                     />
                     {/* trmx-90: the ⇧⌘B inline editor, over this pane while it is being badged. */}
                     {paneId === badgingPaneId && (
