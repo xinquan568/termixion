@@ -7,6 +7,12 @@
 // (tmux / nvim yank), but a query (`Pd === "?"`) must be consumed without an answer — answering
 // would let any program that can print an escape sequence read the user's clipboard.
 import { describe, expect, it, vi } from "vitest";
+
+// trmx-145: realWriteClipboard is now the native clipboard-manager sink — hoisted mock so the
+// delegation test can observe the IPC call (realDeps.test.ts pattern).
+const writeTextMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: writeTextMock }));
+
 import { Terminal } from "@xterm/headless";
 import { attachOsc52, realWriteClipboard } from "./osc52";
 
@@ -112,22 +118,14 @@ describe("attachOsc52", () => {
   });
 });
 
-describe("realWriteClipboard", () => {
-  it("does not throw in jsdom, where navigator.clipboard is absent", () => {
-    expect(navigator.clipboard).toBeUndefined(); // jsdom precondition this case relies on
-    expect(() => realWriteClipboard("hello")).not.toThrow();
-  });
-
-  it("swallows a rejecting Clipboard API instead of surfacing it", async () => {
-    const writeText = vi.fn(() => Promise.reject(new Error("denied")));
-    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
-    try {
-      expect(() => realWriteClipboard("hello")).not.toThrow();
-      expect(writeText).toHaveBeenCalledWith("hello");
-      // Let the rejection settle: an unswallowed one would surface as an unhandled error here.
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    } finally {
-      delete (navigator as { clipboard?: unknown }).clipboard;
-    }
+describe("realWriteClipboard (the native IPC sink since trmx-145)", () => {
+  it("delegates to the clipboard-manager plugin — NOT navigator.clipboard (the mojibake path)", () => {
+    // jsdom has no navigator.clipboard at all, which doubles as proof the webview API is not
+    // involved: the write must still reach the plugin sink. (Failure tolerances — rejection and
+    // synchronous throw — are pinned in nativeClipboard.test.ts, on the sink itself.)
+    expect(navigator.clipboard).toBeUndefined();
+    writeTextMock.mockClear();
+    expect(() => realWriteClipboard("héllo — 你好")).not.toThrow();
+    expect(writeTextMock).toHaveBeenCalledWith("héllo — 你好");
   });
 });

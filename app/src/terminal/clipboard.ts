@@ -12,7 +12,13 @@
 // selection must attempt NO clipboard write at all (not clear it) while ⌃C — a keydown, never a DOM
 // copy event — stays untouched by construction. Pure logic over narrow slices (house pattern);
 // TerminalView binds it via an injectable seam.
+//
+// trmx-145: the copy write goes through the NATIVE sink (nativeClipboard.ts, the clipboard-manager
+// IPC), never `ev.clipboardData.setData` — WKWebView delivers setData's bytes to other apps
+// re-decoded as Mac OS Roman ("—" pastes as "‚Äî"). preventDefault + stopPropagation still own the
+// event so neither WebKit nor xterm writes the corrupt pasteboard behind the sink's back.
 import type { ITerminalOptions } from "@xterm/xterm";
+import { writeClipboardText } from "./nativeClipboard";
 
 /** The clipboard-event slice the handlers read — fake-testable (jsdom ClipboardEvent is partial). */
 export interface ClipboardEventLike {
@@ -52,13 +58,18 @@ export function selectionText(terminal: CopyTerminalLike): string {
 }
 
 /**
- * ⌘C / Edit→Copy. With a selection: write it as text/plain and own the event. Without: attempt NO
- * write (suppressing default + propagation keeps xterm's element handler from writing either), so
- * the platform preserves whatever is on the clipboard.
+ * ⌘C / Edit→Copy. With a selection: hand it to the native write sink (trmx-145 — never the event's
+ * setData, the mojibake path) and own the event. Without: attempt NO write (suppressing default +
+ * propagation keeps xterm's element handler from writing either), so the platform preserves
+ * whatever is on the clipboard.
  */
-export function handleCopyEvent(ev: ClipboardEventLike, terminal: CopyTerminalLike): void {
+export function handleCopyEvent(
+  ev: ClipboardEventLike,
+  terminal: CopyTerminalLike,
+  writeClipboard: (text: string) => void,
+): void {
   if (terminal.hasSelection()) {
-    ev.clipboardData?.setData("text/plain", selectionText(terminal));
+    writeClipboard(selectionText(terminal));
   }
   ev.preventDefault();
   ev.stopPropagation();
@@ -78,13 +89,16 @@ export function handlePasteEvent(ev: ClipboardEventLike, terminal: PasteTerminal
 /**
  * Bind both guards on the terminal HOST in the capture phase — structurally ahead of xterm's own
  * handlers on the `.xterm` element (copy + paste) and its textarea (paste) for events originating
- * at either node. Returns a teardown that removes both listeners.
+ * at either node. Returns a teardown that removes both listeners. The copy sink defaults to the
+ * native clipboard write (trmx-145) and is injectable for tests.
  */
 export function attachClipboardGuards(
   host: Pick<HTMLElement, "addEventListener" | "removeEventListener">,
   terminal: CopyTerminalLike & PasteTerminalLike,
+  writeClipboard: (text: string) => void = writeClipboardText,
 ): () => void {
-  const onCopy = (ev: Event) => handleCopyEvent(ev as unknown as ClipboardEventLike, terminal);
+  const onCopy = (ev: Event) =>
+    handleCopyEvent(ev as unknown as ClipboardEventLike, terminal, writeClipboard);
   const onPaste = (ev: Event) => handlePasteEvent(ev as unknown as ClipboardEventLike, terminal);
   host.addEventListener("copy", onCopy, { capture: true });
   host.addEventListener("paste", onPaste, { capture: true });
