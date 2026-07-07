@@ -985,7 +985,9 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         CliQuery::UnknownFlag(flag) => {
-            eprintln!("termixion: unrecognized flag '{flag}'\n\n{}", usage());
+            // Debug-format the flag: argv is attacker-adjacent input, and a raw echo could write
+            // control bytes (ANSI/OSC) into the caller's terminal — {flag:?} escapes them.
+            eprintln!("termixion: unrecognized flag {flag:?}\n\n{}", usage());
             return ExitCode::from(2);
         }
         CliQuery::None => {}

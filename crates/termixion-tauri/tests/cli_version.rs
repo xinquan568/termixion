@@ -105,4 +105,8 @@ fn help_wins_even_next_to_an_unknown_flag() {
     let (code, out, err) = run_cli(&["--bogus", "--help"]);
     assert_eq!(code, 0, "stderr: {err}");
     assert!(out.contains("USAGE:"));
+    assert!(
+        err.is_empty(),
+        "help answered cleanly — nothing belongs on stderr; got:\n{err}"
+    );
 }
