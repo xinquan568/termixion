@@ -7,7 +7,7 @@
 #   - NONE                    → DELIBERATE unsigned personal-alpha macOS build (0.0.x).
 #   - a PARTIAL set           → fail fast — a half-configured release is never shipped.
 # TAURI_SIGNING_PRIVATE_KEY is ALWAYS required so the auto-updater can verify every update artifact (the
-# SAME minisign key signs both the macOS .app.tar.gz and the Linux .AppImage.tar.gz — trmx-102).
+# SAME minisign key signs both the macOS .app.tar.gz and the Linux .AppImage — trmx-102/trmx-139).
 #
 # Three jobs so Linux never races the macOS publish (each build UPLOADS artifacts; `publish` NEEDS both,
 # downloads them, assembles the two-platform latest.json, and creates the release exactly once).
@@ -177,9 +177,9 @@ jobs:
           EXPECTED_TAG: ${{ github.ref_name }}
         run: bash scripts/check-release-metadata.sh
 
-      # The SAME minisign key signs the Linux updater tarball. appimage is updater-enabled (produces the
-      # .AppImage.tar.gz+.sig); deb is install-only.
-      - name: Build (tauri-action — appimage + deb, signed updater tarball)
+      # The SAME minisign key signs the Linux updater artifact — the .AppImage itself + a detached
+      # .AppImage.sig (trmx-139); deb is install-only.
+      - name: Build (tauri-action — appimage + deb, signed updater artifact)
         uses: tauri-apps/tauri-action@v0
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}

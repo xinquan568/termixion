@@ -69,7 +69,7 @@ xattr -d com.apple.quarantine /Applications/Termixion.app
    gate → metadata + tag gate → build the `.dmg` (+ codesign + notarize + staple in signed mode) →
    **verify** (`stapler validate` + `spctl` in signed mode; existence in unsigned mode) → upload the
    `.dmg` + `.app.tar.gz(.sig)`. (b) **`build-linux`** (`ubuntu-22.04`): build the `.AppImage` + `.deb`,
-   validate the `.deb` (metadata + contents), upload the `.AppImage` + `.AppImage.tar.gz(.sig)` + `.deb`.
+   validate the `.deb` (metadata + contents), upload the `.AppImage` + `.AppImage.sig` + `.deb`.
    (c) **`publish`** (`needs` both): download both, assemble ONE `latest.json` (both platform entries, both
    signatures verified) → create a **draft** release with every installer + updater artifact + `latest.json`
    attached. **Not a prerelease** — the auto-updater's `/releases/latest/` endpoint resolves only to the
@@ -107,8 +107,8 @@ spctl --assess --type open --context context:primary-signature -vvv Termixion_0.
 ## Linux (trmx-102, FR-1.7) — x86_64 AppImage + `.deb`
 
 Since v0.0.9 the release also ships **x86_64 Linux** artifacts (built on `ubuntu-22.04`, in the
-`build-linux` job): a portable **`.AppImage`** + its signed updater tarball (`.AppImage.tar.gz` +
-`.AppImage.tar.gz.sig`) and a **`.deb`** for install convenience. The `publish` job (which `needs` both the
+`build-linux` job): a portable **`.AppImage`** — itself the signed updater artifact (Tauri v2, trmx-139),
+with a detached **`.AppImage.sig`** — and a **`.deb`** for install convenience. The `publish` job (which `needs` both the
 macOS and Linux builds) assembles ONE `latest.json` carrying both `darwin-aarch64` and `linux-x86_64`
 entries, signed by the **same** minisign updater key — there is **no notarization concept on Linux**
 (Gatekeeper is macOS-only).
