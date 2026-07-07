@@ -878,10 +878,10 @@ describe("tab-strip CSS contract (trmx-151)", () => {
     expect(indexCss).toMatch(
       /@container\s*\(max-width:\s*90px\)\s*\{\s*\.tab-strip__hint\s*\{[^}]*display:\s*none/,
     );
-    // …and the upright rail chip declares its own display, whose (0,2,0) specificity outranks
-    // the drop rule's (0,1,0): the 44px rail is always "narrow" but the header row is designed
-    // exactly for it.
-    expect(ruleBody(".tab-strip__hint--upright")).toMatch(/display:\s*/);
+    // …and the upright rail chip wins by GENUINE specificity, not source order (step-8 review):
+    // the compound selector's (0,2,0) outranks the drop rule's (0,1,0). The 44px rail is always
+    // "narrow" but the header row is designed exactly for it.
+    expect(ruleBody(".tab-strip__hint.tab-strip__hint--upright")).toMatch(/display:\s*/);
   });
 
   it("anchors the close × absolutely at the tab's LEFT edge (the reveal never shifts content)", () => {
@@ -904,7 +904,7 @@ describe("tab-strip CSS contract (trmx-151)", () => {
     for (const selector of [
       ".tab-strip__content",
       ".tab-strip__hint",
-      ".tab-strip__hint--upright",
+      ".tab-strip__hint.tab-strip__hint--upright",
       ".tab-strip--labels-vertical .tab-strip__content",
     ]) {
       expect(ruleBody(selector), selector).not.toMatch(/#[0-9a-fA-F]{3}|rgba?\(/);

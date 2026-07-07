@@ -634,9 +634,10 @@ body {
  * writes it with the other rail tokens, barLayout.ts owns the 20px) horizontally centered in the
  * 44px rail, NORMAL writing mode. The explicit display also deliberately OUTRANKS the narrow-tab
  * @container drop above (0,2,0 > 0,1,0): the rail is always "narrower than 90px", but this header
- * row is designed exactly for it.
+ * row is designed exactly for it. The compound selector makes the win REAL specificity, not
+ * source order (step-8 review).
  */
-.tab-strip__hint--upright {
+.tab-strip__hint.tab-strip__hint--upright {
   writing-mode: horizontal-tb;
   flex: 0 0 var(--tab-hint-header);
   height: var(--tab-hint-header);

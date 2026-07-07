@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: ISC
 // Copyright (c) 2026 Eric Y. Liu
 //
-// trmx-74 (test-first): the pure tab keymap. ⌘1..⌘9 select a tab (index 8 = last, the iTerm2 ⌘9
-// rule applied by the reducer); everything else — extra modifiers, non-digits, ⌘C/⌘V/⌘T/⌘W — is
+// trmx-74 (test-first): the pure tab keymap. ⌘1..⌘9 select a tab by strict position (trmx-151 —
+// index 8 IS the ninth tab; no last-tab mapping anywhere); everything else — extra modifiers, non-digits, ⌘C/⌘V/⌘T/⌘W — is
 // never intercepted. Editable-target inertness is scoped to NON-terminal inputs: xterm's hidden
 // helper textarea is technically editable, but it lives inside `.terminal-host`, so the keymap
 // still FIRES there (a focused terminal is exactly where tab switching must work); a settings
@@ -35,7 +35,7 @@ describe("tabKeyAction", () => {
     ["6", 5],
     ["7", 6],
     ["8", 7],
-    ["9", 8], // index 8 — the reducer maps it to the LAST tab (iTerm2 ⌘9)
+    ["9", 8], // index 8 — strictly the ninth tab (trmx-151; the old 8→last reducer mapping is gone)
   ])("⌘%s → select-index %i", (key, index) => {
     expect(tabKeyAction(cmd(key), PAGE)).toEqual({ kind: "select-index", index });
   });
