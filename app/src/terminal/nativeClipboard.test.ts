@@ -18,6 +18,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: writeTextMoc
 
 import { writeClipboardText } from "./nativeClipboard";
 import { realWriteClipboard } from "./osc52";
+import { realAttachClipboard } from "./TerminalView";
 
 beforeEach(() => {
   writeTextMock.mockReset();
@@ -49,5 +50,28 @@ describe("writeClipboardText (the native IPC sink)", () => {
 describe("one-sink identity (trmx-95 invariant, write side)", () => {
   it("realWriteClipboard IS writeClipboardText — OSC 52, auto-copy, and ⌘C share the object", () => {
     expect(realWriteClipboard).toBe(writeClipboardText);
+  });
+
+  it("production ⌘C wiring: TerminalView's realAttachClipboard drives the native plugin write", () => {
+    // The REAL attach seam TerminalView mounts (not an injected spy): a copy event through
+    // realAttachClipboard must land in the plugin IPC — pinning that the guard's default sink is
+    // the native write in the exact wiring production uses (step-8 finding 1).
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const term = { hasSelection: () => true, getSelection: () => "wired-sel", paste: () => {} };
+    const dispose = realAttachClipboard(
+      host,
+      term as unknown as Parameters<typeof realAttachClipboard>[1],
+    );
+    writeTextMock.mockClear();
+    const ev = new Event("copy", { bubbles: true, cancelable: true }) as Event & {
+      clipboardData: { getData: (t: string) => string; setData: (t: string, v: string) => void };
+    };
+    ev.clipboardData = { getData: () => "", setData: () => {} };
+    host.dispatchEvent(ev);
+    expect(writeTextMock).toHaveBeenCalledTimes(1);
+    expect(writeTextMock).toHaveBeenCalledWith("wired-sel");
+    dispose();
+    host.remove();
   });
 });
