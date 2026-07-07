@@ -211,11 +211,20 @@ jobs:
       - name: Stage + upload Linux artifacts
         run: |
           set -euo pipefail
+          echo "bundle tree:"; find target/release/bundle -maxdepth 2 -type f | sort
           mkdir -p dist-linux
-          cp "$(find target -name '*.AppImage' -print -quit)" dist-linux/
-          cp "$(find target -name '*.AppImage.tar.gz' -print -quit)" dist-linux/
-          cp "$(find target -name '*.AppImage.tar.gz.sig' -print -quit)" dist-linux/
-          cp "$(find target -name '*.deb' -print -quit)" dist-linux/
+          shopt -s nullglob
+          # Tauri v2's Linux updater artifact is the .AppImage itself + a detached .AppImage.sig — NOT a
+          # .AppImage.tar.gz (Tauri v1 / macOS's .app.tar.gz shape) — trmx-139. Match the app bundle by the
+          # `_amd64` arch suffix so the downloaded linuxdeploy-*-x86_64.AppImage build helpers never match.
+          appimage=(target/release/bundle/appimage/*_amd64.AppImage)
+          appsig=(target/release/bundle/appimage/*_amd64.AppImage.sig)
+          deb=(target/release/bundle/deb/*_amd64.deb)
+          [ "${#appimage[@]}" = 1 ] || { echo "::error::expected 1 .AppImage, found ${#appimage[@]}: ${appimage[*]:-<none>}"; exit 1; }
+          [ "${#appsig[@]}"   = 1 ] || { echo "::error::expected 1 .AppImage.sig, found ${#appsig[@]}: ${appsig[*]:-<none>}"; exit 1; }
+          [ "${#deb[@]}"      = 1 ] || { echo "::error::expected 1 .deb, found ${#deb[@]}: ${deb[*]:-<none>}"; exit 1; }
+          cp "${appimage[0]}" "${appsig[0]}" "${deb[0]}" dist-linux/
+          echo "staged:"; ls -l dist-linux/
       - uses: actions/upload-artifact@v4
         with:
           name: dist-linux
@@ -245,8 +254,10 @@ jobs:
           set -euo pipefail
           mac_art=$(find dist-macos -name '*.app.tar.gz' -print -quit)
           mac_sig=$(find dist-macos -name '*.app.tar.gz.sig' -print -quit)
-          lin_art=$(find dist-linux -name '*.AppImage.tar.gz' -print -quit)
-          lin_sig=$(find dist-linux -name '*.AppImage.tar.gz.sig' -print -quit)
+          # Tauri v2 Linux updater artifact = the .AppImage itself + its detached .AppImage.sig (trmx-139).
+          # '*.AppImage' does not match '*.AppImage.sig' (that ends in .sig), so the two finds stay distinct.
+          lin_art=$(find dist-linux -name '*.AppImage' -print -quit)
+          lin_sig=$(find dist-linux -name '*.AppImage.sig' -print -quit)
           for f in "$mac_art" "$mac_sig" "$lin_art" "$lin_sig"; do
             if [ -z "$f" ] || [ ! -s "$f" ]; then echo "::error::missing/empty updater artifact or signature: '$f'"; exit 1; fi
           done
@@ -276,7 +287,7 @@ jobs:
           fi
           gh release create "${{ github.ref_name }}" \
             dist-macos/*.dmg dist-macos/*.app.tar.gz dist-macos/*.app.tar.gz.sig \
-            dist-linux/*.AppImage dist-linux/*.AppImage.tar.gz dist-linux/*.AppImage.tar.gz.sig dist-linux/*.deb \
+            dist-linux/*.AppImage dist-linux/*.AppImage.sig dist-linux/*.deb \
             latest.json \
             --draft \
             --title "Termixion ${{ github.ref_name }}" \
