@@ -230,24 +230,28 @@ body {
 /*
  * trmx-90 (sub-task F) — the per-pane BADGE OVERLAY (BadgeOverlay.tsx). iTerm2's translucent corner
  * watermark: pinned to the pane host's TOP-RIGHT, click-through (pointer-events: none) so it never
- * eats the terminal's own clicks/selection, large + bold system-UI. It clamps to 2 lines with an
- * ellipsis and caps its width at ~50% of the pane so a long badge never sprawls; `pre-line` keeps a
- * multi-line badge's `\n` breaks (the OSC 1337 sanitizer preserves LF). z-index 4 sits ABOVE the
- * xterm screen (z-auto) and BELOW the Kitty scrollbar (z-index 10). The color + font-size are written
- * INLINE (the active theme's `terminal.badge` tint + ~2× cell height); the rest of the look is here.
+ * eats the terminal's own clicks/selection, large + bold. It clamps to 2 lines with an ellipsis and
+ * caps its width at ~50% of the pane so a long badge never sprawls; `pre-line` keeps a multi-line
+ * badge's `\n` breaks (the OSC 1337 sanitizer preserves LF). z-index 4 sits ABOVE the xterm screen
+ * (z-auto) and BELOW the Kitty scrollbar (z-index 10). trmx-149 pins iTerm2's exact chrome: 10px
+ * top/right margins (badgeTopMargin / badgeRightMargin) and bold Helvetica (badgeFont) — the
+ * font-family MIRRORS BADGE_FONT_FAMILY in panes/badgeFit.ts so the canvas fit measures the painted
+ * font. The color, the fitted font-size, and the background-tinted glyph stroke are written INLINE;
+ * the rest of the look is here.
  */
 .tx-badge {
   position: absolute;
-  top: 4px;
-  right: 8px;
+  top: 10px;
+  right: 10px;
   z-index: 4;
   pointer-events: none;
   max-width: 50%;
   text-align: right;
   font-family:
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
+    Helvetica,
+    "Helvetica Neue",
+    Arial,
+    "Liberation Sans",
     sans-serif;
   font-weight: 700;
   line-height: 1.05;

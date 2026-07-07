@@ -68,8 +68,9 @@ describe("themeTokensToToml", () => {
   });
 
   it("emits the per-pane badge token under [terminal] (trmx-90)", () => {
-    // A single-word `badge` key; night's built-in watermark preserved verbatim.
-    expect(toml).toMatch(/^badge = "rgba\(255, 255, 255, 0\.08\)"$/m);
+    // A single-word `badge` key; night's built-in watermark preserved verbatim
+    // (trmx-149: the iTerm2 default badge red).
+    expect(toml).toMatch(/^badge = "rgba\(255, 0, 0, 0\.5\)"$/m);
     // …and it sits inside [terminal], before the [terminal.ansi] table opens.
     expect(toml.indexOf("[terminal]")).toBeLessThan(toml.indexOf("badge = "));
     expect(toml.indexOf("badge = ")).toBeLessThan(toml.indexOf("[terminal.ansi]"));

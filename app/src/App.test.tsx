@@ -83,6 +83,7 @@ vi.mock("./update/UpdateAuthorityHost", () => ({
 import { App, type AppProps } from "./App";
 import { makeSettingsStore, __resetSettingsForTest } from "./settings/settingsStore";
 import { clearUserThemes, registerUserThemes } from "./theme/registry";
+import { night } from "./theme/themes/night";
 import type { ThemeSpec } from "./theme/themeDerive";
 
 interface AttachCall {
@@ -1527,6 +1528,53 @@ describe("App per-pane badges (trmx-90)", () => {
     const badge = within(screen.getByTestId("pane-host-1")).getByTestId("pane-badge");
     expect(badge.style.color).not.toBe("");
     expect(badge).toHaveTextContent("db");
+    // trmx-149 (step-8 review-1): the glyph-edge stroke is tinted from the ACTIVE theme's
+    // BACKGROUND (color.bg.primary), which App threads as outlineColor. The boot theme in this
+    // harness is Night; pin ITS background token so threading the wrong token (e.g. the badge
+    // color itself, or a hardcoded value) fails here.
+    expect(badge.style.webkitTextStroke.toLowerCase()).toContain(
+      night.color.bg.primary.toLowerCase(),
+    );
+    // jsdom has no canvas 2d context → the default measurer is null → the fit falls back to 28px
+    // (no crash with real pane-rect geometry threaded).
+    expect(badge.style.fontSize).toBe("28px");
+  });
+
+  // review-1 (step-8): pin that App threads the PANE RECT geometry into the fit path — not merely
+  // that the overlay renders. With a stubbed 2d context (deterministic measureText), the jsdom
+  // pre-ResizeObserver layout (DEFAULT_BOUNDS 800×600 → fit box 400×120) must produce the exact
+  // width-bound fit for a long label; wrong/zero geometry threading would land on the 28px fallback
+  // (or a different size) and fail.
+  it("threads the pane rect into the badge fit: a long label width-fits the 800×600 default bounds (trmx-149)", async () => {
+    const proto = HTMLCanvasElement.prototype;
+    const original = proto.getContext;
+    // width = chars × 0.6 × fontPx (linear fake); height comes from the overlay's line math.
+    // "production-cluster" = 18 chars → 10.8×f ≤ 400 → f ≤ 37.03 → the integer search lands on 37.
+    (proto as { getContext: unknown }).getContext = function (kind: string) {
+      if (kind !== "2d") return null;
+      let font = "";
+      return {
+        set font(value: string) {
+          font = value;
+        },
+        get font() {
+          return font;
+        },
+        measureText: (text: string) => ({
+          // The font string is e.g. `bold 52px Helvetica, …` — extract the px size.
+          width: text.length * 0.6 * (Number(/(\d+(?:\.\d+)?)px/.exec(font)?.[1]) || 0),
+        }),
+      };
+    };
+    try {
+      const { calls } = renderApp();
+      await resolveAttach(calls[0], { sessionId: 1, title: "one" });
+      await act(async () => recorder.mounts[0].onBadge?.("production-cluster"));
+      const badge = within(screen.getByTestId("pane-host-1")).getByTestId("pane-badge");
+      expect(badge.style.fontSize).toBe("37px");
+    } finally {
+      proto.getContext = original;
+    }
   });
 
   // review-1: the badge color must repaint on a SAME-ID trmx-89 hot reload — the designer edits their

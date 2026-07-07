@@ -72,7 +72,7 @@ describe("deriveTheme", () => {
         cursor: "#cccccc",
         cursorAccent: "#808080",
         selectionBackground: "rgba(0, 0, 255, 0.22)",
-        badge: "rgba(204, 204, 204, 0.12)", // trmx-90: withAlpha(text.primary #cccccc, 0.12)
+        badge: "rgba(255, 0, 0, 0.5)", // trmx-149: iTerm2's default badge red (KEY_BADGE_COLOR)
         scrollbar: {
           idle: "rgba(255, 255, 255, 0.12)",
           hover: "rgba(255, 255, 255, 0.2)",
@@ -152,11 +152,11 @@ describe("deriveTheme", () => {
     expect(t.terminal.pane.inactiveBorder).toBe("#123456"); // the resolved border flows to the pane line
   });
 
-  it("derives terminal.badge as a 0.12-alpha watermark of text.primary; a spec badge wins (trmx-90)", () => {
-    // No badge in a minimal spec → withAlpha(text.primary, 0.12): a subtle, deterministic watermark.
-    const derived = deriveTheme(minimalSpec(true)); // text.primary = #cccccc
-    expect(derived.terminal.badge).toBe(withAlpha("#cccccc", 0.12));
-    expect(derived.terminal.badge).toBe("rgba(204, 204, 204, 0.12)"); // pins the chosen 0.12 alpha
+  it("defaults terminal.badge to iTerm2's badge red rgba(255, 0, 0, 0.5); a spec badge wins (trmx-149)", () => {
+    // No badge in a spec → iTerm2's default badge color (KEY_BADGE_COLOR: calibrated red 1.0/0/0
+    // @ 0.5 alpha, iTermProfilePreferences.m:890) — theme-independent, not derived from the palette.
+    const derived = deriveTheme(minimalSpec(true));
+    expect(derived.terminal.badge).toBe("rgba(255, 0, 0, 0.5)"); // pins the iTerm2 parity literal
     // An author-provided badge beats the formula.
     const spec = minimalSpec(true);
     spec.terminal.badge = "rgba(1, 2, 3, 0.5)";

@@ -46,8 +46,9 @@ export const solarized: ThemeTokens = {
     cursor: "#93a1a1",
     cursorAccent: "#002b36",
     selectionBackground: "rgba(38, 139, 210, 0.15)",
-    // trmx-90: per-pane badge watermark — translucent base1 (text #93a1a1) on the dark teal background.
-    badge: "rgba(147, 161, 161, 0.10)",
+    // trmx-90: per-pane badge watermark. trmx-149: iTerm2's default badge red (KEY_BADGE_COLOR,
+    // red 1.0/0/0 @ 0.5 alpha) replaces the faint text tint — exact iTerm2 parity.
+    badge: "rgba(255, 0, 0, 0.5)",
     scrollbar: {
       idle: "rgba(255, 255, 255, 0.12)",
       hover: "rgba(255, 255, 255, 0.20)",

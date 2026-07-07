@@ -39,8 +39,9 @@ export const paper: ThemeTokens = {
     cursor: "#1a1a1a",
     cursorAccent: "#EEEDED",
     selectionBackground: "rgba(0,102,204,0.25)",
-    // trmx-90: per-pane badge watermark — translucent dark (text #1a1a1a) on the warm paper background.
-    badge: "rgba(26, 26, 26, 0.05)",
+    // trmx-90: per-pane badge watermark. trmx-149: iTerm2's default badge red (KEY_BADGE_COLOR,
+    // red 1.0/0/0 @ 0.5 alpha) replaces the faint text tint — exact iTerm2 parity.
+    badge: "rgba(255, 0, 0, 0.5)",
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
     // trmx-98: find-bar highlights — translucent yellow match / warmer active (legible over every theme bg).
     search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },

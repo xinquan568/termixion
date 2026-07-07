@@ -30,7 +30,10 @@ const CORE: Record<BuiltinThemeId, { bg: string; bg2: string; text: string; acce
 };
 
 /** Full terminal slices — vmark origin/main @ d7e70e3f plus the two trmx-77 audited deviations
- *  (night.brightBlack, solarized.selectionBackground); see the header comment. */
+ *  (night.brightBlack, solarized.selectionBackground); see the header comment.
+ *  trmx-149: every theme's `badge` is iTerm2's default badge color rgba(255, 0, 0, 0.5)
+ *  (KEY_BADGE_COLOR, iTermProfilePreferences.m:890 — calibrated red 1.0/0/0 @ 0.5 alpha),
+ *  replacing the trmx-90 faint per-theme text tints. */
 const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
   white: {
     pane: { activeBorder: "#0066cc", inactiveBorder: "#eeeeee" },
@@ -43,7 +46,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     cursor: "#1a1a1a",
     cursorAccent: "#FFFFFF",
     selectionBackground: "rgba(0,102,204,0.25)",
-    badge: "rgba(26, 26, 26, 0.05)",
+    badge: "rgba(255, 0, 0, 0.5)",
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
     search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },
   },
@@ -58,7 +61,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     cursor: "#1a1a1a",
     cursorAccent: "#EEEDED",
     selectionBackground: "rgba(0,102,204,0.25)",
-    badge: "rgba(26, 26, 26, 0.05)",
+    badge: "rgba(255, 0, 0, 0.5)",
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
     search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },
   },
@@ -73,7 +76,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     cursor: "#2d3a35",
     cursorAccent: "#CCE6D0",
     selectionBackground: "rgba(0,102,204,0.25)",
-    badge: "rgba(45, 58, 53, 0.06)",
+    badge: "rgba(255, 0, 0, 0.5)",
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
     search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },
   },
@@ -88,7 +91,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     cursor: "#5c4b37",
     cursorAccent: "#F9F0DB",
     selectionBackground: "rgba(0,102,204,0.25)",
-    badge: "rgba(92, 75, 55, 0.06)",
+    badge: "rgba(255, 0, 0, 0.5)",
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
     search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },
   },
@@ -103,7 +106,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     cursor: "#d6d9de",
     cursorAccent: "#23262b",
     selectionBackground: "rgba(90, 168, 255, 0.22)",
-    badge: "rgba(255, 255, 255, 0.08)",
+    badge: "rgba(255, 0, 0, 0.5)",
     scrollbar: { idle: "rgba(255, 255, 255, 0.12)", hover: "rgba(255, 255, 255, 0.20)", active: "rgba(255, 255, 255, 0.30)" },
     search: { match: "rgba(88, 166, 255, 0.16)", activeMatch: "rgba(88, 166, 255, 0.24)" },
   },
@@ -118,7 +121,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     cursor: "#93a1a1",
     cursorAccent: "#002b36",
     selectionBackground: "rgba(38, 139, 210, 0.15)",
-    badge: "rgba(147, 161, 161, 0.10)",
+    badge: "rgba(255, 0, 0, 0.5)",
     scrollbar: { idle: "rgba(255, 255, 255, 0.12)", hover: "rgba(255, 255, 255, 0.20)", active: "rgba(255, 255, 255, 0.30)" },
     search: { match: "rgba(38, 139, 210, 0.09)", activeMatch: "rgba(38, 139, 210, 0.12)" },
   },
@@ -166,6 +169,7 @@ describe.each(THEME_IDS)("theme %s", (id) => {
 
   // trmx-90 (sub-task B): every built-in ships a per-pane badge watermark — non-empty and a valid
   // color the contrast math can composite over the terminal background (never throws).
+  // trmx-149: the value itself is iTerm2's default badge red, pinned in TERMINAL above.
   it("has a non-empty, valid translucent badge watermark", () => {
     const badge = theme.terminal.badge;
     expect(badge).not.toBe("");
