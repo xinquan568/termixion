@@ -61,6 +61,21 @@ describe("ConfirmCloseDialog rendering (trmx-144)", () => {
     expect(screen.getByRole("button", { name: "Quit" })).toBeInTheDocument();
   });
 
+  it("quit renders the busy-tab count line (plural)", () => {
+    setup({ kind: "quit", names: ["vim"], busyTabCount: 2 });
+    expect(screen.getByText("2 tabs have running programs.")).toBeInTheDocument();
+  });
+
+  it("quit renders the busy-tab count line (singular)", () => {
+    setup({ kind: "quit", names: ["vim"], busyTabCount: 1 });
+    expect(screen.getByText("1 tab has a running program.")).toBeInTheDocument();
+  });
+
+  it("pane/tab kinds never render a count line even if one is passed", () => {
+    setup({ kind: "tab", names: ["vim"], busyTabCount: 2 });
+    expect(screen.queryByText(/running programs\./)).not.toBeInTheDocument();
+  });
+
   it("has an unchecked 'Don't ask me again' checkbox by default", () => {
     setup();
     expect(screen.getByRole("checkbox", { name: /don't ask me again/i })).not.toBeChecked();

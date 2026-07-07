@@ -305,6 +305,35 @@ describe("confirm-before-close: the open dialog owns the surface (trmx-144)", ()
     expect(screen.getByTestId("tab-2")).toBeInTheDocument(); // the chord works again
   });
 
+  it("the native menu path is gated while the dialog is up: a tabs:action verb is inert until cancel", async () => {
+    // Packaged menu accelerators (⌘T etc.) arrive as tabs:action events, NOT DOM keydowns — the
+    // modal gate must cover this channel too, or the dialog can be driven around from the menu.
+    const seams = renderApp();
+    await splitWithBusyPane2(seams);
+    cmdW();
+
+    act(() => seams.tabsAction.fire("new"));
+    expect(screen.queryByTestId("tab-2")).not.toBeInTheDocument(); // no new tab under the dialog
+    expect(seams.attach).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(dialogButton("Cancel"));
+    act(() => seams.tabsAction.fire("new"));
+    expect(screen.getByTestId("tab-2")).toBeInTheDocument(); // the menu verb works again
+  });
+
+  it("the quit dialog reports how many tabs have running programs", async () => {
+    const seams = renderApp();
+    await resolveAttach(seams.calls[0], { sessionId: 11, title: "one" });
+    cmdT();
+    await resolveAttach(seams.calls[1], { sessionId: 12, title: "two" });
+    act(() => seams.activity.fire(11, true));
+    act(() => seams.activity.fire(12, true));
+
+    act(() => seams.closeRequested.fire());
+
+    expect(dialog()).toHaveTextContent("2 tabs have running programs.");
+  });
+
   it("target drift A: the pane going IDLE does not dismiss the dialog; confirm still closes it", async () => {
     const seams = renderApp();
     await splitWithBusyPane2(seams);

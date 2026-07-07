@@ -321,7 +321,14 @@ type CloseOpts = {
 
 // trmx-144: the pending confirm-before-close dialog's target (null = no dialog). `tabId`/`paneId`
 // pin the target by id so a confirm re-resolves it (a dead target makes confirm a safe no-op).
-type PendingClose = { kind: "pane" | "tab" | "quit"; tabId?: number; paneId?: PaneId; names: string[] };
+type PendingClose = {
+  kind: "pane" | "tab" | "quit";
+  tabId?: number;
+  paneId?: PaneId;
+  names: string[];
+  /** Quit only: how many tabs have running programs — the dialog's summary line. */
+  busyTabCount?: number;
+};
 
 export interface AppProps {
   /** Injection seam for tests; defaults to useBackend's attachTerminal (the live PTY wiring). */
@@ -1254,6 +1261,9 @@ export function App({
       // trmx-94 (FR-9.1): menu verbs are untrusted input — map the exact verb string to a command id
       // and route it through the single `dispatch` spine (junk / unknown verbs are inert).
       if (typeof payload !== "string") return;
+      // trmx-144: the confirm dialog is modal for the NATIVE menu path too — packaged accelerators
+      // (⌘T etc.) arrive here as tabs:action events, not DOM keydowns the keymap gate would catch.
+      if (pendingCloseRef.current !== null) return;
       const commandId = VERB_TO_COMMAND[payload];
       if (commandId) dispatcherRef.current?.dispatch(commandId);
     });
@@ -1334,7 +1344,7 @@ export function App({
       if (pendingCloseRef.current !== null) return;
       const report = collectBusyTabs(stateRef.current.tabs, busyLookup);
       if (shouldConfirmClose(makeSettingsStore().get("terminal.confirmClose"), report.busy, "user")) {
-        setPendingCloseSynced({ kind: "quit", names: report.names });
+        setPendingCloseSynced({ kind: "quit", names: report.names, busyTabCount: report.busyTabCount });
       } else {
         seamsRef.current.quitConfirmed();
       }
@@ -2008,6 +2018,7 @@ export function App({
         <ConfirmCloseDialog
           kind={pendingClose.kind}
           names={pendingClose.names}
+          busyTabCount={pendingClose.busyTabCount}
           onConfirm={confirmPendingClose}
           onCancel={cancelPendingClose}
         />

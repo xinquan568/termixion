@@ -16,6 +16,8 @@ export interface ConfirmCloseDialogProps {
   kind: "pane" | "tab" | "quit";
   /** The busy running-program names (already deduped/ordered by closeGuard); [] = no program line. */
   names: string[];
+  /** Quit only: how many tabs have running programs — the summary line ("2 tabs have…"). */
+  busyTabCount?: number;
   onConfirm: (dontAskAgain: boolean) => void;
   onCancel: () => void;
 }
@@ -44,7 +46,13 @@ export function formatNames(names: string[]): string {
   return extra > 0 ? `${shown} +${extra} more` : shown;
 }
 
-export function ConfirmCloseDialog({ kind, names, onConfirm, onCancel }: ConfirmCloseDialogProps) {
+export function ConfirmCloseDialog({
+  kind,
+  names,
+  busyTabCount,
+  onConfirm,
+  onCancel,
+}: ConfirmCloseDialogProps) {
   const [dontAskAgain, setDontAskAgain] = useState(false);
   const checkboxRef = useRef<HTMLInputElement | null>(null);
   const cancelRef = useRef<HTMLButtonElement | null>(null);
@@ -108,6 +116,13 @@ export function ConfirmCloseDialog({ kind, names, onConfirm, onCancel }: Confirm
         aria-label={DIALOG_LABEL[kind]}
       >
         <p className="tx-confirm-close__title">{QUESTION[kind]}</p>
+        {kind === "quit" && busyTabCount !== undefined && busyTabCount > 0 && (
+          <p className="tx-confirm-close__programs">
+            {busyTabCount === 1
+              ? "1 tab has a running program."
+              : `${busyTabCount} tabs have running programs.`}
+          </p>
+        )}
         {names.length === 1 && (
           <p className="tx-confirm-close__programs">
             <code>{names[0]}</code> is still running.
