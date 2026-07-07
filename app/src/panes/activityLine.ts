@@ -73,6 +73,17 @@ export function isVisible(state: ActivityState): boolean {
 }
 
 /**
+ * trmx-144: the RAW busy flag, distinct from the debounced presentation ({@link isVisible}): true
+ * from the moment a busy=true change is applied — including the pre-show window where the line has
+ * not appeared yet — and false the moment busy drops, including the min-visible linger where the
+ * line is still up. The close guard reads THIS (is a job running right now?), never the cosmetic
+ * visibility, so a close 10 ms into a long job is guarded and a close during the linger is not.
+ */
+export function isBusy(state: ActivityState): boolean {
+  return state.phase === "pendingShow" || state.phase === "visible";
+}
+
+/**
  * Apply a busy<->idle flip at `now`. Transitions:
  * - idle + busy -> pendingShow (deadline `now + SHOW_DELAY_MS`); idle + idle -> no-op.
  * - pendingShow + idle -> idle (busy dropped before the show fired: never shown, no flicker);

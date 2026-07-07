@@ -71,6 +71,14 @@ import {
   type ActivityTransition,
 } from "./panes/activityLine";
 import { shouldFlash, FLASH_MS } from "./panes/activityFlash";
+import {
+  collectBusyPanes,
+  collectBusyTabs,
+  paneIsBusy,
+  shouldConfirmClose,
+  type BusyLookup,
+} from "./panes/closeGuard";
+import { ConfirmCloseDialog } from "./panes/ConfirmCloseDialog";
 import { type PromptTransition } from "./terminal/osc133";
 import { type FrameSchedule } from "./terminal/resizeCoalescer";
 import {
@@ -192,6 +200,17 @@ export function realCloseWindow(): void {
     });
 }
 
+/**
+ * trmx-144: the production quit-confirm sink — tell the backend the webview approved the quit
+ * (the `close:requested` round-trip's "yes", and the remote window.close fast-path). Error-swallowed
+ * like realCloseWindow: without a Tauri runtime there is nothing to quit.
+ */
+export function realQuitConfirmed(): void {
+  realInvoke("quit_confirmed").catch(() => {
+    // No Tauri runtime — a plain browser tab owns its own lifecycle.
+  });
+}
+
 // Observe the menu's tabs:action broadcasts over the event bus, with the teardown-before-resolve
 // pattern from TerminalView's realObserveSettings: a teardown called before the async listen
 // resolves unlistens the late subscription instead of leaking it, and the `live` guard keeps a
@@ -265,11 +284,59 @@ const realObserveControlRequest: ControlRequestObservation = (onRequest) => {
   };
 };
 
+// trmx-144: observe the backend's `close:requested` broadcasts (the native window close / ⌘Q
+// intercepted Rust-side and round-tripped to the webview for the quit confirm) — the same
+// teardown-before-resolve pattern as realObserveControlRequest above.
+export type CloseRequestedObservation = (onRequest: () => void) => () => void;
+const realObserveCloseRequested: CloseRequestedObservation = (onRequest) => {
+  let live = true;
+  let unlisten: (() => void) | undefined;
+  realEventBus
+    .listen("close:requested", () => {
+      if (live) onRequest();
+    })
+    .then((u) => {
+      if (live) unlisten = u;
+      else u();
+    })
+    .catch(() => {
+      // No Tauri runtime — the OS never routes a window close through the webview.
+    });
+  return () => {
+    live = false;
+    unlisten?.();
+  };
+};
+
+// trmx-144: one close's options, threaded pane → tab so a close that already passed (or bypassed)
+// the confirm gate is never re-gated downstream.
+type CloseOpts = {
+  /** The session already exited on its own (pty:exited) — nothing left to protect, no close_pty. */
+  alreadyExited?: boolean;
+  /** Who asked: "remote" (control channel) never prompts — a dialog would deadlock a headless caller. */
+  origin?: "user" | "remote";
+  /** The user just confirmed THIS close in the dialog — proceed without re-prompting. */
+  confirmed?: boolean;
+};
+
+// trmx-144: the pending confirm-before-close dialog's target (null = no dialog). `tabId`/`paneId`
+// pin the target by id so a confirm re-resolves it (a dead target makes confirm a safe no-op).
+type PendingClose = {
+  kind: "pane" | "tab" | "quit";
+  tabId?: number;
+  paneId?: PaneId;
+  names: string[];
+  /** Quit only: how many tabs have running programs — the dialog's summary line. */
+  busyTabCount?: number;
+};
+
 export interface AppProps {
   /** Injection seam for tests; defaults to useBackend's attachTerminal (the live PTY wiring). */
   attach?: AttachFn;
   /** Injection seam for tests; defaults to closing the native window (last-tab close). */
   closeWindow?: () => void;
+  /** Injection seam for tests; defaults to the real `quit_confirmed` invoke (trmx-144). */
+  quitConfirmed?: () => void;
   /** Injection seam for tests; defaults to the real `close_pty` command. */
   closeSession?: (sessionId: number) => Promise<void>;
   /** Injection seam for tests; defaults to the real `tabs:action` event-bus subscription. */
@@ -284,6 +351,8 @@ export interface AppProps {
   observeSettings?: SettingsObservation;
   /** Injection seam for tests; the control socket's request stream (trmx-101). */
   observeControlRequest?: ControlRequestObservation;
+  /** Injection seam for tests; the backend's `close:requested` stream (trmx-144). */
+  observeCloseRequested?: CloseRequestedObservation;
   /** Injection seam for tests; defaults to retitling the native window (trmx-75). */
   setWindowTitle?: (title: string) => void;
   /** Injection seam for tests; defaults to the real `set_session_title` core mirror (trmx-75). */
@@ -301,6 +370,7 @@ export interface AppProps {
 export function App({
   attach,
   closeWindow = realCloseWindow,
+  quitConfirmed = realQuitConfirmed,
   closeSession = closePty,
   observeTabsAction = realObserveTabsAction,
   observePtyExited = onPtyExited,
@@ -308,6 +378,7 @@ export function App({
   observeActivity = onSessionActivity,
   observeSettings = realObserveAppSettings,
   observeControlRequest = realObserveControlRequest,
+  observeCloseRequested = realObserveCloseRequested,
   setWindowTitle = realSetWindowTitle,
   mirrorTitle = setSessionTitle,
   dragSchedule = realFrameSchedule,
@@ -375,6 +446,9 @@ export function App({
   );
   // trmx-94 (FR-9.2): the ⇧⌘P command palette open state.
   const [showPalette, setShowPalette] = useState(false);
+  // trmx-144: the pending confirm-before-close dialog (null = none). State drives the render; the
+  // mirror ref below is the out-of-render read for the close gates + the capture-phase keydown.
+  const [pendingClose, setPendingClose] = useState<PendingClose | null>(null);
   // trmx-94 (FR-9.3): the effective keymap (defaults ⊕ user [keys]). Seeded to the shipped defaults
   // SYNCHRONOUSLY so keyboard shortcuts work on the first paint; the async keys_read + keys:changed
   // rebuild it with the user's overrides.
@@ -423,6 +497,12 @@ export function App({
   const badgingRef = useRef(badgingPaneId); // out-of-render read for the onReady focus guard (trmx-90)
   const openSearchRef = useRef(openSearchPanes); // out-of-render read for the onReady focus guard (trmx-98)
   const searchControllersRef = useRef(new Map<PaneId, SearchController>()); // trmx-98: per-pane find bars
+  // trmx-144: pendingClose's mirror (the gates and the keydown handler run out-of-render), kept in
+  // sync by setPendingCloseSynced; and whether a quit is already authorized — set the moment a gated
+  // (or bypassed) gesture reaches closeWindow, so the backend's close:requested round-trip for that
+  // very gesture never prompts a second time.
+  const pendingCloseRef = useRef<PendingClose | null>(null);
+  const quitAuthorizedRef = useRef(false);
   const bootedRef = useRef(false);
 
   // Latest-seam ref: the cached per-pane callbacks (stable identity — an inline arrow would remount
@@ -430,6 +510,7 @@ export function App({
   const seamsRef = useRef({
     attach: attachFn,
     closeWindow,
+    quitConfirmed,
     closeSession,
     setWindowTitle,
     mirrorTitle,
@@ -438,6 +519,7 @@ export function App({
   seamsRef.current = {
     attach: attachFn,
     closeWindow,
+    quitConfirmed,
     closeSession,
     setWindowTitle,
     mirrorTitle,
@@ -764,14 +846,56 @@ export function App({
     }
   };
 
+  // trmx-144: set the pending confirm dialog through ONE path so the render state and its
+  // out-of-render mirror can never drift.
+  const setPendingCloseSynced = (next: PendingClose | null) => {
+    pendingCloseRef.current = next;
+    setPendingClose(next);
+  };
+
+  // trmx-144: the per-pane reads the closeGuard aggregators need — the RAW debounce state (an
+  // in-flight job counts even before the cosmetic line shows) and a display name (the foreground-
+  // process hint, falling back to the pane's effective title). PaneIds are global-unique, so the
+  // cross-tab scan can't alias.
+  const busyLookup: BusyLookup = {
+    activityState: (paneId) => activityStatesRef.current.get(paneId),
+    displayName: (paneId) => {
+      for (const tab of stateRef.current.tabs) {
+        const pane = tab.panes[paneId];
+        if (pane) return pane.titleSources.process ?? pane.title;
+      }
+      return undefined;
+    },
+  };
+
+  // trmx-144: whether a close skips the confirm gate outright — the session already exited (nothing
+  // left to protect), a remote controller asked (a dialog would deadlock a headless caller), or the
+  // user just confirmed this very close in the dialog.
+  const bypassesConfirm = (opts?: CloseOpts): boolean =>
+    opts?.alreadyExited === true || opts?.origin === "remote" || opts?.confirmed === true;
+
   // Close a whole tab (all its panes) — the tab-strip × and the last-pane fallthrough. The LAST tab
   // closes the WINDOW instead (no dispatch, no per-session close — the backend's CloseRequested
   // kill_all owns cleanup). Otherwise drop the tab and dispose every pane's resources.
-  const closeTabInternal = (tabId: number, opts?: { alreadyExited?: boolean }) => {
+  const closeTabInternal = (tabId: number, opts?: CloseOpts) => {
     const s = stateRef.current;
     const tab = s.tabs.find((t) => t.tabId === tabId);
     if (!tab) return;
+    // trmx-144: the confirm gate — a user-initiated close of a tab holding a busy pane prompts
+    // instead of closing (per terminal.confirmClose, read fresh at close time).
+    if (!bypassesConfirm(opts)) {
+      if (pendingCloseRef.current !== null) return; // a confirm is already up — swallow the repeat
+      const report = collectBusyPanes(tab, busyLookup);
+      if (shouldConfirmClose(makeSettingsStore().get("terminal.confirmClose"), report.busy, "user")) {
+        setPendingCloseSynced({ kind: "tab", tabId, names: report.names });
+        return; // the dialog's onConfirm re-enters with { confirmed: true }
+      }
+    }
     if (s.tabs.length <= 1) {
+      // trmx-144: the last tab closing the window IS the quit, and this gesture was already gated
+      // (or bypassed) above — authorize it so the backend's close:requested round-trip for this
+      // very close never prompts a second time.
+      quitAuthorizedRef.current = true;
       seamsRef.current.closeWindow();
       return;
     }
@@ -788,10 +912,22 @@ export function App({
   // Close one pane with the ⌘W precedence: pane → tab → window. More than one pane → drop just that
   // pane (its sibling re-lays out, sessions untouched). The LAST pane of a tab closes the whole tab
   // (which may be the last tab → the window).
-  const closePaneInternal = (tabId: number, paneId: PaneId, opts?: { alreadyExited?: boolean }) => {
+  const closePaneInternal = (tabId: number, paneId: PaneId, opts?: CloseOpts) => {
     const s = stateRef.current;
     const tab = s.tabs.find((t) => t.tabId === tabId);
     if (!tab || tab.panes[paneId] === undefined) return;
+    // trmx-144: the confirm gate — a user-initiated close of a RAW-busy pane prompts instead of
+    // closing. The name is included only when busy (the "always" dialog on an idle pane asks the
+    // bare question — nothing is "still running").
+    if (!bypassesConfirm(opts)) {
+      if (pendingCloseRef.current !== null) return; // a confirm is already up — swallow the repeat
+      const busy = paneIsBusy(activityStatesRef.current.get(paneId), tab.panes[paneId].activityVisible);
+      if (shouldConfirmClose(makeSettingsStore().get("terminal.confirmClose"), busy, "user")) {
+        const name = busy ? busyLookup.displayName(paneId)?.trim() : undefined;
+        setPendingCloseSynced({ kind: "pane", tabId, paneId, names: name ? [name] : [] });
+        return; // the dialog's onConfirm re-enters with { confirmed: true }
+      }
+    }
     if (tabPaneIds(tab).length > 1) {
       // A pane dying mid-rename (it is the focused/renamed pane) must clear the rename, or the input
       // would survive and re-target the NEW focused pane on commit. The whole-tab branch clears it
@@ -876,13 +1012,15 @@ export function App({
     }
   };
 
-  // ⌘W / menu "close": close the active tab's FOCUSED pane (pane → tab → window).
-  const requestCloseActive = () => {
+  // ⌘W / menu "close": close the active tab's FOCUSED pane (pane → tab → window). `origin`
+  // (trmx-144) tags who asked — the dispatcher injects "remote" for control-channel requests, so
+  // those skip the confirm gate; everything else defaults to "user".
+  const requestCloseActive = (origin?: "user" | "remote") => {
     const s = stateRef.current;
     if (s.activeTabId === null) return;
     const tab = s.tabs.find((t) => t.tabId === s.activeTabId);
     if (!tab) return;
-    closePaneInternal(tab.tabId, tab.focusedPaneId);
+    closePaneInternal(tab.tabId, tab.focusedPaneId, { origin: origin ?? "user" });
   };
 
   // The tab-strip × closes the WHOLE tab (all its panes), distinct from the ⌘W pane precedence.
@@ -900,9 +1038,9 @@ export function App({
     newTab: requestNewTab,
     // trmx-94: tab.close closes the WHOLE active tab; pane.close (⌘W) closes the focused pane
     // (pane precedence — the last pane closing takes the tab). Distinct commands (review finding 4).
-    closeActiveTab: () => {
+    closeActiveTab: (origin) => {
       const a = stateRef.current.activeTabId;
-      if (a !== null) closeTabInternal(a);
+      if (a !== null) closeTabInternal(a, { origin: origin ?? "user" });
     },
     nextTab: () => dispatch({ kind: "nextTab" }),
     prevTab: () => dispatch({ kind: "prevTab" }),
@@ -989,7 +1127,13 @@ export function App({
         console.error("[termixion] open settings (updates) failed", err),
       );
     },
-    closeWindow: () => seamsRef.current.closeWindow(),
+    // trmx-144: a REMOTE window.close confirms the quit directly (never gates, never re-enters the
+    // native close → close:requested loop); a user one takes the native path, which round-trips
+    // through close:requested where the quit gate lives.
+    closeWindow: (origin) => {
+      if (origin === "remote") seamsRef.current.quitConfirmed();
+      else seamsRef.current.closeWindow();
+    },
     openCommandPalette: () => setShowPalette(true),
     selectTheme: (id) => makeSettingsStore().set("appearance.theme", id),
     runScript: (sourceLine) => {
@@ -1117,6 +1261,9 @@ export function App({
       // trmx-94 (FR-9.1): menu verbs are untrusted input — map the exact verb string to a command id
       // and route it through the single `dispatch` spine (junk / unknown verbs are inert).
       if (typeof payload !== "string") return;
+      // trmx-144: the confirm dialog is modal for the NATIVE menu path too — packaged accelerators
+      // (⌘T etc.) arrive here as tabs:action events, not DOM keydowns the keymap gate would catch.
+      if (pendingCloseRef.current !== null) return;
       const commandId = VERB_TO_COMMAND[payload];
       if (commandId) dispatcherRef.current?.dispatch(commandId);
     });
@@ -1158,7 +1305,8 @@ export function App({
     };
     return observeControlRequest(({ id, request }) => {
       const deps: ControlDeps = {
-        dispatch: (cmd, arg) => dispatcherRef.current?.dispatch(cmd, arg) ?? false,
+        // trmx-144: forward the router's "remote" source so close commands skip the confirm gate.
+        dispatch: (cmd, arg, source) => dispatcherRef.current?.dispatch(cmd, arg, source) ?? false,
         hasCommand: (cmd) => dispatcherRef.current?.get(cmd) !== undefined,
         buildLs: () =>
           buildLsSnapshot(
@@ -1181,6 +1329,52 @@ export function App({
       invoke("control_response", { id, payload }).catch(() => {});
     });
   }, [observeControlRequest, invoke]);
+
+  // trmx-144: the quit gate. The backend intercepts the native window close (red button / ⌘Q) and
+  // round-trips it as close:requested; the webview answers with quit_confirmed once authorized. An
+  // already-authorized quit (a gated gesture reached the last-tab closeWindow, or a prior quit
+  // confirm) goes straight back; an open dialog swallows the repeat; otherwise gate on the all-tabs
+  // busy report (per terminal.confirmClose, read fresh).
+  useEffect(() => {
+    return observeCloseRequested(() => {
+      if (quitAuthorizedRef.current) {
+        seamsRef.current.quitConfirmed();
+        return;
+      }
+      if (pendingCloseRef.current !== null) return;
+      const report = collectBusyTabs(stateRef.current.tabs, busyLookup);
+      if (shouldConfirmClose(makeSettingsStore().get("terminal.confirmClose"), report.busy, "user")) {
+        setPendingCloseSynced({ kind: "quit", names: report.names, busyTabCount: report.busyTabCount });
+      } else {
+        seamsRef.current.quitConfirmed();
+      }
+    });
+  }, [observeCloseRequested]);
+
+  // trmx-144: the dialog's resolutions. Confirm re-enters the SAME close path with {confirmed:true},
+  // re-resolving the target by id first — a pane/tab that died while the dialog was up makes confirm
+  // a safe no-op (never a wrong-target close). "Don't ask again" persists the setting before closing.
+  const confirmPendingClose = (dontAskAgain: boolean) => {
+    const pending = pendingCloseRef.current;
+    if (pending === null) return;
+    if (dontAskAgain) makeSettingsStore().set("terminal.confirmClose", "never");
+    setPendingCloseSynced(null);
+    if (pending.kind === "quit") {
+      quitAuthorizedRef.current = true;
+      seamsRef.current.quitConfirmed();
+      return;
+    }
+    if (pending.tabId === undefined) return;
+    const tab = stateRef.current.tabs.find((t) => t.tabId === pending.tabId);
+    if (!tab) return;
+    if (pending.kind === "pane") {
+      if (pending.paneId === undefined || tab.panes[pending.paneId] === undefined) return;
+      closePaneInternal(pending.tabId, pending.paneId, { confirmed: true });
+    } else {
+      closeTabInternal(pending.tabId, { confirmed: true });
+    }
+  };
+  const cancelPendingClose = () => setPendingCloseSynced(null);
 
   // trmx-81/82: keep the bar position + side-label orientation live over settings:changed. Its OWN
   // effect, dep'd only on the stable observation seam — payloads are untrusted (only a well-formed
@@ -1230,6 +1424,9 @@ export function App({
   // non-terminal editables and foreign chords, so nothing else is intercepted.
   useEffect(() => {
     const onKeyDown = (ev: KeyboardEvent) => {
+      // trmx-144: while the confirm-close dialog is up it owns the keyboard — its own onKeyDown is
+      // the only keyboard surface; no chord may dispatch under a modal question.
+      if (pendingCloseRef.current !== null) return;
       // trmx-94 (FR-9.3): resolve the chord to a WEBVIEW-owned command via the effective keymap
       // (defaults ⊕ user [keys]); native-menu chords (⌘T/⌘W/…) and ⌘C/⌘V resolve null here. A
       // resolved command is fully owned by the app: preventDefault + stopImmediatePropagation so the
@@ -1813,6 +2010,17 @@ export function App({
           themes={listThemes().map((entry) => ({ id: entry.id, title: entry.label }))}
           invoke={invoke}
           onClose={() => setShowPalette(false)}
+        />
+      )}
+      {/* trmx-144: the confirm-before-close dialog (pane / tab / quit) — mounted by the close
+          gates instead of closing; confirm re-enters the close with { confirmed: true }. */}
+      {pendingClose !== null && (
+        <ConfirmCloseDialog
+          kind={pendingClose.kind}
+          names={pendingClose.names}
+          busyTabCount={pendingClose.busyTabCount}
+          onConfirm={confirmPendingClose}
+          onCancel={cancelPendingClose}
         />
       )}
     </main>

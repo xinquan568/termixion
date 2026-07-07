@@ -12,7 +12,9 @@
 export interface CommandContext {
   // tabs (trmx-74)
   newTab(): void;
-  closeActiveTab(): void;
+  /** trmx-144: close commands forward the dispatch `origin` so App's confirm gate can tell a user
+   * gesture (may prompt) from a remote control-channel request (never prompts). */
+  closeActiveTab(origin?: "user" | "remote"): void;
   nextTab(): void;
   prevTab(): void;
   selectTab(index: number): void;
@@ -23,7 +25,7 @@ export interface CommandContext {
   splitBelow(): void;
   splitRightWithScript(): void; // trmx-93
   splitBelowWithScript(): void; // trmx-93
-  closePane(): void;
+  closePane(origin?: "user" | "remote"): void;
   focusPane(dir: "left" | "right" | "up" | "down"): void;
   nextPane(): void;
   prevPane(): void;
@@ -40,7 +42,7 @@ export interface CommandContext {
   // app / window (trmx-94 — routed through dispatch, not the Rust menu shortcuts)
   openSettings(): void;
   checkForUpdates(): void;
-  closeWindow(): void;
+  closeWindow(origin?: "user" | "remote"): void;
   openCommandPalette(): void;
   // parameterized targets
   selectTheme(themeId: string): void; // trmx-89
@@ -48,6 +50,11 @@ export interface CommandContext {
   // read-only accessors for `when` guards
   tabCount(): number;
   paneCount(): number;
+  /** trmx-144: the origin of the CURRENT dispatch — injected per-dispatch by the dispatcher (never
+   * implemented by App's ctx). "user" = user gesture (menu/keymap/palette), "remote" = control
+   * channel (ctl). "auto" closes (e.g. shell exit) never pass through dispatch, so they never see
+   * an origin. Lets close commands skip the busy-close confirm for remote requests. */
+  readonly origin?: "user" | "remote";
 }
 
 /** A command descriptor. `param` marks a two-level palette command (a second fuzzy page of themes /
@@ -68,7 +75,7 @@ export function buildCommands(): Command[] {
   const commands: Command[] = [
     // --- tabs ---
     { id: "tab.new", title: "New Tab", category: "Tabs", run: (c) => c.newTab() },
-    { id: "tab.close", title: "Close Tab", category: "Tabs", run: (c) => c.closeActiveTab(), when: (c) => c.tabCount() > 0 },
+    { id: "tab.close", title: "Close Tab", category: "Tabs", run: (c) => c.closeActiveTab(c.origin), when: (c) => c.tabCount() > 0 },
     { id: "tab.next", title: "Next Tab", category: "Tabs", run: (c) => c.nextTab(), when: (c) => c.tabCount() > 1 },
     { id: "tab.prev", title: "Previous Tab", category: "Tabs", run: (c) => c.prevTab(), when: (c) => c.tabCount() > 1 },
     { id: "tab.rename", title: "Rename Tab…", category: "Tabs", run: (c) => c.renameActiveTab(), when: (c) => c.tabCount() > 0 },
@@ -88,7 +95,7 @@ export function buildCommands(): Command[] {
     { id: "pane.split-below", title: "Split Below", category: "Panes", run: (c) => c.splitBelow() },
     { id: "pane.split-right-with-script", title: "Split Right with Script…", category: "Panes", run: (c) => c.splitRightWithScript() },
     { id: "pane.split-below-with-script", title: "Split Below with Script…", category: "Panes", run: (c) => c.splitBelowWithScript() },
-    { id: "pane.close", title: "Close Pane", category: "Panes", run: (c) => c.closePane(), when: (c) => c.paneCount() > 0 },
+    { id: "pane.close", title: "Close Pane", category: "Panes", run: (c) => c.closePane(c.origin), when: (c) => c.paneCount() > 0 },
     { id: "pane.next", title: "Next Pane", category: "Panes", run: (c) => c.nextPane(), when: (c) => c.paneCount() > 1 },
     { id: "pane.prev", title: "Previous Pane", category: "Panes", run: (c) => c.prevPane(), when: (c) => c.paneCount() > 1 },
     { id: "pane.set-badge", title: "Set Badge…", category: "Panes", run: (c) => c.setBadge(), when: (c) => c.paneCount() > 0 },
@@ -128,7 +135,7 @@ export function buildCommands(): Command[] {
     { id: "app.command-palette", title: "Command Palette…", category: "App", run: (c) => c.openCommandPalette() },
     { id: "app.settings", title: "Settings…", category: "App", run: (c) => c.openSettings() },
     { id: "app.check-updates", title: "Check for Updates…", category: "App", run: (c) => c.checkForUpdates() },
-    { id: "window.close", title: "Close Window", category: "App", run: (c) => c.closeWindow() },
+    { id: "window.close", title: "Close Window", category: "App", run: (c) => c.closeWindow(c.origin) },
   ];
   return commands;
 }

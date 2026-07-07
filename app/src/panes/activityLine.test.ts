@@ -10,6 +10,7 @@ import {
   SHOW_DELAY_MS,
   MIN_VISIBLE_MS,
   initialActivity,
+  isBusy,
   isVisible,
   onBusyChange,
   onDeadline,
@@ -169,6 +170,48 @@ describe("activityLine debounce (trmx-91)", () => {
       return trace;
     };
     expect(run()).toEqual(run());
+  });
+});
+
+describe("isBusy raw readout (trmx-144)", () => {
+  it("is false on a fresh idle state", () => {
+    expect(isBusy(initialActivity())).toBe(false);
+  });
+
+  it("is true during the pre-show window (busy applied, indicator not yet visible)", () => {
+    // busy@0 -> pendingShow: the debounced line has NOT appeared (isVisible false), but the pane IS
+    // busy RIGHT NOW — a close at t=100 must still be guarded.
+    const pending = onBusyChange(initialActivity(), true, 0).state;
+    expect(isVisible(pending)).toBe(false);
+    expect(isBusy(pending)).toBe(true);
+  });
+
+  it("stays true once the line is shown while busy holds", () => {
+    const visible = onDeadline(onBusyChange(initialActivity(), true, 0).state, 150).state;
+    expect(isVisible(visible)).toBe(true);
+    expect(isBusy(visible)).toBe(true);
+  });
+
+  it("is false during the min-visible linger (busy dropped, indicator still up)", () => {
+    // busy@0 -> shown@150 -> idle@200: pendingHide keeps the LINE up until 450, but the pane is NOT
+    // busy anymore — a close during the linger must NOT be guarded.
+    const visible = onDeadline(onBusyChange(initialActivity(), true, 0).state, 150).state;
+    const lingering = onBusyChange(visible, false, 200).state;
+    expect(isVisible(lingering)).toBe(true);
+    expect(isBusy(lingering)).toBe(false);
+  });
+
+  it("is true again when busy returns during the linger", () => {
+    const visible = onDeadline(onBusyChange(initialActivity(), true, 0).state, 150).state;
+    const lingering = onBusyChange(visible, false, 200).state;
+    const reBusy = onBusyChange(lingering, true, 210).state;
+    expect(isBusy(reBusy)).toBe(true);
+  });
+
+  it("is false when busy drops before the show delay (never-shown short job)", () => {
+    const pending = onBusyChange(initialActivity(), true, 0).state;
+    const dropped = onBusyChange(pending, false, 100).state;
+    expect(isBusy(dropped)).toBe(false);
   });
 });
 

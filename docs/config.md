@@ -37,6 +37,7 @@ tables; internally each maps 1:1 to a camelCase registry key (the mapping is own
 | `terminal.cursor_blink` | `terminal.cursorBlink` | bool | `false` | — | immediate |
 | `terminal.activity_indicator` | `terminal.activityIndicator` | bool | `true` | — | immediate⁴ |
 | `terminal.copy_on_select` | `terminal.copyOnSelect` | bool | `true` | — | immediate (attaches/detaches per pane)⁶ |
+| `terminal.confirm_close` | `terminal.confirmClose` | string | `"when-busy"` | `never` · `when-busy` · `always` | immediate (read at the next close)⁸ |
 | `terminal.scrollback_lines` | `terminal.scrollbackLines` | integer | `10000` | `0`–`200000` (clamped) | immediate¹ |
 | `terminal.font_family` | `terminal.fontFamily` | string | `""` | any font stack; `""` = platform default² | immediate (re-measure + refit) |
 | `terminal.font_size` | `terminal.fontSize` | integer | `12` | `6`–`72` (clamped) | immediate (re-measure + refit) |
@@ -76,6 +77,21 @@ drive the terminal. **OFF by default; NO TCP, ever.** Enabling it starts the soc
 dir); `socket_path` overrides the default `~/.config/termixion/control.sock` (the parent must be a private,
 you-owned `0700` dir or the override is refused). See [remote-control.md](remote-control.md) for the
 protocol, the `termixion ctl` CLI, and the threat model.
+
+⁸ Confirm-before-close (trmx-144): a **user-initiated** close — a pane (`pane.close`), a tab (`tab.close`,
+prompts if **any** pane in the tab is busy), or quitting the app (one summary dialog if any tab is busy) —
+shows a themed confirmation dialog. **Busy** = a command is currently running in the pane (the OSC 133
+shell-integration state when available, otherwise the foreground-process check) — idle at the shell prompt
+is **not** busy. `never` disables all prompts; `always` prompts on every user-initiated close, even when
+idle. In the dialog: click a button, or `Y` = confirm, `N`/`Esc` = cancel, `Enter` = the focused button
+(focus starts on Cancel); ticking **"Don't ask me again"** persists `never` into this key. A shell exiting
+on its own never prompts, and a close driven over the remote-control socket never prompts in any mode (see
+[remote-control.md](remote-control.md)).
+
+```toml
+[terminal]
+confirm_close = "when-busy"   # never · when-busy · always
+```
 
 ## `[keys]` — keybindings (trmx-94, FR-9)
 

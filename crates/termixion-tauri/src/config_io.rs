@@ -141,6 +141,7 @@ fn value_kind_for(registry_key: &str) -> Option<ValueKind> {
         "update.checkFrequency"
         | "terminal.cursorStyle"
         | "terminal.fontFamily"
+        | "terminal.confirmClose"
         | "appearance.theme"
         | "tabs.barPosition"
         | "tabs.sideLabelOrientation"
@@ -831,6 +832,7 @@ mod tests {
             ("terminal.cursorBlink", ValueKind::Bool),
             ("terminal.activityIndicator", ValueKind::Bool),
             ("terminal.copyOnSelect", ValueKind::Bool),
+            ("terminal.confirmClose", ValueKind::Str),
             ("terminal.scrollbackLines", ValueKind::Int),
             ("terminal.fontFamily", ValueKind::Str),
             ("terminal.fontSize", ValueKind::Int),

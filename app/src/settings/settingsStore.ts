@@ -60,6 +60,9 @@ export interface SettingsChanged {
 
 export type CheckFrequency = "on-startup" | "daily" | "weekly" | "manual";
 export type CursorStyle = "bar" | "block" | "underline";
+/** trmx-144: when closing a pane/tab/window asks for confirmation — "when-busy" prompts only
+ * while a foreground program is still running (the iTerm2-style default). */
+export type ConfirmClose = "never" | "when-busy" | "always";
 /** trmx-81 (FR-2.2): the window edge the tab bar sits on. */
 export type TabBarPosition = "top" | "bottom" | "left" | "right";
 /** trmx-82 (FR-2.3): how the side-rail tab labels run (only meaningful on left/right bars). */
@@ -72,6 +75,8 @@ export interface SettingsValues {
   "update.autoDownload": boolean;
   "terminal.cursorStyle": CursorStyle;
   "terminal.cursorBlink": boolean;
+  /** trmx-144: confirm before closing a pane, a tab, or quitting (default "when-busy"). */
+  "terminal.confirmClose": ConfirmClose;
   /** trmx-91: show the per-pane activity line while a session runs a foreground job. */
   "terminal.activityIndicator": boolean;
   /** trmx-95: auto-copy the mouse selection to the clipboard, iTerm2-style (default on). */
@@ -132,6 +137,8 @@ export const SETTING_DEFAULTS: SettingsValues = {
   "update.autoDownload": true,
   "terminal.cursorStyle": "underline",
   "terminal.cursorBlink": false,
+  // trmx-144: prompt only when a program is still running (iTerm2-style default).
+  "terminal.confirmClose": "when-busy",
   // trmx-91: the activity line is ON by default (off keeps the poller running for titles).
   "terminal.activityIndicator": true,
   // trmx-95: auto-copy selection ON by default (iTerm2 parity).
@@ -170,6 +177,8 @@ const STORAGE_KEYS: Record<SettingKey, string> = {
   "update.autoDownload": "termixion.update.autoDownload",
   "terminal.cursorStyle": "termixion.terminal.cursorStyle",
   "terminal.cursorBlink": "termixion.terminal.cursorBlink",
+  // trmx-144: never existed pre-config-file, so the T3b migration finds nothing — harmless.
+  "terminal.confirmClose": "termixion.terminal.confirmClose",
   "terminal.activityIndicator": "termixion.terminal.activityIndicator",
   "terminal.copyOnSelect": "termixion.terminal.copyOnSelect",
   "terminal.scrollbackLines": "termixion.terminal.scrollbackLines",
@@ -193,6 +202,7 @@ export const SETTING_KEYS = Object.keys(SETTING_DEFAULTS) as SettingKey[];
 
 const FREQUENCIES: readonly CheckFrequency[] = ["on-startup", "daily", "weekly", "manual"];
 const CURSOR_STYLES: readonly CursorStyle[] = ["bar", "block", "underline"];
+const CONFIRM_CLOSE_VALUES: readonly ConfirmClose[] = ["never", "when-busy", "always"];
 const TAB_BAR_POSITIONS: readonly TabBarPosition[] = ["top", "bottom", "left", "right"];
 const LABEL_ORIENTATIONS: readonly LabelOrientation[] = ["horizontal", "vertical"];
 
@@ -254,6 +264,12 @@ function parse<K extends SettingKey>(key: K, raw: string): SettingsValues[K] {
     // trmx-82: enum parse-with-fallback, mirroring tabs.barPosition above.
     return (isLabelOrientation(raw) ? raw : fallback) as SettingsValues[K];
   }
+  if (key === "terminal.confirmClose") {
+    // trmx-144: enum parse-with-fallback, exactly like terminal.cursorStyle below.
+    return (CONFIRM_CLOSE_VALUES.includes(raw as ConfirmClose)
+      ? raw
+      : fallback) as SettingsValues[K];
+  }
   return (CURSOR_STYLES.includes(raw as CursorStyle) ? raw : fallback) as SettingsValues[K];
 }
 
@@ -295,6 +311,11 @@ function coerce<K extends SettingKey>(key: K, value: unknown): SettingsValues[K]
   }
   if (key === "tabs.sideLabelOrientation") {
     return isLabelOrientation(value) ? (value as SettingsValues[K]) : undefined;
+  }
+  if (key === "terminal.confirmClose") {
+    return CONFIRM_CLOSE_VALUES.includes(value as ConfirmClose)
+      ? (value as SettingsValues[K])
+      : undefined;
   }
   return CURSOR_STYLES.includes(value as CursorStyle) ? (value as SettingsValues[K]) : undefined;
 }

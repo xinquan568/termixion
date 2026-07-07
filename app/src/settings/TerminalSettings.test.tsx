@@ -52,15 +52,23 @@ describe("TerminalSettings", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Activity Indicator")).toBeInTheDocument();
     expect(screen.getByText("Show a green line while a command is running")).toBeInTheDocument();
-    // EXACTLY these seven rows (no Shell / Panel / Line Height).
+    // trmx-144: the close-confirmation tri-state sits below Activity Indicator.
+    expect(screen.getByText("Confirm before closing")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Applies when closing a pane, a tab, or quitting; "When busy" prompts only when a program is still running',
+      ),
+    ).toBeInTheDocument();
+    // EXACTLY these eight rows (no Shell / Panel / Line Height).
     const rows = container.querySelectorAll(".tx-setting-row");
-    expect(rows).toHaveLength(7);
+    expect(rows).toHaveLength(8);
     const labels = [...rows].map((r) => r.querySelector(".tx-setting-row__label")?.textContent);
     expect(labels).toEqual([
       "Cursor Style",
       "Cursor Blink",
       "Copy on Select",
       "Activity Indicator",
+      "Confirm before closing",
       "Scrollback",
       "Font Family",
       "Font Size",
@@ -144,6 +152,60 @@ describe("TerminalSettings", () => {
     expect(screen.getByRole("switch", { name: "Cursor Blink" })).toHaveAttribute(
       "aria-checked",
       "true",
+    );
+  });
+});
+
+// trmx-144: the close-confirmation tri-state row — a SegmentedControl (Never / When busy / Always)
+// over terminal.confirmClose, defaulting to "when-busy". Confirmation applies when closing a pane,
+// a tab, or quitting; "When busy" prompts only when a program is still running.
+describe("TerminalSettings confirm-before-closing row (trmx-144)", () => {
+  it("renders the three options as a radiogroup and defaults to When busy", () => {
+    render(<TerminalSettings settings={makeSettingsStore(fakeStorage())} />);
+    expect(
+      screen.getByRole("radiogroup", { name: "Confirm before closing" }),
+    ).toBeInTheDocument();
+    const radios = screen.getAllByRole("radio");
+    expect(radios.map((r) => r.textContent)).toEqual(["Never", "When busy", "Always"]);
+    expect(screen.getByRole("radio", { name: "When busy" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(screen.getByRole("radio", { name: "Never" })).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByRole("radio", { name: "Always" })).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("persists a selection via settings.set, broadcasts it, and reflects the new value", () => {
+    const bus = fakeBus();
+    const store = makeSettingsStore(fakeStorage(), bus, "settings-window");
+    render(<TerminalSettings settings={store} />);
+    fireEvent.click(screen.getByRole("radio", { name: "Always" }));
+    expect(store.get("terminal.confirmClose")).toBe("always");
+    expect(bus.events).toContainEqual({
+      event: SETTINGS_CHANGED_EVENT,
+      payload: { key: "terminal.confirmClose", value: "always", source: "settings-window" },
+    });
+    expect(screen.getByRole("radio", { name: "Always" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("radio", { name: "When busy" })).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+
+    fireEvent.click(screen.getByRole("radio", { name: "Never" }));
+    expect(store.get("terminal.confirmClose")).toBe("never");
+    expect(bus.events).toContainEqual({
+      event: SETTINGS_CHANGED_EVENT,
+      payload: { key: "terminal.confirmClose", value: "never", source: "settings-window" },
+    });
+  });
+
+  it("reflects a persisted value on mount", () => {
+    const store = makeSettingsStore(fakeStorage({ "termixion.terminal.confirmClose": "never" }));
+    render(<TerminalSettings settings={store} />);
+    expect(screen.getByRole("radio", { name: "Never" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("radio", { name: "When busy" })).toHaveAttribute(
+      "aria-checked",
+      "false",
     );
   });
 });

@@ -77,6 +77,36 @@ impl CursorStyle {
     }
 }
 
+/// When to confirm before closing a busy pane/tab or quitting (registry key
+/// `terminal.confirmClose`) — trmx-144.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConfirmClose {
+    Never,
+    WhenBusy,
+    Always,
+}
+
+impl ConfirmClose {
+    /// The TOML/registry spelling of this value (kebab-case, e.g. `"when-busy"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Never => "never",
+            Self::WhenBusy => "when-busy",
+            Self::Always => "always",
+        }
+    }
+
+    fn from_toml(s: &str) -> Option<Self> {
+        match s {
+            "never" => Some(Self::Never),
+            "when-busy" => Some(Self::WhenBusy),
+            "always" => Some(Self::Always),
+            _ => None,
+        }
+    }
+}
+
 /// Where the tab bar sits in the window (registry key `tabs.barPosition`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -181,6 +211,8 @@ pub struct TerminalConfig {
     pub activity_indicator: bool,
     /// Auto-copy the mouse selection to the clipboard, iTerm2-style (trmx-95).
     pub copy_on_select: bool,
+    /// When to confirm before closing a busy pane/tab or quitting (trmx-144).
+    pub confirm_close: ConfirmClose,
 }
 
 impl Default for TerminalConfig {
@@ -193,6 +225,7 @@ impl Default for TerminalConfig {
             font_size: 12,
             activity_indicator: true,
             copy_on_select: true,
+            confirm_close: ConfirmClose::WhenBusy,
         }
     }
 }
@@ -341,6 +374,7 @@ pub const DEFAULT_TEMPLATE: &str = r##"# Termixion configuration (TOML).
 # font_size = 12                  # 6..=72
 # activity_indicator = true       # animated line while a command runs
 # copy_on_select = true           # auto-copy the mouse selection to the clipboard (iTerm2-style)
+# confirm_close = "when-busy"     # confirm before closing a busy pane/tab or quitting: "never" | "when-busy" | "always"
 
 # [appearance]
 # theme = "white"                 # a theme id from the theme catalog
@@ -404,6 +438,7 @@ pub fn toml_path_for(registry_key: &str) -> Option<(&'static str, &'static str)>
         "terminal.fontSize" => Some(("terminal", "font_size")),
         "terminal.activityIndicator" => Some(("terminal", "activity_indicator")),
         "terminal.copyOnSelect" => Some(("terminal", "copy_on_select")),
+        "terminal.confirmClose" => Some(("terminal", "confirm_close")),
         "appearance.theme" => Some(("appearance", "theme")),
         "tabs.barPosition" => Some(("tabs", "bar_position")),
         "tabs.sideLabelOrientation" => Some(("tabs", "side_label_orientation")),
@@ -472,6 +507,11 @@ pub fn diff_configs(old: &Config, new: &Config) -> Vec<(String, RegistryValue)> 
         old.terminal.copy_on_select != new.terminal.copy_on_select,
         "terminal.copyOnSelect",
         RegistryValue::Bool(new.terminal.copy_on_select),
+    );
+    push(
+        old.terminal.confirm_close != new.terminal.confirm_close,
+        "terminal.confirmClose",
+        RegistryValue::Str(new.terminal.confirm_close.as_str().to_string()),
     );
     push(
         old.appearance.theme != new.appearance.theme,
@@ -684,6 +724,15 @@ fn walk_terminal(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
                 &mut config.terminal.copy_on_select,
                 sink,
             ),
+            "confirm_close" => read_enum(
+                value,
+                ("terminal.confirm_close", "terminal.confirmClose"),
+                ConfirmClose::from_toml,
+                ConfirmClose::as_str,
+                r#"one of "never", "when-busy", "always""#,
+                &mut config.terminal.confirm_close,
+                sink,
+            ),
             _ => sink.warnings.push(ConfigWarning::UnknownKey {
                 key: format!("terminal.{key}"),
             }),
@@ -886,8 +935,8 @@ fn describe_value(value: &toml::Value) -> String {
 mod tests {
     use super::*;
 
-    /// All 12 registry keys.
-    const REGISTRY_KEYS: [&str; 13] = [
+    /// All 14 registry keys.
+    const REGISTRY_KEYS: [&str; 14] = [
         "update.autoCheck",
         "update.checkFrequency",
         "update.autoDownload",
@@ -898,6 +947,7 @@ mod tests {
         "terminal.fontSize",
         "terminal.activityIndicator",
         "terminal.copyOnSelect",
+        "terminal.confirmClose",
         "appearance.theme",
         "tabs.barPosition",
         "tabs.sideLabelOrientation",
@@ -921,6 +971,7 @@ font_family = "Menlo"
 font_size = 14
 activity_indicator = false
 copy_on_select = false
+confirm_close = "always"
 
 [appearance]
 theme = "night"
@@ -951,6 +1002,7 @@ side_label_orientation = "vertical"
                     font_size: 14,
                     activity_indicator: false,
                     copy_on_select: false,
+                    confirm_close: ConfirmClose::Always,
                 },
                 appearance: AppearanceConfig {
                     theme: "night".to_string(),
@@ -1014,7 +1066,7 @@ side_label_orientation = "vertical"
     fn full_file_yields_all_twelve_registry_pairs() {
         let (pairs, warnings) = parse_registry_pairs(FULL_NON_DEFAULT);
         assert_eq!(warnings, Vec::new());
-        assert_eq!(pairs.len(), 13);
+        assert_eq!(pairs.len(), 14);
         for key in REGISTRY_KEYS {
             assert!(value_for(&pairs, key).is_some(), "missing pair for {key}");
         }
@@ -1057,6 +1109,10 @@ side_label_orientation = "vertical"
         assert_eq!(
             value_for(&pairs, "terminal.activityIndicator"),
             Some(&RegistryValue::Bool(false))
+        );
+        assert_eq!(
+            value_for(&pairs, "terminal.confirmClose"),
+            Some(&RegistryValue::Str("always".to_string()))
         );
         assert_eq!(
             value_for(&pairs, "appearance.theme"),
@@ -1205,6 +1261,90 @@ side_label_orientation = "vertical"
             &warnings[0],
             ConfigWarning::InvalidValue { key, .. } if key == "terminal.copy_on_select"
         ));
+    }
+
+    // trmx-144: terminal.confirmClose — tri-state confirm-before-close ("never" | "when-busy" |
+    // "always"). Defaults to WhenBusy; each valid spelling parses + surfaces the pair; an invalid
+    // value keeps the default and warns with the allowed values listed (tolerant read_enum).
+    #[test]
+    fn confirm_close_parses_all_three_values() {
+        let cases = [
+            ("never", ConfirmClose::Never),
+            ("when-busy", ConfirmClose::WhenBusy),
+            ("always", ConfirmClose::Always),
+        ];
+        for (spelling, expected) in cases {
+            let text = format!("[terminal]\nconfirm_close = \"{spelling}\"\n");
+            let (config, warnings) = parse_config(&text);
+            assert_eq!(warnings, Vec::new(), "for {spelling}");
+            assert_eq!(config.terminal.confirm_close, expected, "for {spelling}");
+            let (pairs, _) = parse_registry_pairs(&text);
+            assert_eq!(
+                value_for(&pairs, "terminal.confirmClose"),
+                Some(&RegistryValue::Str(spelling.to_string())),
+                "for {spelling}"
+            );
+        }
+    }
+
+    #[test]
+    fn confirm_close_defaults_to_when_busy_when_absent() {
+        assert_eq!(
+            Config::default().terminal.confirm_close,
+            ConfirmClose::WhenBusy
+        );
+        let (config, warnings) = parse_config("[terminal]\n");
+        assert_eq!(config.terminal.confirm_close, ConfirmClose::WhenBusy);
+        assert_eq!(warnings, Vec::new());
+        let (pairs, _) = parse_registry_pairs("[terminal]\n");
+        assert!(value_for(&pairs, "terminal.confirmClose").is_none());
+    }
+
+    #[test]
+    fn unknown_confirm_close_warns_with_valid_values_listed() {
+        let text = "[terminal]\nconfirm_close = \"sometimes\"\n";
+        let (config, warnings) = parse_config(text);
+        assert_eq!(config.terminal.confirm_close, ConfirmClose::WhenBusy);
+        assert_eq!(warnings.len(), 1);
+        match &warnings[0] {
+            ConfigWarning::InvalidValue { key, got, expected } => {
+                assert_eq!(key, "terminal.confirm_close");
+                assert!(got.contains("sometimes"));
+                for valid in ["never", "when-busy", "always"] {
+                    assert!(expected.contains(valid), "expected must list {valid}");
+                }
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+        let (pairs, _) = parse_registry_pairs(text);
+        assert!(value_for(&pairs, "terminal.confirmClose").is_none());
+    }
+
+    #[test]
+    fn confirm_close_diffs_maps_and_template_documents_it() {
+        let old = Config::default();
+        assert_eq!(
+            diff_configs(&old, &old),
+            Vec::new(),
+            "unchanged emits nothing"
+        );
+        let mut new = Config::default();
+        new.terminal.confirm_close = ConfirmClose::Always;
+        assert_eq!(
+            diff_configs(&old, &new),
+            vec![(
+                "terminal.confirmClose".to_string(),
+                RegistryValue::Str("always".to_string())
+            )]
+        );
+        assert_eq!(
+            toml_path_for("terminal.confirmClose"),
+            Some(("terminal", "confirm_close"))
+        );
+        assert!(
+            DEFAULT_TEMPLATE.contains("# confirm_close = \"when-busy\""),
+            "the template must document terminal.confirm_close (commented out)"
+        );
     }
 
     // trmx-93: scripts.startup is a free string (""=unset). Present-only pair; wrong-type keeps the
@@ -1576,7 +1716,7 @@ side_label_orientation = "vertical"
     // 10. toml_path_for maps all 11 registry keys and rejects junk.
     #[test]
     fn toml_path_for_maps_every_registry_key() {
-        let expected: [(&str, (&str, &str)); 13] = [
+        let expected: [(&str, (&str, &str)); 14] = [
             ("update.autoCheck", ("update", "auto_check")),
             ("update.checkFrequency", ("update", "check_frequency")),
             ("update.autoDownload", ("update", "auto_download")),
@@ -1590,6 +1730,7 @@ side_label_orientation = "vertical"
                 ("terminal", "activity_indicator"),
             ),
             ("terminal.copyOnSelect", ("terminal", "copy_on_select")),
+            ("terminal.confirmClose", ("terminal", "confirm_close")),
             ("appearance.theme", ("appearance", "theme")),
             ("tabs.barPosition", ("tabs", "bar_position")),
             (
@@ -1613,7 +1754,7 @@ side_label_orientation = "vertical"
     fn toml_path_for_round_trips_through_the_parser() {
         // A minimal file written at toml_path_for's answer must surface exactly
         // that registry key in the pairs.
-        let samples: [(&str, &str); 13] = [
+        let samples: [(&str, &str); 14] = [
             ("update.autoCheck", "false"),
             ("update.checkFrequency", "\"manual\""),
             ("update.autoDownload", "false"),
@@ -1624,6 +1765,7 @@ side_label_orientation = "vertical"
             ("terminal.fontSize", "20"),
             ("terminal.activityIndicator", "false"),
             ("terminal.copyOnSelect", "false"),
+            ("terminal.confirmClose", "\"never\""),
             ("appearance.theme", "\"night\""),
             ("tabs.barPosition", "\"right\""),
             ("tabs.sideLabelOrientation", "\"vertical\""),

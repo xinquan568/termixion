@@ -67,6 +67,10 @@ Unknown top-level fields are ignored; a malformed line returns an error response
 - `send-text` → `{ ok: true }`, or `{ ok: false, error: "no-such-pane" }`.
 - A request the webview doesn't answer within 2 s → `{ ok: false, error: "timeout" }`.
 
+**Close commands never prompt.** `pane.close`, `tab.close`, and `window.close` over the socket bypass the
+[`terminal.confirm_close`](config.md) confirmation entirely — no dialog in **any** mode, including
+`always` (trmx-144). A scripted close is explicit intent and must stay non-interactive.
+
 ### `ls` — the tabs/panes snapshot (a stable, versioned shape)
 
 ```json

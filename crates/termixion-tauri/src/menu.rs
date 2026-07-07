@@ -58,6 +58,9 @@ pub fn menu_action(id: &str) -> Option<MenuAction> {
         // trmx-94 (FR-9): Close Window routes through dispatch (window.close) — the frontend's
         // closeWindow seam closes the main window, same as the last-tab-close path.
         "shell-close-window" => Some(MenuAction::EmitTabsAction("window-close")),
+        // trmx-144: Quit rides the SAME gated window-close flow — a predefined quit item would
+        // app.exit() directly and bypass the CloseRequested confirm-before-quit gate.
+        "shell-quit" => Some(MenuAction::EmitTabsAction("window-close")),
         "window-next-tab" => Some(MenuAction::EmitTabsAction("next")),
         "window-prev-tab" => Some(MenuAction::EmitTabsAction("prev")),
         // trmx-86 (FR-3.5): keyboard pane navigation — directional (⌥⌘-arrows) + cyclic (⌘] / ⌘[).
@@ -219,6 +222,16 @@ pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         accel_for("settings", &keys).as_deref(),
     )?;
 
+    // trmx-144: a CUSTOM quit item, not PredefinedMenuItem::quit — the predefined one calls
+    // app.exit() and would bypass the CloseRequested confirm-before-quit gate; this one rides the
+    // gated window-close flow (see menu_action) so ⌘Q gets the same confirmation as ⇧⌘W.
+    let quit = MenuItem::with_id(
+        handle,
+        "shell-quit",
+        "Quit Termixion",
+        true,
+        Some("CmdOrCtrl+Q"),
+    )?;
     let app_menu = Submenu::with_items(
         handle,
         "Termixion",
@@ -230,7 +243,7 @@ pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &PredefinedMenuItem::separator(handle)?,
             &PredefinedMenuItem::hide(handle, None)?,
             &PredefinedMenuItem::separator(handle)?,
-            &PredefinedMenuItem::quit(handle, None)?,
+            &quit,
         ],
     )?;
 
@@ -462,6 +475,17 @@ mod tests {
             Some(MenuAction::ShowSettings {
                 section: Some("about")
             })
+        );
+    }
+
+    #[test]
+    fn quit_routes_through_the_gated_window_close() {
+        // trmx-144: Quit is a CUSTOM item mapped to the same window-close flow the ⇧⌘W item uses —
+        // the predefined quit item would app.exit() directly and bypass the CloseRequested
+        // confirm-before-quit gate.
+        assert_eq!(
+            menu_action("shell-quit"),
+            Some(MenuAction::EmitTabsAction("window-close"))
         );
     }
 

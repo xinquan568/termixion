@@ -842,6 +842,55 @@ fn smoke_done(success: bool, reason: String) {
     std::process::exit(1);
 }
 
+/// trmx-144: set once the webview confirms a quit (or a pre-authorized close chain reaches the
+/// window) — the next `CloseRequested` on the main window is then torn down and allowed through
+/// instead of being vetoed-and-asked.
+static QUIT_AUTHORIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// trmx-144: the main-window teardown must run exactly once however many close paths race.
+static MAIN_TEARDOWN_DONE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// trmx-144: what a `CloseRequested` must do. Pure so the gate logic is unit-testable — the
+/// webview owns the confirm decision (busy state + the `terminal.confirmClose` setting + the
+/// dialog); this side only vetoes, asks, and lets a confirmed close through.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum CloseAction {
+    /// Not the PTY-owning window (the settings webview) — never gated, never torn down here.
+    Ignore,
+    /// Main window, quit not yet confirmed — veto the close and ask the webview.
+    PreventAndAsk,
+    /// Confirmed — run the teardown (once) and let the window close.
+    TeardownAndAllow,
+}
+
+fn close_action(is_pty_owner: bool, quit_authorized: bool) -> CloseAction {
+    if !is_pty_owner {
+        CloseAction::Ignore
+    } else if quit_authorized {
+        CloseAction::TeardownAndAllow
+    } else {
+        CloseAction::PreventAndAsk
+    }
+}
+
+/// Latch: true exactly once — the caller that wins runs the teardown body.
+fn begin_teardown(done: &std::sync::atomic::AtomicBool) -> bool {
+    !done.swap(true, std::sync::atomic::Ordering::SeqCst)
+}
+
+/// trmx-144: the webview's confirmed-quit handoff. The frontend gate (the `close:requested`
+/// listener) calls this once the quit may proceed; it authorizes the close and re-drives it, so
+/// the `CloseRequested` handler runs the teardown and releases the window. Only the PTY-owning
+/// window may authorize — the settings webview can never quit the app.
+#[tauri::command]
+fn quit_confirmed(window: tauri::WebviewWindow) {
+    if !window_manager::disposes_pty_for(window.label()) {
+        return;
+    }
+    QUIT_AUTHORIZED.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = window.close();
+}
+
 fn main() -> ExitCode {
     // trmx-101 (FR-9.4): `termixion ctl <…>` is a non-GUI CLI — connect to the control socket, send one
     // request, print the response, exit. An EARLY fork, before the tauri app is ever built.
@@ -994,31 +1043,47 @@ fn main() -> ExitCode {
             scripts_io::scripts_list,
             scripts_io::scripts_open_dir,
             shell_integration_io::shell_integration_reveal,
-            control::control_response
+            control::control_response,
+            quit_confirmed
         ])
         .on_window_event(|window, event| {
             // trmx-51: only the MAIN window owns the PTY sessions — closing the settings window
-            // must leave the terminal alone. Closing main kills every live session (trmx-74:
+            // must leave the terminal alone. trmx-144: an UNCONFIRMED main-window close is vetoed
+            // and bounced to the webview (which owns the busy state, the `terminal.confirmClose`
+            // setting, and the dialog); once the webview calls `quit_confirmed` the re-driven
+            // close lands here authorized. Closing main then kills every live session (trmx-74:
             // `registry.kill_all()`, no zombies) and takes the settings window with it, so the
             // app exits exactly as it did when main was the only window.
-            if let WindowEvent::CloseRequested { .. } = event {
-                if !window_manager::disposes_pty_for(window.label()) {
-                    return;
-                }
-                if let Some(state) = window.try_state::<PtyState>()
-                    && let Ok(mut registry) = state.registry.lock()
-                {
-                    registry.kill_all();
-                }
-                // trmx-101 (FR-9.4): tear down the control socket (stop the acceptor + unlink).
-                if let Some(control_state) = window.try_state::<control::ControlState>() {
-                    control::shutdown(&control_state);
-                }
-                if let Some(settings) = window
-                    .app_handle()
-                    .get_webview_window(window_manager::SETTINGS_WINDOW_LABEL)
-                {
-                    let _ = settings.close();
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                match close_action(
+                    window_manager::disposes_pty_for(window.label()),
+                    QUIT_AUTHORIZED.load(std::sync::atomic::Ordering::SeqCst),
+                ) {
+                    CloseAction::Ignore => {}
+                    CloseAction::PreventAndAsk => {
+                        api.prevent_close();
+                        let _ = window.emit_to(window.label(), "close:requested", ());
+                    }
+                    CloseAction::TeardownAndAllow => {
+                        if begin_teardown(&MAIN_TEARDOWN_DONE) {
+                            if let Some(state) = window.try_state::<PtyState>()
+                                && let Ok(mut registry) = state.registry.lock()
+                            {
+                                registry.kill_all();
+                            }
+                            // trmx-101 (FR-9.4): tear down the control socket (acceptor + unlink).
+                            if let Some(control_state) = window.try_state::<control::ControlState>()
+                            {
+                                control::shutdown(&control_state);
+                            }
+                            if let Some(settings) = window
+                                .app_handle()
+                                .get_webview_window(window_manager::SETTINGS_WINDOW_LABEL)
+                            {
+                                let _ = settings.close();
+                            }
+                        }
+                    }
                 }
             }
         })
@@ -1037,6 +1102,26 @@ mod tests {
     use std::sync::mpsc;
 
     use super::*;
+
+    #[test]
+    fn close_action_gates_only_the_unauthorized_pty_owner() {
+        // trmx-144: the settings window is never gated (Ignore either way); the main window is
+        // vetoed-and-asked until the webview confirms the quit, then torn down and allowed.
+        assert_eq!(close_action(false, false), CloseAction::Ignore);
+        assert_eq!(close_action(false, true), CloseAction::Ignore);
+        assert_eq!(close_action(true, false), CloseAction::PreventAndAsk);
+        assert_eq!(close_action(true, true), CloseAction::TeardownAndAllow);
+    }
+
+    #[test]
+    fn begin_teardown_latches_exactly_once() {
+        // trmx-144: however many close paths race (authorized CloseRequested, quit_confirmed
+        // re-drive), the main teardown body must run once.
+        let done = std::sync::atomic::AtomicBool::new(false);
+        assert!(begin_teardown(&done));
+        assert!(!begin_teardown(&done));
+        assert!(!begin_teardown(&done));
+    }
 
     #[test]
     fn core_version_reports_the_core_crate_version() {

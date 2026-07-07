@@ -55,4 +55,72 @@ describe("createDispatcher", () => {
     d.dispatch("a.run");
     expect(d.recentCommandIds()).toEqual(["a.run", "c.arg"]);
   });
+
+  // trmx-144: per-dispatch origin — close commands must distinguish user gestures ("user") from
+  // control-channel requests ("remote", which bypass the busy-close confirm).
+  describe("per-dispatch origin (trmx-144)", () => {
+    function probe() {
+      let runOrigin: string | undefined;
+      let whenOrigin: string | undefined;
+      const commands: Command[] = [
+        {
+          id: "o.probe",
+          title: "O",
+          category: "X",
+          run: (c) => {
+            runOrigin = c.origin;
+          },
+          when: (c) => {
+            whenOrigin = c.origin;
+            return true;
+          },
+        },
+      ];
+      return { commands, runOrigin: () => runOrigin, whenOrigin: () => whenOrigin };
+    }
+
+    it("run (and when) see ctx.origin === 'user' by default", () => {
+      const p = probe();
+      expect(createDispatcher(p.commands, ctx).dispatch("o.probe")).toBe(true);
+      expect(p.runOrigin()).toBe("user");
+      expect(p.whenOrigin()).toBe("user");
+    });
+
+    it("dispatch(id, arg, 'remote') → ctx.origin === 'remote' in run and when", () => {
+      const p = probe();
+      expect(createDispatcher(p.commands, ctx).dispatch("o.probe", undefined, "remote")).toBe(true);
+      expect(p.runOrigin()).toBe("remote");
+      expect(p.whenOrigin()).toBe("remote");
+    });
+
+    it("DELEGATION PIN: ctx methods still reach the underlying impl through App's forwarding proxy", () => {
+      // Mirror App.tsx (~1017-1025): the ctx App injects is a Proxy over an EMPTY object whose
+      // get-trap returns forwarding functions. The dispatcher must NOT spread it — its per-call
+      // origin wrapper has to delegate every other property via Reflect.get so the trap still fires.
+      const impl = { newTab: vi.fn() };
+      const forwarding = new Proxy({} as CommandContext, {
+        get(_target, prop: string) {
+          return (...args: unknown[]) =>
+            (impl as unknown as Record<string, (...a: unknown[]) => unknown>)[prop](...args);
+        },
+      });
+      let seenOrigin: string | undefined;
+      const commands: Command[] = [
+        {
+          id: "t.new",
+          title: "T",
+          category: "X",
+          run: (c) => {
+            seenOrigin = c.origin; // must be the injected origin, NOT a forwarding function
+            c.newTab();
+          },
+        },
+      ];
+      expect(createDispatcher(commands, forwarding).dispatch("t.new", undefined, "remote")).toBe(
+        true,
+      );
+      expect(impl.newTab).toHaveBeenCalledTimes(1);
+      expect(seenOrigin).toBe("remote");
+    });
+  });
 });
