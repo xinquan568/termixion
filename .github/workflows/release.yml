@@ -194,12 +194,19 @@ jobs:
           deb=$(find target -name '*.deb' -print -quit)
           if [ -z "$deb" ]; then echo "::error::no .deb produced under target/"; exit 1; fi
           echo "inspecting: $deb"
-          dpkg-deb -I "$deb"                       # control + Depends must be present + sane
-          dpkg-deb -I "$deb" | grep -qi '^ Depends:' || { echo "::error::.deb has no Depends"; exit 1; }
+          # Capture each dpkg-deb output ONCE, then grep the captured text via a here-string. Piping
+          # `dpkg-deb ... | grep -q` is unsafe under `set -o pipefail`: grep -q exits at the first match
+          # and closes the pipe, dpkg-deb's tar subprocess then hits a write error and exits non-zero, and
+          # pipefail promotes that to the pipeline's status — a false "missing" failure on a good .deb
+          # (trmx-137). A here-string has no upstream producer to SIGPIPE, so the guard is faithful.
+          info="$(dpkg-deb -I "$deb")"             # control + Depends must be present + sane
+          printf '%s\n' "$info"
+          grep -qi '^ Depends:' <<<"$info" || { echo "::error::.deb has no Depends"; exit 1; }
           # Contents must carry the actual payload, not just metadata (a mispackaged .deb would else pass).
-          dpkg-deb --contents "$deb"
-          dpkg-deb --contents "$deb" | grep -q 'usr/bin/termixion' || { echo "::error::.deb is missing usr/bin/termixion"; exit 1; }
-          dpkg-deb --contents "$deb" | grep -q '\.desktop' || { echo "::error::.deb is missing the .desktop entry"; exit 1; }
+          contents="$(dpkg-deb --contents "$deb")"
+          printf '%s\n' "$contents"
+          grep -q 'usr/bin/termixion' <<<"$contents" || { echo "::error::.deb is missing usr/bin/termixion"; exit 1; }
+          grep -q '\.desktop' <<<"$contents" || { echo "::error::.deb is missing the .desktop entry"; exit 1; }
 
       - name: Stage + upload Linux artifacts
         run: |
