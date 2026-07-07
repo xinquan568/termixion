@@ -9,8 +9,11 @@
 // `update` (authority or mirror), plus injected `appInfo`/`opener`/`settings` seams, so it is
 // unit-tested with fakes and the real Tauri edge stays out of the test path.
 // trmx-80 (FR-13): a Configuration group with "Open config file" — the row's description shows
-// where config.toml lives (getConfigFilePath, hydrated at boot) and the button opens it through
-// the opener seam. A plain browser has no config file (null path), so the group hides entirely.
+// where config.toml lives (getConfigFilePath, hydrated at boot). A plain browser has no config
+// file (null path), so the group hides entirely. trmx-148: the button opens the file BACKEND-side
+// through the injected openConfigFile seam (the config_open_file command — the webview opener
+// plugin command is capability-denied in the packaged app) and a failure surfaces as an inline
+// error pill instead of being silently discarded.
 import { useEffect, useState } from "react";
 import { Button, ProgressBar, Select, SettingRow, SettingsGroup, StatusPill, Toggle } from "./components";
 import { GitHubIcon, GlobeIcon } from "./icons";
@@ -42,9 +45,18 @@ export interface AboutSettingsProps {
   appInfo: AppInfo;
   opener: Opener;
   settings: SettingsStore;
+  /** trmx-148: the backend-side config-file open (settingsStore.openConfigFile in production);
+   * rejections propagate here so the row can surface them. */
+  openConfigFile: () => Promise<void>;
 }
 
-export function AboutSettings({ update, appInfo, opener, settings }: AboutSettingsProps) {
+export function AboutSettings({
+  update,
+  appInfo,
+  opener,
+  settings,
+  openConfigFile,
+}: AboutSettingsProps) {
   const { state } = update;
   // Hydrated before any window renders (main.tsx boot order); null in a plain browser.
   const configPath = getConfigFilePath();
@@ -56,6 +68,8 @@ export function AboutSettings({ update, appInfo, opener, settings }: AboutSettin
     settings.get("update.autoDownload"),
   );
   const [confirmingReset, setConfirmingReset] = useState(false);
+  // trmx-148: the last failed config-file open, surfaced as an inline error pill in the row.
+  const [openError, setOpenError] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -207,10 +221,23 @@ export function AboutSettings({ update, appInfo, opener, settings }: AboutSettin
       {configPath ? (
         <SettingsGroup title="Configuration">
           <SettingRow label="Open config file" description={configPath}>
-            {/* review R3: a filesystem path takes the PATH opener, never the URL opener. */}
-            <Button variant="tertiary" onClick={() => void opener.openPath(configPath)}>
-              Open
-            </Button>
+            {/* trmx-148: the path opens BACKEND-side via config_open_file (the webview opener
+                command is capability-denied in the packaged app), and a rejection surfaces as
+                the error pill instead of vanishing into a discarded promise. */}
+            <div className="tx-about__check">
+              {openError ? <StatusPill tone="error">{openError}</StatusPill> : null}
+              <Button
+                variant="tertiary"
+                onClick={() => {
+                  setOpenError(null);
+                  openConfigFile().catch((err: unknown) => {
+                    setOpenError(err instanceof Error ? err.message : String(err));
+                  });
+                }}
+              >
+                Open
+              </Button>
+            </div>
           </SettingRow>
         </SettingsGroup>
       ) : null}

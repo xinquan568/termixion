@@ -17,6 +17,7 @@ import {
   getConfigFilePath,
   getConfigWarnings,
   onConfigWarningsChanged,
+  openConfigFile,
   __resetSettingsForTest,
   SETTING_KEYS,
   SETTING_DEFAULTS,
@@ -923,6 +924,48 @@ describe("shared snapshot backend (trmx-80)", () => {
     } finally {
       localStorage.removeItem("termixion.update.lastCheckAt");
     }
+  });
+});
+
+// trmx-148: the About row's backend-side "Open config file" — a plain command invoke
+// (config_open_file) riding the hydration-injected channel, mirroring the themes/scripts
+// open-dir seam. Unlike the fire-and-forget config_write path, its rejection PROPAGATES to the
+// caller so the row can surface the failure instead of silently discarding it.
+describe("openConfigFile (trmx-148)", () => {
+  /** A backend that resolves config_read + config_open_file; everything else is unexpected. */
+  function fakeOpenBackend(opts: { failOpen?: boolean } = {}) {
+    const calls: string[] = [];
+    const invoke = (cmd: string): Promise<unknown> => {
+      calls.push(cmd);
+      if (cmd === "config_read") {
+        return Promise.resolve({
+          exists: true,
+          path: "/tmp/termixion/config.toml",
+          values: { "appearance.theme": "white" },
+          warnings: [],
+        });
+      }
+      if (cmd === "config_open_file") {
+        return opts.failOpen
+          ? Promise.reject(new Error("opener denied"))
+          : Promise.resolve(null);
+      }
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    };
+    return { invoke, calls };
+  }
+
+  it("invokes config_open_file through the hydration-injected invoke and resolves void", async () => {
+    const backend = fakeOpenBackend();
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    await expect(openConfigFile()).resolves.toBeUndefined();
+    expect(backend.calls).toContain("config_open_file");
+  });
+
+  it("PROPAGATES a rejection to the caller (unlike the fire-and-forget config_write path)", async () => {
+    const backend = fakeOpenBackend({ failOpen: true });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    await expect(openConfigFile()).rejects.toThrow("opener denied");
   });
 });
 

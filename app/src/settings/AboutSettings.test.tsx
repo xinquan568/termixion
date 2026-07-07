@@ -6,8 +6,10 @@
 // trmx-51: vmark-0.8.18 parity — icon-led stacked links, the four Updates rows (Automatic updates,
 // Check frequency, Download updates automatically, Check for updates), and the Reset section with an
 // inline confirmation driving resetAllSettings.
-// trmx-80 (FR-13): the Configuration group — "Open config file" opens the hydrated config path
-// through the opener seam and shows the path as secondary text; a plain browser (null path) hides it.
+// trmx-80 (FR-13): the Configuration group — "Open config file" shows the hydrated config path as
+// secondary text; a plain browser (null path) hides it. trmx-148: the row opens BACKEND-side
+// through the injected openConfigFile seam (config_open_file — the webview opener plugin command
+// is capability-denied in the packaged app) and surfaces a rejection as an inline error pill.
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AboutSettings } from "./AboutSettings";
@@ -49,9 +51,17 @@ function renderAbout(
   update: UseUpdate,
   opener = makeFakeOpener(),
   settings: SettingsStore = makeSettingsStore(fakeStorage()),
+  // trmx-148: the backend-side config-file open seam; defaults to a resolving fake.
+  openConfigFile: () => Promise<void> = vi.fn(async () => {}),
 ) {
   render(
-    <AboutSettings update={update} appInfo={makeFakeAppInfo("0.0.1")} opener={opener} settings={settings} />,
+    <AboutSettings
+      update={update}
+      appInfo={makeFakeAppInfo("0.0.1")}
+      opener={opener}
+      settings={settings}
+      openConfigFile={openConfigFile}
+    />,
   );
   return opener;
 }
@@ -63,12 +73,13 @@ describe("AboutSettings identity", () => {
     await waitFor(() => expect(screen.getByText("Version 0.0.1")).toBeInTheDocument());
   });
 
-  it("opens BOTH links to the GitHub URL through the URL opener (never the path opener)", () => {
+  it("opens BOTH links to the GitHub URL through the URL opener", () => {
+    // trmx-148: the opener seam is URL-only again (openPath removed — the config row opens
+    // backend-side), so "a path never rides the URL opener" holds by construction.
     const opener = renderAbout(fakeUpdate());
     screen.getByRole("button", { name: "Website" }).click();
     screen.getByRole("button", { name: "GitHub" }).click();
     expect(opener.opened).toEqual([GITHUB_URL, GITHUB_URL]);
-    expect(opener.openedPaths).toEqual([]);
   });
 
   it("stacks the links vertically, each led by its icon (vmark parity)", () => {
@@ -230,7 +241,10 @@ describe("AboutSettings Reset section", () => {
 
 // trmx-80 (FR-13): the "Open config file" affordance, driven by the hydrated module state
 // (getConfigFilePath) — so these tests hydrate with a fake backend, or don't (plain browser).
-describe("AboutSettings config file (trmx-80)", () => {
+// trmx-148: the row opens BACKEND-side through the injected openConfigFile seam — the webview
+// opener plugin command is capability-denied in the packaged app — and a rejection surfaces as
+// an inline error pill instead of vanishing into a discarded void.
+describe("AboutSettings config file (trmx-80 / trmx-148)", () => {
   beforeEach(() => __resetSettingsForTest());
   afterEach(() => __resetSettingsForTest());
 
@@ -251,20 +265,57 @@ describe("AboutSettings config file (trmx-80)", () => {
     };
   }
 
-  it("shows the config path and opens the file through the PATH opener (a file is not a URL)", async () => {
-    // trmx-80 review R3: openExternal is backed by openUrl — routing a raw filesystem path
-    // through it is wrong; the config row must use the plugin's PATH opener instead.
+  /** Hydrate the module state so getConfigFilePath() serves CONFIG_PATH (the group shows). */
+  async function hydrateWithPath() {
     await hydrateSettings({
       invoke: fakeConfigInvoke(CONFIG_PATH),
       bus: { listen: () => Promise.resolve(() => {}) },
     });
-    const opener = renderAbout(fakeUpdate());
+  }
+
+  it("shows the config path and opens the file through the BACKEND seam (trmx-148)", async () => {
+    await hydrateWithPath();
+    const openConfigFile = vi.fn(async () => {});
+    const opener = renderAbout(
+      fakeUpdate(),
+      makeFakeOpener(),
+      makeSettingsStore(fakeStorage()),
+      openConfigFile,
+    );
     expect(screen.getByText("Open config file")).toBeInTheDocument();
     // The path shows as the row's secondary text so the user can see where the file lives.
     expect(screen.getByText(CONFIG_PATH)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Open" }));
-    expect(opener.openedPaths).toEqual([CONFIG_PATH]);
-    expect(opener.opened).toEqual([]); // never routed through the URL opener
+    expect(openConfigFile).toHaveBeenCalledOnce();
+    expect(opener.opened).toEqual([]); // a path never rides the URL opener
+  });
+
+  it("surfaces a rejected open as an inline error pill (trmx-148 — no silent discard)", async () => {
+    await hydrateWithPath();
+    const openConfigFile = vi.fn(() => Promise.reject(new Error("opener denied by capability")));
+    renderAbout(fakeUpdate(), makeFakeOpener(), makeSettingsStore(fakeStorage()), openConfigFile);
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    await waitFor(() =>
+      expect(screen.getByText("opener denied by capability")).toBeInTheDocument(),
+    );
+  });
+
+  it("a later successful open clears the error pill (trmx-148)", async () => {
+    await hydrateWithPath();
+    let fail = true;
+    const openConfigFile = vi.fn(() =>
+      fail ? Promise.reject(new Error("opener denied by capability")) : Promise.resolve(),
+    );
+    renderAbout(fakeUpdate(), makeFakeOpener(), makeSettingsStore(fakeStorage()), openConfigFile);
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    await waitFor(() =>
+      expect(screen.getByText("opener denied by capability")).toBeInTheDocument(),
+    );
+    fail = false;
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    await waitFor(() =>
+      expect(screen.queryByText("opener denied by capability")).not.toBeInTheDocument(),
+    );
   });
 
   it("hides the affordance when there is no config path (plain browser)", () => {

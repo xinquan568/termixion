@@ -97,6 +97,7 @@ function renderApp(props: Partial<Parameters<typeof SettingsApp>[0]> = {}) {
       appInfo={makeFakeAppInfo("0.0.1")}
       opener={makeFakeOpener()}
       settings={settings}
+      openConfigFile={async () => {}}
       {...props}
     />,
   );
@@ -254,6 +255,7 @@ describe("SettingsApp — live barPosition for the Appearance page (trmx-82, D5)
         appInfo={makeFakeAppInfo("0.0.1")}
         opener={makeFakeOpener()}
         settings={settings}
+        openConfigFile={async () => {}}
         initialSection="appearance"
       />,
     );
@@ -477,6 +479,7 @@ describe("SettingsApp — user themes hydration (trmx-89, 4b)", () => {
         appInfo={makeFakeAppInfo("0.0.1")}
         opener={makeFakeOpener()}
         settings={makeSettingsStore(fakeStorage())}
+        openConfigFile={async () => {}}
         listen={listen}
         invoke={invoke}
         initialSection="appearance"
