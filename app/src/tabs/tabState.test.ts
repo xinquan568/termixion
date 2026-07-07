@@ -2,8 +2,9 @@
 // Copyright (c) 2026 Eric Y. Liu
 //
 // trmx-74/75/84 (test-first): the pure tab+pane reducer. Every transition — open, per-pane attach,
-// close (iTerm2 right-then-left activation), activate, wrap next/prev, ⌘1..⌘9 selectIndex (index 8
-// = LAST), drag reorder, AND the trmx-84 pane transitions (split/close/focus/ratio) — is pinned
+// close (iTerm2 right-then-left activation), activate, wrap next/prev, ⌘1..⌘9 selectIndex (strictly
+// positional per trmx-151), drag reorder, AND the trmx-84 pane transitions (split/close/focus/ratio)
+// — is pinned
 // here headless: no React, no DOM, state in / state out. No-op transitions return the IDENTICAL
 // state object (===). Titles are per-PANE layered sources; the tab's rendered title is the FOCUSED
 // pane's effective title (a background pane's title change never moves the tab label).
@@ -620,15 +621,20 @@ describe("activate / next / prev / selectIndex / moveTab (unchanged)", () => {
     expect(reduceTabs(one, { kind: "nextTab" })).toBe(one);
   });
 
-  it("selectIndex activates 0-based; ⌘9 (index 8) = last; out-of-range no-op", () => {
+  it("selectIndex activates the exact 0-based index (trmx-151 strict first-nine); out-of-range no-op", () => {
     const state = withTabs(3);
     expect(reduceTabs(state, { kind: "selectIndex", index: 0 }).activeTabId).toBe(1);
-    expect(
-      reduceTabs(reduceTabs(state, { kind: "activateTab", tabId: 1 }), {
-        kind: "selectIndex",
-        index: 8,
-      }).activeTabId,
-    ).toBe(3);
+    // trmx-151 product decision: index 8 (⌘9) is the NINTH tab, period — the old iTerm2
+    // "8 → last" mapping is gone. With 12 tabs (tabIds 1..12), index 8 selects tabId 9.
+    const twelve = withTabs(12);
+    expect(reduceTabs(twelve, { kind: "selectIndex", index: 8 }).activeTabId).toBe(9);
+    // The guard stays RANGE-based (0..len-1), so indexes past 8 are still valid when tabs exist —
+    // only the special-case mapping was removed, not the general reducer surface.
+    const fromFirst = reduceTabs(twelve, { kind: "activateTab", tabId: 1 });
+    expect(reduceTabs(fromFirst, { kind: "selectIndex", index: 11 }).activeTabId).toBe(12);
+    // With 3 tabs, index 8 is now simply out of range → === no-op (was "last tab" before trmx-151).
+    const onFirst = reduceTabs(state, { kind: "activateTab", tabId: 1 });
+    expect(reduceTabs(onFirst, { kind: "selectIndex", index: 8 })).toBe(onFirst);
     expect(reduceTabs(state, { kind: "selectIndex", index: 5 })).toBe(state);
   });
 

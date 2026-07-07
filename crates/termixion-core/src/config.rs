@@ -252,6 +252,8 @@ impl Default for AppearanceConfig {
 pub struct TabsConfig {
     pub bar_position: TabBarPosition,
     pub side_label_orientation: LabelOrientation,
+    /// Show the ⌘1–⌘9 shortcut prefixes on tab labels (trmx-151).
+    pub show_shortcut_hints: bool,
 }
 
 impl Default for TabsConfig {
@@ -259,6 +261,7 @@ impl Default for TabsConfig {
         Self {
             bar_position: TabBarPosition::Bottom,
             side_label_orientation: LabelOrientation::Horizontal,
+            show_shortcut_hints: true,
         }
     }
 }
@@ -382,6 +385,7 @@ pub const DEFAULT_TEMPLATE: &str = r##"# Termixion configuration (TOML).
 # [tabs]
 # bar_position = "bottom"         # "top" | "bottom" | "left" | "right"
 # side_label_orientation = "horizontal"   # "horizontal" | "vertical" (left/right bars only)
+# show_shortcut_hints = true      # false hides the ⌘1–⌘9 tab prefixes
 
 # [scripts]
 # startup = ""                    # a script under ~/.config/termixion/scripts/ to run in the first
@@ -442,6 +446,7 @@ pub fn toml_path_for(registry_key: &str) -> Option<(&'static str, &'static str)>
         "appearance.theme" => Some(("appearance", "theme")),
         "tabs.barPosition" => Some(("tabs", "bar_position")),
         "tabs.sideLabelOrientation" => Some(("tabs", "side_label_orientation")),
+        "tabs.showShortcutHints" => Some(("tabs", "show_shortcut_hints")),
         "scripts.startup" => Some(("scripts", "startup")),
         "remote_control.enabled" => Some(("remote_control", "enabled")),
         "remote_control.socketPath" => Some(("remote_control", "socket_path")),
@@ -527,6 +532,11 @@ pub fn diff_configs(old: &Config, new: &Config) -> Vec<(String, RegistryValue)> 
         old.tabs.side_label_orientation != new.tabs.side_label_orientation,
         "tabs.sideLabelOrientation",
         RegistryValue::Str(new.tabs.side_label_orientation.as_str().to_string()),
+    );
+    push(
+        old.tabs.show_shortcut_hints != new.tabs.show_shortcut_hints,
+        "tabs.showShortcutHints",
+        RegistryValue::Bool(new.tabs.show_shortcut_hints),
     );
     push(
         old.scripts.startup != new.scripts.startup,
@@ -811,6 +821,13 @@ fn walk_tabs(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
                 &mut config.tabs.side_label_orientation,
                 sink,
             ),
+            // trmx-151: the ⌘1–⌘9 tab-prefix toggle (tolerant read_bool, like activity_indicator).
+            "show_shortcut_hints" => read_bool(
+                value,
+                ("tabs.show_shortcut_hints", "tabs.showShortcutHints"),
+                &mut config.tabs.show_shortcut_hints,
+                sink,
+            ),
             _ => sink.warnings.push(ConfigWarning::UnknownKey {
                 key: format!("tabs.{key}"),
             }),
@@ -935,8 +952,8 @@ fn describe_value(value: &toml::Value) -> String {
 mod tests {
     use super::*;
 
-    /// All 14 registry keys.
-    const REGISTRY_KEYS: [&str; 14] = [
+    /// All 15 registry keys.
+    const REGISTRY_KEYS: [&str; 15] = [
         "update.autoCheck",
         "update.checkFrequency",
         "update.autoDownload",
@@ -951,6 +968,7 @@ mod tests {
         "appearance.theme",
         "tabs.barPosition",
         "tabs.sideLabelOrientation",
+        "tabs.showShortcutHints",
     ];
 
     fn value_for<'a>(pairs: &'a [(String, RegistryValue)], key: &str) -> Option<&'a RegistryValue> {
@@ -979,6 +997,7 @@ theme = "night"
 [tabs]
 bar_position = "top"
 side_label_orientation = "vertical"
+show_shortcut_hints = false
 "#;
 
     // 1. Happy path: every key set to a non-default valid value.
@@ -1010,6 +1029,7 @@ side_label_orientation = "vertical"
                 tabs: TabsConfig {
                     bar_position: TabBarPosition::Top,
                     side_label_orientation: LabelOrientation::Vertical,
+                    show_shortcut_hints: false,
                 },
                 scripts: ScriptsConfig::default(),
                 remote_control: RemoteControlConfig::default(),
@@ -1066,7 +1086,7 @@ side_label_orientation = "vertical"
     fn full_file_yields_all_twelve_registry_pairs() {
         let (pairs, warnings) = parse_registry_pairs(FULL_NON_DEFAULT);
         assert_eq!(warnings, Vec::new());
-        assert_eq!(pairs.len(), 14);
+        assert_eq!(pairs.len(), 15);
         for key in REGISTRY_KEYS {
             assert!(value_for(&pairs, key).is_some(), "missing pair for {key}");
         }
@@ -1125,6 +1145,10 @@ side_label_orientation = "vertical"
         assert_eq!(
             value_for(&pairs, "tabs.sideLabelOrientation"),
             Some(&RegistryValue::Str("vertical".to_string()))
+        );
+        assert_eq!(
+            value_for(&pairs, "tabs.showShortcutHints"),
+            Some(&RegistryValue::Bool(false))
         );
     }
 
@@ -1564,6 +1588,42 @@ side_label_orientation = "vertical"
         }
     }
 
+    // trmx-151: tabs.showShortcutHints defaults to TRUE (the ⌘1–⌘9 tab prefixes show); explicit
+    // false parses + surfaces the pair; a wrong-typed value keeps the default and warns
+    // (tolerant read_bool, same as terminal.activity_indicator).
+    #[test]
+    fn show_shortcut_hints_defaults_true_false_surfaces_and_wrong_type_warns() {
+        assert!(Config::default().tabs.show_shortcut_hints);
+        let (config, warnings) = parse_config("[tabs]\n");
+        assert!(config.tabs.show_shortcut_hints, "defaults to true");
+        assert_eq!(warnings, Vec::new());
+
+        let text = "[tabs]\nshow_shortcut_hints = false\n";
+        let (config, warnings) = parse_config(text);
+        assert!(!config.tabs.show_shortcut_hints);
+        assert_eq!(warnings, Vec::new());
+        let (pairs, warnings) = parse_registry_pairs(text);
+        assert_eq!(warnings, Vec::new());
+        assert_eq!(
+            pairs,
+            vec![(
+                "tabs.showShortcutHints".to_string(),
+                RegistryValue::Bool(false)
+            )]
+        );
+
+        // A non-bool value keeps the default (true) and warns; the key is absent from the pairs.
+        let (config, warnings) = parse_config("[tabs]\nshow_shortcut_hints = \"yes\"\n");
+        assert!(config.tabs.show_shortcut_hints);
+        assert_eq!(warnings.len(), 1);
+        assert!(matches!(
+            &warnings[0],
+            ConfigWarning::InvalidValue { key, .. } if key == "tabs.show_shortcut_hints"
+        ));
+        let (pairs, _) = parse_registry_pairs("[tabs]\nshow_shortcut_hints = \"yes\"\n");
+        assert!(value_for(&pairs, "tabs.showShortcutHints").is_none());
+    }
+
     #[test]
     fn unknown_label_orientation_warns_with_valid_values_listed() {
         let text = "[tabs]\nside_label_orientation = \"diagonal\"\n";
@@ -1716,7 +1776,7 @@ side_label_orientation = "vertical"
     // 10. toml_path_for maps all 11 registry keys and rejects junk.
     #[test]
     fn toml_path_for_maps_every_registry_key() {
-        let expected: [(&str, (&str, &str)); 14] = [
+        let expected: [(&str, (&str, &str)); 15] = [
             ("update.autoCheck", ("update", "auto_check")),
             ("update.checkFrequency", ("update", "check_frequency")),
             ("update.autoDownload", ("update", "auto_download")),
@@ -1737,6 +1797,7 @@ side_label_orientation = "vertical"
                 "tabs.sideLabelOrientation",
                 ("tabs", "side_label_orientation"),
             ),
+            ("tabs.showShortcutHints", ("tabs", "show_shortcut_hints")),
         ];
         for (registry_key, path) in expected {
             assert_eq!(
@@ -1754,7 +1815,7 @@ side_label_orientation = "vertical"
     fn toml_path_for_round_trips_through_the_parser() {
         // A minimal file written at toml_path_for's answer must surface exactly
         // that registry key in the pairs.
-        let samples: [(&str, &str); 14] = [
+        let samples: [(&str, &str); 15] = [
             ("update.autoCheck", "false"),
             ("update.checkFrequency", "\"manual\""),
             ("update.autoDownload", "false"),
@@ -1769,6 +1830,7 @@ side_label_orientation = "vertical"
             ("appearance.theme", "\"night\""),
             ("tabs.barPosition", "\"right\""),
             ("tabs.sideLabelOrientation", "\"vertical\""),
+            ("tabs.showShortcutHints", "false"),
         ];
         for (registry_key, literal) in samples {
             let Some((table, key)) = toml_path_for(registry_key) else {
@@ -1825,6 +1887,30 @@ side_label_orientation = "vertical"
                 "tabs.sideLabelOrientation".to_string(),
                 RegistryValue::Str("vertical".to_string())
             )]
+        );
+    }
+
+    // trmx-151: the diff pin — without the diff_configs arm a hand-edited TOML parses but never
+    // live-applies (the watcher's settings:changed ride diff_configs, not the parse pairs).
+    #[test]
+    fn diff_show_shortcut_hints_change_yields_that_pair() {
+        let old = Config::default();
+        let mut new = Config::default();
+        new.tabs.show_shortcut_hints = false;
+        assert_eq!(
+            diff_configs(&old, &new),
+            vec![(
+                "tabs.showShortcutHints".to_string(),
+                RegistryValue::Bool(false)
+            )]
+        );
+        assert_eq!(
+            toml_path_for("tabs.showShortcutHints"),
+            Some(("tabs", "show_shortcut_hints"))
+        );
+        assert!(
+            DEFAULT_TEMPLATE.contains("# show_shortcut_hints = true"),
+            "the template must document tabs.show_shortcut_hints (commented out)"
         );
     }
 

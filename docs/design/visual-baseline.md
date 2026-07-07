@@ -165,6 +165,18 @@ classes, the 44px rail token, rotated labels, tab flows, the scrolled-rail renam
 the Settings-page gating) is CI-gated instead, in `app/e2e/label-orientation.spec.ts` plus the
 barLayout/TabStrip/AppearanceSettings/SettingsApp unit suites.
 
+**iTerm2-style tab layout + shortcut hints (trmx-151).** The strip adopts iTerm2's layout
+conventions — centered prefix+title content, a left-edge hover/focus-revealed close ×, the
+activity dot staying right — and the first nine tabs gain a dimmed `⌘1`–`⌘9` prefix (the live
+`tab.select-N` binding, `tabs.showShortcutHints`, default on). Layout only: the same `--tx-*`
+tokens on every surface, zero new color literals (the §2 consistency rule holds); the active-tab
+treatment (raised `--tx-bg` + accent line) is unchanged. Review evidence: the operator's §5
+six-shot pass picks up the new layout on its existing bottom/left rows — no new screenshot row is
+required (same window, same protocol). Functional coverage is CI-gated in the tabState /
+registry / chordGlyphs / tabHints / barLayout / TabStrip unit suites and the tabs / tab-position /
+label-orientation e2e specs (hint presence per position, the narrow-tab whole-prefix drop, the
+upright chip on the vertical rail, and the scrolled-rail rename overlay staying un-recontained).
+
 ## 6. The forward rule (v0.0.6 / v0.0.7)
 
 - **Splits (v0.0.6):** pane chrome (dividers, focus dim, indicators) consumes existing tokens

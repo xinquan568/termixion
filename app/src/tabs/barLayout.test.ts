@@ -86,20 +86,25 @@ describe("labelOrientationFor (trmx-82)", () => {
 // labels-vertical CSS reads them); everything else is the trmx-81 status quo (railWidthPx 180;
 // the 34px strip/row height and the 16px close square), kept as REFERENCE data for totality —
 // index.css hardcodes those numbers itself and no rule consumes them as vars.
+// trmx-151 adds hintHeaderPx — the upright ⌘N chip's fixed header row atop the rotated label: 0
+// outside vertical-label mode (horizontal hints sit inline, no header), 20 in it; the min/max
+// heights grow by exactly that 20 (60→80, 180→200) so the LABEL's own budget is preserved.
 describe("railGeometryFor (trmx-82)", () => {
   const STATUS_QUO = {
     railWidthPx: 180,
     tabMaxHeightPx: 34,
     tabMinHeightPx: 34,
     closeHitTargetMinPx: 16,
+    hintHeaderPx: 0,
   };
 
   it("vertical rail + vertical labels → the narrow rail (44) with tall-tab tokens", () => {
     expect(railGeometryFor("vertical", "vertical")).toEqual({
       railWidthPx: 44,
-      tabMaxHeightPx: 180,
-      tabMinHeightPx: 60,
+      tabMaxHeightPx: 200,
+      tabMinHeightPx: 80,
       closeHitTargetMinPx: 24,
+      hintHeaderPx: 20,
     });
   });
 

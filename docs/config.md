@@ -44,6 +44,7 @@ tables; internally each maps 1:1 to a camelCase registry key (the mapping is own
 | `appearance.theme` | `appearance.theme` | string | derived³ | a theme id from the built-in catalog | immediate |
 | `tabs.bar_position` | `tabs.barPosition` | string | `"bottom"` | `top` · `bottom` · `left` · `right` | immediate (the tab bar repositions live; terminals keep running) |
 | `tabs.side_label_orientation` | `tabs.sideLabelOrientation` | string | `"horizontal"` | `horizontal` · `vertical` | immediate (applies only when the bar is `left`/`right`; the value persists across moves and re-applies) |
+| `tabs.show_shortcut_hints` | `tabs.showShortcutHints` | bool | `true` | — | immediate (the ⌘1–⌘9 prefixes on the first nine tabs show/hide live) |
 | `scripts.startup` | `scripts.startup` | string | `""` | a script path relative to the scripts root, e.g. `"work/proj-x.sh"`; `""` = none⁵ | next launch (sourced in the first tab) |
 | `remote_control.enabled` | `remote_control.enabled` | bool | `false` | — | immediate (starts/stops the socket)⁷ |
 | `remote_control.socket_path` | `remote_control.socketPath` | string | `""` | an absolute path in a private (`0700`) dir; `""` = the default⁷ | next enable |

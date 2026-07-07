@@ -6,9 +6,13 @@
 // owns NO tab state. The drag-to-reorder math lives in the exported `hoverIndexFromPoint` helper
 // (unit-tested directly, like the reducer), while the DOM wiring is driven here with jsdom pointer
 // sequences (getBoundingClientRect mocked — jsdom has no layout).
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { TabStrip, hoverIndexFromPoint, hoverSlotFor, DRAG_SLOP_PX } from "./TabStrip";
+import { FULL_DEFAULT_KEYS } from "../commands/keymapDispatch";
 import type { Tab } from "./tabState";
 import { leafNode } from "../panes/layoutTree";
 
@@ -556,17 +560,26 @@ describe("TabStrip vertical labels (trmx-82)", () => {
   // The D2 geometry ownership (review round): TabStrip — the one component that knows BOTH
   // orientation and labelOrientation — writes the railGeometryFor tokens itself, so index.css can
   // consume the vars with NO fallbacks (they can never be absent in vertical-label mode).
-  it("owns the D2 geometry: vertical-label mode writes all four token vars on the root", () => {
+  // trmx-151: a FIFTH token (--tab-hint-header, the upright chip's 20px header row) joins the
+  // set, and the height bounds carry the +20 header (min 60→80, max 180→200 — barLayout.ts).
+  it("owns the D2 geometry: vertical-label mode writes all five token vars on the root", () => {
     renderStrip({ orientation: "vertical", labelOrientation: "vertical" });
     const strip = screen.getByTestId("tab-strip");
     expect(strip.style.getPropertyValue("--tab-rail-width")).toBe("44px");
-    expect(strip.style.getPropertyValue("--tab-max-height")).toBe("180px");
-    expect(strip.style.getPropertyValue("--tab-min-height")).toBe("60px");
+    expect(strip.style.getPropertyValue("--tab-max-height")).toBe("200px");
+    expect(strip.style.getPropertyValue("--tab-min-height")).toBe("80px");
     expect(strip.style.getPropertyValue("--tab-close-min")).toBe("24px");
+    expect(strip.style.getPropertyValue("--tab-hint-header")).toBe("20px");
   });
 
   it("writes NO geometry vars outside vertical-label mode (those layouts are CSS-owned)", () => {
-    const vars = ["--tab-rail-width", "--tab-max-height", "--tab-min-height", "--tab-close-min"];
+    const vars = [
+      "--tab-rail-width",
+      "--tab-max-height",
+      "--tab-min-height",
+      "--tab-close-min",
+      "--tab-hint-header",
+    ];
     const { view, ...props } = renderStrip({ orientation: "vertical" }); // horizontal labels
     for (const name of vars) {
       expect(screen.getByTestId("tab-strip").style.getPropertyValue(name)).toBe("");
@@ -696,5 +709,205 @@ describe("TabStrip vertical labels (trmx-82)", () => {
     fireEvent.pointerMove(el, { pointerId: 11, clientX: 20, clientY: 200 }); // past mid(0)=90, before mid(1)=210
     fireEvent.pointerUp(el, { pointerId: 11, clientX: 20, clientY: 200 });
     expect(onMove).toHaveBeenCalledExactlyOnceWith(0, 1);
+  });
+});
+
+// trmx-151 (test-first): the ⌘N shortcut hints. The strip takes the EFFECTIVE keymap App
+// maintains (defaults ⊕ user [keys]) plus the live tabs.showShortcutHints setting, and prefixes
+// the first NINE tabs' titles with their select-chord glyphs (tabHintChordFor is positional —
+// render index, not tab identity). The hint is its OWN aria-hidden span inside the new
+// `.tab-strip__content` wrapper — the title span's text and `title=` tooltip stay pristine — and
+// the tab div announces the chord to AT via aria-keyshortcuts instead. THE CONTAINMENT CONTRACT
+// (step-5 review finding 1): the rename input replaces the whole wrapper and stays a DIRECT child
+// of the tab div — its D4 fixed overlay must never gain a containing ancestor (the wrapper is a
+// size container).
+describe("TabStrip shortcut hints (trmx-151)", () => {
+  const DEFAULT_KEYMAP: Record<string, string> = { ...FULL_DEFAULT_KEYS };
+  const tenTabs = () => Array.from({ length: 10 }, (_, i) => tab(i + 1, `job-${i + 1}`));
+  const hintIn = (tabId: number) =>
+    screen.getByTestId(`tab-${tabId}`).querySelector(".tab-strip__hint");
+
+  it("renders the ⌘N hint on tabs 1–9 with the default keymap; the 10th tab has none", () => {
+    renderStrip({ tabs: tenTabs(), keymap: DEFAULT_KEYMAP });
+    for (let i = 1; i <= 9; i++) {
+      const hint = hintIn(i);
+      expect(hint, `tab ${i}`).not.toBeNull();
+      expect(hint!.textContent).toBe(`⌘${i}`);
+      // Decorative for AT — the chord is announced via aria-keyshortcuts on the tab instead.
+      expect(hint!.getAttribute("aria-hidden")).toBe("true");
+    }
+    expect(hintIn(10)).toBeNull(); // strictly first-nine (no cmd+10 exists)
+  });
+
+  it("keeps the hint a SEPARATE span: title text and tooltip carry ONLY the title", () => {
+    renderStrip({ keymap: DEFAULT_KEYMAP });
+    const title = screen.getByTestId("tab-1").querySelector(".tab-strip__title")!;
+    expect(title.textContent).toBe("Shell"); // no glyph leaked into the label
+    expect(title.getAttribute("title")).toBe("Shell"); // …or into the tooltip
+    expect(title.querySelector(".tab-strip__hint")).toBeNull(); // sibling, never nested
+  });
+
+  it("wraps hint + title in the content wrapper (hint first)", () => {
+    renderStrip({ keymap: DEFAULT_KEYMAP });
+    const tabEl = screen.getByTestId("tab-1");
+    const content = tabEl.querySelector(".tab-strip__content")!;
+    expect(content).not.toBeNull();
+    expect(content.parentElement).toBe(tabEl);
+    const children = [...content.children].map((c) => c.className);
+    expect(children[0]).toContain("tab-strip__hint");
+    expect(children[1]).toContain("tab-strip__title");
+  });
+
+  it("renders NO hints anywhere when shortcutHintsOn is false", () => {
+    renderStrip({ tabs: tenTabs(), keymap: DEFAULT_KEYMAP, shortcutHintsOn: false });
+    expect(document.querySelectorAll(".tab-strip__hint")).toHaveLength(0);
+    for (let i = 1; i <= 10; i++) {
+      expect(screen.getByTestId(`tab-${i}`)).not.toHaveAttribute("aria-keyshortcuts");
+    }
+  });
+
+  it("announces the chord via aria-keyshortcuts (Meta+N) on tabs 1–9 only", () => {
+    renderStrip({ tabs: tenTabs(), keymap: DEFAULT_KEYMAP });
+    for (let i = 1; i <= 9; i++) {
+      expect(screen.getByTestId(`tab-${i}`)).toHaveAttribute("aria-keyshortcuts", `Meta+${i}`);
+    }
+    expect(screen.getByTestId("tab-10")).not.toHaveAttribute("aria-keyshortcuts");
+  });
+
+  it("a REBOUND slot shows the surviving chord's glyphs; an unbound slot shows none", () => {
+    // cmd+1 unbound (mergeKeymap deletes on "none" — the chord is simply absent here) with a
+    // replacement bound; tab.select-2 fully unbound. tabHintChordFor's alias/rebind rule.
+    renderStrip({ keymap: { "cmd+b": "tab.select-1", "cmd+3": "tab.select-3" } });
+    expect(hintIn(1)!.textContent).toBe("⌘B");
+    expect(hintIn(2)).toBeNull(); // fully unbound → no hint, no aria
+    expect(screen.getByTestId("tab-2")).not.toHaveAttribute("aria-keyshortcuts");
+    expect(hintIn(3)!.textContent).toBe("⌘3");
+  });
+
+  it("defaults to NO hints without a keymap prop (the strip stays safe standalone)", () => {
+    renderStrip();
+    expect(document.querySelectorAll(".tab-strip__hint")).toHaveLength(0);
+  });
+
+  it("CONTAINMENT CONTRACT: the rename input is a DIRECT child of the tab div, seeded bare", () => {
+    renderStrip({ keymap: DEFAULT_KEYMAP, renamingTabId: 2 });
+    const tabEl = screen.getByTestId("tab-2");
+    const input = screen.getByTestId("tab-rename-input") as HTMLInputElement;
+    // The D4 fixed overlay must never gain a containing ancestor: the size-container wrapper is
+    // REPLACED whole, so the input's parent is the tab div itself (parentElement, not contains).
+    expect(input.parentElement).toBe(tabEl);
+    expect(tabEl.querySelector(".tab-strip__content")).toBeNull();
+    expect(input.value).toBe("vim"); // the BARE title — no hint glyph leaked into the edit
+    // The other tabs keep their wrapped hint + title.
+    expect(screen.getByTestId("tab-1").querySelector(".tab-strip__content")).not.toBeNull();
+    expect(hintIn(1)).not.toBeNull();
+  });
+
+  it("close still closes WITHOUT activating, with the hint present", () => {
+    const { onActivate, onClose } = renderStrip({ keymap: DEFAULT_KEYMAP });
+    const close = screen.getByTestId("tab-close-3");
+    fireEvent.pointerDown(close, { pointerId: 1, clientX: 290, clientY: 10, button: 0 });
+    fireEvent.pointerUp(close, { pointerId: 1, clientX: 290, clientY: 10 });
+    fireEvent.click(close);
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(3);
+    expect(onActivate).not.toHaveBeenCalled();
+  });
+
+  it("vertical-label mode: the hint is an UPRIGHT chip outside the writing-mode span", () => {
+    renderStrip({
+      orientation: "vertical",
+      labelOrientation: "vertical",
+      keymap: DEFAULT_KEYMAP,
+    });
+    const hint = hintIn(1)!;
+    expect(hint.className).toBe("tab-strip__hint tab-strip__hint--upright");
+    // The rotation stays on the TITLE span alone — the chip must never inherit it structurally.
+    const title = screen.getByTestId("tab-1").querySelector(".tab-strip__title--vertical")!;
+    expect(title).not.toBeNull();
+    expect(title.contains(hint)).toBe(false);
+    // Both live in the (column) content wrapper, chip first (the header row above the label).
+    const content = screen.getByTestId("tab-1").querySelector(".tab-strip__content")!;
+    expect(content.firstElementChild).toBe(hint);
+    expect(content.contains(title)).toBe(true);
+  });
+
+  it("horizontal strips carry NO upright modifier", () => {
+    renderStrip({ keymap: DEFAULT_KEYMAP });
+    expect(hintIn(1)!.className).toBe("tab-strip__hint");
+  });
+});
+
+// trmx-151: the CSS contract for the centered-content layout — jsdom runs css:false, so the
+// load-bearing stylesheet mechanics are pinned off the real index.css text (node:fs — the
+// ActivityLineOverlay.test.tsx idiom; a `?raw` css import arrives empty under css:false).
+describe("tab-strip CSS contract (trmx-151)", () => {
+  const indexCss = readFileSync(
+    resolve(dirname(fileURLToPath(import.meta.url)), "../index.css"),
+    "utf8",
+  );
+
+  /** The body of the STANDALONE rule for `selector` (start-of-line anchored, so `.a` never
+   * matches `.a--modifier` or `.x .a`). */
+  function ruleBody(selector: string): string {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = new RegExp(`(?:^|\\n)${escaped}\\s*\\{([^}]*)\\}`).exec(indexCss);
+    if (!match) throw new Error(`no standalone rule for ${selector} in index.css`);
+    return match[1];
+  }
+
+  it("puts the size container on .tab-strip__content — NEVER on .tab-strip__tab", () => {
+    // container-type implies contain:layout, and LAYOUT containment makes the element the
+    // containing block for FIXED descendants — on the tab div it would capture the trmx-82 D4
+    // rename overlay (a fixed direct child of the tab). The wrapper never hosts the input, so
+    // containment is safe exactly there (trmx-151 / step-5 review finding 1).
+    expect(ruleBody(".tab-strip__content")).toMatch(/container-type:\s*inline-size/);
+    expect(ruleBody(".tab-strip__tab")).not.toMatch(/container-type|contain\s*:/);
+  });
+
+  it("centers the wrapped content (justify-content: center on the wrapper)", () => {
+    expect(ruleBody(".tab-strip__content")).toMatch(/justify-content:\s*center/);
+  });
+
+  it("keeps the title shrink-only so the centering holds (no flex-grow land-grab)", () => {
+    // A grow-1 title (the pre-151 fill-to-the-close-slot layout) would consume the free space
+    // and pin the text left — the wrapper's justify-content could never center it.
+    expect(ruleBody(".tab-strip__title")).toMatch(/flex:\s*0\s+1\s+auto/);
+  });
+
+  it("drops the WHOLE hint prefix inside a narrow (≤90px) tab via a container query", () => {
+    expect(indexCss).toMatch(
+      /@container\s*\(max-width:\s*90px\)\s*\{\s*\.tab-strip__hint\s*\{[^}]*display:\s*none/,
+    );
+    // …and the upright rail chip declares its own display, whose (0,2,0) specificity outranks
+    // the drop rule's (0,1,0): the 44px rail is always "narrow" but the header row is designed
+    // exactly for it.
+    expect(ruleBody(".tab-strip__hint--upright")).toMatch(/display:\s*/);
+  });
+
+  it("anchors the close × absolutely at the tab's LEFT edge (the reveal never shifts content)", () => {
+    const close = ruleBody(".tab-strip__close");
+    expect(close).toMatch(/position:\s*absolute/);
+    expect(close).toMatch(/left:\s*6px/);
+    expect(close).toMatch(/top:\s*50%/);
+    expect(close).toMatch(/translateY\(-50%\)/);
+    // The vertical-label END close resets back into the column flow (its pre-151 geometry).
+    const end = ruleBody(".tab-strip__close--end");
+    expect(end).toMatch(/position:\s*static/);
+    expect(end).toMatch(/margin-top:\s*auto/);
+  });
+
+  it("themes the hint via var(--tx-text-2) with ZERO new color literals", () => {
+    const hint = ruleBody(".tab-strip__hint");
+    expect(hint).toMatch(/color:\s*var\(--tx-text-2\)/);
+    expect(hint).toMatch(/white-space:\s*nowrap/);
+    expect(hint).toMatch(/flex:\s*none/);
+    for (const selector of [
+      ".tab-strip__content",
+      ".tab-strip__hint",
+      ".tab-strip__hint--upright",
+      ".tab-strip--labels-vertical .tab-strip__content",
+    ]) {
+      expect(ruleBody(selector), selector).not.toMatch(/#[0-9a-fA-F]{3}|rgba?\(/);
+    }
   });
 });

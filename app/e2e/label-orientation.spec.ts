@@ -79,7 +79,7 @@ test("left bar + vertical setting: both modifier classes, the 44px rail, rotated
   await expect(page.locator(".tab-strip__title--vertical")).toHaveCount(3);
 });
 
-test("the height tokens bound the OUTER row: short tab within 60–180, long-title tab capped at 180", async ({
+test("the height tokens bound the OUTER row: short tab within 80–200, long-title tab capped at 200", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 900, height: 600 });
@@ -102,14 +102,15 @@ test("the height tokens bound the OUTER row: short tab within 60–180, long-tit
   await input.press("Enter");
   await expect(page.getByTestId("tab-2").locator(".tab-strip__title")).toHaveText(longTitle);
 
-  // The D2 tokens are OUTER (border-box) bounds — the row's padding lives INSIDE 60–180px, so a
-  // rendered row must never exceed the max token (the review-round regression: content-box
-  // min/max + 8px vertical padding rendered 76–196px rows).
+  // The D2 tokens are OUTER (border-box) bounds — the row's padding lives INSIDE 80–200px
+  // (trmx-151: the min/max grew 60→80 / 180→200 for the 20px upright hint header, preserving the
+  // label budget), so a rendered row must never exceed the max token (the review-round regression:
+  // content-box min/max + 8px vertical padding rendered 76–196px rows).
   const shortBox = (await page.getByTestId("tab-1").boundingBox())!;
   const longBox = (await page.getByTestId("tab-2").boundingBox())!;
-  expect(shortBox.height).toBeGreaterThanOrEqual(60);
-  expect(shortBox.height).toBeLessThanOrEqual(180);
-  expect(longBox.height).toBeLessThanOrEqual(180);
+  expect(shortBox.height).toBeGreaterThanOrEqual(80);
+  expect(shortBox.height).toBeLessThanOrEqual(200);
+  expect(longBox.height).toBeLessThanOrEqual(200);
   // Natural sizing still works between the bounds: the long label renders TALLER than the short.
   expect(longBox.height).toBeGreaterThan(shortBox.height);
 });
@@ -122,6 +123,14 @@ test("core flows survive vertical labels: click-activate, y-drag reorder, synthe
   await page.getByTestId("tab-new").click();
   await expect(tabs).toHaveCount(2);
   await expect(page.getByTestId("tab-2")).toHaveClass(ACTIVE);
+
+  // trmx-151: on the vertical rail the ⌘N prefix renders as the UPRIGHT chip (horizontal text,
+  // outside the rotated writing-mode span) and stays visible despite the 44px rail being narrower
+  // than the horizontal-drop threshold.
+  const railHint = page.getByTestId("tab-1").locator(".tab-strip__hint");
+  await expect(railHint).toHaveText("⌘1");
+  await expect(railHint).toHaveClass(/tab-strip__hint--upright/);
+  await expect(railHint).toBeVisible();
 
   // Drag tab-1 from its center to past tab-2's midpoint ON THE Y AXIS (the rail's drag axis;
   // hoverSlotFor flips at the midpoint) — the exact trmx-81 two-tab drag, now on TALL tabs.

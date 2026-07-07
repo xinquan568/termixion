@@ -91,10 +91,12 @@ describe("command run() bodies call the right ctx method", () => {
 });
 
 describe("when guards", () => {
-  it("tab.select-1..8 need that many tabs; ⌘9 (select-9) is the iTerm 'last tab' for any nonzero count", () => {
+  it("tab.select-1..9 uniformly need that many tabs (trmx-151 strict ninth-tab semantics)", () => {
     expect(byId("tab.select-8").when!(fakeCtx({ tabCount: () => 3 }))).toBe(false);
-    // tab.select-9 selects the LAST tab, so it is available with any nonzero count (finding 5).
-    expect(byId("tab.select-9").when!(fakeCtx({ tabCount: () => 3 }))).toBe(true);
+    // trmx-151: tab.select-9 is the strict NINTH tab — available only when ≥9 tabs exist (the old
+    // iTerm2 "⌘9 = last tab" special case is gone).
+    expect(byId("tab.select-9").when!(fakeCtx({ tabCount: () => 3 }))).toBe(false);
+    expect(byId("tab.select-9").when!(fakeCtx({ tabCount: () => 9 }))).toBe(true);
     expect(byId("tab.select-9").when!(fakeCtx({ tabCount: () => 0 }))).toBe(false);
   });
 

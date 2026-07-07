@@ -439,8 +439,47 @@ body {
 .tab-strip--vertical .tab-strip__tab--active {
   box-shadow: inset 2px 0 0 var(--tx-primary);
 }
+/*
+ * trmx-151 — the content wrapper: ⌘N hint chip + title as ONE flex group, centered in the tab
+ * (justify-content — the iTerm2 centered-tab look; the left close and the right activity dot are
+ * absolute overlays that never shift it). CONTAINMENT LIVES HERE, NEVER ON .tab-strip__tab:
+ * container-type implies contain:layout, and LAYOUT containment makes the element the containing
+ * block for FIXED descendants — the trmx-82 D4 rename overlay is a position:fixed DIRECT child of
+ * the tab div (TabStrip replaces this whole wrapper with the input, never nests it), so the tab
+ * itself must stay containment-free for the overlay's viewport pinning to hold (trmx-151 / step-5
+ * review finding 1).
+ */
+.tab-strip__content {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
+  container-type: inline-size;
+}
+/* trmx-151 — the ⌘N hint chip: the secondary text tint (existing --tx-* vars ONLY — zero new
+   color literals), never wraps, never shrinks (the TITLE ellipsizes instead; a truncated chord
+   would read as a different shortcut). A point under the strip's 12px so it reads as a prefix. */
+.tab-strip__hint {
+  color: var(--tx-text-2);
+  white-space: nowrap;
+  flex: none;
+  font-size: 11px;
+}
+/* trmx-151 — the narrow-tab WHOLE-prefix drop: under 90px of content width there is no honest
+   room for both the chip and a readable title, so the entire hint goes at once. A container query
+   against the wrapper above (@media cannot see per-tab width). The upright rail chip below
+   deliberately outranks this (0,2,0 > 0,1,0) with its own display. */
+@container (max-width: 90px) {
+  .tab-strip__hint {
+    display: none;
+  }
+}
 .tab-strip__title {
-  flex: 1 1 auto;
+  /* trmx-151: shrink-only — the pre-151 `flex: 1 1 auto` filled the row to the old right-side
+     close slot and would pin the text left, defeating the wrapper's centering. */
+  flex: 0 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -464,9 +503,15 @@ body {
   margin: 0;
   height: 20px;
 }
-/* Always in the DOM (hit-testable, testable); revealed on hover/keyboard focus only. */
+/* Always in the DOM (hit-testable, testable); revealed on hover/keyboard focus only.
+   trmx-151 — OUT of the flex flow to the tab's LEFT edge (iTerm2's close-on-the-left): absolute
+   in the position:relative tab div, so the hover reveal overlays the centered content instead of
+   shifting it. The hover/:focus-visible reveal rules below and the 16px hit square are untouched. */
 .tab-strip__close {
-  flex: 0 0 auto;
+  position: absolute;
+  left: 6px;
+  top: 50%;
+  transform: translateY(-50%);
   width: 16px;
   height: 16px;
   padding: 0;
@@ -573,6 +618,34 @@ body {
   padding: 8px 0;
 }
 /*
+ * trmx-151 — vertical-label mode: the wrapper turns COLUMN so the upright chip sits ABOVE the
+ * rotated title (the title span alone keeps the writing-mode class). min-height 0 lets the title
+ * shrink against the tab's max token; flex 1 fills the row between the tab's padding and the
+ * end-anchored close ×.
+ */
+.tab-strip--labels-vertical .tab-strip__content {
+  flex-direction: column;
+  justify-content: flex-start;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+/*
+ * trmx-151 — the upright chip on the rail: a fixed header row (--tab-hint-header — TabStrip
+ * writes it with the other rail tokens, barLayout.ts owns the 20px) horizontally centered in the
+ * 44px rail, NORMAL writing mode. The explicit display also deliberately OUTRANKS the narrow-tab
+ * @container drop above (0,2,0 > 0,1,0): the rail is always "narrower than 90px", but this header
+ * row is designed exactly for it.
+ */
+.tab-strip__hint--upright {
+  writing-mode: horizontal-tb;
+  flex: 0 0 var(--tab-hint-header);
+  height: var(--tab-hint-header);
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+/*
  * The rotated label: with `writing-mode: vertical-rl` the INLINE axis runs down the tab, so the
  * base rule's white-space/overflow/text-overflow now truncate with an ellipsis against the tab's
  * height budget (the max token) — and the full-text `title` tooltip is untouched.
@@ -582,8 +655,13 @@ body {
   text-orientation: mixed;
 }
 /* The close × at the tab's END (the column's bottom), grown to the ≥24px token hit target
-   (a vertical-label-only class — TabStrip sets it exactly where the token vars are written). */
+   (a vertical-label-only class — TabStrip sets it exactly where the token vars are written).
+   trmx-151 — back IN flow: the base class went absolute-left for the centered horizontal strips,
+   so the end-anchored column close resets to static + margin-top:auto (its pre-151 geometry;
+   left/top are inert on a static box, transform must reset explicitly). */
 .tab-strip__close--end {
+  position: static;
+  transform: none;
   margin-top: auto;
   width: auto;
   height: auto;

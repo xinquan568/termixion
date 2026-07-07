@@ -137,6 +137,7 @@ fn value_kind_for(registry_key: &str) -> Option<ValueKind> {
         | "terminal.cursorBlink"
         | "terminal.activityIndicator"
         | "terminal.copyOnSelect"
+        | "tabs.showShortcutHints" // trmx-151
         | "remote_control.enabled" => Some(ValueKind::Bool),
         "terminal.scrollbackLines" | "terminal.fontSize" => Some(ValueKind::Int),
         "update.checkFrequency"
@@ -889,6 +890,7 @@ mod tests {
             ("appearance.theme", ValueKind::Str),
             ("tabs.barPosition", ValueKind::Str),
             ("tabs.sideLabelOrientation", ValueKind::Str),
+            ("tabs.showShortcutHints", ValueKind::Bool), // trmx-151
             ("scripts.startup", ValueKind::Str),
             ("remote_control.enabled", ValueKind::Bool),
             ("remote_control.socketPath", ValueKind::Str),

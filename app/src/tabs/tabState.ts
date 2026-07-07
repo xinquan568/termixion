@@ -20,7 +20,8 @@
 //   session later via `attachSession`. If the pane/tab died in between, attach is a no-op and the
 //   CALLER disposes the orphan session (the reducer never owns backend resources).
 // - Closing the ACTIVE tab activates the RIGHT neighbor, else the LEFT one, else nothing.
-// - `selectIndex` 8 (⌘9) means the LAST tab regardless of count.
+// - `selectIndex` is strictly positional (trmx-151): index 8 (⌘9) is the NINTH tab, never "the
+//   last"; tabs beyond nine are reached via ⌘⇧]/⌘⇧[ or the mouse.
 // - Every no-op returns the IDENTICAL state object (===), so a React `useReducer` consumer skips
 //   the re-render and tests can pin no-op-ness exactly.
 // - trmx-75 titles are layered SOURCES (manual > osc > process > fallback, tabTitle.ts), now held
@@ -247,8 +248,10 @@ export function reduceTabs(state: TabsState, action: TabsAction): TabsState {
     case "selectIndex": {
       const len = state.tabs.length;
       if (len === 0) return state;
-      // ⌘9 (index 8) = the LAST tab (iTerm2), even when more than 9 tabs exist.
-      const idx = action.index === 8 ? len - 1 : action.index;
+      // trmx-151 product decision: the numbering feature is STRICTLY first-nine — index 8 (⌘9)
+      // selects the NINTH tab, period (the old iTerm2 "8 → last" mapping is gone). Tabs beyond 9
+      // are reachable via ⌘⇧]/⌘⇧[ or the mouse; out-of-range indexes stay range-guarded no-ops.
+      const idx = action.index;
       if (!Number.isInteger(idx) || idx < 0 || idx >= len) return state;
       return withActive(state, state.tabs[idx].tabId);
     }

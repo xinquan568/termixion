@@ -40,6 +40,20 @@
 // rename input becomes the D4 FIXED OVERLAY: anchored to the renaming tab's viewport rect
 // (measured once, at rename start), horizontal text, wider than the slim rail — while STAYING in
 // the tab's DOM subtree so the trmx-75 commit/cancel/latch + stopPropagation wiring is untouched.
+//
+// trmx-151: the ⌘N shortcut hints + the iTerm2 centered-content layout. Each of the first NINE
+// render slots looks its select-chord up in the EFFECTIVE keymap App threads (`keymap` prop,
+// tabHintChordFor — positional, so a drag-reorder renumbers hints) and, while the live
+// tabs.showShortcutHints setting (`shortcutHintsOn`) is on, prefixes the title with the chord's
+// glyphs in an aria-hidden `tab-strip__hint` span (the chord reaches AT via aria-keyshortcuts on
+// the tab div instead). Hint + title live in a `tab-strip__content` wrapper — the @container
+// size container index.css centers and narrow-drops against. THE CONTAINMENT CONTRACT (step-5
+// review finding 1): while renaming, TabRenameInput REPLACES the whole wrapper and stays a DIRECT
+// child of the tab div — container-type implies layout containment, which would capture the D4
+// fixed overlay's viewport pinning if any new ancestor carried it. The close × moves out of the
+// flex flow to the tab's LEFT edge (CSS-owned, absolute) so its hover reveal never shifts the
+// centered content; in vertical-label mode the hint renders as an UPRIGHT chip (a fixed
+// `--tab-hint-header` header row — barLayout.ts token) above the rotated label.
 import {
   useEffect,
   useLayoutEffect,
@@ -49,7 +63,9 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { formatAriaKeyshortcuts, formatChordGlyphs } from "../commands/chordGlyphs";
 import { railGeometryFor } from "./barLayout";
+import { tabHintChordFor } from "./tabHints";
 import type { Tab } from "./tabState";
 
 export interface TabStripProps {
@@ -60,6 +76,14 @@ export interface TabStripProps {
   /** trmx-91 (review-1): the live terminal.activityIndicator setting — when off, no busy dot shows
    * (the setting gates BOTH the pane line and the tab dot). Defaults to on. */
   activityIndicatorOn?: boolean;
+  /** trmx-151: the EFFECTIVE chord→command keymap App maintains (defaults ⊕ user [keys]) — the
+   * ⌘N hint lookup source. Defaults to {} (no chord resolves → no hints), keeping the strip safe
+   * standalone. */
+  keymap?: Record<string, string>;
+  /** trmx-151: the live tabs.showShortcutHints setting — off renders no hint spans and no
+   * aria-keyshortcuts (a pure visual opt-out; the chords themselves stay bound). Defaults to on,
+   * matching the registry default. */
+  shortcutHintsOn?: boolean;
   /**
    * The strip's axis (trmx-81): "horizontal" (default — top/bottom bars) or "vertical"
    * (left/right rails). App derives it from barLayoutFor(tabs.barPosition).
@@ -255,6 +279,8 @@ export function TabStrip({
   activeTabId,
   renamingTabId,
   activityIndicatorOn = true,
+  keymap = {},
+  shortcutHintsOn = true,
   orientation = "horizontal",
   labelOrientation = "horizontal",
   style,
@@ -290,6 +316,8 @@ export function TabStrip({
       "--tab-max-height": `${geometry.tabMaxHeightPx}px`,
       "--tab-min-height": `${geometry.tabMinHeightPx}px`,
       "--tab-close-min": `${geometry.closeHitTargetMinPx}px`,
+      // trmx-151: the upright ⌘N chip's fixed header row above the rotated label.
+      "--tab-hint-header": `${geometry.hintHeaderPx}px`,
     } as CSSProperties;
   }
 
@@ -374,6 +402,10 @@ export function TabStrip({
         const busy = Object.values(tab.panes).some((p) => p.activityVisible === true);
         // review-1: gated by the terminal.activityIndicator setting too — off hides the dot.
         const showActivityDot = busy && !active && activityIndicatorOn;
+        // trmx-151: the RENDER slot's select-chord (positional — a reorder renumbers the hints),
+        // null past slot 9 / when unbound / when the setting is off. Drives BOTH the visual span
+        // and the tab's aria-keyshortcuts, so they can never disagree.
+        const hintChord = shortcutHintsOn ? tabHintChordFor(index, keymap) : null;
         return (
           // A div (not a button): the close × inside is a real <button>, and buttons must not
           // nest. Keyboard activation is wired explicitly below.
@@ -384,6 +416,8 @@ export function TabStrip({
             tabIndex={0}
             data-testid={`tab-${tab.tabId}`}
             data-tabstrip-item=""
+            // trmx-151: the AT-facing chord (the visual span is aria-hidden) — ⌘ is "Meta".
+            aria-keyshortcuts={hintChord !== null ? formatAriaKeyshortcuts(hintChord) : undefined}
             className={`tab-strip__tab${active ? " tab-strip__tab--active" : ""}`}
             onPointerDown={onTabPointerDown(tab, index)}
             onPointerMove={onTabPointerMove}
@@ -403,6 +437,9 @@ export function TabStrip({
             }}
           >
             {tab.tabId === renamingTabId ? (
+              // trmx-151 CONTAINMENT CONTRACT: the input replaces the WHOLE content wrapper and
+              // stays a DIRECT child of the tab div — the wrapper is a size container (implied
+              // layout containment would capture the D4 fixed overlay's viewport pinning).
               <TabRenameInput
                 initial={tab.title}
                 overlay={labelsVertical}
@@ -410,13 +447,28 @@ export function TabStrip({
                 onCancel={onRenameCancel}
               />
             ) : (
-              // trmx-82: the writing-mode class rotates the label; the full-text tooltip stays,
-              // and CSS ellipsis still triggers — the inline axis is just vertical now.
-              <span
-                className={`tab-strip__title${labelsVertical ? " tab-strip__title--vertical" : ""}`}
-                title={tab.title}
-              >
-                {tab.title}
+              // trmx-151: hint + title as ONE centered flex group — the @container size
+              // container index.css centers and narrow-drops against (never on the tab div).
+              <span className="tab-strip__content">
+                {hintChord !== null && (
+                  // The visual ⌘N prefix — decorative (aria-hidden; AT gets aria-keyshortcuts
+                  // above); --upright renders it as the rail's fixed header chip (trmx-151).
+                  <span
+                    className={`tab-strip__hint${labelsVertical ? " tab-strip__hint--upright" : ""}`}
+                    aria-hidden="true"
+                  >
+                    {formatChordGlyphs(hintChord)}
+                  </span>
+                )}
+                {/* trmx-82: the writing-mode class rotates the label; the full-text tooltip
+                    stays, and CSS ellipsis still triggers — the inline axis is just vertical
+                    now. trmx-151: text and tooltip stay the BARE title — the hint is a sibling. */}
+                <span
+                  className={`tab-strip__title${labelsVertical ? " tab-strip__title--vertical" : ""}`}
+                  title={tab.title}
+                >
+                  {tab.title}
+                </span>
               </span>
             )}
             {/* trmx-91 (sub-task G): the subtle activity dot on a BACKGROUND busy tab. Absolutely
