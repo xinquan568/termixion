@@ -20,6 +20,11 @@
 // hint line and never writes. The gate derives PURELY from the prop — no subscription here; the
 // shell keeps it current — via the same barLayoutFor the main window's layout runs on.
 //
+// trmx-151: the "Shortcut hints" toggle below Orientation — tabs.showShortcutHints, the ⌘1–⌘9
+// prefixes before the first nine tab titles. Wired exactly like the TerminalSettings boolean rows
+// (local state seeded from the injected store at mount, write via settings.set — the broadcast is
+// what the main window's App applies live). Never gated on barPosition: hints render on every bar.
+//
 // trmx-89 (4b): the USER-THEME picker. The Theme row now renders the full registry list
 // (`listThemes()` — built-ins first, then the user themes the settings window hydrated into its
 // own registry instance), not just the closed built-in catalog. A user theme resolves its swatch
@@ -31,7 +36,7 @@
 // folder" button reveals the dir, and a hint links the file-format docs. The backend edge is the
 // injected `invoke` seam (default realInvoke) so tests drive a fake.
 import { useState } from "react";
-import { SegmentedControl, SettingRow, SettingsGroup } from "./components";
+import { SegmentedControl, SettingRow, SettingsGroup, Toggle } from "./components";
 import type { LabelOrientation, SettingsStore, TabBarPosition } from "./settingsStore";
 import { barLayoutFor } from "../tabs/barLayout";
 import type { ThemeId } from "../theme/themes";
@@ -109,6 +114,10 @@ export function AppearanceSettings({
   // TerminalSettings row pattern) — only its ENABLEMENT is shell-driven, via the prop.
   const [sideLabelOrientation, setSideLabelOrientation] = useState<LabelOrientation>(() =>
     settings.get("tabs.sideLabelOrientation"),
+  );
+  // trmx-151: the ⌘N hint toggle — the same seeded-local-state pattern as the row above.
+  const [showShortcutHints, setShowShortcutHints] = useState<boolean>(() =>
+    settings.get("tabs.showShortcutHints"),
   );
   // Derived PURELY from the prop through the same layout engine App runs on: the setting can
   // only take effect on a vertical rail, so anywhere else the row is disabled (value preserved).
@@ -203,6 +212,19 @@ export function AppearanceSettings({
               // is never touched by a click on a gated-off row.
               setSideLabelOrientation(value);
               settings.set("tabs.sideLabelOrientation", value);
+            }}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Shortcut hints"
+          description="Show ⌘1–⌘9 before the first nine tab titles"
+        >
+          <Toggle
+            checked={showShortcutHints}
+            label="Shortcut hints"
+            onChange={(value) => {
+              setShowShortcutHints(value);
+              settings.set("tabs.showShortcutHints", value);
             }}
           />
         </SettingRow>

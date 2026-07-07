@@ -281,11 +281,11 @@ describe("AppearanceSettings — Orientation (trmx-82, FR-2.3)", () => {
         barPosition="left"
       />,
     );
-    // Row order inside the Tab bar group: Position first, Orientation second.
+    // Row order inside the Tab bar group: Position, Orientation, then Shortcut hints (trmx-151).
     const labels = [...container.querySelectorAll(".tx-setting-row__label")].map(
       (el) => el.textContent,
     );
-    expect(labels).toEqual(["Position", "Orientation"]);
+    expect(labels).toEqual(["Position", "Orientation", "Shortcut hints"]);
 
     const group = screen.getByRole("radiogroup", { name: "Tab label orientation" });
     const segments = within(group).getAllByRole("radio");
@@ -393,6 +393,61 @@ describe("AppearanceSettings — Orientation (trmx-82, FR-2.3)", () => {
       "aria-checked",
       "true",
     );
+  });
+});
+
+// trmx-151 (test-first): the "Shortcut hints" toggle — tabs.showShortcutHints in the Tab bar
+// group, wired exactly like the TerminalSettings boolean rows (read via settings.get at mount,
+// write via settings.set → the store broadcasts and the main window's App strips the ⌘N prefixes
+// live). Always enabled: hints render on every bar position, so no barPosition gate here.
+describe("AppearanceSettings — Shortcut hints (trmx-151)", () => {
+  const toggle = () => screen.getByRole("switch", { name: "Shortcut hints" });
+
+  it("renders the row in the Tab bar group with its description, ON by default", () => {
+    render(
+      <AppearanceSettings
+        settings={makeSettingsStore(fakeStorage())}
+        selected="night"
+        barPosition="bottom"
+      />,
+    );
+    expect(toggle()).toHaveAttribute("aria-checked", "true"); // registry default: on
+    expect(
+      screen.getByText("Show ⌘1–⌘9 before the first nine tab titles"),
+    ).toBeInTheDocument();
+  });
+
+  it("reflects a persisted OFF from the injected store", () => {
+    render(
+      <AppearanceSettings
+        settings={makeSettingsStore(
+          fakeStorage({ "termixion.tabs.showShortcutHints": "false" }),
+        )}
+        selected="night"
+        barPosition="bottom"
+      />,
+    );
+    expect(toggle()).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("a toggle writes through settings.set (persist + broadcast) and flips the switch", () => {
+    const storage = fakeStorage();
+    const bus = fakeBus();
+    const settings = makeSettingsStore(storage, bus, "settings-window");
+    render(<AppearanceSettings settings={settings} selected="night" barPosition="bottom" />);
+
+    fireEvent.click(toggle());
+
+    expect(storage.data.get("termixion.tabs.showShortcutHints")).toBe("false");
+    expect(bus.events).toContainEqual({
+      event: SETTINGS_CHANGED_EVENT,
+      payload: { key: "tabs.showShortcutHints", value: false, source: "settings-window" },
+    });
+    expect(toggle()).toHaveAttribute("aria-checked", "false");
+
+    fireEvent.click(toggle()); // …and back on
+    expect(storage.data.get("termixion.tabs.showShortcutHints")).toBe("true");
+    expect(toggle()).toHaveAttribute("aria-checked", "true");
   });
 });
 

@@ -95,6 +95,10 @@ export interface SettingsValues {
    * Registry-stored unconditionally; App gates the EFFECT to left/right bars (labelOrientationFor).
    */
   "tabs.sideLabelOrientation": LabelOrientation;
+  /** trmx-151: show the ⌘1–⌘9 shortcut hints before the first nine tab titles (default on). A
+   * plain boolean like terminal.activityIndicator — the strip gates only the RENDER; the chords
+   * themselves stay bound either way (mirrors core's `tabs.show_shortcut_hints`). */
+  "tabs.showShortcutHints": boolean;
   /** trmx-93 (FR-5): the startup script to source in the first tab on launch, as a scripts-root
    * relative path (e.g. "work/proj-x.sh"); "" = none. A free string, like terminal.fontFamily. */
   "scripts.startup": string;
@@ -153,6 +157,8 @@ export const SETTING_DEFAULTS: SettingsValues = {
   "tabs.barPosition": "bottom",
   // trmx-82 (FR-2.3): side-rail labels stay readable by default; rotation is an opt-in.
   "tabs.sideLabelOrientation": "horizontal",
+  // trmx-151: the ⌘N tab hints are ON by default (iTerm2 parity); off is a visual opt-out only.
+  "tabs.showShortcutHints": true,
   // trmx-93 (FR-5): no startup script by default (empty = none).
   "scripts.startup": "",
   "remote_control.enabled": false,
@@ -185,9 +191,10 @@ const STORAGE_KEYS: Record<SettingKey, string> = {
   "terminal.fontFamily": "termixion.terminal.fontFamily",
   "terminal.fontSize": "termixion.terminal.fontSize",
   "appearance.theme": "termixion.appearance.theme",
-  // trmx-81/82: never existed pre-config-file, so the T3b migration finds nothing — harmless.
+  // trmx-81/82/151: never existed pre-config-file, so the T3b migration finds nothing — harmless.
   "tabs.barPosition": "termixion.tabs.barPosition",
   "tabs.sideLabelOrientation": "termixion.tabs.sideLabelOrientation",
+  "tabs.showShortcutHints": "termixion.tabs.showShortcutHints",
   // trmx-93 (FR-5): never existed pre-config-file, so the migration finds nothing — harmless.
   "scripts.startup": "termixion.scripts.startup",
   "remote_control.enabled": "termixion.remote_control.enabled",

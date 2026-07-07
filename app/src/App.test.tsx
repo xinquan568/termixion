@@ -173,7 +173,7 @@ function makeFrameSchedule() {
   };
 }
 
-function renderApp(opts: { strict?: boolean } = {}) {
+function renderApp(opts: { strict?: boolean; invoke?: AppProps["invoke"] } = {}) {
   const { attach, calls } = makeAttach();
   const frame = makeFrameSchedule();
   const closeWindow = vi.fn();
@@ -202,6 +202,9 @@ function renderApp(opts: { strict?: boolean } = {}) {
     mirrorTitle,
     dragSchedule: frame.schedule,
     installHotReload,
+    // trmx-151: injectable backend invoke (keys_read drives the keymap rebuild); undefined keeps
+    // App's realInvoke default (which rejects in jsdom → the shipped default keymap).
+    invoke: opts.invoke,
   };
   const ui = opts.strict ? (
     <StrictMode>
@@ -826,11 +829,13 @@ describe("App side-bar label orientation (trmx-82)", () => {
     renderApp();
     expect(strip().className).toBe("tab-strip tab-strip--vertical tab-strip--labels-vertical");
     // The railGeometryFor tokens, verbatim, END-TO-END: TabStrip owns them, App's render carries
-    // them onto the strip container.
+    // them onto the strip container. trmx-151: the heights carry the +20px hint header (60→80,
+    // 180→200) and the fifth token (--tab-hint-header) joins the set.
     expect(stripVar("--tab-rail-width")).toBe("44px");
-    expect(stripVar("--tab-max-height")).toBe("180px");
-    expect(stripVar("--tab-min-height")).toBe("60px");
+    expect(stripVar("--tab-max-height")).toBe("200px");
+    expect(stripVar("--tab-min-height")).toBe("80px");
     expect(stripVar("--tab-close-min")).toBe("24px");
+    expect(stripVar("--tab-hint-header")).toBe("20px");
   });
 
   it("a top/bottom bar forces horizontal labels even when the setting is vertical", () => {
@@ -842,6 +847,7 @@ describe("App side-bar label orientation (trmx-82)", () => {
     expect(stripVar("--tab-max-height")).toBe("");
     expect(stripVar("--tab-min-height")).toBe("");
     expect(stripVar("--tab-close-min")).toBe("");
+    expect(stripVar("--tab-hint-header")).toBe(""); // trmx-151: the fifth token stays absent too
   });
 
   it("a side bar with the DEFAULT setting keeps the trmx-81 rail (no vars, no label class)", () => {
@@ -1871,5 +1877,87 @@ describe("App activity indicator (trmx-91)", () => {
     act(() => activity.fire(4040, true)); // no pane owns this session
     act(() => vi.advanceTimersByTime(150));
     expect(activityLineIn(1)).not.toBeInTheDocument();
+  });
+});
+
+// trmx-151 (test-first): the ⌘N tab hints, threaded end-to-end — App hands the strip its live
+// EFFECTIVE keymap (the trmx-94 state: defaults ⊕ user [keys], rebuilt by readKeys on mount and
+// on every keys:changed signal) plus a `shortcutHintsOn` state mirroring tabs.showShortcutHints
+// exactly like activityIndicatorOn (seeded from the shared snapshot, kept live over
+// settings:changed with the untrusted-payload guard).
+describe("App tab shortcut hints (trmx-151)", () => {
+  beforeEach(() => {
+    __resetSettingsForTest();
+  });
+  afterEach(() => {
+    __resetSettingsForTest();
+  });
+
+  const hintIn = (tabId: number) =>
+    screen.getByTestId(`tab-${tabId}`).querySelector(".tab-strip__hint");
+
+  it("shows the ⌘1 hint on the first tab with the default keymap", async () => {
+    const { calls } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 1, title: "zsh" });
+    const hint = hintIn(1);
+    expect(hint).not.toBeNull();
+    expect(hint!.textContent).toBe("⌘1");
+    expect(screen.getByTestId("tab-1")).toHaveAttribute("aria-keyshortcuts", "Meta+1");
+  });
+
+  it("flipping tabs.showShortcutHints removes/restores the hints LIVE (settings:changed)", async () => {
+    const { calls, settingsChanged } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 1, title: "zsh" });
+    expect(hintIn(1)).not.toBeNull();
+
+    // OFF → the prefix disappears without a re-mount (the settings-window toggle path).
+    act(() =>
+      settingsChanged.fire({
+        key: "tabs.showShortcutHints",
+        value: false,
+        source: "settings-window",
+      }),
+    );
+    expect(hintIn(1)).toBeNull();
+    expect(screen.getByTestId("tab-1")).not.toHaveAttribute("aria-keyshortcuts");
+
+    // Back ON → it returns.
+    act(() =>
+      settingsChanged.fire({
+        key: "tabs.showShortcutHints",
+        value: true,
+        source: "settings-window",
+      }),
+    );
+    expect(hintIn(1)).not.toBeNull();
+
+    // A non-boolean value for the key is inert (the untrusted-payload guard).
+    act(() =>
+      settingsChanged.fire({
+        key: "tabs.showShortcutHints",
+        value: "nope",
+        source: "config-file",
+      }),
+    );
+    expect(hintIn(1)).not.toBeNull();
+  });
+
+  it("a [keys] rebuild rethreads the hint (the keymap-prop threading)", async () => {
+    // Drives the SAME rebuild code path a keys:changed signal calls (readKeys → mergeKeymap →
+    // setKeymap), via the injected invoke's keys_read: firing the literal keys:changed event is
+    // impractical here — onKeysChanged subscribes on the real Tauri bus, which App exposes no
+    // seam for — so this pins the keymap-prop threading instead. cmd+1 is unbound ("none" —
+    // mergeKeymap deletes the chord) and a replacement bound → slot 1 hints the survivor.
+    const invoke = vi.fn((cmd: string) =>
+      Promise.resolve(cmd === "keys_read" ? { "cmd+1": "none", "cmd+b": "tab.select-1" } : null),
+    );
+    const { calls } = renderApp({ invoke });
+    await resolveAttach(calls[0], { sessionId: 1, title: "zsh" });
+    await act(async () => {}); // flush the readKeys(invoke) microtask → setKeymap lands
+    expect(invoke).toHaveBeenCalledWith("keys_read");
+    const hint = hintIn(1);
+    expect(hint).not.toBeNull();
+    expect(hint!.textContent).toBe("⌘B"); // the rebound chord, not the unbound default
+    expect(screen.getByTestId("tab-1")).toHaveAttribute("aria-keyshortcuts", "Meta+B");
   });
 });

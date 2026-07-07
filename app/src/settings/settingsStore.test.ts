@@ -327,6 +327,7 @@ describe("registry shape", () => {
         "appearance.theme",
         "tabs.barPosition",
         "tabs.sideLabelOrientation",
+        "tabs.showShortcutHints",
         "scripts.startup",
         "remote_control.enabled",
         "remote_control.socketPath",
@@ -592,6 +593,77 @@ describe("tabs.sideLabelOrientation (trmx-82)", () => {
     expect(
       getConfigWarnings().some(
         (w) => w.source === "client" && w.message.includes("tabs.sideLabelOrientation"),
+      ),
+    ).toBe(true);
+  });
+});
+
+// trmx-151: tabs.showShortcutHints — the ⌘1–⌘9 tab-strip number hints on/off. A plain boolean key
+// exactly like terminal.activityIndicator: default true, only the "true"/"false" literals parse
+// (legacy) / only real booleans coerce (snapshot), junk falls to the default. The strip gates the
+// RENDER only — the effective keymap itself is untouched by this setting.
+describe("tabs.showShortcutHints (trmx-151)", () => {
+  it("defaults to true in both backends", () => {
+    expect(makeSettingsStore(fakeStorage()).get("tabs.showShortcutHints")).toBe(true);
+    expect(makeSettingsStore().get("tabs.showShortcutHints")).toBe(true); // snapshot, pre-hydration
+  });
+
+  it("round-trips a toggle (legacy storage mode)", () => {
+    const store = makeSettingsStore(fakeStorage());
+    store.set("tabs.showShortcutHints", false);
+    expect(store.get("tabs.showShortcutHints")).toBe(false);
+    store.set("tabs.showShortcutHints", true);
+    expect(store.get("tabs.showShortcutHints")).toBe(true);
+  });
+
+  it("treats a junk persisted value as the default (boolean parse-with-fallback)", () => {
+    const store = makeSettingsStore(
+      fakeStorage({ "termixion.tabs.showShortcutHints": "maybe" }),
+    );
+    expect(store.get("tabs.showShortcutHints")).toBe(true);
+  });
+
+  it("snapshot mode: set validates, writes through config_write, and broadcasts; junk is rejected", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    const bus = fakeBus();
+    const store = makeSettingsStore(undefined, bus, "settings");
+    store.set("tabs.showShortcutHints", false);
+    expect(store.get("tabs.showShortcutHints")).toBe(false);
+    expect(backend.writes()).toContainEqual({ key: "tabs.showShortcutHints", value: false });
+    expect(bus.events).toEqual([
+      {
+        event: SETTINGS_CHANGED_EVENT,
+        payload: { key: "tabs.showShortcutHints", value: false, source: "settings" },
+      },
+    ]);
+    // Junk (a bad cast at runtime) is dropped whole: no snapshot change, no write, no broadcast.
+    bus.events.length = 0;
+    const writesBefore = backend.writes().length;
+    store.set("tabs.showShortcutHints", "yes" as never);
+    expect(store.get("tabs.showShortcutHints")).toBe(false);
+    expect(backend.writes().length).toBe(writesBefore);
+    expect(bus.events).toEqual([]);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it("hydration seeds a valid file value; an invalid one falls to the default + client warning", async () => {
+    const backend = fakeConfigBackend({
+      values: { "tabs.showShortcutHints": false, "appearance.theme": "white" },
+    });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    expect(makeSettingsStore().get("tabs.showShortcutHints")).toBe(false);
+
+    __resetSettingsForTest();
+    const junk = fakeConfigBackend({
+      values: { "tabs.showShortcutHints": "yes", "appearance.theme": "white" },
+    });
+    await hydrateSettings({ invoke: junk.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    expect(makeSettingsStore().get("tabs.showShortcutHints")).toBe(true);
+    expect(
+      getConfigWarnings().some(
+        (w) => w.source === "client" && w.message.includes("tabs.showShortcutHints"),
       ),
     ).toBe(true);
   });

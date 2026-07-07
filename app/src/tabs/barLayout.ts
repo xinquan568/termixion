@@ -68,6 +68,9 @@ export interface RailGeometry {
   tabMinHeightPx: number;
   /** The close ×'s minimum hit-target square. */
   closeHitTargetMinPx: number;
+  /** trmx-151: the upright ⌘N hint chip's fixed header row atop the rotated label (the
+   * `--tab-hint-header` var) — 0 outside vertical-label mode (horizontal hints sit inline). */
+  hintHeaderPx: number;
 }
 
 // The trmx-81 status quo, kept as data for totality and REFERENCE ONLY: the 180px rail, the 34px
@@ -79,15 +82,19 @@ const STATUS_QUO_GEOMETRY: RailGeometry = {
   tabMaxHeightPx: 34,
   tabMinHeightPx: 34,
   closeHitTargetMinPx: 16,
+  hintHeaderPx: 0,
 };
 
-// Vertical labels on the vertical rail: a slim 44px rail of tall tabs (60–180px by label length)
-// with a ≥24px close hit target at each tab's end.
+// Vertical labels on the vertical rail: a slim 44px rail of tall tabs (80–200px by label length)
+// with a ≥24px close hit target at each tab's end. trmx-151 hint header: the upright ⌘N chip
+// occupies a fixed 20px row above the rotated label, so both height bounds grew by exactly 20
+// (min 60→80, max 180→200) — the LABEL's own 60–180px budget is preserved.
 const VERTICAL_LABEL_GEOMETRY: RailGeometry = {
   railWidthPx: 44,
-  tabMaxHeightPx: 180,
-  tabMinHeightPx: 60,
+  tabMaxHeightPx: 200,
+  tabMinHeightPx: 80,
   closeHitTargetMinPx: 24,
+  hintHeaderPx: 20,
 };
 
 /**

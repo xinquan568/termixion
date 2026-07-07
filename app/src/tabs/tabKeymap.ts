@@ -4,8 +4,8 @@
 // trmx-74: the pure tab keymap — decides whether a keydown is a tab-switching shortcut, with no
 // dispatching or DOM listeners of its own (the integration layer binds it to window keydown).
 //
-// Exactly ⌘1..⌘9 (metaKey + a bare digit, NO ctrl/alt/shift) maps to `select-index` digit-1; the
-// reducer turns index 8 (⌘9) into "last tab" per iTerm2. trmx-84 (FR-3.2) adds ⌘D / ⇧⌘D →
+// Exactly ⌘1..⌘9 (metaKey + a bare digit, NO ctrl/alt/shift) maps to `select-index` digit-1
+// (trmx-151: strictly positional — ⌘9 is the NINTH tab; the old reducer-side 8→last mapping is gone). trmx-84 (FR-3.2) adds ⌘D / ⇧⌘D →
 // `split` right / below. Everything else — other modifiers, non-digits, ⌘C/⌘V/⌘T/⌘W — is never
 // intercepted (null), so reserved shortcuts keep their owners.
 //
@@ -31,8 +31,8 @@ export interface KeyTarget {
 import type { Direction } from "../panes/paneNav";
 
 /**
- * The actions this keymap emits: `select-index` (⌘1..⌘9; the reducer maps index 8/⌘9 to the last
- * tab), `split` (trmx-84 — ⌘D right, ⇧⌘D below), and pane navigation (trmx-86 — `nav-dir` for
+ * The actions this keymap emits: `select-index` (⌘1..⌘9, strictly positional — trmx-151), `split`
+ * (trmx-84 — ⌘D right, ⇧⌘D below), and pane navigation (trmx-86 — `nav-dir` for
  * ⌥⌘-arrows, `nav-cycle` for ⌘] / ⌘[).
  */
 export type TabKeyAction =

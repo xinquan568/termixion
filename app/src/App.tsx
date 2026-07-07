@@ -421,6 +421,13 @@ export function App({
   const [activityIndicatorOn, setActivityIndicatorOn] = useState<boolean>(() =>
     makeSettingsStore().get("terminal.activityIndicator"),
   );
+  // trmx-151: whether the tab strip prefixes the first nine titles with their ⌘N select-chord
+  // (tabs.showShortcutHints, default true), seeded from the shared settings snapshot and kept
+  // live over settings:changed — the exact activityIndicatorOn pattern. A pure render gate: the
+  // keymap (and the chords it binds) is untouched by the toggle.
+  const [shortcutHintsOn, setShortcutHintsOn] = useState<boolean>(() =>
+    makeSettingsStore().get("tabs.showShortcutHints"),
+  );
   // trmx-91: the activity line's COLOR — the active theme's semantic-success tint at ~80% alpha,
   // tracked as RESOLVED state exactly like badgeColor (review-1: the trmx-89 hot-reload re-emits the
   // SAME user-theme id after re-registering tokens, so keying on the id would leave the line on a
@@ -1398,6 +1405,11 @@ export function App({
       else if (key === "terminal.activityIndicator" && typeof value === "boolean") {
         setActivityIndicatorOn(value);
       }
+      // trmx-151: keep the ⌘N hint toggle live (same boolean guard). Off strips the prefixes
+      // without touching the keymap — the chords stay bound either way.
+      else if (key === "tabs.showShortcutHints" && typeof value === "boolean") {
+        setShortcutHintsOn(value);
+      }
       // trmx-90/91: recompute the badge watermark AND the activity-line color on every theme event so
       // both repaint on a theme switch AND on a trmx-89 same-id hot-reload (the token changed under the
       // same id, review-1). Same untrusted-payload discipline as barPosition; resolveTheme is total.
@@ -1986,6 +1998,10 @@ export function App({
         activeTabId={state.activeTabId}
         renamingTabId={renamingTabId}
         activityIndicatorOn={activityIndicatorOn}
+        // trmx-151: the ⌘N hints — the live EFFECTIVE keymap (rebuilt on keys:changed) plus the
+        // tabs.showShortcutHints render gate; the strip does the positional reverse lookup.
+        keymap={keymap}
+        shortcutHintsOn={shortcutHintsOn}
         orientation={barLayout.orientation}
         labelOrientation={labelOrientation}
         onActivate={(tabId) => dispatch({ kind: "activateTab", tabId })}

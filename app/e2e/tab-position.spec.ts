@@ -182,14 +182,20 @@ for (const position of POSITIONS) {
       await dispatchMetaChord(page, "1");
       await expect(page.getByTestId("tab-1")).toHaveClass(ACTIVE);
 
-      // ⌘9 activates the LAST tab (the reducer's iTerm2 rule), whatever its index.
+      // trmx-151: ⌘9 is strictly the NINTH tab — with only three tabs it is a no-op (the old
+      // 9-selects-last iTerm2 rule was deliberately removed with the numbered-hint feature).
       await dispatchMetaChord(page, "9");
-      await expect(page.getByTestId("tab-3")).toHaveClass(ACTIVE);
+      await expect(page.getByTestId("tab-1")).toHaveClass(ACTIVE);
+
+      // trmx-151: the first nine tabs carry the dimmed shortcut prefix (default keymap → ⌘N),
+      // rendered as its own span so the title span stays bare.
+      await expect(page.getByTestId("tab-1").locator(".tab-strip__hint")).toHaveText("⌘1");
+      await expect(page.getByTestId("tab-3").locator(".tab-strip__hint")).toHaveText("⌘3");
 
       // ⇧⌘2 is someone else's chord — the keymap's extra-modifier veto must leave it alone.
       // (⇧⌘[ / ⇧⌘] cycling is menu-owned — see the header — and covered headless + by --smoke.)
       await dispatchMetaChord(page, "2", true);
-      await expect(page.getByTestId("tab-3")).toHaveClass(ACTIVE);
+      await expect(page.getByTestId("tab-1")).toHaveClass(ACTIVE);
     });
 
     // Overflow on ONE horizontal strip (bottom) and ONE vertical rail (left) — the two scroll
@@ -228,6 +234,15 @@ for (const position of POSITIONS) {
             await strip.evaluate((el) => getComputedStyle(el).overflowX),
           ).toMatch(/auto|scroll/);
         }
+
+        // trmx-151: on the horizontal strip the 12 tabs sit at their 60px minimum — below the
+        // 90px container threshold — so the shortcut prefix drops WHOLE (title keeps the width);
+        // tabs 10-12 never had one (first-nine rule). The 44px vertical rail keeps its upright
+        // chip by design (the rail is permanently "narrow"; the chip outranks the drop rule).
+        if (!vertical) {
+          await expect(page.getByTestId("tab-1").locator(".tab-strip__hint")).toBeHidden();
+        }
+        await expect(page.getByTestId("tab-10").locator(".tab-strip__hint")).toHaveCount(0);
 
         // A user-like wheel scroll moves the strip on its axis (no programmatic assist)…
         await strip.hover();
