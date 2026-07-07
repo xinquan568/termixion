@@ -71,6 +71,9 @@ export interface SettingsAppProps {
   appInfo: AppInfo;
   opener: Opener;
   settings: SettingsStore;
+  /** trmx-148: the About row's backend-side config-file open (settingsStore.openConfigFile in
+   * production); threaded through untouched so tests can inject a fake. */
+  openConfigFile: () => Promise<void>;
   /** Subscription seam for settings:navigate + settings:changed; absent in tests/dev browser is fine. */
   listen?: ListenFn;
   /** trmx-89 (4b): the backend edge for the theme registry (hydrate + the Appearance themes-dir
@@ -92,6 +95,7 @@ export function SettingsApp({
   appInfo,
   opener,
   settings,
+  openConfigFile,
   listen,
   invoke = realInvoke,
 }: SettingsAppProps) {
@@ -249,7 +253,13 @@ export function SettingsApp({
           ) : section === "scripts" ? (
             <ScriptsSettings settings={settings} invoke={invoke} />
           ) : (
-            <AboutSettings update={update} appInfo={appInfo} opener={opener} settings={settings} />
+            <AboutSettings
+              update={update}
+              appInfo={appInfo}
+              opener={opener}
+              settings={settings}
+              openConfigFile={openConfigFile}
+            />
           )}
         </div>
       </div>

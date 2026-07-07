@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value as JsonValue};
 use tauri::{Emitter, Manager, State};
+use tauri_plugin_opener::OpenerExt;
 use termixion_core::{
     Config, ConfigWarning, DEFAULT_TEMPLATE, RegistryValue, diff_configs, parse_config,
     parse_registry_pairs, toml_path_for,
@@ -384,6 +385,21 @@ fn reset_all_at(path: &Path) -> Result<u64, String> {
     write_atomic(path, DEFAULT_TEMPLATE)
 }
 
+/// trmx-148: ensure the file EXISTS without touching existing content — present → `Ok(false)`,
+/// bytes untouched; absent → materialize the fully-commented [`DEFAULT_TEMPLATE`] atomically →
+/// `Ok(true)`. The write's hash is deliberately dropped (never latched) — see
+/// [`config_open_file`] for why.
+fn ensure_config_file_at(path: &Path) -> Result<bool, String> {
+    match std::fs::metadata(path) {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            write_atomic(path, DEFAULT_TEMPLATE)?;
+            Ok(true)
+        }
+        Err(error) => Err(format!("could not read {}: {error}", path.display())),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
@@ -453,6 +469,23 @@ pub fn config_reset_all(
     // A reset restores every default → remote control OFF.
     crate::control::apply_remote_control(&app, &Config::default().remote_control, &control_state);
     Ok(())
+}
+
+/// trmx-148: the About page's "Open config file" row — materialize the file if absent (so the
+/// OS always has something to open), then open it in the default editor via the opener plugin,
+/// backend-side like [`crate::themes_io::themes_open_dir`] (the webview's own `openPath` command
+/// is capability-denied).
+#[tauri::command]
+pub fn config_open_file(app: tauri::AppHandle) -> Result<(), String> {
+    let path = config_path();
+    // Deliberately NO ConfigState touch (no last_write_hash latch, no diff-base update): the
+    // watcher must observe the materialization write and apply it normally — the template parses
+    // to pure defaults, and latching would wrongly suppress the default-state transition after
+    // an external delete.
+    ensure_config_file_at(&path)?;
+    app.opener()
+        .open_path(path.display().to_string(), None::<&str>)
+        .map_err(|error| format!("could not open {}: {error}", path.display()))
 }
 
 // ---------------------------------------------------------------------------
@@ -689,6 +722,23 @@ mod tests {
         let mut last = Config::default();
         last.terminal.font_size = 14;
         let application = apply_file_text("", &last, None).expect("applies");
+        assert_eq!(
+            application.changed,
+            vec![("terminal.fontSize".to_string(), RegistryValue::Int(12))]
+        );
+        assert_eq!(application.config, Config::default());
+        assert!(application.warnings.is_empty());
+    }
+
+    #[test]
+    fn apply_file_text_default_template_is_not_latched_and_reverts_non_defaults() {
+        // trmx-148 design pin: config_open_file's materialization write is deliberately NOT
+        // latched (no last_write_hash), so the watcher applies the template like any external
+        // edit — the template parses to pure defaults, and the diff against the previous state
+        // carries exactly the non-default keys that must revert.
+        let last = parse_config("[terminal]\nfont_size = 14\n").0;
+        let application = apply_file_text(DEFAULT_TEMPLATE, &last, None)
+            .expect("an unlatched template write must apply, not be suppressed");
         assert_eq!(
             application.changed,
             vec![("terminal.fontSize".to_string(), RegistryValue::Int(12))]
@@ -1019,6 +1069,34 @@ mod tests {
         assert!(
             !path.exists(),
             "a rejected write must not materialize the file"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_config_file_at_materializes_the_template_when_absent() {
+        let dir = test_dir("ensure-absent");
+        let path = dir.join("nested").join(CONFIG_FILE_NAME);
+        let created = ensure_config_file_at(&path).expect("ensure");
+        assert!(created, "an absent file must report created = true");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            DEFAULT_TEMPLATE
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_config_file_at_leaves_an_existing_file_untouched() {
+        let dir = test_dir("ensure-existing");
+        let path = dir.join(CONFIG_FILE_NAME);
+        std::fs::write(&path, "[terminal]\nfont_size = 40\n").expect("seed");
+        let created = ensure_config_file_at(&path).expect("ensure");
+        assert!(!created, "an existing file must report created = false");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            "[terminal]\nfont_size = 40\n",
+            "existing content must be left byte-for-byte untouched"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -407,6 +407,17 @@ export function getConfigFilePath(): string | null {
   return configPath;
 }
 
+/**
+ * trmx-148: open the config file in its OS default application — the About row's BACKEND-side
+ * open (the webview opener plugin command is capability-denied in the packaged app; this mirrors
+ * the themes/scripts open-dir seam pattern). Unlike the fire-and-forget config_write path, the
+ * rejection PROPAGATES to the caller so the row can surface the failure. Rides the
+ * hydration-injected invoke channel automatically.
+ */
+export function openConfigFile(): Promise<void> {
+  return invokeSafely("config_open_file").then(() => {});
+}
+
 /** The current config warnings for the settings UI (T3e): the MERGED ledgers, file-rendered
  * warnings first, then the client-authored per-key warnings. */
 export function getConfigWarnings(): ConfigWarningItem[] {
