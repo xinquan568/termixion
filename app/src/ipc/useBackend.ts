@@ -11,7 +11,7 @@
 // id, and resolves the SessionInfo so the tab layer can bind session→tab (or dispose the orphan when
 // the tab died while the open was in flight). An optional `cwd` opt seeds the shell's directory
 // (new-tab-inherits-cwd, fed from the OSC 7 store).
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getCoreVersion,
   openPty as realOpenPty,
@@ -34,6 +34,19 @@ export interface UseBackendOptions {
     opts: { cwd?: string } | undefined,
     invoke: InvokeFn,
   ) => Promise<SessionInfo>;
+  /**
+   * trmx-159: observe a session's PTY OUTPUT — the byte LENGTH of each parsed output chunk (never the
+   * bytes themselves; terminal data stays off the observation path, ADR-0001). Fired on xterm's
+   * parse-completion callback, scoped to the resolved sessionId. Drives the activity light's
+   * output-recency / echo-suppression signal. Optional — absent is inert.
+   */
+  onOutput?: (sessionId: number, byteLength: number) => void;
+  /**
+   * trmx-159: observe a session's keystroke INPUT (the xterm `onData` string) so the activity light
+   * can detect a submit (a `\r`/`\n`). Scoped to the resolved sessionId, fired alongside the pty_write
+   * that sends the keystroke to the backend. Optional — absent is inert.
+   */
+  onInput?: (sessionId: number, data: string) => void;
 }
 
 export interface BackendApi {
@@ -54,8 +67,15 @@ export interface BackendApi {
 export function useBackend({
   invoke = realInvoke,
   openPty = realOpenPty,
+  onOutput,
+  onInput,
 }: UseBackendOptions = {}): BackendApi {
   const [coreVersion, setCoreVersion] = useState<string | null>(null);
+  // trmx-159: keep the I/O observers behind a ref so attachTerminal stays a STABLE identity (a new
+  // closure would remount the terminal via the effect deps). App re-points the ref each render; the
+  // per-attach wiring always reads the latest observer.
+  const observersRef = useRef({ onOutput, onInput });
+  observersRef.current = { onOutput, onInput };
 
   useEffect(() => {
     let active = true;
@@ -97,6 +117,8 @@ export function useBackend({
           (bytes) =>
             term.write(bytes, () => {
               if (ackSessionId > 0) {
+                // trmx-159: observe output (LENGTH only) at parse completion, scoped to the session.
+                observersRef.current.onOutput?.(ackSessionId, bytes.length);
                 void sendPtyAck(ackSessionId, bytes.length, invoke).catch(() => {});
               }
             }),
@@ -114,6 +136,8 @@ export function useBackend({
       // a keystroke racing the open can never fire a session-less (or wrong-session) pty_write.
       // Keystrokes → the PTY.
       term.onData((data) => {
+        // trmx-159: observe input (for the \r/\n submit signal) alongside routing the keystroke.
+        observersRef.current.onInput?.(session.sessionId, data);
         sendPtyInput(session.sessionId, data, invoke).catch((err: unknown) =>
           console.error("[termixion] pty write failed", err),
         );

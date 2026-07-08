@@ -63,10 +63,15 @@ import { activeDividerKeys, dividerKey } from "./panes/paneChrome";
 import { BadgeOverlay } from "./panes/BadgeOverlay";
 import { ActivityLineOverlay } from "./panes/ActivityLineOverlay";
 import {
+  classDeadline,
   initialActivity,
-  isVisible as isActivityVisible,
+  lightActive,
   onBusyChange,
+  onClassifyMetadata,
   onDeadline,
+  onInput as onActivityInput,
+  onOutput as onActivityOutput,
+  type ActivityMeta,
   type ActivityState,
   type ActivityTransition,
 } from "./panes/activityLine";
@@ -181,9 +186,22 @@ export type TitleHintObservation = (
   onHint: (sessionId: number, name: string) => void,
 ) => () => void;
 
-/** Observe `session:activity` busy<->idle transitions (trmx-91); returns a teardown. */
+/**
+ * Observe `session:activity` busy<->idle transitions (trmx-91); returns a teardown. trmx-159: a busy
+ * rise also carries optional classification metadata (foreground name / argv tail / stdin-tty).
+ */
 export type ActivityObservation = (
-  onActivity: (sessionId: number, busy: boolean) => void,
+  onActivity: (sessionId: number, busy: boolean, meta?: ActivityMeta) => void,
+) => () => void;
+
+/** trmx-159: injection seam for tests — observe a session's PTY output byte length. */
+export type OutputObservation = (
+  onOutput: (sessionId: number, byteLength: number) => void,
+) => () => void;
+
+/** trmx-159: injection seam for tests — observe a session's keystroke input. */
+export type InputObservation = (
+  onInput: (sessionId: number, data: string) => void,
 ) => () => void;
 
 /**
@@ -347,6 +365,10 @@ export interface AppProps {
   observeTitleHint?: TitleHintObservation;
   /** Injection seam for tests; defaults to the real `session:activity` subscription (trmx-91). */
   observeActivity?: ActivityObservation;
+  /** Injection seam for tests (trmx-159); production observes PTY output via useBackend directly. */
+  observeOutput?: OutputObservation;
+  /** Injection seam for tests (trmx-159); production observes keystroke input via useBackend directly. */
+  observeInput?: InputObservation;
   /** Injection seam for tests; defaults to the real `settings:changed` subscription (trmx-81). */
   observeSettings?: SettingsObservation;
   /** Injection seam for tests; the control socket's request stream (trmx-101). */
@@ -376,6 +398,8 @@ export function App({
   observePtyExited = onPtyExited,
   observeTitleHint = onTitleHint,
   observeActivity = onSessionActivity,
+  observeOutput,
+  observeInput,
   observeSettings = realObserveAppSettings,
   observeControlRequest = realObserveControlRequest,
   observeCloseRequested = realObserveCloseRequested,
@@ -386,7 +410,18 @@ export function App({
   sendInput = (sessionId, data) => sendPtyInput(sessionId, data),
   invoke = realInvoke,
 }: AppProps = {}) {
-  const { attachTerminal } = useBackend();
+  // trmx-159: the per-pane I/O observers route PTY output/input into the activity classifier. They are
+  // set (below, once applyActivityTransition exists) into this ref, which the stable useBackend wiring
+  // and the test-only observeOutput/observeInput seams both read — so production observes I/O through
+  // the live terminal (useBackend) while tests drive it through the injection seams.
+  const ioObserversRef = useRef<{
+    output: (sessionId: number, byteLength: number) => void;
+    input: (sessionId: number, data: string) => void;
+  }>({ output: () => {}, input: () => {} });
+  const { attachTerminal } = useBackend({
+    onOutput: (sessionId, byteLength) => ioObserversRef.current.output(sessionId, byteLength),
+    onInput: (sessionId, data) => ioObserversRef.current.input(sessionId, data),
+  });
   const attachFn = attach ?? attachTerminal;
 
   const [state, dispatch] = useReducer(reduceTabs, undefined, initialTabsState);
@@ -755,15 +790,41 @@ export function App({
       clearTimeout(prior);
       activityTimersRef.current.delete(paneId);
     }
-    if (deadline !== null) {
+    const now = Date.now();
+    // trmx-159: fold the class-layer deadline (unknown-fallback / light-off / window-close) with the
+    // phase deadline into the single per-pane timer — arm to whichever fires first.
+    const classAt = classDeadline(state, now);
+    const armAt =
+      deadline === null ? classAt : classAt === null ? deadline : Math.min(deadline, classAt);
+    if (armAt !== null) {
       const timer = setTimeout(() => {
         activityTimersRef.current.delete(paneId);
         const current = activityStatesRef.current.get(paneId) ?? initialActivity();
         applyActivityTransition(tabId, paneId, onDeadline(current, Date.now()));
-      }, Math.max(0, deadline - Date.now()));
+      }, Math.max(0, armAt - now));
       activityTimersRef.current.set(paneId, timer);
     }
-    dispatch({ kind: "setActivity", tabId, paneId, visible: isActivityVisible(state) });
+    // trmx-159: the visible line/dot follow `lightActive` (executing-user-work), not raw visibility;
+    // the close guard still reads isBusy(state) (rawBusy) via busyLookup, unchanged.
+    dispatch({ kind: "setActivity", tabId, paneId, visible: lightActive(state, now) });
+  };
+
+  // trmx-159: the per-pane I/O observers — route PTY output / keystroke input into the activity
+  // classifier through the same single-writer applyActivityTransition. Repointed each render so they
+  // always close over the live refs; useBackend (production) and the test seams both call these.
+  ioObserversRef.current = {
+    output: (sessionId, byteLength) => {
+      const hit = paneBySessionId(stateRef.current, sessionId);
+      if (!hit) return;
+      const current = activityStatesRef.current.get(hit.paneId) ?? initialActivity();
+      applyActivityTransition(hit.tab.tabId, hit.paneId, onActivityOutput(current, byteLength, Date.now()));
+    },
+    input: (sessionId, data) => {
+      const hit = paneBySessionId(stateRef.current, sessionId);
+      if (!hit) return;
+      const current = activityStatesRef.current.get(hit.paneId) ?? initialActivity();
+      applyActivityTransition(hit.tab.tabId, hit.paneId, onActivityInput(current, data, Date.now()));
+    },
   };
 
   // trmx-99 (FR-7b): start / cancel a pane's exit-code flash. The flashing set drives the overlay
@@ -1268,6 +1329,14 @@ export function App({
           source: "process",
           value: name,
         });
+        // trmx-159: the 1 Hz name hint also reclassifies the current epoch — recovering a still-unknown
+        // epoch and catching an in-epoch program takeover (name-only ⇒ partial-metadata fail-safe).
+        const current = activityStatesRef.current.get(hit.paneId) ?? initialActivity();
+        applyActivityTransition(
+          hit.tab.tabId,
+          hit.paneId,
+          onClassifyMetadata(current, { name }, Date.now()),
+        );
       }
     });
     const stopTabsAction = observeTabsAction((payload) => {
@@ -1294,16 +1363,38 @@ export function App({
   // (activityIndicatorOn) alone decides whether the resolved line paints, so toggling the setting
   // never desyncs the phase.
   useEffect(() => {
-    return observeActivity((sessionId, busy) => {
+    return observeActivity((sessionId, busy, meta) => {
       const hit = paneBySessionId(stateRef.current, sessionId);
       if (!hit) return; // no pane owns this session (session-less/closed) — inert
-      // trmx-99 (FR-7b): once a pane is OSC-133-owned, the poller's guesses are dropped for it — the
-      // shell-integration state machine is the authoritative source (a sticky, session-scoped upgrade).
-      if (osc133PanesRef.current.has(hit.paneId)) return;
       const current = activityStatesRef.current.get(hit.paneId) ?? initialActivity();
-      applyActivityTransition(hit.tab.tabId, hit.paneId, onBusyChange(current, busy, Date.now()));
+      // trmx-159 (weakens the trmx-99 latch): once a pane is OSC-133-owned, the OSC 133 machine OWNS
+      // rawBusy — so IGNORE the poller's `busy` field (do not feed it to onBusyChange). But still
+      // CONSUME its classification metadata: the poller's name-bearing rise classifies the epoch that
+      // the `C` marker opened `unknown`. rawBusy stays provably with OSC 133; only the class is adopted.
+      if (osc133PanesRef.current.has(hit.paneId)) {
+        if (meta) {
+          applyActivityTransition(hit.tab.tabId, hit.paneId, onClassifyMetadata(current, meta, Date.now()));
+        }
+        return;
+      }
+      // Poller-owned pane: the rise is born classified from the metadata (no ordering window).
+      applyActivityTransition(hit.tab.tabId, hit.paneId, onBusyChange(current, busy, Date.now(), meta));
     });
   }, [observeActivity]);
+
+  // trmx-159: the test-only I/O injection seams (production observes through useBackend directly).
+  // Each drives the same ioObserversRef handlers as the live terminal wiring.
+  useEffect(() => {
+    if (!observeOutput && !observeInput) return;
+    const stops: Array<() => void> = [];
+    if (observeOutput) {
+      stops.push(observeOutput((sessionId, byteLength) => ioObserversRef.current.output(sessionId, byteLength)));
+    }
+    if (observeInput) {
+      stops.push(observeInput((sessionId, data) => ioObserversRef.current.input(sessionId, data)));
+    }
+    return () => stops.forEach((stop) => stop());
+  }, [observeOutput, observeInput]);
 
   // trmx-101 (FR-9.4): the control-channel bridge. A request from the Rust socket routes through the SAME
   // command dispatcher as a keypress, builds the ls snapshot, or types into a pane; the reply goes back

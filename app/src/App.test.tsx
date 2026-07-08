@@ -132,19 +132,44 @@ function makeHintObservation() {
   };
 }
 
-// The session:activity seam carries (sessionId, busy) — same capture pattern (trmx-91).
+// The session:activity seam carries (sessionId, busy, meta?) — same capture pattern (trmx-91/159).
+type ActivityMetaArg = { name?: string; args?: string[]; stdinTty?: boolean };
 function makeActivityObservation() {
-  let handler: ((sessionId: number, busy: boolean) => void) | undefined;
+  let handler:
+    | ((sessionId: number, busy: boolean, meta?: ActivityMetaArg) => void)
+    | undefined;
   const teardown = vi.fn();
-  const observe = vi.fn((h: (sessionId: number, busy: boolean) => void) => {
-    handler = h;
-    return teardown;
-  });
+  const observe = vi.fn(
+    (h: (sessionId: number, busy: boolean, meta?: ActivityMetaArg) => void) => {
+      handler = h;
+      return teardown;
+    },
+  );
   return {
     observe,
     teardown,
-    fire: (sessionId: number, busy: boolean) => handler?.(sessionId, busy),
+    fire: (sessionId: number, busy: boolean, meta?: ActivityMetaArg) =>
+      handler?.(sessionId, busy, meta),
   };
+}
+
+// trmx-159: the test-only PTY output-length + keystroke-input seams (production wires these through
+// useBackend's live terminal). Same capture pattern.
+function makeOutputObservation() {
+  let handler: ((sessionId: number, byteLength: number) => void) | undefined;
+  const observe = vi.fn((h: (sessionId: number, byteLength: number) => void) => {
+    handler = h;
+    return vi.fn();
+  });
+  return { observe, fire: (sessionId: number, byteLength: number) => handler?.(sessionId, byteLength) };
+}
+function makeInputObservation() {
+  let handler: ((sessionId: number, data: string) => void) | undefined;
+  const observe = vi.fn((h: (sessionId: number, data: string) => void) => {
+    handler = h;
+    return vi.fn();
+  });
+  return { observe, fire: (sessionId: number, data: string) => handler?.(sessionId, data) };
 }
 
 // A controllable frame schedule for the divider-drag rAF coalescing (trmx-85): the test flushes the
@@ -182,6 +207,8 @@ function renderApp(opts: { strict?: boolean; invoke?: AppProps["invoke"] } = {})
   const ptyExited = makeObservation<number>();
   const titleHint = makeHintObservation();
   const activity = makeActivityObservation(); // trmx-91: session:activity broadcasts
+  const output = makeOutputObservation(); // trmx-159: PTY output-length observations
+  const input = makeInputObservation(); // trmx-159: keystroke-input observations
   const settingsChanged = makeObservation<unknown>(); // trmx-81: settings:changed broadcasts
   const setWindowTitle = vi.fn();
   const mirrorTitle = vi.fn(() => Promise.resolve());
@@ -197,6 +224,8 @@ function renderApp(opts: { strict?: boolean; invoke?: AppProps["invoke"] } = {})
     observePtyExited: ptyExited.observe,
     observeTitleHint: titleHint.observe,
     observeActivity: activity.observe,
+    observeOutput: output.observe,
+    observeInput: input.observe,
     observeSettings: settingsChanged.observe,
     setWindowTitle,
     mirrorTitle,
@@ -224,6 +253,8 @@ function renderApp(opts: { strict?: boolean; invoke?: AppProps["invoke"] } = {})
     ptyExited,
     titleHint,
     activity,
+    output,
+    input,
     settingsChanged,
     setWindowTitle,
     mirrorTitle,
@@ -1741,8 +1772,10 @@ describe("App activity indicator (trmx-91)", () => {
     await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
     vi.useFakeTimers();
 
-    // Busy — the line must NOT flash before the 150ms show floor is crossed.
-    act(() => activity.fire(7, true));
+    // Busy with a PLAIN foreground program (an unlisted name) — plain lights whenever visible, so the
+    // 150ms show / 300ms min-visible debounce is exactly the trmx-91 behavior. The line must NOT flash
+    // before the 150ms show floor is crossed.
+    act(() => activity.fire(7, true, { name: "sleep" }));
     expect(activityLineIn(1)).not.toBeInTheDocument();
     act(() => vi.advanceTimersByTime(149));
     expect(activityLineIn(1)).not.toBeInTheDocument();
@@ -1758,20 +1791,29 @@ describe("App activity indicator (trmx-91)", () => {
     expect(activityLineIn(1)).not.toBeInTheDocument();
   });
 
-  it("OSC 133 drives the line and LATCHES the pane so the poller is ignored (trmx-99, FR-7b)", async () => {
-    const { calls, activity } = renderApp();
+  it("OSC 133 owns rawBusy but a C-rise stays DARK until classified as executing work (trmx-159, finding #3)", async () => {
+    const { calls, activity, input, output } = renderApp();
     await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
     vi.useFakeTimers();
     const marker = recorder.mounts[0].onPromptMarker!;
-    // A command starts (OSC 133;C) → busy → the line appears after the 150ms show floor.
+    // A command starts (OSC 133;C) with NO classification metadata → the epoch is born `unknown` and
+    // stays DARK, even past the old 150ms show delay (an idle Claude no longer lights). rawBusy is
+    // owned by OSC 133 throughout.
     act(() => marker({ kind: "C", busy: true, busyChanged: true }));
-    act(() => vi.advanceTimersByTime(150));
+    act(() => vi.advanceTimersByTime(200));
+    expect(activityLineIn(1)).not.toBeInTheDocument();
+    // The poller's busy=false is IGNORED for this latched pane (rawBusy stays with OSC 133 — no
+    // change), but its classification metadata (interactive) IS consumed.
+    act(() => activity.fire(7, false, { name: "claude" }));
+    act(() => vi.advanceTimersByTime(50));
+    expect(activityLineIn(1)).not.toBeInTheDocument(); // classified interactive, but no submit yet ⇒ dark
+    // A submit (Enter) opens the window; counted output in the window lights the line — the pane is
+    // now actually executing user work.
+    act(() => input.fire(7, "\r"));
+    act(() => vi.advanceTimersByTime(400)); // clear the echo window
+    act(() => output.fire(7, 4096));
     expect(activityLineIn(1)).toBeInTheDocument();
-    // The poller's guess (idle) is DROPPED for this OSC-133-owned pane — the line HOLDS (no strobe).
-    act(() => activity.fire(7, false));
-    act(() => vi.advanceTimersByTime(500)); // well past the 300ms min-visible
-    expect(activityLineIn(1)).toBeInTheDocument();
-    // The command finishes via OSC 133 (D, exit 0) → busy clears → the line goes after min-visible.
+    // The command finishes via OSC 133 (D, exit 0) → the epoch closes → the line clears.
     act(() => marker({ kind: "D", busy: false, busyChanged: true, exitCode: 0 }));
     act(() => vi.advanceTimersByTime(700));
     expect(activityLineIn(1)).not.toBeInTheDocument();
@@ -1810,7 +1852,7 @@ describe("App activity indicator (trmx-91)", () => {
     const { calls, activity, settingsChanged } = renderApp();
     await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
     vi.useFakeTimers();
-    act(() => activity.fire(7, true));
+    act(() => activity.fire(7, true, { name: "sleep" })); // plain ⇒ lights whenever visible
     act(() => vi.advanceTimersByTime(150));
     expect(activityLineIn(1)).toBeInTheDocument();
 
@@ -1852,8 +1894,8 @@ describe("App activity indicator (trmx-91)", () => {
     await resolveAttach(calls[1], { sessionId: 2, title: "two" });
     vi.useFakeTimers();
 
-    // Session 1 owns the now-BACKGROUND pane 1. Its busy transition lights pane 1's line ONLY.
-    act(() => activity.fire(1, true));
+    // Session 1 owns the now-BACKGROUND pane 1. Its busy transition (plain) lights pane 1's line ONLY.
+    act(() => activity.fire(1, true, { name: "sleep" }));
     act(() => vi.advanceTimersByTime(150));
     expect(activityLineIn(1)).toBeInTheDocument();
     expect(activityLineIn(2)).not.toBeInTheDocument();
@@ -1863,7 +1905,7 @@ describe("App activity indicator (trmx-91)", () => {
     const { calls, activity } = renderApp();
     await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
     vi.useFakeTimers();
-    act(() => activity.fire(7, true));
+    act(() => activity.fire(7, true, { name: "sleep" }));
     act(() => vi.advanceTimersByTime(150));
     // App threads withAlpha(resolveTheme(id).color.semantic.success, 0.8) — a resolved color, not "".
     const line = within(screen.getByTestId("pane-host-1")).getByTestId("pane-activity");
@@ -1876,6 +1918,48 @@ describe("App activity indicator (trmx-91)", () => {
     vi.useFakeTimers();
     act(() => activity.fire(4040, true)); // no pane owns this session
     act(() => vi.advanceTimersByTime(150));
+    expect(activityLineIn(1)).not.toBeInTheDocument();
+  });
+
+  // trmx-159: a poller rise born INTERACTIVE (an AI CLI) sits idle DARK, then lights only once it is
+  // actually executing user work (a submit opens the window, output lights it), and drops afterward.
+  it("keeps an interactive program dark until it executes user work, then lights and drops (trmx-159)", async () => {
+    const { calls, activity, input, output } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
+    vi.useFakeTimers();
+
+    // Claude launches (poller rise born classified interactive) — idle at its prompt ⇒ NO line, even
+    // past the show delay (the whole point of trmx-159).
+    act(() => activity.fire(7, true, { name: "claude" }));
+    act(() => vi.advanceTimersByTime(300));
+    expect(activityLineIn(1)).not.toBeInTheDocument();
+
+    // The user submits a prompt and Claude answers (output) ⇒ the line lights.
+    act(() => input.fire(7, "\r"));
+    act(() => vi.advanceTimersByTime(400)); // clear the echo window
+    act(() => output.fire(7, 4096));
+    expect(activityLineIn(1)).toBeInTheDocument();
+
+    // ~3s after the last output (no more work, no busy event) ⇒ the line drops (timer-driven).
+    act(() => vi.advanceTimersByTime(3100));
+    expect(activityLineIn(1)).not.toBeInTheDocument();
+  });
+
+  // trmx-159: a silent PLAIN command (e.g. `sleep 30`, which produces no output) lights its whole run,
+  // exactly as before — plain lighting is rawBusy-driven, not output-driven.
+  it("lights a silent plain command for its whole run (trmx-159)", async () => {
+    const { calls, activity } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
+    vi.useFakeTimers();
+
+    act(() => activity.fire(7, true, { name: "sleep", args: ["30"], stdinTty: true }));
+    act(() => vi.advanceTimersByTime(150));
+    expect(activityLineIn(1)).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(5000)); // still running, still lit — no output needed
+    expect(activityLineIn(1)).toBeInTheDocument();
+    // The command exits ⇒ idle ⇒ clears after the min-visible hold.
+    act(() => activity.fire(7, false));
+    act(() => vi.advanceTimersByTime(400));
     expect(activityLineIn(1)).not.toBeInTheDocument();
   });
 });

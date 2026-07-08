@@ -4202,6 +4202,7 @@ dependencies = [
 name = "termixion-platform"
 version = "0.0.9"
 dependencies = [
+ "libc",
  "portable-pty",
  "termixion-core",
 ]

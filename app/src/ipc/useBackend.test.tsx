@@ -134,6 +134,52 @@ describe("useBackend", () => {
     );
   });
 
+  // trmx-159: the I/O observation hooks — output length + keystroke input, both scoped to the
+  // RESOLVED sessionId, so the activity light can key off "actual work" (output recency + Enter).
+  it("attachTerminal fires onOutput (byte length) on parsed output and onInput on keystrokes, scoped to the sessionId", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    const invoke = vi.fn<InvokeFn>();
+    invoke.mockResolvedValue(undefined);
+    const openPty = vi.fn<OpenPty>();
+    openPty.mockResolvedValue(SESSION);
+    const onOutput = vi.fn<(sessionId: number, byteLength: number) => void>();
+    const onInput = vi.fn<(sessionId: number, data: string) => void>();
+
+    const { result } = renderHook(() =>
+      useBackend({ invoke, openPty, onOutput, onInput }),
+    );
+    const t = fakeHandle();
+    await result.current.attachTerminal(t.handle);
+
+    // Output: the write callback (parse completion) reports the chunk's LENGTH, scoped to session 42.
+    const [onBytes] = openPty.mock.calls[0];
+    onBytes(new Uint8Array([104, 105, 106]));
+    t.flushWriteCallbacks();
+    expect(onOutput).toHaveBeenCalledWith(42, 3);
+
+    // Input: a keystroke reports the raw data, scoped to session 42 (fired alongside pty_write).
+    t.type("\r");
+    expect(onInput).toHaveBeenCalledWith(42, "\r");
+  });
+
+  it("attachTerminal is inert when the I/O observers are omitted (no throw)", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    const invoke = vi.fn<InvokeFn>();
+    invoke.mockResolvedValue(undefined);
+    const openPty = vi.fn<OpenPty>();
+    openPty.mockResolvedValue(SESSION);
+
+    const { result } = renderHook(() => useBackend({ invoke, openPty }));
+    const t = fakeHandle();
+    await result.current.attachTerminal(t.handle);
+    const [onBytes] = openPty.mock.calls[0];
+    expect(() => {
+      onBytes(new Uint8Array([1, 2]));
+      t.flushWriteCallbacks();
+      t.type("a");
+    }).not.toThrow();
+  });
+
   it("attachTerminal forwards the cwd opt to openPty (and passes undefined when omitted)", async () => {
     vi.spyOn(console, "info").mockImplementation(() => {});
     const invoke = vi.fn<InvokeFn>();

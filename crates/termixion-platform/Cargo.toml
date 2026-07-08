@@ -14,3 +14,6 @@ termixion-core = { path = "../termixion-core" }
 # (trmx-102). portable-pty selects the platform PTY impl at runtime; no per-OS feature is needed.
 [target.'cfg(unix)'.dependencies]
 portable-pty = "0.9"
+# trmx-159 (T1): the macOS foreground-metadata helpers (KERN_PROCARGS2 argv + proc_pidfdinfo tty
+# check) call raw sysctl / proc_pid* APIs; same version as termixion-tauri.
+libc = "0.2"

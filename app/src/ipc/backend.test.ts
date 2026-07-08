@@ -525,6 +525,34 @@ describe("onSessionActivity", () => {
     expect(handler).toHaveBeenLastCalledWith(4, false);
   });
 
+  // trmx-159: a busy rise carries optional classification metadata; onSessionActivity forwards it as a
+  // 3rd arg, and drops junk fields (the pure parseActivityPayload guards them).
+  it("forwards the optional rise metadata, dropping junk fields", async () => {
+    const { bus, activity } = fakeBus();
+    const handler = vi.fn<
+      (sessionId: number, busy: boolean, meta?: { name?: string; args?: string[]; stdinTty?: boolean }) => void
+    >();
+    onSessionActivity(handler, bus);
+    await Promise.resolve();
+
+    activity({
+      sessionId: 7,
+      busy: true,
+      foregroundName: "claude",
+      foregroundArgs: ["-p", "hi"],
+      foregroundStdinTty: true,
+    });
+    expect(handler).toHaveBeenLastCalledWith(7, true, {
+      name: "claude",
+      args: ["-p", "hi"],
+      stdinTty: true,
+    });
+
+    // Junk metadata fields drop independently; a bare rise still forwards with exactly two args.
+    activity({ sessionId: 7, busy: true, foregroundArgs: [1, 2] });
+    expect(handler).toHaveBeenLastCalledWith(7, true);
+  });
+
   it.each([
     {},
     null,

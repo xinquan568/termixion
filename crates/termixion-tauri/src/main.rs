@@ -23,7 +23,10 @@ use std::time::Duration;
 use tauri::ipc::Channel;
 use tauri::{Emitter, Manager, State, WindowEvent};
 use termixion_core::{PtySize, SessionRegistry, SessionSpec};
-use termixion_platform::{PlatformPtyFactory, foreground_process, is_busy};
+use termixion_platform::{
+    ForegroundProcess, PlatformPtyFactory, foreground_args, foreground_process,
+    foreground_stdin_is_tty, is_busy,
+};
 
 mod config_io;
 mod control;
@@ -144,11 +147,110 @@ enum ActivitySource {
 /// Payload of the `session:activity` event (trmx-91, FR-7a): the poller observed that session
 /// `session_id` is now `busy` (a command is running — its foreground process-group leader is not the
 /// shell) or idle again. Change-only (emitted on a flip, not every tick). camelCase for the frontend.
+///
+/// trmx-159: a busy `false→true` RISE additionally carries the foreground leader's classification
+/// metadata — its `name`, its argv tail (`args`), and whether its stdin is a tty — so the frontend's
+/// interactive-aware activity light is born classified with no ordering window. Each field is
+/// independently optional (omitted on resolution failure) and, being `None` on every non-rise event,
+/// serializes away — a steady/idle event stays exactly `{ sessionId, busy }`.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SessionActivity {
     session_id: u64,
     busy: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    foreground_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    foreground_args: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    foreground_stdin_tty: Option<bool>,
+}
+
+impl SessionActivity {
+    /// A bare change event (no classification metadata) — every non-rise event, and the base a rise
+    /// event is enriched from ([`enrich_rises`]).
+    fn bare(session_id: u64, busy: bool) -> Self {
+        Self {
+            session_id,
+            busy,
+            foreground_name: None,
+            foreground_args: None,
+            foreground_stdin_tty: None,
+        }
+    }
+}
+
+/// trmx-159: the foreground-metadata resolver the poller injects, so the rise-enrichment logic
+/// ([`enrich_rises`]) is unit-testable with a fake that records which pids it was asked about — the
+/// load-bearing check being that argv/stdin are resolved on the foreground LEADER pid, never the shell.
+trait ForegroundResolver {
+    /// The foreground process-group leader on the shell's terminal (leader pid + name), or `None`.
+    fn foreground(&self, shell_pid: u32) -> Option<ForegroundProcess>;
+    /// The argv tail of `pid` (the LEADER, not the shell), or `None`.
+    fn args(&self, pid: u32) -> Option<Vec<String>>;
+    /// Whether `pid`'s (the LEADER's) stdin is a tty, or `None`.
+    fn stdin_tty(&self, pid: u32) -> Option<bool>;
+}
+
+/// The production resolver: the real `termixion-platform` foreground helpers.
+struct RealForeground;
+
+impl ForegroundResolver for RealForeground {
+    fn foreground(&self, shell_pid: u32) -> Option<ForegroundProcess> {
+        foreground_process(shell_pid)
+    }
+    fn args(&self, pid: u32) -> Option<Vec<String>> {
+        foreground_args(pid)
+    }
+    fn stdin_tty(&self, pid: u32) -> Option<bool> {
+        foreground_stdin_is_tty(pid)
+    }
+}
+
+/// trmx-159: the session ids that went busy `false→true` this tick (a new-or-flipped-to-true state) —
+/// the RISES that need classification metadata. A steady `true`, a `true→false` fall, and an unchanged
+/// `false` are NOT rises. Pure (the [`activity_tick`] shape), so it is unit-tested on canned snapshots.
+fn rises_of(resolved: &[(u64, Option<bool>)], prev: &HashMap<u64, bool>) -> Vec<u64> {
+    resolved
+        .iter()
+        .filter(|(id, busy)| *busy == Some(true) && prev.get(id) != Some(&true))
+        .map(|(id, _)| *id)
+        .collect()
+}
+
+/// trmx-159: attach classification metadata to the RISE events, resolving it on the foreground LEADER
+/// pid (finding #1 — never the shell pid), and reset each rise session's title-diff memory so the next
+/// steady-state title tick re-emits the name even if unchanged (the 1 Hz recovery attempt). Only rise
+/// events are touched (finding #2 — a fall / steady event never invokes the resolver). Pure given the
+/// injected `resolver`; the real impl's subprocess/syscall edge stays out here in the loop.
+fn enrich_rises<R: ForegroundResolver>(
+    mut events: Vec<SessionActivity>,
+    rises: &[u64],
+    shell_pids: &HashMap<u64, u32>,
+    prev_titles: &mut HashMap<u64, String>,
+    resolver: &R,
+) -> Vec<SessionActivity> {
+    for event in &mut events {
+        if !rises.contains(&event.session_id) {
+            continue;
+        }
+        if let Some(&shell_pid) = shell_pids.get(&event.session_id)
+            && let Some(fg) = resolver.foreground(shell_pid)
+        {
+            // finding #1: argv + stdin are the LEADER's (`fg.pid`), not the shell's (`shell_pid`).
+            event.foreground_args = resolver.args(fg.pid);
+            event.foreground_stdin_tty = resolver.stdin_tty(fg.pid);
+            event.foreground_name = Some(fg.name);
+        }
+        prev_titles.remove(&event.session_id);
+    }
+    events
+}
+
+/// Whether this poller tick resolves foreground titles: every 4th 250 ms tick (~1 Hz, unchanged from
+/// trmx-75). Pure so the cadence is a pinned test (trmx-159 kept it exactly as-is).
+fn resolves_titles(tick: u64) -> bool {
+    tick.is_multiple_of(4)
 }
 
 /// One activity tick's pure diff (trmx-91), the [`poll_tick`] shape for the boolean busy state:
@@ -167,7 +269,7 @@ fn activity_tick(
         match busy {
             Some(busy) => {
                 if prev.get(&session_id) != Some(&busy) {
-                    events.push(SessionActivity { session_id, busy });
+                    events.push(SessionActivity::bare(session_id, busy));
                 }
                 next.insert(session_id, busy);
             }
@@ -222,13 +324,31 @@ fn run_title_poller(
             .iter()
             .map(|(id, pid)| (*id, pid.and_then(is_busy)))
             .collect();
+        // trmx-159: the rises (false→true) need classification metadata; capture them + the shell pids
+        // BEFORE activity_tick consumes busy_now, then enrich the rise events off the LEADER pid.
+        let rises = rises_of(&busy_now, &prev_busy);
         let (activity, next_busy) = activity_tick(busy_now, &prev_busy);
         prev_busy = next_busy;
+        let activity = if rises.is_empty() {
+            activity
+        } else {
+            let shell_pids: HashMap<u64, u32> = snapshot
+                .iter()
+                .filter_map(|(id, pid)| pid.map(|p| (*id, p)))
+                .collect();
+            enrich_rises(
+                activity,
+                &rises,
+                &shell_pids,
+                &mut prev_titles,
+                &RealForeground,
+            )
+        };
         for event in activity {
             let _ = app.emit("session:activity", event);
         }
         // trmx-75: titles every 4th tick (1 Hz, unchanged).
-        if tick.is_multiple_of(4) {
+        if resolves_titles(tick) {
             let resolved: Vec<(u64, Option<String>)> = snapshot
                 .into_iter()
                 .map(|(id, pid)| {
@@ -1465,7 +1585,181 @@ mod tests {
     }
 
     fn activity(session_id: u64, busy: bool) -> SessionActivity {
-        SessionActivity { session_id, busy }
+        SessionActivity::bare(session_id, busy)
+    }
+
+    // --- trmx-159: rise detection + metadata enrichment (findings #1/#2) + cadence ---------------
+
+    use std::cell::RefCell;
+
+    /// A fake resolver that records which pids it was asked about, so a test can prove argv/stdin were
+    /// resolved on the foreground LEADER pid (not the shell pid) and that non-rises never invoke it.
+    struct FakeForeground {
+        leader: u32,
+        name: String,
+        foreground_calls: RefCell<Vec<u32>>,
+        args_calls: RefCell<Vec<u32>>,
+        stdin_calls: RefCell<Vec<u32>>,
+    }
+
+    impl FakeForeground {
+        fn new(leader: u32, name: &str) -> Self {
+            Self {
+                leader,
+                name: name.to_string(),
+                foreground_calls: RefCell::new(Vec::new()),
+                args_calls: RefCell::new(Vec::new()),
+                stdin_calls: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl ForegroundResolver for FakeForeground {
+        fn foreground(&self, shell_pid: u32) -> Option<ForegroundProcess> {
+            self.foreground_calls.borrow_mut().push(shell_pid);
+            Some(ForegroundProcess {
+                pid: self.leader,
+                name: self.name.clone(),
+            })
+        }
+        fn args(&self, pid: u32) -> Option<Vec<String>> {
+            self.args_calls.borrow_mut().push(pid);
+            Some(vec!["-p".to_string(), "hi".to_string()])
+        }
+        fn stdin_tty(&self, pid: u32) -> Option<bool> {
+            self.stdin_calls.borrow_mut().push(pid);
+            Some(true)
+        }
+    }
+
+    #[test]
+    fn rises_of_reports_only_false_to_true_transitions() {
+        let prev = busy_map(&[(2, false), (3, true)]);
+        // 1 new-busy (rise), 2 false→true (rise), 3 steady-true (NOT), 4 true→false (NOT), 5 new-idle (NOT).
+        let mut rises = rises_of(
+            &busy_resolved(&[
+                (1, Some(true)),
+                (2, Some(true)),
+                (3, Some(true)),
+                (4, Some(false)),
+                (5, Some(false)),
+            ]),
+            &prev,
+        );
+        rises.sort_unstable();
+        assert_eq!(rises, vec![1, 2]);
+    }
+
+    #[test]
+    fn enrich_rises_resolves_metadata_on_the_leader_pid_not_the_shell() {
+        // finding #1: the poller snapshot carries the SHELL pid (100); the classification metadata must
+        // be resolved on the foreground LEADER pid (9999) that foreground_process(shell_pid) returns.
+        let fake = FakeForeground::new(9999, "claude");
+        let mut prev_titles = HashMap::new();
+        let shell_pids = HashMap::from([(1u64, 100u32)]);
+        let enriched = enrich_rises(
+            vec![SessionActivity::bare(1, true)],
+            &[1],
+            &shell_pids,
+            &mut prev_titles,
+            &fake,
+        );
+        assert_eq!(enriched[0].foreground_name, Some("claude".to_string()));
+        assert_eq!(
+            enriched[0].foreground_args,
+            Some(vec!["-p".to_string(), "hi".to_string()])
+        );
+        assert_eq!(enriched[0].foreground_stdin_tty, Some(true));
+        // foreground() was asked about the SHELL pid; args/stdin about the LEADER pid.
+        assert_eq!(*fake.foreground_calls.borrow(), vec![100]);
+        assert_eq!(*fake.args_calls.borrow(), vec![9999]);
+        assert_eq!(*fake.stdin_calls.borrow(), vec![9999]);
+    }
+
+    #[test]
+    fn enrich_rises_never_resolves_a_fall_or_a_steady_event() {
+        // finding #2: no metadata resolution on true→false (a fall) or a non-rise — the resolver is
+        // untouched, and the events pass through bare.
+        let fake = FakeForeground::new(9999, "claude");
+        let mut prev_titles = HashMap::new();
+        let shell_pids = HashMap::from([(2u64, 200u32)]);
+        let out = enrich_rises(
+            vec![SessionActivity::bare(2, false)],
+            &[], // no rises this tick
+            &shell_pids,
+            &mut prev_titles,
+            &fake,
+        );
+        assert_eq!(out, vec![SessionActivity::bare(2, false)]);
+        assert!(fake.foreground_calls.borrow().is_empty());
+        assert!(fake.args_calls.borrow().is_empty());
+        assert!(fake.stdin_calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn enrich_rises_resets_title_memory_so_the_next_tick_re_emits_an_unchanged_name() {
+        // A rise clears the session's title-diff memory, so poll_tick re-hints the SAME name next tick
+        // (the 1 Hz recovery attempt) — otherwise an unchanged name would stay suppressed.
+        let fake = FakeForeground::new(9999, "zsh");
+        let mut prev_titles = HashMap::from([(1u64, "zsh".to_string())]);
+        let shell_pids = HashMap::from([(1u64, 100u32)]);
+        enrich_rises(
+            vec![SessionActivity::bare(1, true)],
+            &[1],
+            &shell_pids,
+            &mut prev_titles,
+            &fake,
+        );
+        assert!(
+            !prev_titles.contains_key(&1),
+            "the rise cleared the title memory"
+        );
+        let (hints, _next) = poll_tick(vec![(1, Some("zsh".to_string()))], &prev_titles);
+        assert_eq!(
+            hints,
+            vec![TitleHint {
+                session_id: 1,
+                name: "zsh".to_string(),
+            }],
+            "the unchanged name re-emits after the reset"
+        );
+    }
+
+    #[test]
+    fn resolves_titles_keeps_the_1hz_cadence_over_the_250ms_base_tick() {
+        // trmx-159 must NOT change the title cadence: titles resolve on every 4th 250 ms tick.
+        assert!(resolves_titles(0));
+        assert!(resolves_titles(4));
+        assert!(resolves_titles(8));
+        assert!(!resolves_titles(1));
+        assert!(!resolves_titles(2));
+        assert!(!resolves_titles(3));
+    }
+
+    #[test]
+    fn session_activity_serializes_rise_metadata_and_omits_it_when_bare() {
+        // An enriched rise event carries camelCase metadata; a bare event stays exactly {sessionId,busy}.
+        let enriched = SessionActivity {
+            session_id: 7,
+            busy: true,
+            foreground_name: Some("claude".to_string()),
+            foreground_args: Some(vec!["-p".to_string()]),
+            foreground_stdin_tty: Some(true),
+        };
+        assert_eq!(
+            serde_json::to_value(&enriched).expect("serializes"),
+            serde_json::json!({
+                "sessionId": 7,
+                "busy": true,
+                "foregroundName": "claude",
+                "foregroundArgs": ["-p"],
+                "foregroundStdinTty": true,
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(SessionActivity::bare(7, false)).expect("serializes"),
+            serde_json::json!({ "sessionId": 7, "busy": false }),
+        );
     }
 
     #[test]
