@@ -127,9 +127,15 @@ describe("activity-line progress-bar CSS (trmx-160)", () => {
     ).toBe(true);
   });
 
-  it("peaks the sweep at pure green (#00ff00) in both modes", () => {
-    // Both the dark 6-stop gradient and the light ramp reach #00ff00.
-    expect((indexCss.match(/#00ff00/gi) ?? []).length).toBeGreaterThanOrEqual(2);
+  it("peaks EACH mode's sweep gradient at pure green (#00ff00)", () => {
+    // Match the dark and light sweep rule BODIES separately, so a light sweep that lost its #00ff00
+    // peak can't be masked by the dark gradient's / reduced-motion rule's occurrences.
+    const darkSweep = /\.tx-activity-line--dark\s+\.tx-activity-line__sweep\s*\{([^}]*)\}/.exec(indexCss);
+    const lightSweep = /\.tx-activity-line--light\s+\.tx-activity-line__sweep\s*\{([^}]*)\}/.exec(indexCss);
+    expect(darkSweep).not.toBeNull();
+    expect(lightSweep).not.toBeNull();
+    expect(/#00ff00/i.test(darkSweep![1])).toBe(true);
+    expect(/#00ff00/i.test(lightSweep![1])).toBe(true);
   });
 
   it("respects prefers-reduced-motion: no sweep animation, a static peak-color bar", () => {
