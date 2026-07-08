@@ -9,12 +9,22 @@ import { describe, it, expect } from "vitest";
 import {
   SHOW_DELAY_MS,
   MIN_VISIBLE_MS,
+  HOLD_MS,
+  WINDOW_CLOSE_MS,
+  UNKNOWN_FALLBACK_MS,
+  ECHO_MAX_BYTES,
   initialActivity,
   isBusy,
   isVisible,
+  lightActive,
   onBusyChange,
+  onClassifyMetadata,
   onDeadline,
+  onInput,
+  onOutput,
+  classDeadline,
   parseActivityPayload,
+  type ActivityMeta,
   type ActivityState,
 } from "./activityLine";
 
@@ -260,5 +270,171 @@ describe("parseActivityPayload (trmx-91)", () => {
     expect(parseActivityPayload({ sessionId: Number.NaN, busy: true })).toBeNull();
     expect(parseActivityPayload({ sessionId: Number.POSITIVE_INFINITY, busy: true })).toBeNull();
     expect(parseActivityPayload({ sessionId: 1.5, busy: true })).toBeNull();
+  });
+
+  // trmx-159: the optional rise metadata rides the same payload; each field is validated + dropped
+  // independently, and absence leaves the payload exactly the trmx-91 { sessionId, busy } shape.
+  it("parses the optional foreground metadata into meta", () => {
+    expect(
+      parseActivityPayload({
+        sessionId: 5,
+        busy: true,
+        foregroundName: "claude",
+        foregroundArgs: ["-p", "hi"],
+        foregroundStdinTty: true,
+      }),
+    ).toEqual({
+      sessionId: 5,
+      busy: true,
+      meta: { name: "claude", args: ["-p", "hi"], stdinTty: true },
+    });
+  });
+
+  it("drops junk metadata fields independently and omits meta entirely when none are present", () => {
+    // No metadata at all ⇒ no meta key (exactly the trmx-91 shape).
+    expect(parseActivityPayload({ sessionId: 5, busy: true })).toEqual({ sessionId: 5, busy: true });
+    // A junk args array (non-string entries) and a junk stdin drop, keeping the valid name.
+    expect(
+      parseActivityPayload({
+        sessionId: 5,
+        busy: false,
+        foregroundName: "python",
+        foregroundArgs: [1, 2],
+        foregroundStdinTty: "yes",
+      }),
+    ).toEqual({ sessionId: 5, busy: false, meta: { name: "python" } });
+  });
+});
+
+// trmx-159: the classification + activity-window layer on top of the phase debounce. Time is INJECTED
+// throughout — the heuristic pins from the issue's test contract, driven with plain numbers.
+describe("activity classification + window (trmx-159)", () => {
+  const AI: ActivityMeta = { name: "claude" }; // AI CLI, no argv ⇒ interactive (partial-metadata fail-safe)
+
+  /** A visible, born-classified epoch: rise@0 (with meta), show@150. */
+  function visibleClassified(meta?: ActivityMeta): ActivityState {
+    return onDeadline(onBusyChange(initialActivity(), true, 0, meta).state, 150).state;
+  }
+
+  it("keeps the tunables at their documented values", () => {
+    expect([HOLD_MS, WINDOW_CLOSE_MS, UNKNOWN_FALLBACK_MS, ECHO_MAX_BYTES]).toEqual([
+      3000, 10000, 1500, 2048,
+    ]);
+  });
+
+  it("an idle interactive program is rawBusy but NOT lit (finding #4: isBusy true, lightActive false)", () => {
+    const s = visibleClassified(AI);
+    expect(isBusy(s)).toBe(true); // the close guard still fires
+    expect(lightActive(s, 160)).toBe(false); // but no line/dot
+  });
+
+  it("never lights a launch banner (interactive output before any submit)", () => {
+    let s = visibleClassified(AI);
+    s = onOutput(s, 4096, 160).state; // banner, window not open ⇒ not counted
+    expect(lightActive(s, 170)).toBe(false);
+    // A python launch banner is equally dark.
+    let p = visibleClassified({ name: "python", args: [] });
+    p = onOutput(p, 4096, 160).state;
+    expect(lightActive(p, 170)).toBe(false);
+  });
+
+  it("lights an interactive epoch on submit+output, then hides after HOLD_MS with no busy event", () => {
+    let s = visibleClassified(AI);
+    s = onInput(s, "\r", 200).state; // submit opens the window
+    expect(lightActive(s, 210)).toBe(false); // arming alone shows nothing
+    s = onOutput(s, 4096, 600).state; // real output ⇒ counted
+    expect(lightActive(s, 610)).toBe(true);
+    expect(lightActive(s, 600 + HOLD_MS)).toBe(true); // still lit at exactly HOLD_MS
+    expect(lightActive(s, 600 + HOLD_MS + 1)).toBe(false); // dropped just after — timer-driven, no busy event
+  });
+
+  it("buffers an Enter that arrives before classification and honors it on interactive", () => {
+    let s = onDeadline(onBusyChange(initialActivity(), true, 0).state, 150).state; // unknown epoch, visible
+    s = onInput(s, "\r", 200).state; // Enter while unknown ⇒ buffered
+    expect(s.pendingSubmit).toBe(true);
+    expect(lightActive(s, 210)).toBe(false); // unknown fails dark
+    s = onClassifyMetadata(s, AI, 300).state; // classify interactive ⇒ honor the buffered submit
+    expect(s.windowOpen).toBe(true);
+    s = onOutput(s, 4096, 400).state;
+    expect(lightActive(s, 410)).toBe(true);
+  });
+
+  it("falls an unresolved (unknown) epoch back to plain at UNKNOWN_FALLBACK_MS and lights it (pipeline case)", () => {
+    let s = onDeadline(onBusyChange(initialActivity(), true, 0).state, 150).state; // unknown, visible
+    expect(lightActive(s, 160)).toBe(false); // fail-dark while unknown
+    expect(classDeadline(s, 160)).toBe(UNKNOWN_FALLBACK_MS); // the fallback timer
+    s = onDeadline(s, UNKNOWN_FALLBACK_MS).state; // the fallback fires
+    expect(s.klass).toBe("plain");
+    expect(lightActive(s, UNKNOWN_FALLBACK_MS)).toBe(true); // now lit like `true | sleep 30`
+  });
+
+  it("isolates the launch Enter: an Enter while idle never arms the next epoch", () => {
+    let s = onInput(initialActivity(), "\r", 0).state; // Enter at the idle shell prompt
+    expect(s.pendingSubmit).toBe(false);
+    s = onBusyChange(s, true, 250, AI).state; // the launched program rises
+    expect(s.pendingSubmit).toBe(false); // the launch Enter did not arm the new session
+  });
+
+  it("resets the window on in-epoch reclassification (a new program took over the name)", () => {
+    let s = visibleClassified(AI);
+    s = onInput(s, "\r", 200).state;
+    s = onOutput(s, 4096, 600).state;
+    expect(lightActive(s, 610)).toBe(true);
+    // The foreground name changes to psql (interactive), a mid-epoch takeover ⇒ window resets.
+    s = onClassifyMetadata(s, { name: "psql", args: ["mydb"], stdinTty: true }, 700).state;
+    expect(s.klass).toBe("interactive");
+    expect(s.windowOpen).toBe(false);
+    expect(lightActive(s, 710)).toBe(false); // dark until a fresh submit+output
+  });
+
+  it("does not re-light after the window closes (post-response repaint is ignored)", () => {
+    let s = visibleClassified(AI);
+    s = onInput(s, "\r", 200).state;
+    s = onOutput(s, 4096, 600).state; // last window activity @600 ⇒ closes @10600
+    s = onDeadline(s, 600 + WINDOW_CLOSE_MS).state; // window-close timer fires
+    expect(s.windowOpen).toBe(false);
+    s = onOutput(s, 4096, 600 + WINDOW_CLOSE_MS + 100).state; // a late repaint
+    expect(lightActive(s, 600 + WINDOW_CLOSE_MS + 110)).toBe(false);
+  });
+
+  it("self-heals within the window: output after a HOLD gap re-lights, until the window closes", () => {
+    let s = visibleClassified(AI);
+    s = onInput(s, "\r", 200).state;
+    s = onOutput(s, 4096, 600).state;
+    expect(lightActive(s, 600 + HOLD_MS + 1)).toBe(false); // dark after the hold gap
+    s = onOutput(s, 4096, 5000).state; // still within the 10s window ⇒ counted, re-lights
+    expect(lightActive(s, 5010)).toBe(true);
+  });
+
+  it("suppresses echo: small output right after a keystroke does not count, a big burst does", () => {
+    const base = (() => {
+      const s = visibleClassified(AI);
+      return onInput(s, "\r", 200).state; // window open, lastInputAt=200
+    })();
+    // Small (<=2KiB) output 50 ms after the keystroke ⇒ echo ⇒ not counted.
+    expect(lightActive(onOutput(base, 10, 250).state, 260)).toBe(false);
+    // A >2KiB burst in the same window is real work ⇒ counted.
+    expect(lightActive(onOutput(base, 4096, 250).state, 260)).toBe(true);
+    // Small output but >300 ms later ⇒ past the echo window ⇒ counted.
+    expect(lightActive(onOutput(base, 10, 600).state, 610)).toBe(true);
+  });
+
+  it("lights a plain command for its whole run (silent sleep, unlisted name, and one-shot spellings)", () => {
+    // An unlisted foreground name ⇒ plain ⇒ lit whenever visible (today's behavior).
+    const sleep = visibleClassified({ name: "sleep" });
+    expect(lightActive(sleep, 5000)).toBe(true);
+    // `python script.py` (a one-shot) ⇒ plain ⇒ lit.
+    const oneShot = visibleClassified({ name: "python", args: ["script.py"], stdinTty: true });
+    expect(lightActive(oneShot, 5000)).toBe(true);
+  });
+
+  it("computes the class deadline for an interactive lit epoch (hold-off then window-close)", () => {
+    let s = visibleClassified(AI);
+    s = onInput(s, "\r", 200).state;
+    s = onOutput(s, 4096, 600).state;
+    // While lit, the soonest class deadline is the hold-off (HOLD_MS+1 after last output).
+    expect(classDeadline(s, 700)).toBe(600 + HOLD_MS + 1);
+    // Past the hold-off (dark, window still open), the soonest is the window-close.
+    expect(classDeadline(s, 600 + HOLD_MS + 5)).toBe(600 + WINDOW_CLOSE_MS);
   });
 });

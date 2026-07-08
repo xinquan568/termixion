@@ -15,7 +15,7 @@
 // `{ channel, rows, cols }` / `{ data }` args.
 import { invoke as tauriInvoke, Channel } from "@tauri-apps/api/core";
 import { realEventBus, type EventBus } from "./eventBus";
-import { parseActivityPayload } from "../panes/activityLine";
+import { parseActivityPayload, type ActivityMeta } from "../panes/activityLine";
 
 /** The `invoke` signature this module depends on — injectable so callers can fake the backend. */
 export type InvokeFn = (
@@ -254,7 +254,7 @@ export const SESSION_ACTIVITY_EVENT = "session:activity";
  * jsdom) the listen rejects and activity transitions simply never arrive.
  */
 export function onSessionActivity(
-  handler: (sessionId: number, busy: boolean) => void,
+  handler: (sessionId: number, busy: boolean, meta?: ActivityMeta) => void,
   bus: EventBus = realEventBus,
 ): () => void {
   let live = true;
@@ -264,7 +264,10 @@ export function onSessionActivity(
       if (!live) return;
       const parsed = parseActivityPayload(payload);
       if (parsed === null) return;
-      handler(parsed.sessionId, parsed.busy);
+      // trmx-159: forward the optional rise classification metadata. Call with exactly two args when
+      // there is none (no phantom trailing `undefined`), so the trmx-91 handler contract is unchanged.
+      if (parsed.meta) handler(parsed.sessionId, parsed.busy, parsed.meta);
+      else handler(parsed.sessionId, parsed.busy);
     })
     .then((u) => {
       if (live) unlisten = u;
