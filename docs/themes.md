@@ -57,7 +57,7 @@ required set:
 | `terminal.selection_background` | `accent.primary` at 22% alpha |
 | `terminal.scrollbar.idle` / `hover` / `active` | white (dark) or black (light) at 12% / 20% / 30% |
 | `terminal.pane.active_border` / `inactive_border` | `accent.primary` / `border` |
-| `terminal.badge` | Termixion's badge pink `#ff8da1` (the per-pane [badge](badges.md) watermark, trmx-149) |
+| `terminal.badge` | Termixion's badge — translucent pink `#ff8da180` (50% alpha; the per-pane [badge](badges.md) watermark, trmx-149) |
 
 So a minimal ~20-line file (the required set only) is already a complete, working theme.
 
