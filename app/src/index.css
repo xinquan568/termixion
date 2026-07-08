@@ -407,13 +407,18 @@ body {
  * trmx-74 — the tab strip (TabStrip.tsx). Themed ONLY via the existing `--tx-*` vars
  * (txCssVars.ts writes them; settings.css's `:root` block is the static fallback, loaded in this
  * window's bundle): sunken bg for the bar, primary bg + accent inset line for the active tab.
- * Horizontal (top/bottom, the default): a fixed 34px flex row; tabs shrink from 180px down to
+ * Horizontal (top/bottom, the default): a fixed-thickness flex row; tabs shrink from 180px down to
  * 60px, then the strip scrolls on x (trmx-81 — `hidden` would strand the tail tabs with no way
  * to reach them). `position: relative` anchors the trmx-81 drop indicator.
+ *
+ * trmx-163 — `--tab-bar-thickness` is the ONE token for the bar's thickness: the horizontal strip
+ * HEIGHT here and the vertical-label rail WIDTH below both resolve to it, so they are equal by
+ * construction (28px, iTerm2-compact). Declared here so both rules inherit the same value.
  */
 .tab-strip {
-  flex: 0 0 34px;
-  height: 34px;
+  --tab-bar-thickness: 28px;
+  flex: 0 0 var(--tab-bar-thickness);
+  height: var(--tab-bar-thickness);
   position: relative;
   display: flex;
   align-items: stretch;
@@ -439,7 +444,7 @@ body {
  * constant, like every non-vertical-label metric in this file (content-box — the divider border
  * sits outside the rail). Tabs are full-width rows at natural height (no 60px shrink model);
  * overflow scrolls vertically. The trmx-82 vertical-label modifier below overrides the width
- * with its --tab-rail-width token.
+ * with the shared --tab-bar-thickness token (trmx-163 — equal to the horizontal strip height).
  *
  * PINNING (trmx-82 D4): the rename overlay below is `position: fixed`, anchored to the renaming
  * tab's getBoundingClientRect() in VIEWPORT coordinates. That is valid only while neither the
@@ -502,23 +507,34 @@ body {
   box-shadow: inset 2px 0 0 var(--tx-primary);
 }
 /*
- * trmx-151 — the content wrapper: ⌘N hint chip + title as ONE flex group, centered in the tab
- * (justify-content — the iTerm2 centered-tab look; the left close and the right activity dot are
- * absolute overlays that never shift it). CONTAINMENT LIVES HERE, NEVER ON .tab-strip__tab:
- * container-type implies contain:layout, and LAYOUT containment makes the element the containing
- * block for FIXED descendants — the trmx-82 D4 rename overlay is a position:fixed DIRECT child of
- * the tab div (TabStrip replaces this whole wrapper with the input, never nests it), so the tab
- * itself must stay containment-free for the overlay's viewport pinning to hold (trmx-151 / step-5
- * review finding 1).
+ * trmx-151/163 — the content wrapper: a symmetric 3-column GRID. The two minmax(0,1fr) side tracks
+ * are always EQUAL, so the title (grid-column 2) is centred to the tab's TRUE midpoint regardless
+ * of the trailing group's width — pixel-perfect, no phantom spacer needed (the close × overlays the
+ * left, so it never consumes a track). The trailing group ([dot][hint]) sits in column 3, pinned to
+ * the trailing edge. CONTAINMENT LIVES HERE, NEVER ON .tab-strip__tab: container-type implies
+ * contain:layout, and LAYOUT containment makes the element the containing block for FIXED
+ * descendants — the trmx-82 D4 rename overlay is a position:fixed DIRECT child of the tab div
+ * (TabStrip replaces this whole wrapper with the input, never nests it), so the tab itself must stay
+ * containment-free for the overlay's viewport pinning to hold (trmx-151 / step-5 review finding 1).
+ * display:grid coexists with container-type here without changing that contract.
  */
 .tab-strip__content {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto) minmax(0, 1fr);
   align-items: center;
-  justify-content: center;
   gap: 6px;
-  min-width: 0;
   width: 100%;
   container-type: inline-size;
+}
+/* trmx-163 — the trailing group: [dot][hint] at the tab's trailing edge (right on the horizontal
+   strip via grid-column 3 + justify-self:end; the vertical-rail override below turns it into a
+   bottom-pinned column). The dot leads (left / top), the hint follows. */
+.tab-strip__trailing {
+  grid-column: 3;
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 /* trmx-151 — the ⌘N hint chip: the secondary text tint (existing --tx-* vars ONLY — zero new
    color literals), never wraps, never shrinks (the TITLE ellipsizes instead; a truncated chord
@@ -539,9 +555,12 @@ body {
   }
 }
 .tab-strip__title {
-  /* trmx-151: shrink-only — the pre-151 `flex: 1 1 auto` filled the row to the old right-side
-     close slot and would pin the text left, defeating the wrapper's centering. */
-  flex: 0 1 auto;
+  /* trmx-163: the title is the grid's middle (auto) column — it hugs its text and the equal side
+     tracks centre it; text-align keeps it centred if the column ever exceeds the text, and
+     min-width:0 lets it shrink to an ellipsis under squeeze instead of overflowing the track. */
+  grid-column: 2;
+  text-align: center;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -595,31 +614,25 @@ body {
   color: var(--tx-text);
 }
 /*
- * trmx-91 (sub-task G) — the activity DOT on a background busy tab (TabStrip renders it only for a
- * NON-active busy tab; the active tab already shows its pane's top-edge activity line). A small
- * themed-green (`--tx-success`, the same semantic-success token the pane line tints) circle,
- * absolutely positioned inside the `position: relative` tab so it never reflows the label or the
- * close ×. Click-through (pointer-events: none) so it can never intercept the tab's activate/close.
- * It pins to the trailing edge and hides on hover, handing that corner to the close × the hover
- * reveals (the complement of the `:hover .tab-strip__close` rule above).
+ * trmx-91/163 (sub-task G) — the activity DOT on a background busy tab (TabStrip renders it only for
+ * a NON-active busy tab; the active tab already shows its pane's top-edge activity line). A small
+ * themed-green (`--tx-success`, the same semantic-success token the pane line tints) circle.
+ * trmx-163: it is now an IN-FLOW flex item of the trailing group (leading the ⌘N hint), not an
+ * absolute overlay — so it needs no positioning, just `flex: none` to hold its size. Click-through
+ * (pointer-events: none) so it can never intercept the tab's activate/close. The pre-163 hover-hide
+ * rule is gone: nothing competes for the trailing corner now (the close × is on the opposite edge).
  */
 .tab-strip__activity-dot {
-  position: absolute;
-  top: 50%;
-  right: 8px;
-  transform: translateY(-50%);
+  flex: none;
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: var(--tx-success);
   pointer-events: none;
 }
-.tab-strip__tab:hover .tab-strip__activity-dot {
-  opacity: 0;
-}
 .tab-strip__new {
   flex: 0 0 auto;
-  width: 34px;
+  width: var(--tab-bar-thickness);
   border: none;
   background: transparent;
   color: var(--tx-text-2);
@@ -660,17 +673,18 @@ body {
 }
 /*
  * trmx-82 (FR-2.3) — vertical labels on the side rail (`tab-strip--labels-vertical`, only ever
- * set together with --vertical). ALL geometry comes from the railGeometryFor CSS custom
- * properties, consumed as BARE variables — NO numeric fallbacks: barLayout.ts is the single
- * source of these numbers (44px rail, 60–180px rows, ≥24px close target), and TabStrip writes
- * the vars on the same root it puts this class on, so they can never be absent here. Tabs become
- * tall-and-narrow columns: natural height by label length between the min/max tokens (border-box
- * — the tokens bound the OUTER row, padding lives inside them), the label rotated via
- * writing-mode, the close × at the column's END (bottom). The + button needs no override — it is
- * already a full-width rail row.
+ * set together with --vertical). The LABEL-LENGTH geometry comes from the railGeometryFor CSS
+ * custom properties, consumed as BARE variables — NO numeric fallbacks: barLayout.ts is the single
+ * source of the row heights (60–180px rows) and the ≥24px close target, and TabStrip writes the
+ * vars on the same root it puts this class on, so they can never be absent here. trmx-163: the rail
+ * WIDTH is the shared --tab-bar-thickness (28px, equal to the horizontal strip height), NOT a rail
+ * token. Tabs become tall-and-narrow columns: natural height by label length between the min/max
+ * tokens (border-box — the tokens bound the OUTER row, padding lives inside them), the label
+ * rotated via writing-mode, the close × an absolute TOP overlay (leading edge). The + button needs
+ * no override — it is already a full-width rail row.
  */
 .tab-strip--labels-vertical {
-  width: var(--tab-rail-width);
+  width: var(--tab-bar-thickness);
 }
 .tab-strip--labels-vertical .tab-strip__tab {
   flex-direction: column;
@@ -680,23 +694,32 @@ body {
   padding: 8px 0;
 }
 /*
- * trmx-151 — vertical-label mode: the wrapper turns COLUMN so the upright chip sits ABOVE the
- * rotated title (the title span alone keeps the writing-mode class). min-height 0 lets the title
- * shrink against the tab's max token; flex 1 fills the row between the tab's padding and the
- * end-anchored close ×.
+ * trmx-151/163 — vertical-label mode: the wrapper reverts to a flex COLUMN (out of the horizontal
+ * grid) with the title at the top; the trailing group (dot + upright chip) is pushed to the bottom
+ * by its own margin-top:auto (below). min-height 0 lets the rotated title shrink against the tab's
+ * max token; flex 1 fills the column between the tab's padding and the top-overlaid close ×.
  */
 .tab-strip--labels-vertical .tab-strip__content {
+  display: flex;
   flex-direction: column;
   justify-content: flex-start;
   flex: 1 1 auto;
   min-height: 0;
 }
+/* trmx-163 — on the rail the trailing group stacks (dot above chip) and pins to the tab's BOTTOM:
+   margin-top:auto absorbs the free space above it, so the title stays at the top and [dot][chip]
+   sit at the bottom regardless of title length. */
+.tab-strip--labels-vertical .tab-strip__trailing {
+  flex-direction: column;
+  margin-top: auto;
+}
 /*
- * trmx-151 — the upright chip on the rail: a fixed header row (--tab-hint-header — TabStrip
- * writes it with the other rail tokens, barLayout.ts owns the 20px) horizontally centered in the
- * 44px rail, NORMAL writing mode. The explicit display also deliberately OUTRANKS the narrow-tab
- * @container drop above (0,2,0 > 0,1,0): the rail is always "narrower than 90px", but this header
- * row is designed exactly for it. The compound selector makes the win REAL specificity, not
+ * trmx-151/163 — the upright ⌘N chip on the rail: a fixed row (--tab-hint-header — TabStrip writes
+ * it with the other rail tokens, barLayout.ts owns the 20px) horizontally centered in the 28px
+ * rail, NORMAL writing mode. trmx-163: it now lives at the BOTTOM of the trailing group (with the
+ * dot above it), not a top header row. The explicit display also deliberately OUTRANKS the
+ * narrow-tab @container drop above (0,2,0 > 0,1,0): the rail is always "narrower than 90px", but
+ * this chip is designed exactly for it. The compound selector makes the win REAL specificity, not
  * source order (step-8 review).
  */
 .tab-strip__hint.tab-strip__hint--upright {
@@ -717,22 +740,23 @@ body {
   writing-mode: vertical-rl;
   text-orientation: mixed;
 }
-/* The close × at the tab's END (the column's bottom), grown to the ≥24px token hit target
-   (a vertical-label-only class — TabStrip sets it exactly where the token vars are written).
-   trmx-151 — back IN flow: the base class went absolute-left for the centered horizontal strips,
-   so the end-anchored column close resets to static + margin-top:auto (its pre-151 geometry;
-   left/top are inert on a static box, transform must reset explicitly). */
-.tab-strip__close--end {
-  position: static;
-  transform: none;
-  margin-top: auto;
+/* trmx-163 — the close × at the tab's TOP (leading edge) in vertical-label mode: an absolute
+   overlay centered horizontally near the top, mirroring the horizontal strip's left overlay, grown
+   to the ≥24px token hit target (a vertical-label-only class — TabStrip sets it exactly where the
+   token vars are written). It STAYS absolute (inherited from the base class) so the hover reveal
+   overlays the title's top instead of shifting it; only the anchor moves from left-center to
+   top-center. */
+.tab-strip__close--vtop {
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
   width: auto;
   height: auto;
   min-width: var(--tab-close-min);
   min-height: var(--tab-close-min);
 }
 /*
- * trmx-82 D4 — the rename overlay: a slim 44px tab cannot host a usable text field, so in
+ * trmx-82 D4 — the rename overlay: a slim 28px tab cannot host a usable text field, so in
  * vertical-label mode the input goes `position: fixed` at the renaming tab's viewport rect
  * (TabStrip measures left/top ONCE at rename start; valid because nothing above the strip
  * creates a fixed-positioning containing block — see the pinning comment on the rail). It stays

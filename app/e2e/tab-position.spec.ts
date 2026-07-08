@@ -83,16 +83,17 @@ for (const position of POSITIONS) {
       if (position === "left") expect(box.x).toBeLessThanOrEqual(1);
       if (position === "right") expect(box.x + box.width).toBeGreaterThanOrEqual(900 - 1);
 
-      // Geometry contract: 180px-wide rails (content-box — the divider border sits outside)
-      // with ≥34px-tall tabs; 34px-tall horizontal strips (+1px divider border).
+      // Geometry contract: the DEFAULT (horizontal-label) side rail is 180px wide (content-box — the
+      // divider border sits outside) with ≥34px-tall tabs (unchanged by trmx-163). The horizontal
+      // strip height is now 28px (trmx-163: the shared --tab-bar-thickness) + a 1px divider border.
       if (vertical) {
         expect(box.width).toBeGreaterThanOrEqual(180);
         expect(box.width).toBeLessThanOrEqual(182);
         const tab = (await page.getByTestId("tab-1").boundingBox())!;
         expect(tab.height).toBeGreaterThanOrEqual(34);
       } else {
-        expect(box.height).toBeGreaterThanOrEqual(34);
-        expect(box.height).toBeLessThanOrEqual(36);
+        expect(box.height).toBeGreaterThanOrEqual(28);
+        expect(box.height).toBeLessThanOrEqual(30);
       }
     });
 
@@ -205,7 +206,7 @@ for (const position of POSITIONS) {
         page,
       }) => {
         // Small window so 12 tabs exceed the strip on either axis: horizontally
-        // 12×60px(min-width)+34px(+) = 754 > 700; vertically 12×35px(min-height+divider)+34px
+        // 12×60px(min-width)+28px(+) = 748 > 700; vertically 12×35px(min-height+divider)+34px
         // = 454 > 400.
         await page.setViewportSize({ width: 700, height: 400 });
         await gotoWithPosition(page, position);
@@ -237,7 +238,7 @@ for (const position of POSITIONS) {
 
         // trmx-151: on the horizontal strip the 12 tabs sit at their 60px minimum — below the
         // 90px container threshold — so the shortcut prefix drops WHOLE (title keeps the width);
-        // tabs 10-12 never had one (first-nine rule). The 44px vertical rail keeps its upright
+        // tabs 10-12 never had one (first-nine rule). The 28px vertical rail keeps its upright
         // chip by design (the rail is permanently "narrow"; the chip outranks the drop rule).
         if (!vertical) {
           await expect(page.getByTestId("tab-1").locator(".tab-strip__hint")).toBeHidden();
