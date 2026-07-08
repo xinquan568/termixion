@@ -69,8 +69,8 @@ describe("themeTokensToToml", () => {
 
   it("emits the per-pane badge token under [terminal] (trmx-90)", () => {
     // A single-word `badge` key; night's built-in watermark preserved verbatim
-    // (trmx-149: Termixion's default badge pink #ff8da1).
-    expect(toml).toMatch(/^badge = "#ff8da1"$/m);
+    // (trmx-149: Termixion's default badge — translucent pink #ff8da180, 50% alpha).
+    expect(toml).toMatch(/^badge = "#ff8da180"$/m);
     // …and it sits inside [terminal], before the [terminal.ansi] table opens.
     expect(toml.indexOf("[terminal]")).toBeLessThan(toml.indexOf("badge = "));
     expect(toml.indexOf("badge = ")).toBeLessThan(toml.indexOf("[terminal.ansi]"));

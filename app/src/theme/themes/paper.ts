@@ -39,9 +39,9 @@ export const paper: ThemeTokens = {
     cursor: "#1a1a1a",
     cursorAccent: "#EEEDED",
     selectionBackground: "rgba(0,102,204,0.25)",
-    // trmx-90: per-pane badge watermark. trmx-149: pink #ff8da1 (Termixion's chosen badge color,
-    // a deliberate deviation from iTerm2's default red) replaces the faint text tint.
-    badge: "#ff8da1",
+    // trmx-90: per-pane badge watermark. trmx-149: translucent pink #ff8da180 (50% alpha; Termixion's
+    // chosen badge color, a deliberate deviation from iTerm2's default red) replaces the faint text tint.
+    badge: "#ff8da180",
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
     // trmx-98: find-bar highlights — translucent yellow match / warmer active (legible over every theme bg).
     search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },

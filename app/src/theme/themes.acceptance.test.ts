@@ -11,7 +11,7 @@
 // solarized.selectionBackground alpha 0.22 → 0.15 (G3). Every other value remains vmark-exact;
 // any future drift must pass the CONTRAST_GATES and update docs/design/visual-baseline.md.
 import { describe, expect, it } from "vitest";
-import { compositeOver, contrastRatio } from "./contrast";
+import { compositeOver, contrastRatio, toOpaqueHex } from "./contrast";
 import { THEME_IDS, themeLabel, themes, type BuiltinThemeId } from "./themes";
 import type { ThemeTokens } from "./tokens";
 
@@ -31,8 +31,9 @@ const CORE: Record<BuiltinThemeId, { bg: string; bg2: string; text: string; acce
 
 /** Full terminal slices — vmark origin/main @ d7e70e3f plus the two trmx-77 audited deviations
  *  (night.brightBlack, solarized.selectionBackground); see the header comment.
- *  trmx-149: every theme's `badge` is Termixion's default badge pink #ff8da1 (a deliberate
- *  deviation from iTerm2's default red rgba(255,0,0,0.5) @ iTermProfilePreferences.m:890),
+ *  trmx-149: every theme's `badge` is Termixion's default badge — translucent pink #ff8da180 (50%
+ *  alpha; a deliberate deviation from iTerm2's default red rgba(255,0,0,0.5) @ iTermProfilePreferences.m:890
+ *  that keeps the pink hue while matching iTerm2's watermark translucency),
  *  replacing the trmx-90 faint per-theme text tints. */
 const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
   white: {
@@ -46,7 +47,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     cursor: "#1a1a1a",
     cursorAccent: "#FFFFFF",
     selectionBackground: "rgba(0,102,204,0.25)",
-    badge: "#ff8da1",
+    badge: "#ff8da180",
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
     search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },
   },
@@ -61,7 +62,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     cursor: "#1a1a1a",
     cursorAccent: "#EEEDED",
     selectionBackground: "rgba(0,102,204,0.25)",
-    badge: "#ff8da1",
+    badge: "#ff8da180",
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
     search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },
   },
@@ -76,7 +77,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     cursor: "#2d3a35",
     cursorAccent: "#CCE6D0",
     selectionBackground: "rgba(0,102,204,0.25)",
-    badge: "#ff8da1",
+    badge: "#ff8da180",
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
     search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },
   },
@@ -91,7 +92,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     cursor: "#5c4b37",
     cursorAccent: "#F9F0DB",
     selectionBackground: "rgba(0,102,204,0.25)",
-    badge: "#ff8da1",
+    badge: "#ff8da180",
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
     search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },
   },
@@ -106,7 +107,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     cursor: "#d6d9de",
     cursorAccent: "#23262b",
     selectionBackground: "rgba(90, 168, 255, 0.22)",
-    badge: "#ff8da1",
+    badge: "#ff8da180",
     scrollbar: { idle: "rgba(255, 255, 255, 0.12)", hover: "rgba(255, 255, 255, 0.20)", active: "rgba(255, 255, 255, 0.30)" },
     search: { match: "rgba(88, 166, 255, 0.16)", activeMatch: "rgba(88, 166, 255, 0.24)" },
   },
@@ -121,7 +122,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     cursor: "#93a1a1",
     cursorAccent: "#002b36",
     selectionBackground: "rgba(38, 139, 210, 0.15)",
-    badge: "#ff8da1",
+    badge: "#ff8da180",
     scrollbar: { idle: "rgba(255, 255, 255, 0.12)", hover: "rgba(255, 255, 255, 0.20)", active: "rgba(255, 255, 255, 0.30)" },
     search: { match: "rgba(38, 139, 210, 0.09)", activeMatch: "rgba(38, 139, 210, 0.12)" },
   },
@@ -169,12 +170,14 @@ describe.each(THEME_IDS)("theme %s", (id) => {
 
   // trmx-90 (sub-task B): every built-in ships a per-pane badge watermark — non-empty and a valid
   // color the contrast math can composite over the terminal background (never throws).
-  // trmx-149: the value itself is iTerm2's default badge red, pinned in TERMINAL above.
+  // trmx-149: the value is Termixion's translucent pink #ff8da180 (50% alpha), pinned in TERMINAL
+  // above. Because it now carries alpha, resolve it via toOpaqueHex (the tolerant compositor that
+  // accepts #rrggbbaa) rather than compositeOver (whose strict hex branch is #rgb/#rrggbb only).
   it("has a non-empty, valid translucent badge watermark", () => {
     const badge = theme.terminal.badge;
     expect(badge).not.toBe("");
     expect(badge).toMatch(/^(#[0-9a-f]{3,8}|rgba?\([\d.,\s]+\))$/i);
-    expect(() => compositeOver(badge, theme.color.bg.primary)).not.toThrow();
+    expect(() => toOpaqueHex(badge, theme.color.bg.primary)).not.toThrow();
   });
 
   it("has a fully-populated color set (no empty strings)", () => {

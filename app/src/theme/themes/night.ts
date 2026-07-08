@@ -43,10 +43,10 @@ export const night: ThemeTokens = {
     cursor: "#d6d9de",
     cursorAccent: "#23262b",
     selectionBackground: "rgba(90, 168, 255, 0.22)",
-    // trmx-90: per-pane badge watermark. trmx-149: pink #ff8da1 (Termixion's chosen badge color,
-    // a deliberate deviation from iTerm2's default red) replaces the faint white tint. (The
-    // theme-golden fixture's night-palette user theme keeps its own explicit badge.)
-    badge: "#ff8da1",
+    // trmx-90: per-pane badge watermark. trmx-149: translucent pink #ff8da180 (50% alpha; Termixion's
+    // chosen badge color, a deliberate deviation from iTerm2's default red) replaces the faint white
+    // tint. (The theme-golden fixture's night-palette user theme keeps its own explicit badge.)
+    badge: "#ff8da180",
     scrollbar: {
       idle: "rgba(255, 255, 255, 0.12)",
       hover: "rgba(255, 255, 255, 0.20)",
