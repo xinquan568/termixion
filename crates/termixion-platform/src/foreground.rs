@@ -93,12 +93,84 @@ pub fn foreground_args(_pid: u32) -> Option<Vec<String>> {
     None
 }
 
-/// Whether `pid`'s stdin (fd 0) is a tty/pty-backed terminal, via macOS `proc_pidfdinfo`. `None` on
-/// any failure (pid gone, fd 0 is not a vnode — e.g. a pipe — or the proc API short-reads).
+/// The type of process `pid`'s stdin (fd 0), via macOS `proc_pidinfo(PROC_PIDLISTFDS)` — the Darwin
+/// `PROX_FDTYPE_*` value (VNODE / PIPE / SOCKET / …). `None` when the pid is gone or its fd list
+/// cannot be read, or when it has no fd 0. Lets [`foreground_stdin_is_tty`] tell a determinably
+/// not-a-tty fd (a pipe/socket ⇒ `Some(false)`) apart from an uninspectable pid (⇒ `None`).
+#[cfg(target_os = "macos")]
+fn stdin_fd_type(pid: u32) -> Option<u32> {
+    const PROC_PIDLISTFDS: libc::c_int = 1;
+
+    // `struct proc_fdinfo` from `sys/proc_info.h` (libc omits it): the fd number + its PROX_FDTYPE_*.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct ProcFdInfo {
+        proc_fd: i32,
+        proc_fdtype: u32,
+    }
+
+    // A null buffer returns the byte length the full fd list would need — 0 / negative if the pid is
+    // gone or has no readable fds. SAFETY: null buffer + 0 size is the documented "size query" call.
+    let needed = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            PROC_PIDLISTFDS,
+            0,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if needed <= 0 {
+        return None;
+    }
+    let entry = std::mem::size_of::<ProcFdInfo>();
+    let count = (needed as usize) / entry;
+    if count == 0 {
+        return None;
+    }
+    let mut fds = vec![
+        ProcFdInfo {
+            proc_fd: 0,
+            proc_fdtype: 0
+        };
+        count
+    ];
+    // SAFETY: `fds` holds exactly `needed` bytes of plain-old-data; proc_pidinfo writes at most that
+    // many and returns the bytes actually written.
+    let got = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            PROC_PIDLISTFDS,
+            0,
+            fds.as_mut_ptr() as *mut libc::c_void,
+            needed,
+        )
+    };
+    if got <= 0 {
+        return None;
+    }
+    let n = ((got as usize) / entry).min(fds.len());
+    fds[..n]
+        .iter()
+        .find(|fd| fd.proc_fd == 0)
+        .map(|fd| fd.proc_fdtype)
+}
+
+/// Whether `pid`'s stdin (fd 0) is a tty/pty-backed terminal. A vnode fd whose path names a tty is
+/// `Some(true)`; any other determinable fd — a regular file, `/dev/null`, or a **pipe/socket** (a
+/// redirect / here-string / pipeline stage) — is `Some(false)`; only a vanished / uninspectable pid,
+/// or a genuine proc-API short-read on a vnode fd, is `None`. Uses `proc_pidinfo` to classify fd 0's
+/// TYPE first (so a non-vnode is `Some(false)`, not `None`), then `proc_pidfdinfo` for the vnode path.
 #[cfg(target_os = "macos")]
 pub fn foreground_stdin_is_tty(pid: u32) -> Option<bool> {
     // libc omits these Darwin `sys/proc_info.h` items, so declare exactly what we use.
     const PROC_PIDFDVNODEPATHINFO: libc::c_int = 2;
+    const PROX_FDTYPE_VNODE: u32 = 1;
+
+    // Only a VNODE fd can be a tty; a pipe / socket / kqueue stdin is determinably NOT a tty.
+    if stdin_fd_type(pid)? != PROX_FDTYPE_VNODE {
+        return Some(false);
+    }
 
     // `struct proc_fileinfo` — the fixed header that precedes the vnode info in the
     // PROC_PIDFDVNODEPATHINFO buffer. Its fields exist only to reproduce the C layout so the vnode
@@ -136,7 +208,8 @@ pub fn foreground_stdin_is_tty(pid: u32) -> Option<bool> {
         )
     };
     if filled < size {
-        // 0 / negative on a dead pid or a non-vnode fd (a pipe); a short read means a bad buffer.
+        // fd 0 was a vnode (checked above) but the vnode-path read short-filled — a genuine failure
+        // (the pid vanished between the two proc calls, or a bad buffer). Unknown ⇒ None.
         return None;
     }
     // `vst_mode` and the `S_IF*` masks are both `mode_t` (u16 on Darwin); no cast needed.
@@ -446,5 +519,38 @@ mod tests {
         assert!(!path_names_a_tty("/dev/zero"));
         assert!(!path_names_a_tty(""));
         assert!(!path_names_a_tty("/private/tmp/foo"));
+    }
+
+    /// trmx-159 (Step-8 review fix): a fd 0 that is a PIPE is determinably NOT a tty ⇒ `Some(false)`,
+    /// distinct from an uninspectable pid ⇒ `None`. A `sleep` spawned with a piped stdin exercises the
+    /// non-vnode branch directly (no PTY needed); `u32::MAX` is a pid the kernel never knows. Without
+    /// this, a piped foreground program would resolve `None` and — via the classifier's partial-metadata
+    /// fail-safe — wrongly read `interactive` instead of `plain`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn foreground_stdin_is_tty_is_false_for_a_pipe_and_none_for_a_dead_pid() {
+        use std::process::{Command, Stdio};
+        let mut child = Command::new("/bin/sleep")
+            .arg("30")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn sleep with a piped stdin");
+        let pid = child.id();
+        let observed = foreground_stdin_is_tty(pid);
+        // Reap before asserting so a failed assertion never leaks the child.
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(
+            observed,
+            Some(false),
+            "a piped stdin is determinably not a tty"
+        );
+        assert_eq!(
+            foreground_stdin_is_tty(u32::MAX),
+            None,
+            "an unknown pid stays None"
+        );
     }
 }
