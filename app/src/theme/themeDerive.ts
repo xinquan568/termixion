@@ -95,10 +95,11 @@ export function deriveTheme(spec: ThemeSpec): ThemeTokens {
       cursor: spec.terminal.cursor ?? textPrimary,
       cursorAccent: spec.terminal.cursorAccent ?? bgPrimary,
       selectionBackground: spec.terminal.selectionBackground ?? withAlpha(accentPrimary, 0.22),
-      // trmx-90 (sub-task B): a per-pane watermark. trmx-149: default = iTerm2's default badge
-      // color (KEY_BADGE_COLOR, iTermProfilePreferences.m:890 — calibrated red 1.0/0/0 @ 0.5
-      // alpha), theme-independent; a spec-provided badge wins.
-      badge: spec.terminal.badge ?? "rgba(255, 0, 0, 0.5)",
+      // trmx-90 (sub-task B): a per-pane watermark. trmx-149: default = pink #ff8da1, a deliberate
+      // Termixion deviation from iTerm2's default badge color (KEY_BADGE_COLOR,
+      // iTermProfilePreferences.m:890 — calibrated red 1.0/0/0 @ 0.5 alpha); theme-independent, a
+      // spec-provided badge still wins.
+      badge: spec.terminal.badge ?? "#ff8da1",
       scrollbar: {
         idle: spec.terminal.scrollbar.idle ?? withAlpha(base, 0.12),
         hover: spec.terminal.scrollbar.hover ?? withAlpha(base, 0.2),

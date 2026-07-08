@@ -31,8 +31,8 @@ const CORE: Record<BuiltinThemeId, { bg: string; bg2: string; text: string; acce
 
 /** Full terminal slices — vmark origin/main @ d7e70e3f plus the two trmx-77 audited deviations
  *  (night.brightBlack, solarized.selectionBackground); see the header comment.
- *  trmx-149: every theme's `badge` is iTerm2's default badge color rgba(255, 0, 0, 0.5)
- *  (KEY_BADGE_COLOR, iTermProfilePreferences.m:890 — calibrated red 1.0/0/0 @ 0.5 alpha),
+ *  trmx-149: every theme's `badge` is Termixion's default badge pink #ff8da1 (a deliberate
+ *  deviation from iTerm2's default red rgba(255,0,0,0.5) @ iTermProfilePreferences.m:890),
  *  replacing the trmx-90 faint per-theme text tints. */
 const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
   white: {
@@ -46,7 +46,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     cursor: "#1a1a1a",
     cursorAccent: "#FFFFFF",
     selectionBackground: "rgba(0,102,204,0.25)",
-    badge: "rgba(255, 0, 0, 0.5)",
+    badge: "#ff8da1",
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
     search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },
   },
@@ -61,7 +61,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     cursor: "#1a1a1a",
     cursorAccent: "#EEEDED",
     selectionBackground: "rgba(0,102,204,0.25)",
-    badge: "rgba(255, 0, 0, 0.5)",
+    badge: "#ff8da1",
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
     search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },
   },
@@ -76,7 +76,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     cursor: "#2d3a35",
     cursorAccent: "#CCE6D0",
     selectionBackground: "rgba(0,102,204,0.25)",
-    badge: "rgba(255, 0, 0, 0.5)",
+    badge: "#ff8da1",
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
     search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },
   },
@@ -91,7 +91,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     cursor: "#5c4b37",
     cursorAccent: "#F9F0DB",
     selectionBackground: "rgba(0,102,204,0.25)",
-    badge: "rgba(255, 0, 0, 0.5)",
+    badge: "#ff8da1",
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
     search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },
   },
@@ -106,7 +106,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     cursor: "#d6d9de",
     cursorAccent: "#23262b",
     selectionBackground: "rgba(90, 168, 255, 0.22)",
-    badge: "rgba(255, 0, 0, 0.5)",
+    badge: "#ff8da1",
     scrollbar: { idle: "rgba(255, 255, 255, 0.12)", hover: "rgba(255, 255, 255, 0.20)", active: "rgba(255, 255, 255, 0.30)" },
     search: { match: "rgba(88, 166, 255, 0.16)", activeMatch: "rgba(88, 166, 255, 0.24)" },
   },
@@ -121,7 +121,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     cursor: "#93a1a1",
     cursorAccent: "#002b36",
     selectionBackground: "rgba(38, 139, 210, 0.15)",
-    badge: "rgba(255, 0, 0, 0.5)",
+    badge: "#ff8da1",
     scrollbar: { idle: "rgba(255, 255, 255, 0.12)", hover: "rgba(255, 255, 255, 0.20)", active: "rgba(255, 255, 255, 0.30)" },
     search: { match: "rgba(38, 139, 210, 0.09)", activeMatch: "rgba(38, 139, 210, 0.12)" },
   },
