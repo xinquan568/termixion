@@ -89,8 +89,9 @@ describe("labelOrientationFor (trmx-82)", () => {
 // trmx-163: `railWidthPx` is RETIRED — the rail width is now the CSS-owned `--tab-bar-thickness`
 // (28px, equal to the horizontal strip height by construction), no longer a barLayout token; the
 // strip/row reference height drops 34→28 to match.
-// trmx-151 adds hintHeaderPx — the upright ⌘N chip's fixed header row atop the rotated label: 0
-// outside vertical-label mode (horizontal hints sit inline, no header), 20 in it; the min/max
+// trmx-151 adds hintHeaderPx — the upright ⌘N chip's fixed row (trmx-163: at the BOTTOM of the
+// trailing group, below the rotated label): 0 outside vertical-label mode (horizontal hints sit
+// inline, no chip row), 20 in it; the min/max
 // heights grow by exactly that 20 (60→80, 180→200) so the LABEL's own budget is preserved.
 describe("railGeometryFor (trmx-82)", () => {
   const STATUS_QUO = {

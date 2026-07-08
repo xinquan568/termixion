@@ -540,7 +540,7 @@ describe("TabStrip rename (trmx-75)", () => {
 // trmx-82 (FR-2.3): vertical labels on the side rail. Vertical-label mode is the AND of
 // orientation="vertical" and labelOrientation="vertical": the root gains
 // `tab-strip--labels-vertical`, the label span the writing-mode class, the close × moves to the
-// tab's END (with the token hit target), and the rename input becomes a FIXED overlay anchored to
+// tab's TOP (trmx-163: --vtop absolute overlay, with the token hit target), and the rename input becomes a FIXED overlay anchored to
 // the renaming tab's rect (D4) — horizontal text, wider than the rail, still inside the tab's DOM
 // subtree with the trmx-75 commit/cancel/latch semantics untouched. jsdom has no layout, so the
 // geometry itself (writing-mode, min-width, fixed clipping) is pinned structurally: classes +
