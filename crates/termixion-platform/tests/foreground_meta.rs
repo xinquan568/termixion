@@ -7,8 +7,9 @@
 // and runs `sleep 30 </dev/null`, pinning that the redirected stdin reads as NOT a tty. Same
 // conventions as `foreground.rs`: rc-free `zsh -f`, a pump thread on the blocking reader, deadline
 // polls, and `ps -o stat=` no-zombie hygiene on EVERY captured pid. macOS is where the real impl
-// lives; on other unix the helpers return `None` (the whole file still compiles).
-#![cfg(unix)]
+// lives — the whole golden-test file is gated to macOS (on other unix the helpers are `None` stubs,
+// so there is nothing to observe and the PTY harness + its imports would be unused under `-D warnings`).
+#![cfg(target_os = "macos")]
 
 use std::process::Command;
 use std::sync::mpsc;
