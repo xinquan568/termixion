@@ -1831,6 +1831,12 @@ describe("App activity indicator (trmx-91)", () => {
     act(() => marker({ kind: "D", busy: false, busyChanged: true, exitCode: 1 }));
     act(() => vi.advanceTimersByTime(300)); // past min-visible; the flash (600ms) still shows the line
     expect(activityLineIn(1)).toBeInTheDocument();
+    // trmx-160: the flash keeps its trmx-99 look — the --flash variant painted in the error color,
+    // NOT the new green progress bar (a flash must never turn green).
+    const flashLine = activityLineIn(1)!;
+    expect(flashLine.className).toContain("tx-activity-line--flash");
+    expect(flashLine.className).not.toContain("tx-activity-line--progress");
+    expect(flashLine.style.backgroundColor).not.toBe("");
     act(() => vi.advanceTimersByTime(400)); // past FLASH_MS → the flash clears
     expect(activityLineIn(1)).not.toBeInTheDocument();
     vi.useRealTimers();
@@ -1901,15 +1907,31 @@ describe("App activity indicator (trmx-91)", () => {
     expect(activityLineIn(2)).not.toBeInTheDocument();
   });
 
-  it("colors the line from the active theme's semantic-success tint (a real rgba, not empty)", async () => {
-    const { calls, activity } = renderApp();
+  // trmx-160: the busy line is the iTerm2 progress-bar clone, keyed on the theme MODE App derives from
+  // resolveTheme(themeId).isDark and re-derives on every theme switch. A dark theme ⇒ --dark; a light
+  // theme ⇒ --light; the bar is no longer inline-colored (its track + green sweep are theme-independent CSS).
+  it("renders the progress bar keyed on the theme mode, re-keying live on a theme switch (trmx-160)", async () => {
+    const { calls, activity, settingsChanged } = renderApp();
     await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
     vi.useFakeTimers();
+
+    // A known DARK theme (night) → the busy progress bar carries --dark and no inline color.
+    act(() =>
+      settingsChanged.fire({ key: "appearance.theme", value: "night", source: "settings-window" }),
+    );
     act(() => activity.fire(7, true, { name: "sleep" }));
     act(() => vi.advanceTimersByTime(150));
-    // App threads withAlpha(resolveTheme(id).color.semantic.success, 0.8) — a resolved color, not "".
-    const line = within(screen.getByTestId("pane-host-1")).getByTestId("pane-activity");
-    expect(line.style.backgroundColor).not.toBe("");
+    let line = within(screen.getByTestId("pane-host-1")).getByTestId("pane-activity");
+    expect(line.className).toContain("tx-activity-line--progress");
+    expect(line.className).toContain("tx-activity-line--dark");
+    expect(line.style.backgroundColor).toBe("");
+
+    // Switching to a known LIGHT theme (white) re-keys the still-busy pane's bar to --light.
+    act(() =>
+      settingsChanged.fire({ key: "appearance.theme", value: "white", source: "settings-window" }),
+    );
+    line = within(screen.getByTestId("pane-host-1")).getByTestId("pane-activity");
+    expect(line.className).toContain("tx-activity-line--light");
   });
 
   it("is inert for activity on an unknown session (no line anywhere)", async () => {

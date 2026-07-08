@@ -283,7 +283,11 @@ body {
   pointer-events: none;
   overflow: hidden;
 }
-.tx-activity-line::after {
+
+/* trmx-99 error FLASH — the original solid-tint bar (App threads the error color inline) with the
+   legacy translucent shimmer, kept byte-for-byte so a failed-command flash looks exactly as it did
+   before trmx-160. Only a `flashing` overlay gets this class; the busy look is `--progress` below. */
+.tx-activity-line--flash::after {
   content: "";
   position: absolute;
   top: 0;
@@ -307,8 +311,66 @@ body {
     transform: translateX(400%);
   }
 }
+
+/* trmx-160 — the iTerm2 indeterminate progress-bar clone (the BUSY look). An OPAQUE track (black in
+   dark mode, white in light) behind a pure-green sweep; TWO `__sweep` layers phase-offset by half a
+   period (the 2nd via a negative `animation-delay`) so a bright blob is always visible. Compositor-
+   only `transform: translateX` (no layout/paint, no JS timers). Deliberate deviations from iTerm2
+   (flagged): the trigger is Termixion's own predicate (not OSC 9;4); it persists on window blur; and
+   it stays GREEN in light mode — iTerm2 defaults to blue there, but the user picked green-everywhere. */
+.tx-activity-line--dark {
+  background: #000;
+}
+.tx-activity-line--light {
+  background: #fff;
+}
+.tx-activity-line__sweep {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  will-change: transform;
+}
+.tx-activity-line--dark .tx-activity-line__sweep {
+  background: linear-gradient(
+    90deg,
+    #000 0%,
+    #008000 20%,
+    #00ff00 40%,
+    #00ff00 60%,
+    #008000 80%,
+    #000 100%
+  );
+  animation: tx-activity-sweep 3s linear infinite;
+}
+.tx-activity-line--light .tx-activity-line__sweep {
+  background: linear-gradient(90deg, #fff, #b3ffb3, #00ff00, #b3ffb3, #fff);
+  animation: tx-activity-sweep 6s linear infinite;
+}
+.tx-activity-line--dark .tx-activity-line__sweep--offset {
+  animation-delay: -1.5s;
+}
+.tx-activity-line--light .tx-activity-line__sweep--offset {
+  animation-delay: -3s;
+}
+@keyframes tx-activity-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
 @media (prefers-reduced-motion: reduce) {
-  .tx-activity-line::after {
+  .tx-activity-line__sweep {
+    animation: none;
+  }
+  .tx-activity-line--progress .tx-activity-line__sweep {
+    background: #00ff00;
+    transform: none;
+  }
+  .tx-activity-line--flash::after {
     animation: none;
   }
 }
