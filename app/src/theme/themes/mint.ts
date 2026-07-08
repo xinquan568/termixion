@@ -40,9 +40,9 @@ export const mint: ThemeTokens = {
     cursor: "#2d3a35",
     cursorAccent: "#CCE6D0",
     selectionBackground: "rgba(0,102,204,0.25)",
-    // trmx-90: per-pane badge watermark. trmx-149: iTerm2's default badge red (KEY_BADGE_COLOR,
-    // red 1.0/0/0 @ 0.5 alpha) replaces the faint text tint — exact iTerm2 parity.
-    badge: "rgba(255, 0, 0, 0.5)",
+    // trmx-90: per-pane badge watermark. trmx-149: pink #ff8da1 (Termixion's chosen badge color,
+    // a deliberate deviation from iTerm2's default red) replaces the faint text tint.
+    badge: "#ff8da1",
     scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
     // trmx-98: find-bar highlights — translucent yellow match / warmer active (legible over every theme bg).
     search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },

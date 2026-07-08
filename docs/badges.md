@@ -44,13 +44,13 @@ control characters are stripped, and the text is capped at 256 characters.
 
 ## Appearance
 
-The badge matches **iTerm2's default badge exactly** (trmx-149): **red at 50% alpha**
-(`rgba(255, 0, 0, 0.5)`), set in **Helvetica bold**, auto-sized to the largest font that fits within
-**50% of the pane's width and 20% of its height** (shrinking for long labels; two lines max), inset
-**10px from the top and right** edges, with a subtle glyph outline in the theme's background color so
-it stays readable over dense text.
+The badge follows **iTerm2's default badge** for everything but color (trmx-149): **pink `#ff8da1`**
+(a deliberate Termixion deviation from iTerm2's red `rgba(255, 0, 0, 0.5)`), set in **Helvetica bold**,
+auto-sized to the largest font that fits within **50% of the pane's width and 20% of its height**
+(shrinking for long labels; two lines max), inset **10px from the top and right** edges, with a subtle
+glyph outline in the theme's background color so it stays readable over dense text.
 
-The color is the **`terminal.badge`** theme token: every built-in theme sets the iTerm2 red; a user
+The color is the **`terminal.badge`** theme token: every built-in theme sets the pink `#ff8da1`; a user
 theme (`~/.config/termixion/themes/<id>.toml`, see [themes.md](themes.md)) may override
-`terminal.badge`, and one that omits it gets the same red default. The overlay is non-interactive
+`terminal.badge`, and one that omits it gets the same pink default. The overlay is non-interactive
 (it never intercepts terminal mouse events) and hides itself on very small panes.
