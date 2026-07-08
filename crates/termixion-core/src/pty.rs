@@ -86,6 +86,15 @@ pub struct SessionSpec {
 /// implements — the same value VS Code, Hyper, and other xterm.js front-ends export.
 pub const DEFAULT_TERM: &str = "xterm-256color";
 
+/// The `LANG` a login shell is given when the inherited environment carries **no locale at all**
+/// (trmx-145). A GUI launch (Finder / the `.app` bundle under `launchd`) inherits none of
+/// `LANG`/`LC_ALL`/`LC_CTYPE`, leaving the child shell in the C locale — where zsh's line editor
+/// renders pasted/typed multi-byte UTF-8 as `<00XX>` garbage that then re-copies faithfully and
+/// masquerades as clipboard corruption. Terminal.app and iTerm2 set locale variables for spawned
+/// shells for the same reason. `en_US.UTF-8` ships on every macOS install, and it is the ctype
+/// (UTF-8) that matters here, not the language.
+pub const DEFAULT_UTF8_LANG: &str = "en_US.UTF-8";
+
 impl SessionSpec {
     /// A spec that runs `program` with no args, inheriting cwd and environment.
     pub fn shell(program: impl Into<OsString>) -> Self {
@@ -109,14 +118,41 @@ impl SessionSpec {
     /// bindings (trmx-37). This forced value also overrides any inherited `$TERM` (the platform backend
     /// layers `spec.env` over the inherited environment): the inherited value describes whatever
     /// terminal Termixion runs *in*, not the xterm.js surface Termixion presents to its child.
+    ///
+    /// Sets `LANG` to [`DEFAULT_UTF8_LANG`] **only when the inherited environment carries no
+    /// locale at all** (`LANG`, `LC_ALL`, and `LC_CTYPE` all unset or empty — the GUI-launch
+    /// state, trmx-145). An explicit value in any of the three — even `C` — is user/process
+    /// configuration and is respected as-is (POSIX precedence for the input-rendering symptom:
+    /// `LC_ALL` > `LC_CTYPE` > `LANG`), so an explicitly non-UTF-8 environment keeps its
+    /// behavior. Unlike `TERM`, this never overrides an inherited value.
     pub fn login_shell() -> Self {
-        let mut spec = Self::shell(login_shell_program(std::env::var_os("SHELL"), |p| {
+        Self::login_shell_with_env(|key| std::env::var_os(key))
+    }
+
+    /// [`login_shell`] over an injected environment lookup (the house test seam, like
+    /// [`login_shell_program`]'s injected probe): the closure fully determines the spec, so unit
+    /// tests never read the process-global environment. Production passes `std::env::var_os`.
+    fn login_shell_with_env(env: impl Fn(&str) -> Option<OsString>) -> Self {
+        let mut spec = Self::shell(login_shell_program(env("SHELL"), |p| {
             std::path::Path::new(p).exists()
         }));
         spec.env
             .push((OsString::from("TERM"), OsString::from(DEFAULT_TERM)));
+        if locale_is_absent(&env) {
+            spec.env
+                .push((OsString::from("LANG"), OsString::from(DEFAULT_UTF8_LANG)));
+        }
         spec
     }
+}
+
+/// True when the environment provides no locale signal at all: `LANG`, `LC_ALL`, and `LC_CTYPE`
+/// each unset **or empty** (an observed real-world state is `LANG=''`). Only this total absence
+/// triggers the [`DEFAULT_UTF8_LANG`] fallback — any explicit value, UTF-8 or not, wins.
+fn locale_is_absent(env: &impl Fn(&str) -> Option<OsString>) -> bool {
+    ["LANG", "LC_ALL", "LC_CTYPE"]
+        .iter()
+        .all(|key| env(key).is_none_or(|value| value.is_empty()))
 }
 
 /// Pick the login-shell program: a non-empty `$SHELL`, else `/bin/zsh` if present (the macOS default),
@@ -266,6 +302,85 @@ mod tests {
         assert!(!spec.program.is_empty(), "a login shell must be resolved");
         assert!(spec.args.is_empty());
         assert!(spec.cwd.is_none());
+    }
+
+    /// An injected env lookup over a fixed pair list. Every test pins a non-empty `SHELL` so the
+    /// resolver never falls through to the host-filesystem `/bin/zsh` probe — the injected env
+    /// fully determines the spec (the Step-5 determinism pin).
+    fn env_from(
+        pairs: &'static [(&'static str, &'static str)],
+    ) -> impl Fn(&str) -> Option<OsString> {
+        move |key| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| OsString::from(v))
+        }
+    }
+
+    fn env_value(spec: &SessionSpec, key: &str) -> Option<OsString> {
+        spec.env
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn login_shell_forces_utf8_lang_when_environment_has_no_locale() {
+        // trmx-145 (reopened): a GUI launch (Finder/launchd) inherits no LANG/LC_ALL/LC_CTYPE,
+        // leaving the child zsh in the C locale — ZLE then displays pasted/typed multi-byte
+        // UTF-8 as `<00XX>` garbage, which re-copies faithfully and masquerades as clipboard
+        // corruption. Same launch-context reasoning as the forced TERM (trmx-37).
+        let spec = SessionSpec::login_shell_with_env(env_from(&[("SHELL", "/bin/zsh")]));
+        assert_eq!(
+            env_value(&spec, "TERM"),
+            Some(OsString::from("xterm-256color")),
+            "the trmx-37 TERM contract must be unaffected"
+        );
+        assert_eq!(
+            env_value(&spec, "LANG"),
+            Some(OsString::from(DEFAULT_UTF8_LANG)),
+            "a locale-less environment must get a UTF-8 LANG; got env {:?}",
+            spec.env
+        );
+    }
+
+    #[test]
+    fn login_shell_treats_empty_locale_vars_as_unset() {
+        // The observed broken machine state was LANG='' (empty string, not absent).
+        let spec = SessionSpec::login_shell_with_env(env_from(&[
+            ("SHELL", "/bin/zsh"),
+            ("LANG", ""),
+            ("LC_ALL", ""),
+            ("LC_CTYPE", ""),
+        ]));
+        assert_eq!(
+            env_value(&spec, "LANG"),
+            Some(OsString::from(DEFAULT_UTF8_LANG)),
+            "empty-string locale vars count as unset; got env {:?}",
+            spec.env
+        );
+    }
+
+    #[test]
+    fn login_shell_respects_an_explicit_locale() {
+        // Any of the three vars set non-empty — even to C — is explicit configuration; the spec
+        // adds nothing and the child inherits it (POSIX precedence: LC_ALL > LC_CTYPE > LANG).
+        for pinned in [
+            ("LANG", "C"),
+            ("LC_ALL", "C"),
+            ("LC_CTYPE", "C"),
+            ("LANG", "fr_FR.UTF-8"),
+        ] {
+            let pairs: &[(&str, &str)] = Box::leak(Box::new([("SHELL", "/bin/zsh"), pinned]));
+            let spec = SessionSpec::login_shell_with_env(env_from(pairs));
+            assert_eq!(
+                env_value(&spec, "LANG"),
+                None,
+                "with {pinned:?} set the spec must not force LANG; got env {:?}",
+                spec.env
+            );
+        }
     }
 
     #[test]
