@@ -154,19 +154,19 @@ const DEFAULT_BOUNDS: Rect = { x: 0, y: 0, width: 800, height: 600 };
 // trmx-149 dropped the rows twin: font sizing now fits the pane RECT (iTerm2's box), not cell metrics.
 const FALLBACK_BADGE_COLS = 80;
 
-// trmx-91: the activity line's alpha over the theme's semantic-success tint — faint enough to sit
-// quietly at a pane's top edge, strong enough to read as "busy". Applied to `color.semantic.success`
-// (a solid theme color) so, unlike the badge tint (already a low-alpha token), App derives the rgba.
+// trmx-99: the alpha over the theme's semantic-error tint for the exit-code FLASH — faint enough to
+// sit quietly at a pane's top edge, strong enough to read. (trmx-160: the BUSY line is no longer a
+// theme tint — it is the iTerm2 progress-bar clone, a theme-independent green keyed only on the mode.)
 const ACTIVITY_LINE_ALPHA = 0.8;
 
-/** The activity line's color for a theme id: its `color.semantic.success` at {@link ACTIVITY_LINE_ALPHA}. */
-function activityColorFor(themeId: string): string {
-  return withAlpha(resolveTheme(themeId).color.semantic.success, ACTIVITY_LINE_ALPHA);
-}
-
-/** trmx-99: the exit-code flash color — `color.semantic.error` at the same alpha as the activity line. */
+/** trmx-99: the exit-code flash color — `color.semantic.error` at {@link ACTIVITY_LINE_ALPHA}. */
 function activityErrorColorFor(themeId: string): string {
   return withAlpha(resolveTheme(themeId).color.semantic.error, ACTIVITY_LINE_ALPHA);
+}
+
+/** trmx-160: the active theme's mode — selects the progress bar's track color (black/white) + period. */
+function activityIsDarkFor(themeId: string): boolean {
+  return resolveTheme(themeId).isDark;
 }
 
 /** Wire a mounted terminal to a live PTY session; resolves the session's identity (useBackend). */
@@ -463,12 +463,12 @@ export function App({
   const [shortcutHintsOn, setShortcutHintsOn] = useState<boolean>(() =>
     makeSettingsStore().get("tabs.showShortcutHints"),
   );
-  // trmx-91: the activity line's COLOR — the active theme's semantic-success tint at ~80% alpha,
-  // tracked as RESOLVED state exactly like badgeColor (review-1: the trmx-89 hot-reload re-emits the
-  // SAME user-theme id after re-registering tokens, so keying on the id would leave the line on a
-  // stale color; the resolved color repaints). resolveTheme is total, so any id resolves.
-  const [activityColor, setActivityColor] = useState<string>(() =>
-    activityColorFor(makeSettingsStore().get("appearance.theme")),
+  // trmx-160: the active theme's MODE — the busy progress bar keys its track color + sweep period on
+  // it (dark: black track / 3s; light: white track / 6s). Tracked as RESOLVED state and re-derived on
+  // every theme event (a trmx-89 same-id hot-reload can flip isDark under the same id), exactly like
+  // the badge color. resolveTheme is total, so any id resolves.
+  const [activityIsDark, setActivityIsDark] = useState<boolean>(() =>
+    activityIsDarkFor(makeSettingsStore().get("appearance.theme")),
   );
   // trmx-99 (FR-7b): the exit-code flash color (semantic.error at the same alpha) + the set of panes
   // currently flashing after a failed command. The flashing set drives the overlay re-render.
@@ -1507,7 +1507,7 @@ export function App({
       else if (key === "appearance.theme" && (isRegisteredThemeId(value) || isUserThemeIdShape(value))) {
         setBadgeColor(resolveTheme(value).terminal.badge);
         setBadgeOutlineColor(resolveTheme(value).color.bg.primary); // trmx-149: re-tint the stroke
-        setActivityColor(activityColorFor(value));
+        setActivityIsDark(activityIsDarkFor(value)); // trmx-160: re-key the progress bar's mode
         setActivityErrorColor(activityErrorColorFor(value)); // trmx-99: re-tint the exit-code flash
         setSearchColors(resolveTheme(value).terminal.search); // trmx-98: re-tint the find highlights
       }
@@ -1951,15 +1951,18 @@ export function App({
                       onBadge={badgeFor(tab.tabId, paneId)}
                       onPromptMarker={promptMarkerFor(tab.tabId, paneId)}
                     />
-                    {/* trmx-91: the top-edge activity line (click-through, below the badge). Shown while
-                        this pane is busy (its debounced activityVisible) OR flashing a failed command's
-                        exit code (trmx-99), AND the setting is on. The flash paints the error color and
-                        overrides the busy color (a new command clears the flash first). */}
+                    {/* trmx-91/160: the top-edge activity line (click-through, below the badge). Shown while
+                        this pane is busy (its lightActive-derived activityVisible) OR flashing a failed
+                        command's exit code (trmx-99), AND the setting is on. A busy pane renders the
+                        iTerm2 progress-bar clone keyed on the theme mode; a flash renders the trmx-99
+                        error-color look (flashing overrides, and a new command clears the flash first). */}
                     <ActivityLineOverlay
                       visible={
                         activityIndicatorOn && (pane.activityVisible === true || flashingPanes.has(paneId))
                       }
-                      color={flashingPanes.has(paneId) ? activityErrorColor : activityColor}
+                      color={activityErrorColor}
+                      isDark={activityIsDark}
+                      flashing={flashingPanes.has(paneId)}
                     />
                     {/* trmx-90: the translucent badge watermark (top-right, click-through). Hidden by
                         BadgeOverlay itself when the pane has no badge or is too narrow. trmx-149: it
