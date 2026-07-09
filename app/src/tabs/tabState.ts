@@ -9,8 +9,9 @@
 // `layoutTree` (panes/layoutTree.ts), a `focusedPaneId`, and a `panes` record of per-pane state
 // (session + title sources). A pane is exactly what a tab's single surface was before (trmx-74),
 // so all the session/title machinery simply moves from tab scope to PANE scope. The tab's rendered
-// `title` is DERIVED — always the FOCUSED pane's effective title — so the strip/window still
-// consume one string, and it switches source as focus moves between panes.
+// `title` is DERIVED — the tab-scoped manual pin (trmx-166, `manualTitle`) when set, else the
+// FOCUSED pane's effective title — so the strip/window still consume one string; without a pin it
+// switches source as focus moves between panes, and with one it stays put (see `deriveTitle`).
 //
 // Conventions (all iTerm2-modeled):
 // - Tab ids AND pane ids are MONOTONIC and never reused (`nextTabId`/`nextPaneId` only increment),
@@ -24,16 +25,18 @@
 //   last"; tabs beyond nine are reached via ⌘⇧]/⌘⇧[ or the mouse.
 // - Every no-op returns the IDENTICAL state object (===), so a React `useReducer` consumer skips
 //   the re-render and tests can pin no-op-ness exactly.
-// - trmx-75 titles are layered SOURCES (manual > osc > process > fallback, tabTitle.ts), now held
-//   PER PANE; every sources change recomputes that pane's `title`, and if it is the focused pane,
-//   the tab's derived `title` too. A background pane's title change never moves the tab label.
+// - trmx-75/166 titles: each PANE has an automatic source ladder (osc > process > fallback,
+//   tabTitle.ts); every sources change recomputes that pane's `title`. The user's manual rename is
+//   a TAB-scoped pin (`Tab.manualTitle`) — `deriveTitle`/`tabTitle` derive the tab label as the pin
+//   when set, else the focused pane's effective title, so a rename survives pane focus/splits and a
+//   background pane's title change never moves the label.
 // - trmx-90 adds a per-pane `badge`: an ephemeral, session-lifetime overlay label — a SINGLE opaque
 //   slot (last-write-wins, NOT a source ladder like the title). It is orthogonal to the title:
 //   setting/clearing a badge never moves the tab label, even on the focused pane.
 // - Pane ORDER always comes from the layout tree (`leaves`), never `Object.keys(panes)` (numeric
 //   object keys enumerate string-coerced in ascending order, which is NOT layout order).
 
-import { effectiveTitle, sanitizeTitle, type TitleSources } from "./tabTitle";
+import { effectiveTitle, sanitizeTitle, tabTitle, type TitleSources } from "./tabTitle";
 import {
   canSplit as canSplitTree,
   leafNode,
@@ -79,7 +82,18 @@ export interface Tab {
   tree: LayoutNode;
   focusedPaneId: PaneId;
   panes: Record<PaneId, PaneState>;
-  /** Derived: the FOCUSED pane's effective title — the ONE string the strip/window consume. */
+  /**
+   * trmx-166: the user's tab-level manual title (the rename PIN) — `undefined` (or empty after
+   * sanitize) means "follow focus". When set, it overrides the focused pane's effective title for
+   * the derived `title`, so the tab label stays put across pane splits and focus changes. It is a
+   * TAB label only: per-pane `PaneState.title` (and the core session mirror) are unaffected.
+   */
+  manualTitle?: string;
+  /**
+   * Derived: `tabTitle(manualTitle, focusedPane.titleSources)` — the manual pin when set, else the
+   * FOCUSED pane's effective title. The ONE string the strip/window consume; recomputed via
+   * `deriveTitle` at every write site.
+   */
   title: string;
 }
 
@@ -96,14 +110,18 @@ export type TabsAction =
   | { kind: "openTab"; title?: string }
   // trmx-84: session attach is now PER PANE (a tab has many).
   | { kind: "attachSession"; tabId: number; paneId: number; sessionId: number; title: string }
-  // trmx-75/84: set (string) or clear (null) one of a PANE's three overridable title slots.
+  // trmx-75/84: set (string) or clear (null) one of a PANE's AUTOMATIC title slots. trmx-166: the
+  // user's `manual` rename left this ladder — it is now the tab-scoped `setTabTitle` below.
   | {
       kind: "setTitleSource";
       tabId: number;
       paneId: number;
-      source: "manual" | "osc" | "process";
+      source: "osc" | "process";
       value: string | null;
     }
+  // trmx-166: set (string) or clear (null/empty) a TAB's manual title pin — overrides the focused
+  // pane's effective title for the tab label until cleared back to auto.
+  | { kind: "setTabTitle"; tabId: number; value: string | null }
   | { kind: "closeTab"; tabId: number }
   | { kind: "activateTab"; tabId: number }
   | { kind: "nextTab" }
@@ -152,11 +170,24 @@ function replaceTab(state: TabsState, tabId: number, nextTab: Tab): TabsState {
   return { ...state, tabs: state.tabs.map((t) => (t.tabId === tabId ? nextTab : t)) };
 }
 
-// Swap paneId's PaneState in `tab`, recomputing the tab's DERIVED title only when the focused pane
-// changed — so a background pane's title update never moves the tab label (background isolation).
+// trmx-166: the derived tab label — the manual pin (`Tab.manualTitle`) when set, else the FOCUSED
+// pane's effective title. EVERY tab-title write routes through here, so the pin is honored at all of
+// them (split, focus, close, redock, move, attach) and no site can silently drop it; a background
+// pane's automatic title change still never moves the label (this reads only the focused pane).
+function deriveTitle(
+  manualTitle: string | undefined,
+  panes: Record<PaneId, PaneState>,
+  focusedPaneId: PaneId,
+): string {
+  return tabTitle(manualTitle, panes[focusedPaneId].titleSources);
+}
+
+// Swap paneId's PaneState in `tab`, recomputing the tab's DERIVED title. With no manual pin a
+// background pane's title update leaves the label unchanged (deriveTitle reads only the focused
+// pane); with a pin the label stays the pinned title regardless (background isolation preserved).
 function replacePane(state: TabsState, tab: Tab, paneId: PaneId, nextPane: PaneState): TabsState {
   const panes = { ...tab.panes, [paneId]: nextPane };
-  const title = paneId === tab.focusedPaneId ? nextPane.title : tab.title;
+  const title = deriveTitle(tab.manualTitle, panes, tab.focusedPaneId);
   return replaceTab(state, tab.tabId, { ...tab, panes, title });
 }
 
@@ -166,12 +197,16 @@ export function reduceTabs(state: TabsState, action: TabsAction): TabsState {
     case "openTab": {
       const paneId = state.nextPaneId;
       const pane = makePane(null, action.title ?? "");
+      const panes = { [paneId]: pane };
       const tab: Tab = {
         tabId: state.nextTabId,
         tree: leafNode(paneId),
         focusedPaneId: paneId,
-        panes: { [paneId]: pane },
-        title: pane.title,
+        panes,
+        // trmx-166: route through deriveTitle like every other write site (a fresh tab has no pin,
+        // so this equals pane.title — but the invariant "all tab-title writes go through deriveTitle"
+        // holds uniformly).
+        title: deriveTitle(undefined, panes, paneId),
       };
       return {
         tabs: [...state.tabs, tab],
@@ -213,6 +248,20 @@ export function reduceTabs(state: TabsState, action: TabsAction): TabsState {
       else titleSources[action.source] = next;
       const nextPane: PaneState = { ...pane, titleSources, title: effectiveTitle(titleSources) };
       return replacePane(state, tab, action.paneId, nextPane);
+    }
+
+    case "setTabTitle": {
+      // trmx-166: set/clear the tab-scoped manual pin. Empty-after-sanitize (or null) clears it back
+      // to "follow focus"; the derived title recomputes to the pin (if set) or the focused pane's
+      // effective title. A no-op change returns the identical state object (=== ) like every other
+      // transition. The per-pane titleSources and the core session mirror are untouched.
+      const tab = state.tabs.find((t) => t.tabId === action.tabId);
+      if (!tab) return state;
+      const clean = action.value === null ? "" : sanitizeTitle(action.value);
+      const manualTitle = clean === "" ? undefined : clean;
+      if (tab.manualTitle === manualTitle) return state; // unchanged / already clear — === no-op
+      const title = deriveTitle(manualTitle, tab.panes, tab.focusedPaneId);
+      return replaceTab(state, tab.tabId, { ...tab, manualTitle, title });
     }
 
     case "closeTab": {
@@ -277,12 +326,15 @@ export function reduceTabs(state: TabsState, action: TabsAction): TabsState {
       const tree = splitLeaf(tab.tree, tab.focusedPaneId, action.dir, newPaneId);
       if (tree === tab.tree) return state; // focused pane isn't a leaf (defensive) — no-op
       const pane = makePane(null, ""); // session-less until App's open_pty resolves
+      const panes = { ...tab.panes, [newPaneId]: pane };
       const nextTab: Tab = {
         ...tab,
         tree,
-        panes: { ...tab.panes, [newPaneId]: pane },
+        panes,
         focusedPaneId: newPaneId, // the new pane takes focus (iTerm2)
-        title: pane.title,
+        // trmx-166: a manual pin survives the split — deriveTitle returns the pin if set, else the
+        // new focused pane's title.
+        title: deriveTitle(tab.manualTitle, panes, newPaneId),
       };
       return {
         ...state,
@@ -305,7 +357,7 @@ export function reduceTabs(state: TabsState, action: TabsAction): TabsState {
         ...tab,
         tree,
         focusedPaneId: action.paneId,
-        title: tab.panes[action.paneId].title,
+        title: deriveTitle(tab.manualTitle, tab.panes, action.paneId), // trmx-166: pin survives
       };
       return replaceTab(state, tab.tabId, nextTab);
     }
@@ -320,7 +372,7 @@ export function reduceTabs(state: TabsState, action: TabsAction): TabsState {
         ...tab,
         tree,
         focusedPaneId: action.paneId, // the moved pane stays focused (keyboard moves chain)
-        title: tab.panes[action.paneId].title,
+        title: deriveTitle(tab.manualTitle, tab.panes, action.paneId), // trmx-166: pin survives
       };
       return replaceTab(state, tab.tabId, nextTab);
     }
@@ -335,7 +387,14 @@ export function reduceTabs(state: TabsState, action: TabsAction): TabsState {
       const panes = { ...tab.panes };
       delete panes[action.paneId];
       const focusedPaneId = tab.focusedPaneId === action.paneId ? focusNext : tab.focusedPaneId;
-      const nextTab: Tab = { ...tab, tree, panes, focusedPaneId, title: panes[focusedPaneId].title };
+      // trmx-166: closing a pane (incl. the one focused at rename time) keeps the manual pin.
+      const nextTab: Tab = {
+        ...tab,
+        tree,
+        panes,
+        focusedPaneId,
+        title: deriveTitle(tab.manualTitle, panes, focusedPaneId),
+      };
       return replaceTab(state, tab.tabId, nextTab);
     }
 
@@ -347,7 +406,8 @@ export function reduceTabs(state: TabsState, action: TabsAction): TabsState {
       const nextTab: Tab = {
         ...tab,
         focusedPaneId: action.paneId,
-        title: tab.panes[action.paneId].title, // the tab label follows focus
+        // trmx-166: with no manual pin the label follows focus; a pin overrides it (stays put).
+        title: deriveTitle(tab.manualTitle, tab.panes, action.paneId),
       };
       return replaceTab(state, tab.tabId, nextTab);
     }

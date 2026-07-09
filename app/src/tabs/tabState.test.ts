@@ -173,10 +173,14 @@ describe("setTitleSource — single-pane regression (trmx-75 precedence intact)"
   }
   function set(
     state: TabsState,
-    source: "manual" | "osc" | "process",
+    source: "osc" | "process",
     value: string | null,
   ): TabsState {
     return reduceTabs(state, { kind: "setTitleSource", tabId: 1, paneId: 1, source, value });
+  }
+  // trmx-166: the tab-scoped manual PIN (was a per-pane "manual" source before).
+  function setTab(state: TabsState, value: string | null, tabId = 1): TabsState {
+    return reduceTabs(state, { kind: "setTabTitle", tabId, value });
   }
   const title = (state: TabsState) => state.tabs[0].title;
 
@@ -191,23 +195,24 @@ describe("setTitleSource — single-pane regression (trmx-75 precedence intact)"
     expect(title(s)).toBe("vim");
   });
 
-  it("manual overrides everything and a process hint can never clobber manual/osc", () => {
+  it("a manual pin (setTabTitle) overrides the automatic title; osc/process can't clobber it (trmx-166)", () => {
     let s = attached();
     s = set(s, "osc", "vim");
-    s = set(s, "manual", "work");
+    s = setTab(s, "work");
     expect(title(s)).toBe("work");
-    s = set(s, "osc", "emacs");
+    s = set(s, "osc", "emacs"); // a later OSC on the pane cannot move the pinned label
     expect(title(s)).toBe("work");
     s = set(s, "process", "sleep");
     expect(title(s)).toBe("work");
   });
 
-  it("clearing cascades manual → osc → process → fallback", () => {
+  it("clearing the pin reverts to the automatic ladder osc → process → fallback (trmx-166)", () => {
     let s = attached();
     s = set(s, "process", "sleep");
     s = set(s, "osc", "vim");
-    s = set(s, "manual", "work");
-    s = set(s, "manual", null);
+    s = setTab(s, "work");
+    expect(title(s)).toBe("work");
+    s = setTab(s, null); // un-pin → follow the pane's automatic ladder again
     expect(title(s)).toBe("vim");
     s = set(s, "osc", null);
     expect(title(s)).toBe("sleep");
@@ -215,18 +220,29 @@ describe("setTitleSource — single-pane regression (trmx-75 precedence intact)"
     expect(title(s)).toBe("zsh");
   });
 
-  it("re-delivering the same value or clearing an absent slot is a no-op (===)", () => {
+  it("an empty / whitespace rename clears the pin (clear-to-auto) (trmx-166)", () => {
+    let s = set(attached(), "osc", "vim");
+    s = setTab(s, "work");
+    expect(title(s)).toBe("work");
+    s = setTab(s, "   "); // whitespace-only commit ⇒ clear to auto
+    expect(title(s)).toBe("vim");
+  });
+
+  it("re-delivering the same value or clearing an unset slot/pin is a no-op (===)", () => {
     const s = set(attached(), "process", "sleep");
     expect(set(s, "process", "sleep")).toBe(s);
     expect(set(s, "process", " sleep \u{7}")).toBe(s);
-    expect(set(s, "manual", null)).toBe(s);
+    expect(setTab(s, null)).toBe(s); // clearing an unset pin — no-op
+    const pinned = setTab(s, "work");
+    expect(setTab(pinned, "work")).toBe(pinned); // re-pinning the same value — no-op
   });
 
   it("is a no-op (===) on a dead tab, an unknown pane, and the empty state", () => {
     const dead = run({ kind: "openTab" }, { kind: "openTab" }, { kind: "closeTab", tabId: 1 });
     expect(
-      reduceTabs(dead, { kind: "setTitleSource", tabId: 1, paneId: 1, source: "manual", value: "x" }),
+      reduceTabs(dead, { kind: "setTitleSource", tabId: 1, paneId: 1, source: "osc", value: "x" }),
     ).toBe(dead);
+    expect(reduceTabs(dead, { kind: "setTabTitle", tabId: 1, value: "x" })).toBe(dead);
     const one = run({ kind: "openTab" });
     expect(
       reduceTabs(one, { kind: "setTitleSource", tabId: 1, paneId: 99, source: "osc", value: "x" }),
@@ -235,8 +251,81 @@ describe("setTitleSource — single-pane regression (trmx-75 precedence intact)"
 
   it("does not mutate the input state (purity guard)", () => {
     const before = deepFreeze(set(attached(), "osc", "vim"));
-    expect(() => set(before, "manual", "work")).not.toThrow();
+    expect(() => setTab(before, "work")).not.toThrow();
     expect(title(before)).toBe("vim");
+  });
+});
+
+// trmx-166: the manual title PIN is TAB-scoped — once set it survives pane splits, focus changes,
+// pane close, and async session attach, and only an empty rename (clear-to-auto) releases it.
+describe("tab manual-title pin survives pane changes (trmx-166)", () => {
+  const title = (s: TabsState) => s.tabs[0].title;
+
+  it("splitting a new pane does NOT change a pinned tab title", () => {
+    let s = run(
+      { kind: "openTab" },
+      { kind: "attachSession", tabId: 1, paneId: 1, sessionId: 7, title: "zsh" },
+      { kind: "setTabTitle", tabId: 1, value: "My Tab" },
+    );
+    expect(title(s)).toBe("My Tab");
+    s = reduceTabs(s, { kind: "splitPane", tabId: 1, dir: "row" }); // new pane focused
+    expect(title(s)).toBe("My Tab");
+    // …and an OSC/process title on the newly focused pane still cannot move the pinned label.
+    const newPane = s.tabs[0].focusedPaneId;
+    s = reduceTabs(s, { kind: "setTitleSource", tabId: 1, paneId: newPane, source: "osc", value: "vim" });
+    expect(title(s)).toBe("My Tab");
+  });
+
+  it("switching focus between existing panes does NOT change a pinned tab title", () => {
+    let s = run(
+      { kind: "openTab" },
+      { kind: "splitPane", tabId: 1, dir: "row" },
+      { kind: "setTabTitle", tabId: 1, value: "My Tab" },
+    );
+    const [p1, p2] = tabPaneIds(s.tabs[0]);
+    s = reduceTabs(s, { kind: "focusPane", tabId: 1, paneId: p1 });
+    expect(title(s)).toBe("My Tab");
+    s = reduceTabs(s, { kind: "focusPane", tabId: 1, paneId: p2 });
+    expect(title(s)).toBe("My Tab");
+  });
+
+  it("closing the rename-focused pane does NOT change a pinned tab title", () => {
+    let s = run(
+      { kind: "openTab" },
+      { kind: "splitPane", tabId: 1, dir: "row" }, // pane 2 focused
+      { kind: "setTabTitle", tabId: 1, value: "My Tab" },
+    );
+    const focused = s.tabs[0].focusedPaneId;
+    s = reduceTabs(s, { kind: "closePane", tabId: 1, paneId: focused });
+    expect(title(s)).toBe("My Tab");
+  });
+
+  it("a pin survives split then async attach; clearing it reveals the attached focused pane title", () => {
+    let s = run(
+      { kind: "openTab" },
+      { kind: "attachSession", tabId: 1, paneId: 1, sessionId: 7, title: "zsh" },
+      { kind: "setTabTitle", tabId: 1, value: "My Tab" },
+      { kind: "splitPane", tabId: 1, dir: "row" }, // pane 2 focused, session-less
+    );
+    const p2 = s.tabs[0].focusedPaneId;
+    s = reduceTabs(s, { kind: "attachSession", tabId: 1, paneId: p2, sessionId: 8, title: "vim" });
+    expect(title(s)).toBe("My Tab"); // still pinned through the async attach
+    s = reduceTabs(s, { kind: "setTabTitle", tabId: 1, value: null }); // un-pin
+    expect(title(s)).toBe("vim"); // now the focused (attached) pane's title
+  });
+
+  it("an UN-pinned tab still follows focus (no regression to the automatic behavior)", () => {
+    let s = run(
+      { kind: "openTab" },
+      { kind: "attachSession", tabId: 1, paneId: 1, sessionId: 7, title: "zsh" },
+      { kind: "splitPane", tabId: 1, dir: "row" },
+    );
+    const [p1, p2] = tabPaneIds(s.tabs[0]);
+    s = reduceTabs(s, { kind: "attachSession", tabId: 1, paneId: p2, sessionId: 8, title: "vim" });
+    s = reduceTabs(s, { kind: "focusPane", tabId: 1, paneId: p1 });
+    expect(title(s)).toBe("zsh");
+    s = reduceTabs(s, { kind: "focusPane", tabId: 1, paneId: p2 });
+    expect(title(s)).toBe("vim");
   });
 });
 
