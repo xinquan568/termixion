@@ -7,8 +7,8 @@
 // are covered by the unit/integration suites with a fake backend + the packaged-app checklist in
 // the PR's Test plan). What this spec pins is that the widened picker (trmx-89 D/4b) DEGRADES
 // GRACEFULLY without a backend: the six built-ins still render and stay selectable, the new
-// affordances (Open themes folder, Duplicate per built-in, the docs hint) are present, and no user
-// themes appear (the registry hydrate no-ops without a runtime) — the app never crashes.
+// affordances (Open themes folder, the trmx-171 right-click Duplicate menu, the docs hint) are
+// present, and no user themes appear (the registry hydrate no-ops without a runtime) — never crashes.
 import { test, expect } from "@playwright/test";
 
 test("Appearance picker: built-ins still render + the user-theme affordances are present (trmx-89)", async ({
@@ -28,8 +28,12 @@ test("Appearance picker: built-ins still render + the user-theme affordances are
   const openFolder = page.getByRole("button", { name: "Open themes folder" });
   await expect(openFolder).toBeVisible();
 
-  // - a Duplicate affordance on each built-in swatch.
-  await expect(page.getByRole("button", { name: /^Duplicate / })).toHaveCount(6);
+  // - trmx-171: Duplicate is a right-click context menu now (no per-swatch button); right-clicking a
+  //   built-in swatch opens the menu with a Duplicate item.
+  await expect(page.getByRole("button", { name: /^Duplicate / })).toHaveCount(0);
+  await page.getByRole("radio", { name: "Night" }).click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: /^Duplicate/ })).toBeVisible();
+  await page.keyboard.press("Escape");
 
   // - the file-format docs hint links docs/themes.md.
   const hint = page.getByRole("link", { name: "Learn the theme file format" });

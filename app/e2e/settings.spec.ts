@@ -104,6 +104,48 @@ test("?window=settings&section=appearance shows the Theme row; a swatch click re
   // settingsStore hydration/write unit tests and the packaged-app checklist.
 });
 
+test("theme Duplicate is a right-click context menu, not a per-swatch button (trmx-171)", async ({
+  page,
+}) => {
+  await page.goto("/?window=settings&section=appearance");
+  await expect(page.getByRole("radiogroup", { name: "Theme" }).getByRole("radio")).toHaveCount(6);
+
+  // No visible "Duplicate" button anywhere; the tip explains the right-click.
+  await expect(page.getByRole("button", { name: /^Duplicate/ })).toHaveCount(0);
+  await expect(
+    page.getByText("Right-click a theme to duplicate it, or create a brand-new one."),
+  ).toBeVisible();
+
+  const night = page.getByRole("radio", { name: "Night" });
+
+  // Right-click opens the custom in-DOM menu with a Duplicate item…
+  await night.click({ button: "right" });
+  const menu = page.getByRole("menu");
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole("menuitem", { name: /^Duplicate/ })).toBeVisible();
+
+  // …Escape closes it…
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("menu")).toHaveCount(0);
+
+  // …choosing Duplicate closes it. (The file WRITE needs the Tauri backend the dev server lacks, so
+  // the write/hydrate/select is covered by the AppearanceSettings unit suite; here we only assert the
+  // browser-observable menu flow — same reason themes.spec.ts avoids file-backed Duplicate.)
+  await night.click({ button: "right" });
+  await page.getByRole("menuitem", { name: /^Duplicate/ }).click();
+  await expect(page.getByRole("menu")).toHaveCount(0);
+
+  // …and near the viewport's right edge the popover is CLAMPED inside the window (jsdom can't check
+  // this — real layout). Dispatch a contextmenu with clientX at the far edge, then assert the box.
+  const vw = page.viewportSize()!.width;
+  await night.dispatchEvent("contextmenu", { clientX: vw - 2, clientY: 140, bubbles: true });
+  const clamped = page.getByRole("menu");
+  await expect(clamped).toBeVisible();
+  const box = await clamped.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box!.x + box!.width).toBeLessThanOrEqual(vw + 1);
+});
+
 test("the plain root still boots the terminal surface", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator(".xterm")).toBeAttached();

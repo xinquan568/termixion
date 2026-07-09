@@ -655,19 +655,36 @@
   color: var(--tx-on-error, #fff);
   background: var(--tx-error);
 }
-.tx-swatch__dup {
+/* trmx-171 — the theme swatch's right-click context menu (ThemeContextMenu): a small popover fixed
+ * at the pointer, above the settings content, themed with the same --tx-* tokens as the rest of the
+ * window. The per-swatch .tx-swatch__dup button it replaces is gone. */
+.tx-theme-menu {
+  position: fixed;
+  z-index: 40;
+  min-width: 120px;
+  padding: 4px;
+  background: var(--tx-bg-elev);
   border: 1px solid var(--tx-border);
-  background: var(--tx-bg-sunken);
-  color: var(--tx-text-2);
-  padding: 2px 8px;
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+.tx-theme-menu__item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: var(--tx-text);
+  padding: 6px 10px;
   border-radius: 6px;
   font: inherit;
-  font-size: 11px;
+  font-size: 13px;
   cursor: pointer;
 }
-.tx-swatch__dup:hover {
-  border-color: var(--tx-text-3);
-  color: var(--tx-text);
+.tx-theme-menu__item:hover,
+.tx-theme-menu__item:focus-visible {
+  background: var(--tx-bg-sunken);
+  outline: none;
 }
 
 /* The Theme group's action row (Open themes folder + the docs hint), below the swatches. */
