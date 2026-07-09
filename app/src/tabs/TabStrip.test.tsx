@@ -562,9 +562,10 @@ describe("TabStrip vertical labels (trmx-82)", () => {
   // consume the vars with NO fallbacks (they can never be absent in vertical-label mode).
   // trmx-151: --tab-hint-header (the upright chip's 20px header row) joins the set, and the height
   // bounds carry the +20 header (min 60→80, max 180→200 — barLayout.ts).
-  // trmx-163: --tab-rail-width is RETIRED — the rail width is the CSS-owned --tab-bar-thickness now,
-  // so TabStrip writes only FOUR geometry vars in vertical-label mode.
-  it("owns the D2 geometry: vertical-label mode writes the four token vars on the root", () => {
+  // trmx-163: --tab-rail-width is RETIRED — the rail width is the CSS-owned --tab-bar-thickness now.
+  // trmx-165: --tab-close-header joins the set (the reserved top gutter for the close ×), so
+  // TabStrip writes FIVE geometry vars in vertical-label mode.
+  it("owns the D2 geometry: vertical-label mode writes the five token vars on the root", () => {
     renderStrip({ orientation: "vertical", labelOrientation: "vertical" });
     const strip = screen.getByTestId("tab-strip");
     expect(strip.style.getPropertyValue("--tab-rail-width")).toBe(""); // trmx-163: retired, never written
@@ -572,6 +573,7 @@ describe("TabStrip vertical labels (trmx-82)", () => {
     expect(strip.style.getPropertyValue("--tab-min-height")).toBe("80px");
     expect(strip.style.getPropertyValue("--tab-close-min")).toBe("24px");
     expect(strip.style.getPropertyValue("--tab-hint-header")).toBe("20px");
+    expect(strip.style.getPropertyValue("--tab-close-header")).toBe("24px"); // trmx-165: reserved top gutter
   });
 
   it("writes NO geometry vars outside vertical-label mode (those layouts are CSS-owned)", () => {
@@ -580,6 +582,7 @@ describe("TabStrip vertical labels (trmx-82)", () => {
       "--tab-min-height",
       "--tab-close-min",
       "--tab-hint-header",
+      "--tab-close-header",
     ];
     const { view, ...props } = renderStrip({ orientation: "vertical" }); // horizontal labels
     for (const name of vars) {
@@ -944,10 +947,29 @@ describe("tab-strip CSS contract (trmx-151)", () => {
     expect(vtop).not.toMatch(/position:\s*static/);
   });
 
-  it("keeps the vertical [dot][hint] trailing group pinned to the tab's BOTTOM (trmx-163)", () => {
+  it("keeps the vertical [dot][hint] trailing group pinned to the tab's BOTTOM (trmx-163/165)", () => {
     const trailing = ruleBody(".tab-strip--labels-vertical .tab-strip__trailing");
     expect(trailing).toMatch(/flex-direction:\s*column/); // dot above chip
-    expect(trailing).toMatch(/margin-top:\s*auto/); // pushed to the bottom of the column
+    // trmx-165: the bottom-pin is now the content grid's 3rd row (grid-row: 3), not margin-top:auto —
+    // the content column became a three-row grid [close gutter][centred title][trailing].
+    expect(trailing).toMatch(/grid-row:\s*3/);
+    expect(trailing).toMatch(/justify-self:\s*center/); // resets the base grid's justify-self: end
+    expect(trailing).not.toMatch(/margin-top:\s*auto/);
+  });
+
+  it("reserves a top gutter for the × and centres the rotated title (trmx-165)", () => {
+    // trmx-165: the vertical-label content wrapper is a single-column, three-row grid —
+    // [reserved close-header row][flexible centred title row][trailing row] — so the close ×
+    // (an absolute overlay in the reserved top row) never overlaps the title, and the title
+    // centres vertically in the middle row. It must FULLY override the base 3-column content grid.
+    const content = ruleBody(".tab-strip--labels-vertical .tab-strip__content");
+    expect(content).toMatch(/display:\s*grid/);
+    expect(content).toMatch(/grid-template-rows:\s*var\(--tab-close-header\)\s+1fr\s+auto/);
+    expect(content).toMatch(/grid-template-columns:\s*minmax\(0,\s*1fr\)/); // single column (base is 3)
+    expect(content).toMatch(/justify-items:\s*center/);
+    const title = ruleBody(".tab-strip--labels-vertical .tab-strip__title");
+    expect(title).toMatch(/grid-row:\s*2/);
+    expect(title).toMatch(/align-self:\s*center/); // vertically centred in the flexible middle row
   });
 
   it("makes the activity dot an in-flow flex item, not an absolute overlay (trmx-163)", () => {

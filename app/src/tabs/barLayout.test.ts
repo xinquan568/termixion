@@ -99,6 +99,9 @@ describe("railGeometryFor (trmx-82)", () => {
     tabMinHeightPx: 28,
     closeHitTargetMinPx: 16,
     hintHeaderPx: 0,
+    // trmx-165: the reserved top row that hosts the close × in vertical-label mode — 0 elsewhere
+    // (the horizontal strip / horizontal-label rail overlay the close without a reserved gutter).
+    closeHeaderPx: 0,
   };
 
   it("vertical rail + vertical labels → the narrow rail with tall-tab tokens", () => {
@@ -107,6 +110,9 @@ describe("railGeometryFor (trmx-82)", () => {
       tabMinHeightPx: 80,
       closeHitTargetMinPx: 24,
       hintHeaderPx: 20,
+      // trmx-165: a 24px reserved top gutter (≥ the close hit target) so the × never overlaps the
+      // rotated title; the title centres in the row below it.
+      closeHeaderPx: 24,
     });
   });
 

@@ -72,6 +72,11 @@ export interface RailGeometry {
    * var) — 0 outside vertical-label mode (horizontal hints sit inline). trmx-163: the chip now sits
    * at the BOTTOM of the trailing group rather than a top header row, but keeps this reserved row. */
   hintHeaderPx: number;
+  /** trmx-165: the reserved TOP row (the `--tab-close-header` var) that hosts the close × in
+   * vertical-label mode, so the ×'s hover-reveal never overlaps the rotated title (the title centres
+   * in the flexible row below it). 0 outside vertical-label mode — the horizontal strip and the
+   * horizontal-label rail overlay the × on the leading edge without a reserved gutter. */
+  closeHeaderPx: number;
 }
 
 // The trmx-81 status quo, kept as data for totality and REFERENCE ONLY: the 28px strip height /
@@ -83,17 +88,21 @@ const STATUS_QUO_GEOMETRY: RailGeometry = {
   tabMinHeightPx: 28,
   closeHitTargetMinPx: 16,
   hintHeaderPx: 0,
+  closeHeaderPx: 0,
 };
 
 // Vertical labels on the vertical rail: tall tabs (80–200px by label length) with a ≥24px close hit
 // target. trmx-163: the rail WIDTH is the CSS-owned --tab-bar-thickness (28px), no longer a token
 // here. trmx-151 hint header: the upright ⌘N chip occupies a fixed 20px row, so both height bounds
 // carry +20 (min 60→80, max 180→200) — the LABEL's own 60–180px budget is preserved.
+// trmx-165 close header: a 24px reserved TOP row (≥ the close hit target) so the ×'s hover-reveal
+// clears the rotated title; the title centres in the flexible row beneath it.
 const VERTICAL_LABEL_GEOMETRY: RailGeometry = {
   tabMaxHeightPx: 200,
   tabMinHeightPx: 80,
   closeHitTargetMinPx: 24,
   hintHeaderPx: 20,
+  closeHeaderPx: 24,
 };
 
 /**

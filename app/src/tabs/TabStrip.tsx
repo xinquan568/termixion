@@ -318,12 +318,15 @@ export function TabStrip({
     rootStyle = {
       ...style,
       // trmx-163: --tab-rail-width is retired — the rail width is the CSS-owned --tab-bar-thickness
-      // (28px), so only these four LABEL-LENGTH tokens are written here.
+      // (28px), so only these LABEL-LENGTH / reserved-row tokens are written here.
       "--tab-max-height": `${geometry.tabMaxHeightPx}px`,
       "--tab-min-height": `${geometry.tabMinHeightPx}px`,
       "--tab-close-min": `${geometry.closeHitTargetMinPx}px`,
       // trmx-151/163: the upright ⌘N chip's fixed row (now at the bottom trailing group).
       "--tab-hint-header": `${geometry.hintHeaderPx}px`,
+      // trmx-165: the reserved TOP gutter that hosts the close × (so it never overlaps the title);
+      // the content grid's first row consumes this and the rotated title centres in the row below.
+      "--tab-close-header": `${geometry.closeHeaderPx}px`,
     } as CSSProperties;
   }
 
