@@ -710,18 +710,25 @@ body {
 .tab-strip--labels-vertical .tab-strip__content {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: var(--tab-close-header) 1fr auto;
+  /* Row 2 is minmax(0, 1fr): the 0 minimum lets a long rotated title CLIP to the row (so
+     overflow:hidden/text-overflow:ellipsis on the title still truncates against the tab's height
+     budget) instead of the title's max-content height expanding the track and overflowing the
+     reserved gutter / trailing (trmx-165 review finding). */
+  grid-template-rows: var(--tab-close-header) minmax(0, 1fr) auto;
   justify-items: center;
   gap: 0;
   flex: 1 1 auto;
   min-height: 0;
 }
-/* trmx-165 — the rotated title sits in the flexible middle row and centres vertically within it;
-   grid-column:1 resets the base .tab-strip__title's grid-column:2 (the horizontal-grid leftover). */
+/* trmx-165 — the rotated title fills the flexible middle row (align-self: stretch, min-height: 0),
+   so overflow:hidden/ellipsis clips a LONG vertical title to the row while the base text-align:center
+   vertically centres a SHORT one; grid-column:1 resets the base .tab-strip__title's grid-column:2.
+   (align-self:center would size the item to its max-content height and reintroduce overlap.) */
 .tab-strip--labels-vertical .tab-strip__title {
   grid-row: 2;
   grid-column: 1;
-  align-self: center;
+  align-self: stretch;
+  min-height: 0;
 }
 /* trmx-163/165 — on the rail the trailing group stacks (dot above chip) and pins to the tab's BOTTOM
    via the grid's 3rd row; grid-column:1 + justify-self:center reset the base rule's grid-column:3 /
