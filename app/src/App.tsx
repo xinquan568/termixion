@@ -97,6 +97,7 @@ import {
 } from "./settings/settingsStore";
 import { describeTarget } from "./tabs/tabKeymap";
 import { isRegisteredThemeId, isUserThemeIdShape, resolveTheme } from "./theme/registry";
+import { applyTxTheme } from "./theme/txCssVars";
 import { FindBar, type SearchController } from "./search/FindBar";
 import { withAlpha } from "./theme/colorMath";
 import { useBackend } from "./ipc/useBackend";
@@ -1499,6 +1500,11 @@ export function App({
       // both repaint on a theme switch AND on a trmx-89 same-id hot-reload (the token changed under the
       // same id, review-1). Same untrusted-payload discipline as barPosition; resolveTheme is total.
       else if (key === "appearance.theme" && (isRegisteredThemeId(value) || isUserThemeIdShape(value))) {
+        // trmx-173: re-apply the --tx-* CSS vars on documentElement so the main window's chrome (tab
+        // bar, borders, …) recolors with the terminal. On EVERY theme event — including a trmx-89
+        // same-id hot-reload where the tokens changed under the same id — matching the color-state
+        // refreshes below; applyTxTheme is idempotent, so a bus echo is harmless.
+        applyTxTheme(value, document);
         setBadgeColor(resolveTheme(value).terminal.badge);
         setBadgeOutlineColor(resolveTheme(value).color.bg.primary); // trmx-149: re-tint the stroke
         setActivityIsDark(activityIsDarkFor(value)); // trmx-160: re-key the progress bar's mode
