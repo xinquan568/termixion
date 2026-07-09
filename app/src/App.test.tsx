@@ -1673,6 +1673,67 @@ describe("App per-pane badges (trmx-90)", () => {
   });
 });
 
+// trmx-173: the main window applies the theme's --tx-* vars onto documentElement on EVERY
+// appearance.theme event, so the tab bar / chrome (themed only via --tx-*) recolor with the terminal
+// — before the fix they were stuck on the static :root fallback (the tab bar stayed dark). Keyed on
+// the event (not the theme id) so a trmx-89 same-id file edit re-applies the changed tokens.
+describe("App main-window theme vars (trmx-173)", () => {
+  const sunken = () => document.documentElement.style.getPropertyValue("--tx-bg-sunken");
+
+  beforeEach(() => {
+    document.documentElement.style.cssText = "";
+    document.body.style.cssText = "";
+  });
+  afterEach(() => clearUserThemes());
+
+  it("writes the mapped --tx-* vars on a theme switch (the tab-bar var flips)", async () => {
+    const { settingsChanged } = renderApp();
+    expect(sunken()).toBe(""); // the main window had applied no vars yet (documentElement was clear)
+    await act(async () =>
+      settingsChanged.fire({ key: "appearance.theme", value: "white", source: "settings-window" }),
+    );
+    expect(sunken()).toBe("#f8f8f8"); // White's sunken bg → the tab bar recolors light
+    await act(async () =>
+      settingsChanged.fire({ key: "appearance.theme", value: "night", source: "settings-window" }),
+    );
+    expect(sunken()).not.toBe(""); // Night's sunken bg (dark), non-empty
+    expect(sunken()).not.toBe("#f8f8f8"); // …and different from White's
+  });
+
+  it("re-applies the --tx-* vars on a same-id user-theme hot reload (changed bg tokens)", async () => {
+    const ANSI = {
+      black: "#000", red: "#f00", green: "#0f0", yellow: "#ff0", blue: "#00f", magenta: "#f0f",
+      cyan: "#0ff", white: "#fff", brightBlack: "#888", brightRed: "#f88", brightGreen: "#8f8",
+      brightYellow: "#ff8", brightBlue: "#88f", brightMagenta: "#f8f", brightCyan: "#8ff", brightWhite: "#fff",
+    };
+    const specWithBg = (bg: string): ThemeSpec => ({
+      isDark: true,
+      color: { bg: { primary: bg }, text: { primary: "#eeeeee" }, accent: {}, semantic: {} },
+      terminal: { ansi: { ...ANSI }, scrollbar: {}, pane: {}, badge: "rgba(0, 0, 0, 0.1)" },
+    });
+    const register = (bg: string) =>
+      registerUserThemes([
+        { id: "user:designer", source: "user", valid: true, spec: specWithBg(bg), warnings: [] },
+      ]);
+
+    const { settingsChanged } = renderApp();
+
+    register("#111111");
+    await act(async () =>
+      settingsChanged.fire({ key: "appearance.theme", value: "user:designer", source: "manual" }),
+    );
+    const sunkenA = sunken();
+    expect(sunkenA).not.toBe("");
+
+    // Edit the SAME theme file → different bg tokens; trmx-89 re-registers + re-emits the SAME id.
+    register("#772211");
+    await act(async () =>
+      settingsChanged.fire({ key: "appearance.theme", value: "user:designer", source: "themes-reload" }),
+    );
+    expect(sunken()).not.toBe(sunkenA); // the --tx-* vars re-applied despite the unchanged id
+  });
+});
+
 // trmx-90 (sub-task G-frontend): the ⇧⌘B inline badge EDITOR — a centered input over the focused
 // pane (the menu accelerator emits the "set-badge" tabs:action; App opens the editor). Enter commits
 // (empty → clear), Esc AND blur cancel; edit-in-place seeds the input with the pane's current badge.

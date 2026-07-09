@@ -41,18 +41,25 @@ const probe = (color: string) => {
 
 beforeEach(() => {
   __resetSettingsForTest();
+  // trmx-173: the vars/body live on documentElement/body inline style — clear between tests so the
+  // --tx-* assertions never read a value bled from a prior test.
+  document.documentElement.style.cssText = "";
+  document.body.style.cssText = "";
 });
 
 describe("applyStartupTheme", () => {
-  it("paints the terminal surface's body from the store's theme", () => {
-    applyStartupTheme({ settings: stubSettings("solarized"), doc: document, search: "" });
+  it("paints the terminal surface's body AND writes its --tx-* vars from the store's theme (trmx-173)", () => {
+    applyStartupTheme({ settings: stubSettings("solarized"), doc: document });
     expect(document.body.style.background).toBe(probe(themes.solarized.color.bg.primary));
-    // The terminal surface needs no --tx-* vars; the settings surface writes them (below).
+    // trmx-173: the main (terminal) surface now ALSO gets the --tx-* vars (the tab bar / chrome are
+    // themed only via them) — previously it painted only the body, leaving them on the :root fallback.
+    expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe(themes.solarized.color.bg.primary);
+    expect(document.documentElement.style.getPropertyValue("--tx-bg-sunken")).not.toBe("");
   });
 
   it("derives the first-run default when the snapshot is empty (jsdom → night)", () => {
     // No injected store: the DEFAULT snapshot-backed store serves defaultFor() pre-hydration.
-    applyStartupTheme({ doc: document, search: "" });
+    applyStartupTheme({ doc: document });
     expect(document.body.style.background).toBe(probe(themes.night.color.bg.primary));
   });
 
@@ -70,16 +77,12 @@ describe("applyStartupTheme", () => {
       bus: { listen: () => Promise.resolve(() => {}) },
       storage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
     });
-    applyStartupTheme({ doc: document, search: "" });
+    applyStartupTheme({ doc: document });
     expect(document.body.style.background).toBe(probe(themes.sepia.color.bg.primary));
   });
 
-  it("also writes the --tx-* vars for the settings surface", () => {
-    applyStartupTheme({
-      settings: stubSettings("paper"),
-      doc: document,
-      search: "?window=settings&section=appearance",
-    });
+  it("writes the --tx-* vars + body for any surface (trmx-173: no surface branch)", () => {
+    applyStartupTheme({ settings: stubSettings("paper"), doc: document });
     expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#EEEDED");
     expect(document.body.style.background).toBe(probe(themes.paper.color.bg.primary));
   });
