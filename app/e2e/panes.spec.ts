@@ -127,7 +127,7 @@ test("⌥⌘-arrows and ⌘] move the focused pane (trmx-86)", async ({ page }) 
   await expect(page.getByTestId("pane-host-1")).toHaveClass(/pane-host--focused/);
 });
 
-test("the focused pane's dividers render active; a focus flip moves the active chrome (trmx-87)", async ({
+test("the focused pane's dividers render active, segmented to the focused pane; a focus flip moves the chrome (trmx-87 / trmx-175)", async ({
   page,
 }) => {
   await page.goto("/");
@@ -135,14 +135,27 @@ test("the focused pane's dividers render active; a focus flip moves the active c
   await page.getByTestId("pane-host-1").click(); // focus 1
   await split(page, { below: true }); // split pane 1 → pane 3; tree ((1/3) | 2), focus 3
 
-  // Focus pane 3 (bottom-left): the root divider + the left-column divider both outline it → 2 active.
-  await expect(page.locator(".pane-divider--active")).toHaveCount(2);
+  // Focus pane 3 (bottom-left): the root (vertical, full-height) divider + the left-column divider both
+  // border it → 2 active overlays. trmx-175: the root overlay covers ONLY pane 3's bottom half — the
+  // upper half, between two UNFOCUSED panes, stays inactive (this is the bug that was fixed).
+  await expect(page.locator(".pane-divider__active")).toHaveCount(2);
+  const dividerBox = await page.getByTestId("pane-divider-root").boundingBox();
+  const activeBox = await page.getByTestId("pane-divider-active-root").boundingBox();
+  expect(dividerBox).not.toBeNull();
+  expect(activeBox).not.toBeNull();
+  // partial: the active segment is clearly shorter than the full-height divider…
+  expect(activeBox!.height).toBeLessThan(dividerBox!.height - 50);
+  // …and bottom-aligned: it starts below the divider's top and ends at the divider's bottom edge.
+  expect(activeBox!.y).toBeGreaterThan(dividerBox!.y + 50);
+  expect(Math.abs(activeBox!.y + activeBox!.height - (dividerBox!.y + dividerBox!.height))).toBeLessThan(2);
 
-  // Focus pane 2 (full-height right): only the root divider outlines it → 1 active; the left-column
-  // divider becomes inactive (a class flip, no re-layout).
+  // Focus pane 2 (full-height right): only the root divider borders it → 1 overlay, spanning the FULL
+  // divider height (a fully-adjacent divider is colored end to end — unchanged from before).
   await page.getByTestId("pane-host-2").click();
-  await expect(page.locator(".pane-divider--active")).toHaveCount(1);
-  await expect(page.locator(".pane-divider--inactive")).toHaveCount(1);
+  await expect(page.locator(".pane-divider__active")).toHaveCount(1);
+  const dividerBox2 = await page.getByTestId("pane-divider-root").boundingBox();
+  const activeBox2 = await page.getByTestId("pane-divider-active-root").boundingBox();
+  expect(Math.abs(activeBox2!.height - dividerBox2!.height)).toBeLessThan(2);
 });
 
 test("⌘-drag re-docks a pane onto another's edge — the pane host survives (keep-alive)", async ({

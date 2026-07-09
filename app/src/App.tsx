@@ -60,7 +60,7 @@ import {
 import { grabOffsetOf, ratioForDrag, RESET_RATIO } from "./panes/dividerDrag";
 import { dropZone, type DropZone } from "./panes/dropZone";
 import { nextPane, paneInDirection, type Direction } from "./panes/paneNav";
-import { activeDividerKeys, dividerKey } from "./panes/paneChrome";
+import { activeDividerSegments, dividerKey } from "./panes/paneChrome";
 import { BadgeOverlay } from "./panes/BadgeOverlay";
 import { ActivityLineOverlay } from "./panes/ActivityLineOverlay";
 import {
@@ -1898,9 +1898,10 @@ export function App({
           // only toggles visibility. trmx-84: within it, each pane is an absolutely-positioned
           // sibling keyed by paneId, laid out from solveRects — a re-layout mutates only style.
           const solved = solveRects(tab.tree, bounds);
-          // trmx-87 (FR-3.6): the dividers OUTLINING the focused pane render in the active border color;
-          // the rest inactive. A pure class flip — no re-layout, no terminal touch.
-          const activeKeys = activeDividerKeys(solved.panes, solved.dividers, tab.focusedPaneId);
+          // trmx-87 (FR-3.6) + trmx-175: each divider is drawn active ONLY over the segment where it
+          // borders the focused pane (its perpendicular overlap), not along its whole length. A pure
+          // style flip — no re-layout, no terminal touch.
+          const activeSegments = activeDividerSegments(solved.panes, solved.dividers, tab.focusedPaneId);
           return (
             <div
               key={tab.tabId}
@@ -2025,31 +2026,48 @@ export function App({
                   </div>
                 );
               })}
-              {solved.dividers.map((d) => (
+              {solved.dividers.map((d) => {
                 // trmx-85: 1px visual line + a widened (~7px) hit area (index.css) that drag-resizes the
                 // split. Pointer handlers stopPropagation so a grab never focuses a pane; double-click
                 // resets to 50/50. Chrome/styling is FR-3.6.
-                <div
-                  key={`divider-${d.path.join("-") || "root"}`}
-                  className={`pane-divider pane-divider--${d.dir} ${
-                    activeKeys.has(dividerKey(d.path)) ? "pane-divider--active" : "pane-divider--inactive"
-                  }`}
-                  data-testid={`pane-divider-${d.path.join("-") || "root"}`}
-                  style={{
-                    position: "absolute",
-                    left: d.rect.x,
-                    top: d.rect.y,
-                    width: d.rect.width,
-                    height: d.rect.height,
-                  }}
-                  onPointerDown={onDividerPointerDown(tab.tabId, d)}
-                  onPointerMove={onDividerPointerMove}
-                  onPointerUp={onDividerPointerUp}
-                  onPointerCancel={onDividerPointerCancel}
-                  onLostPointerCapture={onDividerPointerCancel}
-                  onDoubleClick={onDividerDoubleClick(tab.tabId, d.path)}
-                />
-              ))}
+                // trmx-175: the base line stays INACTIVE; when this divider borders the focused pane, an
+                // active-colored overlay (pointer-events: none) covers only that segment — a full-height
+                // divider next to a bottom pane is blue only over the bottom half, not the whole line.
+                const key = d.path.join("-") || "root";
+                const seg = activeSegments.get(dividerKey(d.path));
+                return (
+                  <div
+                    key={`divider-${key}`}
+                    className={`pane-divider pane-divider--${d.dir} pane-divider--inactive`}
+                    data-testid={`pane-divider-${key}`}
+                    style={{
+                      position: "absolute",
+                      left: d.rect.x,
+                      top: d.rect.y,
+                      width: d.rect.width,
+                      height: d.rect.height,
+                    }}
+                    onPointerDown={onDividerPointerDown(tab.tabId, d)}
+                    onPointerMove={onDividerPointerMove}
+                    onPointerUp={onDividerPointerUp}
+                    onPointerCancel={onDividerPointerCancel}
+                    onLostPointerCapture={onDividerPointerCancel}
+                    onDoubleClick={onDividerDoubleClick(tab.tabId, d.path)}
+                  >
+                    {seg && (
+                      <div
+                        className="pane-divider__active"
+                        data-testid={`pane-divider-active-${key}`}
+                        style={
+                          d.dir === "row"
+                            ? { left: 0, width: "100%", top: seg.offset, height: seg.length }
+                            : { top: 0, height: "100%", left: seg.offset, width: seg.length }
+                        }
+                      />
+                    )}
+                  </div>
+                );
+              })}
               {/* trmx-100: the drop-zone preview — the highlighted half (edge) or whole pane (center-swap)
                   of the hovered target, in the accent color at low alpha. Active tab + live drag only. */}
               {tab.tabId === state.activeTabId &&
