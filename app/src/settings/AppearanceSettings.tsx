@@ -35,8 +35,9 @@
 // → writeUserTheme), re-hydrates the registry, and selects the new `user:<stem>`. An "Open themes
 // folder" button reveals the dir, and a hint links the file-format docs. The backend edge is the
 // injected `invoke` seam (default realInvoke) so tests drive a fake.
-import { useState } from "react";
+import { useState, type MouseEvent as ReactMouseEvent } from "react";
 import { SegmentedControl, SettingRow, SettingsGroup, Toggle } from "./components";
+import { ThemeContextMenu } from "./ThemeContextMenu";
 import type { LabelOrientation, SettingsStore, TabBarPosition } from "./settingsStore";
 import { barLayoutFor } from "../tabs/barLayout";
 import type { ThemeId } from "../theme/themes";
@@ -119,6 +120,9 @@ export function AppearanceSettings({
   const [showShortcutHints, setShowShortcutHints] = useState<boolean>(() =>
     settings.get("tabs.showShortcutHints"),
   );
+  // trmx-171: the open theme-swatch context menu, or null. A SINGLE state → at most one popover open;
+  // set on a right-click of a BUILT-IN swatch (the only themes Duplicate can copy), cleared on close.
+  const [menu, setMenu] = useState<{ x: number; y: number; entry: ThemeListEntry } | null>(null);
   // Derived PURELY from the prop through the same layout engine App runs on: the setting can
   // only take effect on a vertical rail, so anywhere else the row is disabled (value preserved).
   const orientationApplies = barLayoutFor(barPosition).orientation === "vertical";
@@ -164,14 +168,37 @@ export function AppearanceSettings({
               entry={entry}
               selected={selected === entry.id}
               onSelect={() => selectTheme(entry.id)}
-              onDuplicate={() => void duplicateBuiltin(entry)}
+              // trmx-171: right-click a BUILT-IN swatch to open the Duplicate context menu (only
+              // built-ins can be duplicated). Non-built-ins get no handler → the browser default menu.
+              onContextMenu={
+                entry.source === "builtin"
+                  ? (e: ReactMouseEvent) => {
+                      e.preventDefault();
+                      setMenu({ x: e.clientX, y: e.clientY, entry });
+                    }
+                  : undefined
+              }
             />
           ))}
+          {menu ? (
+            <ThemeContextMenu
+              x={menu.x}
+              y={menu.y}
+              label={menu.entry.label}
+              onDuplicate={() => void duplicateBuiltin(menu.entry)}
+              onClose={() => setMenu(null)}
+            />
+          ) : null}
         </div>
         <div className="tx-theme-actions">
           <button type="button" className="tx-btn" onClick={openFolder}>
             Open themes folder
           </button>
+          {/* trmx-171: the discoverability tip for the right-click Duplicate (the per-swatch button
+              is gone); "create a brand-new one" = the Open themes folder / theme-file-format path. */}
+          <p className="tx-theme-hint">
+            Right-click a theme to duplicate it, or create a brand-new one.
+          </p>
           <p className="tx-theme-hint">
             Want your own colors?{" "}
             <a
@@ -237,20 +264,22 @@ export function AppearanceSettings({
  * One swatch cell. A built-in or VALID user theme renders a selectable radio (circle filled with
  * `resolveTheme(id).color.bg.primary`); a valid-but-low-contrast user theme adds a WARNING badge +
  * tooltip. An INVALID user theme renders an inert, non-radio swatch with an ERROR badge + tooltip.
- * Only built-ins carry the Duplicate affordance (you copy a built-in to start a user theme). The
- * badge/Duplicate are SIBLINGS of the swatch (never nested inside the radio) so the swatch's
- * accessible name / textContent stays exactly its label.
+ * trmx-171: built-ins carry the Duplicate affordance via a right-click CONTEXT MENU (`onContextMenu`,
+ * passed only for built-ins) — the old per-swatch Duplicate button is gone. Any badge stays a SIBLING
+ * of the swatch (never nested inside the radio) so the swatch's accessible name / textContent stays
+ * exactly its label.
  */
 function ThemeSwatch({
   entry,
   selected,
   onSelect,
-  onDuplicate,
+  onContextMenu,
 }: {
   entry: ThemeListEntry;
   selected: boolean;
   onSelect: () => void;
-  onDuplicate: () => void;
+  /** trmx-171: right-click handler — set only for built-ins (opens the Duplicate menu); else undefined. */
+  onContextMenu?: (e: ReactMouseEvent) => void;
 }) {
   const swatchColor = resolveTheme(entry.id).color.bg.primary;
   const errorMessage = entry.valid ? undefined : firstMessage(entry.diagnostics, "error");
@@ -271,6 +300,7 @@ function ThemeSwatch({
           className={`tx-swatch${selected ? " tx-swatch--active" : ""}`}
           title={warningMessage}
           onClick={onSelect}
+          onContextMenu={onContextMenu}
         >
           {circle}
           {label}
@@ -291,16 +321,6 @@ function ThemeSwatch({
         <span className="tx-swatch__badge tx-swatch__badge--error" title={errorMessage}>
           invalid
         </span>
-      ) : null}
-      {entry.source === "builtin" ? (
-        <button
-          type="button"
-          className="tx-swatch__dup"
-          aria-label={`Duplicate ${entry.label}`}
-          onClick={onDuplicate}
-        >
-          Duplicate
-        </button>
       ) : null}
     </div>
   );

@@ -85,6 +85,13 @@ function fakeBus(): SettingsBus & { events: Array<{ event: string; payload: unkn
   return { events, emit: (event, payload) => void events.push({ event, payload }) };
 }
 
+// trmx-171: duplicate a built-in via the right-click context menu (replaces the removed per-swatch
+// "Duplicate" button): right-click the swatch, then choose the menu's Duplicate item.
+function duplicateViaMenu(themeLabel: string) {
+  fireEvent.contextMenu(screen.getByRole("radio", { name: themeLabel }));
+  fireEvent.click(screen.getByRole("menuitem", { name: /^Duplicate/ }));
+}
+
 describe("AppearanceSettings", () => {
   it("renders the Theme group with the six labeled swatches in the issue's order", () => {
     render(
@@ -576,7 +583,7 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("themes_open_dir"));
   });
 
-  it("'Duplicate' on a built-in writes a TOML copy, re-hydrates, and selects the new user id", async () => {
+  it("'Duplicate' (via the context menu) on a built-in writes a TOML copy, re-hydrates, and selects the new user id", async () => {
     const storage = fakeStorage();
     const settings = makeSettingsStore(storage);
     const onThemeChange = vi.fn();
@@ -596,7 +603,7 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Duplicate Night" }));
+    duplicateViaMenu("Night");
 
     // themes_write with a sane stem + a real TOML body …
     await waitFor(() =>
@@ -629,7 +636,7 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Duplicate Night" }));
+    duplicateViaMenu("Night");
 
     await waitFor(() =>
       expect(invoke.mock.calls.some((c) => c[0] === "themes_write")).toBe(true),
@@ -659,7 +666,7 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Duplicate White" }));
+    duplicateViaMenu("White");
 
     await waitFor(() =>
       expect(invoke.mock.calls.some((c) => c[0] === "themes_write")).toBe(true),
@@ -667,6 +674,93 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
     // A rejected write leaves the selection untouched (no theme set, no notify).
     expect(setSpy).not.toHaveBeenCalled();
     expect(onThemeChange).not.toHaveBeenCalled();
+  });
+
+  // trmx-171: Duplicate moved from a per-swatch button to a right-click context menu.
+  it("renders NO 'Duplicate' button — the action moved to the right-click context menu", () => {
+    const { container } = render(
+      <AppearanceSettings
+        settings={makeSettingsStore(fakeStorage())}
+        selected="night"
+        barPosition="bottom"
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /^Duplicate/ })).toBeNull();
+    expect(container.querySelector(".tx-swatch__dup")).toBeNull();
+    // …and no menu is open until a right-click.
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("right-clicking a BUILT-IN swatch opens the menu AND prevents the browser default menu", () => {
+    render(
+      <AppearanceSettings
+        settings={makeSettingsStore(fakeStorage())}
+        selected="night"
+        barPosition="bottom"
+      />,
+    );
+    // fireEvent returns false when preventDefault() was called (the browser menu is suppressed).
+    const notCancelled = fireEvent.contextMenu(screen.getByRole("radio", { name: "Night" }));
+    expect(notCancelled).toBe(false);
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Duplicate Night" })).toBeInTheDocument();
+  });
+
+  it("right-clicking a USER swatch opens NO menu and does NOT prevent the browser default", () => {
+    registerUserThemes([validUserEntry("user:cool")]);
+    render(
+      <AppearanceSettings
+        settings={makeSettingsStore(fakeStorage())}
+        selected="night"
+        barPosition="bottom"
+      />,
+    );
+    const notCancelled = fireEvent.contextMenu(screen.getByRole("radio", { name: "Cool" }));
+    expect(notCancelled).toBe(true); // default NOT prevented — built-ins only
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("right-clicking an INVALID swatch opens NO menu and does NOT prevent the browser default", () => {
+    registerUserThemes([invalidUserEntry("user:bad", "invalid color at color.bg.primary")]);
+    const { container } = render(
+      <AppearanceSettings
+        settings={makeSettingsStore(fakeStorage())}
+        selected="night"
+        barPosition="bottom"
+      />,
+    );
+    // The invalid swatch is an inert div (not a radio, no onContextMenu) — right-click does nothing.
+    const invalidSwatch = container.querySelector(".tx-swatch--invalid")!;
+    const notCancelled = fireEvent.contextMenu(invalidSwatch);
+    expect(notCancelled).toBe(true); // default NOT prevented
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("opens only ONE menu at a time (right-clicking a second built-in replaces the first)", () => {
+    render(
+      <AppearanceSettings
+        settings={makeSettingsStore(fakeStorage())}
+        selected="night"
+        barPosition="bottom"
+      />,
+    );
+    fireEvent.contextMenu(screen.getByRole("radio", { name: "Night" }));
+    fireEvent.contextMenu(screen.getByRole("radio", { name: "Sepia" }));
+    expect(screen.getAllByRole("menu")).toHaveLength(1);
+    expect(screen.getByRole("menuitem", { name: "Duplicate Sepia" })).toBeInTheDocument();
+  });
+
+  it("shows the right-click duplicate tip", () => {
+    render(
+      <AppearanceSettings
+        settings={makeSettingsStore(fakeStorage())}
+        selected="night"
+        barPosition="bottom"
+      />,
+    );
+    expect(
+      screen.getByText("Right-click a theme to duplicate it, or create a brand-new one."),
+    ).toBeInTheDocument();
   });
 
   it("shows the theme-file-format docs hint", () => {

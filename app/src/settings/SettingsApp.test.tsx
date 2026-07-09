@@ -568,8 +568,9 @@ describe("SettingsApp — user themes hydration (trmx-89, 4b)", () => {
     });
     renderWithThemes(invoke, bus.listen);
 
-    const dupNight = await screen.findByRole("button", { name: "Duplicate Night" });
-    fireEvent.click(dupNight);
+    // trmx-171: Duplicate is a right-click context menu now (no per-swatch button).
+    fireEvent.contextMenu(await screen.findByRole("radio", { name: "Night" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Duplicate/ }));
 
     await waitFor(() => expect(writes.length).toBe(1));
     expect(writes[0].stem).toBe("night-copy");
