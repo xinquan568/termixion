@@ -15,7 +15,8 @@ import { makeSettingsStore, type SettingsStore } from "../settings/settingsStore
 import { applyTxTheme } from "./txCssVars";
 
 export interface StartupThemeOptions {
-  /** Injection seams for tests; default to the real document/location. */
+  /** Injection seam for tests; defaults to the real `document` (trmx-173: the location/search seam
+   * was retired — both surfaces apply the theme, so there is no surface to resolve). */
   doc?: Document;
   /**
    * The settings store to read appearance.theme through; defaults to a snapshot-backed store
