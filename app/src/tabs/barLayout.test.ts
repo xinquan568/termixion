@@ -95,8 +95,6 @@ describe("labelOrientationFor (trmx-82)", () => {
 // heights grow by exactly that 20 (60→80, 180→200) so the LABEL's own budget is preserved.
 describe("railGeometryFor (trmx-82)", () => {
   const STATUS_QUO = {
-    tabMaxHeightPx: 28,
-    tabMinHeightPx: 28,
     closeHitTargetMinPx: 16,
     hintHeaderPx: 0,
     // trmx-165: the reserved top row that hosts the close × in vertical-label mode — 0 elsewhere
@@ -105,9 +103,9 @@ describe("railGeometryFor (trmx-82)", () => {
   };
 
   it("vertical rail + vertical labels → the narrow rail with tall-tab tokens", () => {
+    // trmx-169: the vertical-label tab height is no longer a min/max token range — it is the fixed
+    // CSS length (--tab-length + --tab-close-header), so tabMin/MaxHeightPx are retired.
     expect(railGeometryFor("vertical", "vertical")).toEqual({
-      tabMaxHeightPx: 200,
-      tabMinHeightPx: 80,
       closeHitTargetMinPx: 24,
       hintHeaderPx: 20,
       // trmx-165: a 24px reserved top gutter (≥ the close hit target) so the × never overlaps the

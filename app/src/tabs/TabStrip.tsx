@@ -317,10 +317,10 @@ export function TabStrip({
     const geometry = railGeometryFor(orientation, labelOrientation);
     rootStyle = {
       ...style,
-      // trmx-163: --tab-rail-width is retired — the rail width is the CSS-owned --tab-bar-thickness
-      // (28px), so only these LABEL-LENGTH / reserved-row tokens are written here.
-      "--tab-max-height": `${geometry.tabMaxHeightPx}px`,
-      "--tab-min-height": `${geometry.tabMinHeightPx}px`,
+      // trmx-163: --tab-rail-width is retired — the rail width is the CSS-owned --tab-bar-thickness.
+      // trmx-169: --tab-max-height / --tab-min-height are retired — the vertical-label tab HEIGHT is
+      // the CSS-owned fixed length calc(--tab-length + --tab-close-header). So only these reserved-row
+      // / hit-target tokens are written here.
       "--tab-close-min": `${geometry.closeHitTargetMinPx}px`,
       // trmx-151/163: the upright ⌘N chip's fixed row (now at the bottom trailing group).
       "--tab-hint-header": `${geometry.hintHeaderPx}px`,

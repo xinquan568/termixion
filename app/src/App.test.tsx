@@ -867,13 +867,15 @@ describe("App side-bar label orientation (trmx-82)", () => {
     renderApp();
     expect(strip().className).toBe("tab-strip tab-strip--vertical tab-strip--labels-vertical");
     // The railGeometryFor tokens, verbatim, END-TO-END: TabStrip owns them, App's render carries
-    // them onto the strip container. trmx-151: the heights carry the +20px hint header (60→80,
-    // 180→200). trmx-163: --tab-rail-width is retired (rail width = CSS-owned --tab-bar-thickness),
-    // so the vars carried end-to-end are these FOUR; --tab-rail-width is never written (asserted below).
-    expect(stripVar("--tab-max-height")).toBe("200px");
-    expect(stripVar("--tab-min-height")).toBe("80px");
+    // them onto the strip container. trmx-163: --tab-rail-width is retired (rail width = CSS-owned
+    // --tab-bar-thickness). trmx-169: --tab-max-height / --tab-min-height are retired too (tab height
+    // = CSS-owned calc(--tab-length + --tab-close-header)), so the vars carried end-to-end are these
+    // THREE; the retired height/rail-width vars are never written (asserted).
     expect(stripVar("--tab-close-min")).toBe("24px");
     expect(stripVar("--tab-hint-header")).toBe("20px");
+    expect(stripVar("--tab-close-header")).toBe("24px");
+    expect(stripVar("--tab-max-height")).toBe(""); // trmx-169: retired, never written
+    expect(stripVar("--tab-min-height")).toBe(""); // trmx-169: retired, never written
     expect(stripVar("--tab-rail-width")).toBe(""); // trmx-163: retired, never written
   });
 

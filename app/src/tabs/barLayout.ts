@@ -60,12 +60,11 @@ export function labelOrientationFor(
 
 /** The rail-geometry tokens (trmx-82) — the geometry source for the tab strip's LABEL-LENGTH
  * metrics. trmx-163: the rail WIDTH is no longer here — it is the CSS-owned `--tab-bar-thickness`
- * (28px, equal to the horizontal strip height by construction), so `railWidthPx` is retired. */
+ * (28px, equal to the horizontal strip height by construction), so `railWidthPx` is retired.
+ * trmx-169: the vertical-label tab HEIGHT is no longer a min/max range here either — it is the
+ * fixed CSS length `calc(--tab-length + --tab-close-header)` (index.css), so `tabMin/MaxHeightPx`
+ * are retired. This interface now holds only the sub-tab reserved-row / hit-target tokens. */
 export interface RailGeometry {
-  /** A vertical-label tab's height ceiling (natural height by label length up to this). */
-  tabMaxHeightPx: number;
-  /** A vertical-label tab's height floor. */
-  tabMinHeightPx: number;
   /** The close ×'s minimum hit-target square. */
   closeHitTargetMinPx: number;
   /** trmx-151: the upright ⌘N hint chip's fixed row on the rotated label (the `--tab-hint-header`
@@ -84,22 +83,17 @@ export interface RailGeometry {
 // NOTHING consumes it at runtime — index.css hardcodes these numbers as its own constants, and
 // TabStrip writes no vars outside vertical-label mode. (The rail width is CSS-owned now — retired.)
 const STATUS_QUO_GEOMETRY: RailGeometry = {
-  tabMaxHeightPx: 28,
-  tabMinHeightPx: 28,
   closeHitTargetMinPx: 16,
   hintHeaderPx: 0,
   closeHeaderPx: 0,
 };
 
-// Vertical labels on the vertical rail: tall tabs (80–200px by label length) with a ≥24px close hit
-// target. trmx-163: the rail WIDTH is the CSS-owned --tab-bar-thickness (28px), no longer a token
-// here. trmx-151 hint header: the upright ⌘N chip occupies a fixed 20px row, so both height bounds
-// carry +20 (min 60→80, max 180→200) — the LABEL's own 60–180px budget is preserved.
-// trmx-165 close header: a 24px reserved TOP row (≥ the close hit target) so the ×'s hover-reveal
-// clears the rotated title; the title centres in the flexible row beneath it.
+// Vertical labels on the vertical rail: a ≥24px close hit target. trmx-163: the rail WIDTH is the
+// CSS-owned --tab-bar-thickness (28px). trmx-169: the tab HEIGHT is the CSS-owned fixed length
+// calc(--tab-length + --tab-close-header) (index.css), no longer a min/max token range here.
+// trmx-151 hint header: the upright ⌘N chip occupies a fixed 20px row. trmx-165 close header: a 24px
+// reserved TOP row (≥ the close hit target) so the ×'s hover-reveal clears the rotated title.
 const VERTICAL_LABEL_GEOMETRY: RailGeometry = {
-  tabMaxHeightPx: 200,
-  tabMinHeightPx: 80,
   closeHitTargetMinPx: 24,
   hintHeaderPx: 20,
   closeHeaderPx: 24,

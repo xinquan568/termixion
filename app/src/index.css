@@ -414,9 +414,13 @@ body {
  * trmx-163 — `--tab-bar-thickness` is the ONE token for the bar's thickness: the horizontal strip
  * HEIGHT here and the vertical-label rail WIDTH below both resolve to it, so they are equal by
  * construction (28px, iTerm2-compact). Declared here so both rules inherit the same value.
+ * trmx-169 — `--tab-length` is the companion token for the bar's LABEL-AXIS extent: the horizontal
+ * tab's WIDTH (flex basis) and the vertical-label tab's HEIGHT both derive from it, so a tab is the
+ * same size along its label axis in either orientation. Declared here so both rules inherit it.
  */
 .tab-strip {
   --tab-bar-thickness: 28px;
+  --tab-length: 180px;
   flex: 0 0 var(--tab-bar-thickness);
   height: var(--tab-bar-thickness);
   position: relative;
@@ -469,7 +473,7 @@ body {
   border-left: 1px solid var(--tx-border);
 }
 .tab-strip__tab {
-  flex: 0 1 180px;
+  flex: 0 1 var(--tab-length);
   min-width: 60px;
   /* trmx-91 — the containing block for the absolutely-positioned activity dot (below). `relative`
      does NOT create a fixed-positioning containing block, so the trmx-82 D4 rename overlay's
@@ -686,11 +690,19 @@ body {
 .tab-strip--labels-vertical {
   width: var(--tab-bar-thickness);
 }
+/*
+ * trmx-169 — the vertical-label tab is a FIXED height = the shared label-axis length (--tab-length,
+ * the horizontal tab's width) PLUS the reserved close gutter (--tab-close-header). The +gutter makes
+ * the rotated title's row ≈ the horizontal title's room (the horizontal × is an absolute overlay
+ * that reserves no space, the vertical one reserves the 24px top gutter). The height takes effect and
+ * never shrinks because `.tab-strip--vertical .tab-strip__tab` already resets `flex: 0 0 auto` (basis
+ * auto → the explicit height is the column-axis main size); the rail scrolls when tabs overflow. This
+ * replaces the trmx-82/165 min/max-height range that (post-165 clip) collapsed the tab to ~80px.
+ */
 .tab-strip--labels-vertical .tab-strip__tab {
   flex-direction: column;
   box-sizing: border-box;
-  min-height: var(--tab-min-height);
-  max-height: var(--tab-max-height);
+  height: calc(var(--tab-length) + var(--tab-close-header));
   padding: 8px 0;
 }
 /*
