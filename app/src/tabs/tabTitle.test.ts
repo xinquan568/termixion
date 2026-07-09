@@ -1,17 +1,20 @@
 // SPDX-License-Identifier: ISC
 // Copyright (c) 2026 Eric Y. Liu
 //
-// trmx-75 (FR-2.4, test-first): the pure title model. A tab's rendered title is chosen from four
-// SOURCES with fixed precedence — manual rename > OSC 0/2 escape > foreground-process hint >
-// fallback — where a slot that is absent OR sanitizes to empty simply does not count. Sanitization
-// (C0/C1 control strip, trim, 256-char cap) is pinned here headless: no React, no reducer — just
-// strings in / strings out, so the tabState reducer and the App wiring can lean on these exact
-// semantics. Control characters are spelled as \u{..} escapes so the source stays greppable.
+// trmx-75/166 (FR-2.4, test-first): the pure title model. A PANE's effective title is chosen from
+// its automatic SOURCES with fixed precedence — OSC 0/2 escape > foreground-process hint > fallback
+// — where a slot that is absent OR sanitizes to empty simply does not count. trmx-166: the user's
+// manual rename left this ladder; it is a TAB-scoped pin combined with the focused pane via
+// `tabTitle(manualTitle, focused)`. Sanitization (C0/C1 control strip, trim, 256-char cap) is pinned
+// here headless: no React, no reducer — just strings in / strings out, so the tabState reducer and
+// the App wiring can lean on these exact semantics. Control characters are spelled as \u{..} escapes
+// so the source stays greppable.
 import { describe, it, expect } from "vitest";
 import {
   effectiveTitle,
   MAX_TITLE_LENGTH,
   sanitizeTitle,
+  tabTitle,
   type TitleSources,
 } from "./tabTitle";
 
@@ -68,36 +71,55 @@ describe("sanitizeTitle", () => {
 describe("effectiveTitle", () => {
   const F = "Shell";
 
-  // The FULL presence table: every combination of the three optional slots over a fallback.
+  // The FULL presence table over the two optional automatic slots + fallback (trmx-166: manual is
+  // no longer a pane source — see the tabTitle describe below).
   const table: Array<[string, TitleSources, string]> = [
-    ["manual+osc+process", { manual: "m", osc: "o", process: "p", fallback: F }, "m"],
-    ["manual+osc", { manual: "m", osc: "o", fallback: F }, "m"],
-    ["manual+process", { manual: "m", process: "p", fallback: F }, "m"],
-    ["manual only", { manual: "m", fallback: F }, "m"],
     ["osc+process", { osc: "o", process: "p", fallback: F }, "o"],
     ["osc only", { osc: "o", fallback: F }, "o"],
     ["process only", { process: "p", fallback: F }, "p"],
     ["none (fallback)", { fallback: F }, F],
   ];
-  it.each(table)("precedence manual > osc > process > fallback: %s", (_name, sources, want) => {
+  it.each(table)("precedence osc > process > fallback: %s", (_name, sources, want) => {
     expect(effectiveTitle(sources)).toBe(want);
   });
 
   it("a present slot that sanitizes to empty does NOT count — precedence falls through it", () => {
-    expect(effectiveTitle({ manual: "   ", osc: "vim", fallback: F })).toBe("vim");
-    expect(effectiveTitle({ manual: "", osc: "\u{7} ", process: "sleep", fallback: F })).toBe(
-      "sleep",
-    );
-    expect(effectiveTitle({ manual: "", osc: "\u{1b}", process: "  ", fallback: F })).toBe(F);
+    expect(effectiveTitle({ osc: "   ", process: "sleep", fallback: F })).toBe("sleep");
+    expect(effectiveTitle({ osc: "\u{7} ", process: "sleep", fallback: F })).toBe("sleep");
+    expect(effectiveTitle({ osc: "\u{1b}", process: "  ", fallback: F })).toBe(F);
   });
 
   it("sanitizes the winning slot's value", () => {
-    expect(effectiveTitle({ manual: " wo\u{7}rk ", osc: "vim", fallback: F })).toBe("work");
+    expect(effectiveTitle({ osc: " wo\u{7}rk ", process: "vim", fallback: F })).toBe("work");
     expect(effectiveTitle({ process: "p".repeat(300), fallback: F })).toBe("p".repeat(256));
   });
 
   it("returns the SANITIZED fallback when nothing counts — even empty (the reducer keeps its fallback non-empty)", () => {
     expect(effectiveTitle({ fallback: " zsh\u{0} " })).toBe("zsh");
     expect(effectiveTitle({ fallback: " \u{7} " })).toBe("");
+  });
+});
+
+// trmx-166: the tab-scoped manual PIN combined with the focused pane. A non-empty (after sanitize)
+// manual title wins over the focused pane's effective title; an absent / empty / whitespace-only
+// manual falls through to the focused pane ("clear to auto"). Manual is sanitized on the same terms.
+describe("tabTitle (trmx-166)", () => {
+  const F = "Shell";
+
+  it("a non-empty manual pin wins over the focused pane's effective title", () => {
+    expect(tabTitle("My Tab", { osc: "vim", fallback: F })).toBe("My Tab");
+    expect(tabTitle("My Tab", { fallback: F })).toBe("My Tab");
+  });
+
+  it("an absent / empty / whitespace-only manual falls through to the focused pane (auto)", () => {
+    expect(tabTitle(undefined, { osc: "vim", fallback: F })).toBe("vim");
+    expect(tabTitle("", { process: "sleep", fallback: F })).toBe("sleep");
+    expect(tabTitle("   ", { osc: "vim", fallback: F })).toBe("vim");
+    expect(tabTitle("\u{7}\u{1b}", { fallback: F })).toBe(F); // control-only manual ⇒ auto
+  });
+
+  it("sanitizes the manual pin (controls stripped, trimmed, capped)", () => {
+    expect(tabTitle(" wo\u{7}rk ", { osc: "vim", fallback: F })).toBe("work");
+    expect(tabTitle("x".repeat(300), { fallback: F })).toBe("x".repeat(256));
   });
 });

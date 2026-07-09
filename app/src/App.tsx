@@ -1272,24 +1272,17 @@ export function App({
     "window-close": "window.close",
   };
 
-  // trmx-75: the rename intents. Start = activate + flip into rename; commit writes the FOCUSED
-  // pane's manual title (empty → clear-to-auto); cancel drops the edit. Commit/cancel clearing
+  // trmx-75/166: the rename intents. Start = activate + flip into rename; commit sets the TAB's
+  // manual title PIN (empty → clear-to-auto); cancel drops the edit. Commit/cancel clearing
   // `renamingTabId` re-runs the focus effect, handing the keyboard back to the focused pane.
   const startRename = (tabId: number) => {
     dispatch({ kind: "activateTab", tabId });
     setRenamingTabId(tabId);
   };
   const commitRename = (tabId: number, value: string) => {
-    const tab = stateRef.current.tabs.find((t) => t.tabId === tabId);
-    if (tab) {
-      dispatch({
-        kind: "setTitleSource",
-        tabId,
-        paneId: tab.focusedPaneId,
-        source: "manual",
-        value: value.trim() === "" ? null : value,
-      });
-    }
+    // trmx-166: the rename is a TAB-scoped pin (setTabTitle), not a per-pane manual source — so it
+    // survives pane splits and focus changes. The reducer no-ops on an unknown tab.
+    dispatch({ kind: "setTabTitle", tabId, value: value.trim() === "" ? null : value });
     setRenamingTabId(null);
   };
   const cancelRename = () => setRenamingTabId(null);
@@ -1576,9 +1569,14 @@ export function App({
   }, [activeTitle]);
 
   // trmx-75/84: the core mirror — every ATTACHED pane's effective title is written into its session
-  // (set_session_title) whenever it changes, so core `Session::title` always matches the UI. The
-  // per-pane dedup map bounds the invoke stream to real changes and is WHY a raw hint never leaks
-  // into the core (a hint under a manual/OSC title leaves the pane title unchanged → nothing writes).
+  // (set_session_title) whenever it changes, so core `Session::title` always matches each pane's own
+  // title. The per-pane dedup map bounds the invoke stream to real changes; a hint under an OSC title
+  // leaves the pane title unchanged → nothing writes.
+  // trmx-166: the tab's manual rename is a TAB-scoped PIN (Tab.manualTitle) — it drives the tab label
+  // and the native window title (activeTab.title, above) ONLY. It is deliberately NOT mirrored here:
+  // each pane's core Session::title keeps tracking that pane's own osc/process/fallback title (a tab
+  // pin can't map to one of N panes' sessions). So a process/OSC hint on a pane under a pinned tab
+  // DOES update that pane's core title, while the tab LABEL stays pinned.
   useEffect(() => {
     for (const tab of state.tabs) {
       for (const paneId of tabPaneIds(tab)) {
