@@ -9,8 +9,9 @@
 // `layoutTree` (panes/layoutTree.ts), a `focusedPaneId`, and a `panes` record of per-pane state
 // (session + title sources). A pane is exactly what a tab's single surface was before (trmx-74),
 // so all the session/title machinery simply moves from tab scope to PANE scope. The tab's rendered
-// `title` is DERIVED — always the FOCUSED pane's effective title — so the strip/window still
-// consume one string, and it switches source as focus moves between panes.
+// `title` is DERIVED — the tab-scoped manual pin (trmx-166, `manualTitle`) when set, else the
+// FOCUSED pane's effective title — so the strip/window still consume one string; without a pin it
+// switches source as focus moves between panes, and with one it stays put (see `deriveTitle`).
 //
 // Conventions (all iTerm2-modeled):
 // - Tab ids AND pane ids are MONOTONIC and never reused (`nextTabId`/`nextPaneId` only increment),
@@ -24,9 +25,11 @@
 //   last"; tabs beyond nine are reached via ⌘⇧]/⌘⇧[ or the mouse.
 // - Every no-op returns the IDENTICAL state object (===), so a React `useReducer` consumer skips
 //   the re-render and tests can pin no-op-ness exactly.
-// - trmx-75 titles are layered SOURCES (manual > osc > process > fallback, tabTitle.ts), now held
-//   PER PANE; every sources change recomputes that pane's `title`, and if it is the focused pane,
-//   the tab's derived `title` too. A background pane's title change never moves the tab label.
+// - trmx-75/166 titles: each PANE has an automatic source ladder (osc > process > fallback,
+//   tabTitle.ts); every sources change recomputes that pane's `title`. The user's manual rename is
+//   a TAB-scoped pin (`Tab.manualTitle`) — `deriveTitle`/`tabTitle` derive the tab label as the pin
+//   when set, else the focused pane's effective title, so a rename survives pane focus/splits and a
+//   background pane's title change never moves the label.
 // - trmx-90 adds a per-pane `badge`: an ephemeral, session-lifetime overlay label — a SINGLE opaque
 //   slot (last-write-wins, NOT a source ladder like the title). It is orthogonal to the title:
 //   setting/clearing a badge never moves the tab label, even on the focused pane.
@@ -194,12 +197,16 @@ export function reduceTabs(state: TabsState, action: TabsAction): TabsState {
     case "openTab": {
       const paneId = state.nextPaneId;
       const pane = makePane(null, action.title ?? "");
+      const panes = { [paneId]: pane };
       const tab: Tab = {
         tabId: state.nextTabId,
         tree: leafNode(paneId),
         focusedPaneId: paneId,
-        panes: { [paneId]: pane },
-        title: pane.title,
+        panes,
+        // trmx-166: route through deriveTitle like every other write site (a fresh tab has no pin,
+        // so this equals pane.title — but the invariant "all tab-title writes go through deriveTitle"
+        // holds uniformly).
+        title: deriveTitle(undefined, panes, paneId),
       };
       return {
         tabs: [...state.tabs, tab],

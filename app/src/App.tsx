@@ -25,9 +25,10 @@
 // - Closing (⌘W): pane → tab → window. Close the focused pane (close_pty); if it was the last pane
 //   the tab closes; if the last tab, the window. A pane's `pty:exited` closes just that pane. The
 //   tab-strip × closes the WHOLE tab (loops close_pty over its panes — no core bulk-close).
-// - Titles (trmx-75, now per pane): the tab label + native window title follow the ACTIVE tab's
-//   FOCUSED pane title; a background pane's OSC/hint updates its own state only. Rename targets the
-//   focused pane's manual title.
+// - Titles (trmx-75/166): each pane has its own automatic title; the tab label + native window title
+//   follow the ACTIVE tab's title, which is the tab-scoped manual PIN when set (trmx-166) else the
+//   focused pane's effective title. A background pane's OSC/hint updates its own state only. Rename
+//   sets the TAB's manual pin (survives pane focus/splits), not a per-pane title.
 import {
   useEffect,
   useReducer,
@@ -425,8 +426,8 @@ export function App({
   const attachFn = attach ?? attachTerminal;
 
   const [state, dispatch] = useReducer(reduceTabs, undefined, initialTabsState);
-  // trmx-75: the tab whose label is an inline rename input (null = not renaming). Rename targets
-  // that tab's FOCUSED pane's manual title. While non-null, focus-follows-activation is suppressed.
+  // trmx-75/166: the tab whose label is an inline rename input (null = not renaming). Commit sets
+  // that TAB's manual title pin. While non-null, focus-follows-activation is suppressed.
   const [renamingTabId, setRenamingTabId] = useState<number | null>(null);
   // trmx-81/82: the tab bar's window edge + side-label orientation, seeded from the shared settings
   // snapshot (hydrated before mount), kept live over settings:changed.
@@ -1560,8 +1561,9 @@ export function App({
     (terminal as unknown as { focus?: () => void } | undefined)?.focus?.();
   }, [state.activeTabId, activeFocusedPaneId, renamingTabId, badgingPaneId, openSearchPanes]);
 
-  // trmx-75: the NATIVE window title is the ACTIVE tab's (focused pane) effective title — background
-  // tabs/panes never reach it. Undefined = no tabs yet (boot) — leave the window alone.
+  // trmx-75/166: the NATIVE window title is the ACTIVE tab's title — the manual pin when set, else
+  // the focused pane's effective title (Tab.title / deriveTitle). Background tabs/panes never reach
+  // it. Undefined = no tabs yet (boot) — leave the window alone.
   const activeTitle = activeTab?.title;
   useEffect(() => {
     if (activeTitle === undefined) return;
