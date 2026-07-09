@@ -720,6 +720,22 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
     expect(screen.queryByRole("menu")).toBeNull();
   });
 
+  it("right-clicking an INVALID swatch opens NO menu and does NOT prevent the browser default", () => {
+    registerUserThemes([invalidUserEntry("user:bad", "invalid color at color.bg.primary")]);
+    const { container } = render(
+      <AppearanceSettings
+        settings={makeSettingsStore(fakeStorage())}
+        selected="night"
+        barPosition="bottom"
+      />,
+    );
+    // The invalid swatch is an inert div (not a radio, no onContextMenu) — right-click does nothing.
+    const invalidSwatch = container.querySelector(".tx-swatch--invalid")!;
+    const notCancelled = fireEvent.contextMenu(invalidSwatch);
+    expect(notCancelled).toBe(true); // default NOT prevented
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
   it("opens only ONE menu at a time (right-clicking a second built-in replaces the first)", () => {
     render(
       <AppearanceSettings

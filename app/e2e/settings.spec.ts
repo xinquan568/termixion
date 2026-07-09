@@ -128,6 +128,12 @@ test("theme Duplicate is a right-click context menu, not a per-swatch button (tr
   await page.keyboard.press("Escape");
   await expect(page.getByRole("menu")).toHaveCount(0);
 
+  // …an OUTSIDE click closes it (pointerdown outside the popover)…
+  await night.click({ button: "right" });
+  await expect(page.getByRole("menu")).toBeVisible();
+  await page.locator(".tx-settings-group__title").first().click(); // the "Theme" heading — inert, outside
+  await expect(page.getByRole("menu")).toHaveCount(0);
+
   // …choosing Duplicate closes it. (The file WRITE needs the Tauri backend the dev server lacks, so
   // the write/hydrate/select is covered by the AppearanceSettings unit suite; here we only assert the
   // browser-observable menu flow — same reason themes.spec.ts avoids file-backed Duplicate.)
