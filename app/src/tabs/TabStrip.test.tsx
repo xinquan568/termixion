@@ -133,12 +133,13 @@ describe("hoverSlotFor", () => {
     expect(hoverSlotFor(123, [], "y")).toBe(0);
   });
 
-  // trmx-82: vertical-label rails stack slim, VARYING-height tabs (natural height by label length
-  // between the min/max tokens) — the midpoint math must hold when heights differ per slot.
+  // trmx-82: vertical-label rails stack slim tabs — the midpoint math is orientation-agnostic and
+  // must hold for arbitrary per-slot heights (these rects are synthetic fixtures, not the CSS sizing;
+  // trmx-169 fixes tabs at a single height, but hoverSlotFor stays height-agnostic).
   it("y axis with slim/tall varying-height rects (trmx-82 vertical-label rails)", () => {
     const rects = [
-      { left: 0, top: 0, width: 44, height: 180 }, // a max-height tab — mid 90
-      { left: 0, top: 180, width: 44, height: 60 }, // a min-height tab — mid 210
+      { left: 0, top: 0, width: 44, height: 180 }, // a taller slot — mid 90
+      { left: 0, top: 180, width: 44, height: 60 }, // a shorter slot — mid 210
       { left: 0, top: 240, width: 44, height: 120 }, // in between — mid 300
     ];
     expect(hoverSlotFor(89, rects, "y")).toBe(0); // just under the tall tab's midpoint
@@ -563,14 +564,16 @@ describe("TabStrip vertical labels (trmx-82)", () => {
   // trmx-151: --tab-hint-header (the upright chip's 20px header row) joins the set, and the height
   // bounds carry the +20 header (min 60→80, max 180→200 — barLayout.ts).
   // trmx-163: --tab-rail-width is RETIRED — the rail width is the CSS-owned --tab-bar-thickness now.
-  // trmx-165: --tab-close-header joins the set (the reserved top gutter for the close ×), so
-  // TabStrip writes FIVE geometry vars in vertical-label mode.
-  it("owns the D2 geometry: vertical-label mode writes the five token vars on the root", () => {
+  // trmx-165: --tab-close-header joins the set (the reserved top gutter for the close ×).
+  // trmx-169: --tab-max-height / --tab-min-height are RETIRED — the vertical-label tab is a fixed CSS
+  // length now (--tab-length + --tab-close-header, index.css), not a min/max range — so TabStrip
+  // writes THREE geometry vars in vertical-label mode and must NOT write the height vars.
+  it("owns the D2 geometry: vertical-label mode writes the three token vars on the root", () => {
     renderStrip({ orientation: "vertical", labelOrientation: "vertical" });
     const strip = screen.getByTestId("tab-strip");
     expect(strip.style.getPropertyValue("--tab-rail-width")).toBe(""); // trmx-163: retired, never written
-    expect(strip.style.getPropertyValue("--tab-max-height")).toBe("200px");
-    expect(strip.style.getPropertyValue("--tab-min-height")).toBe("80px");
+    expect(strip.style.getPropertyValue("--tab-max-height")).toBe(""); // trmx-169: retired, never written
+    expect(strip.style.getPropertyValue("--tab-min-height")).toBe(""); // trmx-169: retired, never written
     expect(strip.style.getPropertyValue("--tab-close-min")).toBe("24px");
     expect(strip.style.getPropertyValue("--tab-hint-header")).toBe("20px");
     expect(strip.style.getPropertyValue("--tab-close-header")).toBe("24px"); // trmx-165: reserved top gutter
@@ -578,8 +581,6 @@ describe("TabStrip vertical labels (trmx-82)", () => {
 
   it("writes NO geometry vars outside vertical-label mode (those layouts are CSS-owned)", () => {
     const vars = [
-      "--tab-max-height",
-      "--tab-min-height",
       "--tab-close-min",
       "--tab-hint-header",
       "--tab-close-header",
@@ -920,6 +921,22 @@ describe("tab-strip CSS contract (trmx-151)", () => {
     // resolve to var(--tab-bar-thickness), so they are equal BY CONSTRUCTION (28px).
     expect(ruleBody(".tab-strip")).toMatch(/height:\s*var\(--tab-bar-thickness\)/);
     expect(ruleBody(".tab-strip--labels-vertical")).toMatch(/width:\s*var\(--tab-bar-thickness\)/);
+  });
+
+  it("shares one --tab-length token for horizontal tab WIDTH and vertical-label tab HEIGHT (trmx-169)", () => {
+    // The tab has ONE label-axis extent: the horizontal tab's flex basis and the vertical-label
+    // tab's height both derive from var(--tab-length) (180px), so a tab is the same size along its
+    // label axis in either orientation. The vertical height adds the reserved close gutter so the
+    // rotated title's room ≈ the horizontal title's.
+    expect(ruleBody(".tab-strip")).toMatch(/--tab-length:\s*180px/);
+    expect(ruleBody(".tab-strip__tab")).toMatch(/flex:\s*0 1 var\(--tab-length\)/);
+    // The vertical-rail reset (flex: 0 0 auto) is what makes the explicit height the column-axis main
+    // size AND guarantees the tab never shrinks (rail scrolls instead) — load-bearing, so pin it.
+    expect(ruleBody(".tab-strip--vertical .tab-strip__tab")).toMatch(/flex:\s*0 0 auto/);
+    const vtab = ruleBody(".tab-strip--labels-vertical .tab-strip__tab");
+    expect(vtab).toMatch(/height:\s*calc\(var\(--tab-length\)\s*\+\s*var\(--tab-close-header\)\)/);
+    // trmx-169: the min/max-height range is retired — the tab is a fixed length now.
+    expect(vtab).not.toMatch(/min-height|max-height/);
   });
 
   it("drops the WHOLE hint prefix inside a narrow (≤90px) tab via a container query", () => {

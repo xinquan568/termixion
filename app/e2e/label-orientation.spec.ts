@@ -9,8 +9,8 @@
 // Covered here (the browser-level half; jsdom can't do real layout/writing-mode/fixed anchoring):
 // - left + vertical: both strip modifier classes, the slim 28px rail (trmx-163: the CSS-owned
 //   --tab-bar-thickness — equal to the horizontal strip height — verified via the real boundingBox;
-//   --tab-rail-width is retired), rotated label spans on every tab, and the token bounds as real
-//   OUTER heights (60–180px border-box rows — padding must never push a row past the max token);
+//   --tab-rail-width is retired), rotated label spans on every tab, and (trmx-169) the FIXED tab
+//   height = calc(--tab-length + --tab-close-header) ≈ 204px — uniform across short and long titles;
 // - the core tab flows survive vertical-label mode: activate by click, y-axis drag reorder past
 //   the neighbor's midpoint, the synthetic ⌘-digit chord (the trmx-81 pattern — real ⌘ chords
 //   are browser-owned and flaky in the dev server, so KeyboardEvents are dispatched on `window`,
@@ -80,7 +80,7 @@ test("left bar + vertical setting: both modifier classes, the 28px rail, rotated
   await expect(page.locator(".tab-strip__title--vertical")).toHaveCount(3);
 });
 
-test("the height tokens bound the OUTER row: short tab within 80–200, long-title tab capped at 200", async ({
+test("the tab height is a FIXED label-axis length (--tab-length + close gutter): short & long tabs are UNIFORM (trmx-169)", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 900, height: 600 });
@@ -90,8 +90,8 @@ test("the height tokens bound the OUTER row: short tab within 80–200, long-tit
   await page.getByTestId("tab-new").click();
   await expect(page.locator(".tab-strip__tab")).toHaveCount(2);
 
-  // Pin both titles through the D4 rename overlay: tab-1 SHORT (floors at the 60px min token),
-  // tab-2 a 43-char path (its natural rotated length far exceeds the 180px max token).
+  // Pin both titles through the D4 rename overlay: tab-1 SHORT, tab-2 a 43-char path (its natural
+  // rotated length far exceeds the tab's room).
   const longTitle = "/Users/dev/projects/termixion/very/deep/dir"; // 43 chars
   await page.getByTestId("tab-1").dblclick();
   const input = page.getByTestId("tab-rename-input");
@@ -103,17 +103,21 @@ test("the height tokens bound the OUTER row: short tab within 80–200, long-tit
   await input.press("Enter");
   await expect(page.getByTestId("tab-2").locator(".tab-strip__title")).toHaveText(longTitle);
 
-  // The D2 tokens are OUTER (border-box) bounds — the row's padding lives INSIDE 80–200px
-  // (trmx-151: the min/max grew 60→80 / 180→200 for the 20px upright hint header, preserving the
-  // label budget), so a rendered row must never exceed the max token (the review-round regression:
-  // content-box min/max + 8px vertical padding rendered 76–196px rows).
+  // trmx-169: the vertical-label tab is now a FIXED height = calc(--tab-length 180px +
+  // --tab-close-header 24px) = 204px (border-box), NOT a min/max range that grew with the label. So
+  // BOTH tabs render at ~204px — a short and a very long title produce the SAME height (uniform,
+  // like a horizontal tab is always ~180px wide), giving the rotated label the readable room the
+  // ~80px-collapsed tabs lacked. The long label ellipsizes within its row (trmx-165 clip), so it
+  // does NOT grow the tab.
   const shortBox = (await page.getByTestId("tab-1").boundingBox())!;
   const longBox = (await page.getByTestId("tab-2").boundingBox())!;
-  expect(shortBox.height).toBeGreaterThanOrEqual(80);
-  expect(shortBox.height).toBeLessThanOrEqual(200);
-  expect(longBox.height).toBeLessThanOrEqual(200);
-  // Natural sizing still works between the bounds: the long label renders TALLER than the short.
-  expect(longBox.height).toBeGreaterThan(shortBox.height);
+  expect(shortBox.height).toBeGreaterThanOrEqual(200); // ≈204 (180 + 24 gutter), border-box
+  expect(shortBox.height).toBeLessThanOrEqual(208);
+  expect(longBox.height).toBeGreaterThanOrEqual(200);
+  expect(longBox.height).toBeLessThanOrEqual(208);
+  // Uniform: the long-title tab is the SAME height as the short one (the trmx-169 fix — a long label
+  // no longer grows the tab; it clips).
+  expect(Math.abs(longBox.height - shortBox.height)).toBeLessThanOrEqual(1);
 });
 
 test("core flows survive vertical labels: click-activate, y-drag reorder, synthetic ⌘-digit, close", async ({
@@ -170,7 +174,7 @@ test("core flows survive vertical labels: click-activate, y-drag reorder, synthe
 test("rename on a SCROLLED rail: the D4 fixed overlay is wider than the rail and commits on Enter", async ({
   page,
 }) => {
-  // Small window so ~10 tall tabs (≥60px min-height each) overflow the rail's height.
+  // Small window so ~10 tall tabs (fixed ~204px each, trmx-169) overflow the rail's height.
   await page.setViewportSize({ width: 700, height: 400 });
   await page.goto(VERTICAL_URL);
   const tabs = page.locator(".tab-strip__tab");
