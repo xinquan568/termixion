@@ -103,15 +103,21 @@ body {
   z-index: 2;
 }
 /*
- * trmx-87 (FR-3.6) — the Kitty multi-pane look. The dividers OUTLINING the focused pane render in the
- * active border color; the rest inactive (both from the theme catalog via --tx-pane-*). A single-pane
- * tab has no dividers, so the chrome-free baseline is preserved.
+ * trmx-87 (FR-3.6) + trmx-175 — the Kitty multi-pane look. Every divider's base line is inactive; where a
+ * divider borders the FOCUSED pane, an `__active` overlay covers only that segment in the active border
+ * color (both from the theme catalog via --tx-pane-*). So a full-height divider next to a bottom pane is
+ * active only over the bottom half, not its whole length. A single-pane tab has no dividers, so the
+ * chrome-free baseline is preserved.
  */
-.pane-divider--active {
-  background: var(--tx-pane-active-border);
-}
 .pane-divider--inactive {
   background: var(--tx-pane-inactive-border);
+}
+/* trmx-175: the active segment — absolutely positioned within the divider (offset/length set inline), so
+ * it paints only the span adjacent to the focused pane; click-through so divider drag is unaffected. */
+.pane-divider__active {
+  position: absolute;
+  background: var(--tx-pane-active-border);
+  pointer-events: none;
 }
 
 /*

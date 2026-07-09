@@ -208,11 +208,17 @@ In our flat-rect model the **divider IS the border**. Emitted as `--tx-pane-acti
 
 ### 6.2 Focus indication (active dividers)
 
-`paneChrome.activeDividerKeys` (pure) returns the dividers **outlining the focused pane** (edge-adjacent
-+ perpendicular overlap). App draws those `pane-divider--active` (`--tx-pane-active-border`), the rest
-`pane-divider--inactive`. A focus change is a **class flip only** — no re-layout, no terminal touch
-(pinned by `App.test.tsx`: survivor `recorder.unmounts === 0`). Kitty segments borders; our whole-divider
-approximation is the faithful flat-rect analogue.
+`paneChrome.activeDividerSegments` (pure) returns, for each divider that borders the focused pane, the
+**segment** where it does — the perpendicular overlap between the focused pane's rect and the divider
+(edge-adjacent + the overlap interval). App renders every divider's base line `pane-divider--inactive` and,
+over each active segment, a `pane-divider__active` overlay (`--tx-pane-active-border`, `pointer-events:
+none`) sized to that span. So a full-height divider next to a bottom pane is colored **only over the bottom
+half**; a fully-adjacent divider (e.g. the sole divider of a 2-pane split) is colored end to end.
+`activeDividerKeys` remains as the set of dividers that have a segment. A focus change is a **style flip
+only** — no re-layout, no terminal touch (pinned by `App.test.tsx`: survivor `recorder.unmounts === 0`).
+**trmx-175** replaced the earlier whole-divider approximation — which colored a divider along its *entire*
+length whenever any part of it bordered the focused pane, so the span between two unfocused panes was
+wrongly active — with true Kitty-style per-segment borders.
 
 ### 6.3 Unfocused dim (Kitty `inactive_text_alpha`)
 
