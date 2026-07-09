@@ -861,12 +861,13 @@ describe("App side-bar label orientation (trmx-82)", () => {
     expect(strip().className).toBe("tab-strip tab-strip--vertical tab-strip--labels-vertical");
     // The railGeometryFor tokens, verbatim, END-TO-END: TabStrip owns them, App's render carries
     // them onto the strip container. trmx-151: the heights carry the +20px hint header (60→80,
-    // 180→200) and the fifth token (--tab-hint-header) joins the set.
-    expect(stripVar("--tab-rail-width")).toBe("44px");
+    // 180→200). trmx-163: --tab-rail-width is retired (rail width = CSS-owned --tab-bar-thickness),
+    // so the vars carried end-to-end are these FOUR; --tab-rail-width is never written (asserted below).
     expect(stripVar("--tab-max-height")).toBe("200px");
     expect(stripVar("--tab-min-height")).toBe("80px");
     expect(stripVar("--tab-close-min")).toBe("24px");
     expect(stripVar("--tab-hint-header")).toBe("20px");
+    expect(stripVar("--tab-rail-width")).toBe(""); // trmx-163: retired, never written
   });
 
   it("a top/bottom bar forces horizontal labels even when the setting is vertical", () => {
@@ -874,19 +875,20 @@ describe("App side-bar label orientation (trmx-82)", () => {
     renderApp();
     expect(strip().className).toBe("tab-strip");
     // No geometry vars outside vertical-label mode — the horizontal strip is CSS-owned.
-    expect(stripVar("--tab-rail-width")).toBe("");
     expect(stripVar("--tab-max-height")).toBe("");
     expect(stripVar("--tab-min-height")).toBe("");
     expect(stripVar("--tab-close-min")).toBe("");
-    expect(stripVar("--tab-hint-header")).toBe(""); // trmx-151: the fifth token stays absent too
+    expect(stripVar("--tab-hint-header")).toBe("");
+    expect(stripVar("--tab-rail-width")).toBe(""); // trmx-163: retired everywhere
   });
 
   it("a side bar with the DEFAULT setting keeps the trmx-81 rail (no vars, no label class)", () => {
     makeSettingsStore().set("tabs.barPosition", "right");
     renderApp();
     expect(strip().className).toBe("tab-strip tab-strip--vertical");
-    // The horizontal-label rail's 180px width is a CSS-owned constant, not a token.
-    expect(stripVar("--tab-rail-width")).toBe("");
+    // The horizontal-label rail's 180px width is a CSS-owned constant, not a token. trmx-163: the
+    // surviving geometry tokens are the mode signal now (--tab-rail-width is retired everywhere).
+    expect(stripVar("--tab-hint-header")).toBe("");
   });
 
   it("settings:changed flips the labels live over the ONE subscription, without remounting hosts", async () => {
@@ -905,7 +907,7 @@ describe("App side-bar label orientation (trmx-82)", () => {
       });
     });
     expect(strip().className).toBe("tab-strip tab-strip--vertical tab-strip--labels-vertical");
-    expect(stripVar("--tab-rail-width")).toBe("44px");
+    expect(stripVar("--tab-hint-header")).toBe("20px"); // trmx-163: surviving token is the mode signal
 
     await act(async () => {
       settingsChanged.fire({
@@ -915,7 +917,7 @@ describe("App side-bar label orientation (trmx-82)", () => {
       });
     });
     expect(strip().className).toBe("tab-strip tab-strip--vertical");
-    expect(stripVar("--tab-rail-width")).toBe(""); // back to the CSS-owned 180px rail
+    expect(stripVar("--tab-hint-header")).toBe(""); // back to the CSS-owned 180px rail
 
     // Keep-alive across both flips: same host node, zero TerminalView unmounts.
     expect(screen.getByTestId("tab-host-1")).toBe(host1);
@@ -931,7 +933,7 @@ describe("App side-bar label orientation (trmx-82)", () => {
       settingsChanged.fire({ key: "appearance.theme", value: "vertical", source: "config-file" });
     });
     expect(strip().className).toBe("tab-strip tab-strip--vertical");
-    expect(stripVar("--tab-rail-width")).toBe("");
+    expect(stripVar("--tab-hint-header")).toBe("");
   });
 
   it("a live position change to top/bottom drops the vertical labels (the gate re-applies)", async () => {
@@ -944,14 +946,14 @@ describe("App side-bar label orientation (trmx-82)", () => {
       settingsChanged.fire({ key: "tabs.barPosition", value: "bottom", source: "settings-window" });
     });
     expect(strip().className).toBe("tab-strip");
-    expect(stripVar("--tab-rail-width")).toBe(""); // status quo (CSS-owned) — the setting stays latent
+    expect(stripVar("--tab-hint-header")).toBe(""); // status quo (CSS-owned) — the setting stays latent
 
     // Back to a side edge: the latent vertical setting re-engages without another broadcast.
     await act(async () => {
       settingsChanged.fire({ key: "tabs.barPosition", value: "right", source: "settings-window" });
     });
     expect(strip().className).toBe("tab-strip tab-strip--vertical tab-strip--labels-vertical");
-    expect(stripVar("--tab-rail-width")).toBe("44px");
+    expect(stripVar("--tab-hint-header")).toBe("20px");
   });
 });
 

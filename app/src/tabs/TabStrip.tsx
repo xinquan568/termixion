@@ -31,12 +31,14 @@
 // trmx-82 (FR-2.3): `labelOrientation` — vertical-label mode is the AND of orientation="vertical"
 // and labelOrientation="vertical" (a vertical value on a horizontal strip is IGNORED — App gates
 // via labelOrientationFor, but the component is safe standalone). It adds
-// `tab-strip--labels-vertical` on the root, the writing-mode class on the label span, and the
-// end-position class on the close ×; all GEOMETRY comes from the railGeometryFor CSS custom
-// properties the strip WRITES ON ITS OWN ROOT in vertical-label mode — TabStrip is the one
-// component that knows both orientation and labelOrientation, so the vars can never be absent
-// where index.css consumes them (with NO fallbacks). Outside vertical-label mode no vars are
-// written: those layouts are CSS-owned constants. Drag logic is untouched (the axis is Y). The
+// `tab-strip--labels-vertical` on the root, the writing-mode class on the label span, and (trmx-163)
+// the top-overlay `--vtop` class on the close ×; the LABEL-LENGTH geometry comes from the
+// railGeometryFor CSS custom properties the strip WRITES ON ITS OWN ROOT in vertical-label mode —
+// TabStrip is the one component that knows both orientation and labelOrientation, so the vars can
+// never be absent where index.css consumes them (with NO fallbacks). trmx-163: the rail WIDTH is no
+// longer one of those vars — it is the CSS-owned `--tab-bar-thickness` (equal to the horizontal
+// strip height). Outside vertical-label mode no vars are written: those layouts are CSS-owned
+// constants. Drag logic is untouched (the axis is Y). The
 // rename input becomes the D4 FIXED OVERLAY: anchored to the renaming tab's viewport rect
 // (measured once, at rename start), horizontal text, wider than the slim rail — while STAYING in
 // the tab's DOM subtree so the trmx-75 commit/cancel/latch + stopPropagation wiring is untouched.
@@ -46,14 +48,16 @@
 // tabHintChordFor — positional, so a drag-reorder renumbers hints) and, while the live
 // tabs.showShortcutHints setting (`shortcutHintsOn`) is on, prefixes the title with the chord's
 // glyphs in an aria-hidden `tab-strip__hint` span (the chord reaches AT via aria-keyshortcuts on
-// the tab div instead). Hint + title live in a `tab-strip__content` wrapper — the @container
-// size container index.css centers and narrow-drops against. THE CONTAINMENT CONTRACT (step-5
-// review finding 1): while renaming, TabRenameInput REPLACES the whole wrapper and stays a DIRECT
-// child of the tab div — container-type implies layout containment, which would capture the D4
-// fixed overlay's viewport pinning if any new ancestor carried it. The close × moves out of the
-// flex flow to the tab's LEFT edge (CSS-owned, absolute) so its hover reveal never shifts the
-// centered content; in vertical-label mode the hint renders as an UPRIGHT chip (a fixed
-// `--tab-hint-header` header row — barLayout.ts token) above the rotated label.
+// the tab div instead). trmx-163: title + a `tab-strip__trailing` group ([dot][hint]) live in a
+// `tab-strip__content` wrapper — a symmetric 3-column grid whose equal side tracks centre the title
+// pixel-perfectly (the @container size container narrow-drops the hint against it). THE CONTAINMENT
+// CONTRACT (step-5 review finding 1): while renaming, TabRenameInput REPLACES the whole wrapper and
+// stays a DIRECT child of the tab div — container-type implies layout containment, which would
+// capture the D4 fixed overlay's viewport pinning if any new ancestor carried it. The close × is an
+// absolute overlay (CSS-owned) so its hover reveal never shifts the centered content: the tab's LEFT
+// edge on the horizontal strip, the TOP edge (`--vtop`) on the vertical rail. trmx-163: in
+// vertical-label mode the hint renders as an UPRIGHT chip (the `--tab-hint-header` row — barLayout.ts
+// token); the trailing group is the column [dot][chip], bottom-pinned below the rotated label.
 import {
   useEffect,
   useLayoutEffect,
@@ -97,9 +101,10 @@ export interface TabStripProps {
   labelOrientation?: "horizontal" | "vertical";
   /**
    * The strip container's inline style — a plain passthrough seam. The railGeometryFor tokens
-   * (--tab-rail-width / --tab-max-height / --tab-min-height / --tab-close-min) are NOT the
+   * (--tab-max-height / --tab-min-height / --tab-close-min / --tab-hint-header) are NOT the
    * caller's job: TabStrip writes them itself in vertical-label mode (merged OVER this style, so
-   * a caller cannot accidentally shear the geometry off).
+   * a caller cannot accidentally shear the geometry off). trmx-163: the rail WIDTH is no longer a
+   * written token — it is the CSS-owned --tab-bar-thickness (equal to the horizontal strip height).
    */
   style?: CSSProperties;
   onActivate: (tabId: number) => void;
@@ -312,11 +317,12 @@ export function TabStrip({
     const geometry = railGeometryFor(orientation, labelOrientation);
     rootStyle = {
       ...style,
-      "--tab-rail-width": `${geometry.railWidthPx}px`,
+      // trmx-163: --tab-rail-width is retired — the rail width is the CSS-owned --tab-bar-thickness
+      // (28px), so only these four LABEL-LENGTH tokens are written here.
       "--tab-max-height": `${geometry.tabMaxHeightPx}px`,
       "--tab-min-height": `${geometry.tabMinHeightPx}px`,
       "--tab-close-min": `${geometry.closeHitTargetMinPx}px`,
-      // trmx-151: the upright ⌘N chip's fixed header row above the rotated label.
+      // trmx-151/163: the upright ⌘N chip's fixed row (now at the bottom trailing group).
       "--tab-hint-header": `${geometry.hintHeaderPx}px`,
     } as CSSProperties;
   }
@@ -447,48 +453,55 @@ export function TabStrip({
                 onCancel={onRenameCancel}
               />
             ) : (
-              // trmx-151: hint + title as ONE centered flex group — the @container size
-              // container index.css centers and narrow-drops against (never on the tab div).
+              // trmx-163: three zones — the centered TITLE (via the grid, index.css) then a
+              // TRAILING group holding [dot][hint] at the tab's trailing edge; the close × overlays
+              // the leading edge (below). The @container size container lives on THIS wrapper (never
+              // the tab div — the D4 containment contract, trmx-151).
               <span className="tab-strip__content">
-                {hintChord !== null && (
-                  // The visual ⌘N prefix — decorative (aria-hidden; AT gets aria-keyshortcuts
-                  // above); --upright renders it as the rail's fixed header chip (trmx-151).
-                  <span
-                    className={`tab-strip__hint${labelsVertical ? " tab-strip__hint--upright" : ""}`}
-                    aria-hidden="true"
-                  >
-                    {formatChordGlyphs(hintChord)}
-                  </span>
-                )}
-                {/* trmx-82: the writing-mode class rotates the label; the full-text tooltip
-                    stays, and CSS ellipsis still triggers — the inline axis is just vertical
-                    now. trmx-151: text and tooltip stay the BARE title — the hint is a sibling. */}
+                {/* trmx-82: the writing-mode class rotates the label; the full-text tooltip stays
+                    and CSS ellipsis still triggers — the inline axis is just vertical. trmx-151:
+                    text and tooltip stay the BARE title — the hint is a sibling (in the trailing
+                    group). trmx-163: the title comes FIRST so the hint never sits under the close. */}
                 <span
                   className={`tab-strip__title${labelsVertical ? " tab-strip__title--vertical" : ""}`}
                   title={tab.title}
                 >
                   {tab.title}
                 </span>
+                {/* trmx-163: the trailing group — dot then hint (dot leading: left on the
+                    horizontal strip, above the chip on the vertical rail). */}
+                <span className="tab-strip__trailing">
+                  {/* trmx-91 (sub-task G): the subtle activity dot on a BACKGROUND busy tab — now an
+                      IN-FLOW flex item of the trailing group (index.css); aria-hidden +
+                      pointer-events:none so it is inert. Rendered only when `showActivityDot`. */}
+                  {showActivityDot && (
+                    <span
+                      className="tab-strip__activity-dot"
+                      data-testid={`tab-activity-dot-${tab.tabId}`}
+                      aria-hidden="true"
+                    />
+                  )}
+                  {hintChord !== null && (
+                    // The visual ⌘N glyphs — decorative (aria-hidden; AT gets aria-keyshortcuts
+                    // above); --upright renders it as the rail's upright chip (trmx-151).
+                    <span
+                      className={`tab-strip__hint${labelsVertical ? " tab-strip__hint--upright" : ""}`}
+                      aria-hidden="true"
+                    >
+                      {formatChordGlyphs(hintChord)}
+                    </span>
+                  )}
+                </span>
               </span>
-            )}
-            {/* trmx-91 (sub-task G): the subtle activity dot on a BACKGROUND busy tab. Absolutely
-                positioned (the tab is the containing block — index.css) so it never reflows the
-                label or the close ×; aria-hidden + pointer-events:none so it is inert (it can never
-                intercept the tab's activate/close). Rendered only when `showActivityDot`. */}
-            {showActivityDot && (
-              <span
-                className="tab-strip__activity-dot"
-                data-testid={`tab-activity-dot-${tab.tabId}`}
-                aria-hidden="true"
-              />
             )}
             {/* Always in the DOM (CSS reveals it on hover); both the pointer sequence and the
                 click stop at the button so closing never drags/activates the tab under it. */}
             <button
               type="button"
-              // trmx-82: in vertical-label mode the × sits at the tab's END (the column's bottom)
-              // with the ≥24px token hit target — the modifier class keys both (index.css).
-              className={`tab-strip__close${labelsVertical ? " tab-strip__close--end" : ""}`}
+              // trmx-163: in vertical-label mode the × is an absolute TOP overlay (mirrors the
+              // horizontal strip's left overlay) with the ≥24px token hit target — the --vtop
+              // modifier keys the position; hover-reveal is inherited from the base class (index.css).
+              className={`tab-strip__close${labelsVertical ? " tab-strip__close--vtop" : ""}`}
               data-testid={`tab-close-${tab.tabId}`}
               aria-label={`Close ${tab.title}`}
               onPointerDown={(e) => e.stopPropagation()}

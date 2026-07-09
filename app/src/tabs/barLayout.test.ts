@@ -83,24 +83,26 @@ describe("labelOrientationFor (trmx-82)", () => {
 
 // trmx-82: the rail-geometry tokens. Only the vertical rail WITH vertical labels gets the
 // narrow-rail tokens (the ONE combination consumed at runtime — TabStrip writes them, the
-// labels-vertical CSS reads them); everything else is the trmx-81 status quo (railWidthPx 180;
-// the 34px strip/row height and the 16px close square), kept as REFERENCE data for totality —
-// index.css hardcodes those numbers itself and no rule consumes them as vars.
-// trmx-151 adds hintHeaderPx — the upright ⌘N chip's fixed header row atop the rotated label: 0
-// outside vertical-label mode (horizontal hints sit inline, no header), 20 in it; the min/max
+// labels-vertical CSS reads them); everything else is the trmx-81 status quo (the 28px strip/row
+// height and the 16px close square), kept as REFERENCE data for totality — index.css hardcodes
+// those numbers itself and no rule consumes them as vars.
+// trmx-163: `railWidthPx` is RETIRED — the rail width is now the CSS-owned `--tab-bar-thickness`
+// (28px, equal to the horizontal strip height by construction), no longer a barLayout token; the
+// strip/row reference height drops 34→28 to match.
+// trmx-151 adds hintHeaderPx — the upright ⌘N chip's fixed row (trmx-163: at the BOTTOM of the
+// trailing group, below the rotated label): 0 outside vertical-label mode (horizontal hints sit
+// inline, no chip row), 20 in it; the min/max
 // heights grow by exactly that 20 (60→80, 180→200) so the LABEL's own budget is preserved.
 describe("railGeometryFor (trmx-82)", () => {
   const STATUS_QUO = {
-    railWidthPx: 180,
-    tabMaxHeightPx: 34,
-    tabMinHeightPx: 34,
+    tabMaxHeightPx: 28,
+    tabMinHeightPx: 28,
     closeHitTargetMinPx: 16,
     hintHeaderPx: 0,
   };
 
-  it("vertical rail + vertical labels → the narrow rail (44) with tall-tab tokens", () => {
+  it("vertical rail + vertical labels → the narrow rail with tall-tab tokens", () => {
     expect(railGeometryFor("vertical", "vertical")).toEqual({
-      railWidthPx: 44,
       tabMaxHeightPx: 200,
       tabMinHeightPx: 80,
       closeHitTargetMinPx: 24,
@@ -113,7 +115,8 @@ describe("railGeometryFor (trmx-82)", () => {
   });
 
   it("horizontal strips return the status-quo tokens regardless of the label orientation", () => {
-    // railWidthPx is irrelevant on a horizontal strip — reference data only, never written.
+    // The height/close tokens are reference data on a horizontal strip — never written; the rail
+    // width is no longer a token at all (trmx-163: CSS-owned --tab-bar-thickness).
     expect(railGeometryFor("horizontal", "horizontal")).toEqual(STATUS_QUO);
     expect(railGeometryFor("horizontal", "vertical")).toEqual(STATUS_QUO);
   });

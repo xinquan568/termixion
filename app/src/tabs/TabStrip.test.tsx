@@ -540,7 +540,7 @@ describe("TabStrip rename (trmx-75)", () => {
 // trmx-82 (FR-2.3): vertical labels on the side rail. Vertical-label mode is the AND of
 // orientation="vertical" and labelOrientation="vertical": the root gains
 // `tab-strip--labels-vertical`, the label span the writing-mode class, the close × moves to the
-// tab's END (with the token hit target), and the rename input becomes a FIXED overlay anchored to
+// tab's TOP (trmx-163: --vtop absolute overlay, with the token hit target), and the rename input becomes a FIXED overlay anchored to
 // the renaming tab's rect (D4) — horizontal text, wider than the rail, still inside the tab's DOM
 // subtree with the trmx-75 commit/cancel/latch semantics untouched. jsdom has no layout, so the
 // geometry itself (writing-mode, min-width, fixed clipping) is pinned structurally: classes +
@@ -560,12 +560,14 @@ describe("TabStrip vertical labels (trmx-82)", () => {
   // The D2 geometry ownership (review round): TabStrip — the one component that knows BOTH
   // orientation and labelOrientation — writes the railGeometryFor tokens itself, so index.css can
   // consume the vars with NO fallbacks (they can never be absent in vertical-label mode).
-  // trmx-151: a FIFTH token (--tab-hint-header, the upright chip's 20px header row) joins the
-  // set, and the height bounds carry the +20 header (min 60→80, max 180→200 — barLayout.ts).
-  it("owns the D2 geometry: vertical-label mode writes all five token vars on the root", () => {
+  // trmx-151: --tab-hint-header (the upright chip's 20px header row) joins the set, and the height
+  // bounds carry the +20 header (min 60→80, max 180→200 — barLayout.ts).
+  // trmx-163: --tab-rail-width is RETIRED — the rail width is the CSS-owned --tab-bar-thickness now,
+  // so TabStrip writes only FOUR geometry vars in vertical-label mode.
+  it("owns the D2 geometry: vertical-label mode writes the four token vars on the root", () => {
     renderStrip({ orientation: "vertical", labelOrientation: "vertical" });
     const strip = screen.getByTestId("tab-strip");
-    expect(strip.style.getPropertyValue("--tab-rail-width")).toBe("44px");
+    expect(strip.style.getPropertyValue("--tab-rail-width")).toBe(""); // trmx-163: retired, never written
     expect(strip.style.getPropertyValue("--tab-max-height")).toBe("200px");
     expect(strip.style.getPropertyValue("--tab-min-height")).toBe("80px");
     expect(strip.style.getPropertyValue("--tab-close-min")).toBe("24px");
@@ -574,7 +576,6 @@ describe("TabStrip vertical labels (trmx-82)", () => {
 
   it("writes NO geometry vars outside vertical-label mode (those layouts are CSS-owned)", () => {
     const vars = [
-      "--tab-rail-width",
       "--tab-max-height",
       "--tab-min-height",
       "--tab-close-min",
@@ -599,14 +600,16 @@ describe("TabStrip vertical labels (trmx-82)", () => {
     });
     const strip = screen.getByTestId("tab-strip");
     expect(strip.style.opacity).toBe("0.5"); // the caller's style still lands…
-    expect(strip.style.getPropertyValue("--tab-rail-width")).toBe("44px"); // …under the tokens
+    expect(strip.style.getPropertyValue("--tab-close-min")).toBe("24px"); // …under the tokens
   });
 
-  it("moves the close × to the tab's END with the hit-target class", () => {
+  it("moves the close × to the tab's TOP (leading edge) with the hit-target class", () => {
     renderStrip({ orientation: "vertical", labelOrientation: "vertical" });
     const close = screen.getByTestId("tab-close-1");
-    expect(close.className).toBe("tab-strip__close tab-strip__close--end");
-    // Title first, × LAST in the tab's column — the CSS column direction lands it at the bottom.
+    // trmx-163: the close is an absolute TOP overlay in vertical-label mode (mirrors the horizontal
+    // strip's left overlay) — the --vtop modifier keys the position; it stays the last DOM child but
+    // its DOM order no longer determines where it paints (it's out of flow).
+    expect(close.className).toBe("tab-strip__close tab-strip__close--vtop");
     expect(screen.getByTestId("tab-1").lastElementChild).toBe(close);
   });
 
@@ -656,7 +659,7 @@ describe("TabStrip vertical labels (trmx-82)", () => {
 
     const input = screen.getByTestId("tab-rename-input") as HTMLInputElement;
     // The overlay class carries position:fixed, the horizontal writing-mode reset, the z-index,
-    // and a min-width WIDER than the 44px rail (index.css) — so the input never renders rotated
+    // and a min-width WIDER than the 28px rail (index.css) — so the input never renders rotated
     // or clipped inside the slim tab.
     expect(input.className).toBe("tab-strip__rename tab-strip__rename--overlay");
     // Anchored at the tab's rect, in viewport coordinates (the strip has no transform).
@@ -747,15 +750,35 @@ describe("TabStrip shortcut hints (trmx-151)", () => {
     expect(title.querySelector(".tab-strip__hint")).toBeNull(); // sibling, never nested
   });
 
-  it("wraps hint + title in the content wrapper (hint first)", () => {
+  it("wraps title then trailing group in the content wrapper (title first, hint trailing)", () => {
+    // trmx-163: the title comes FIRST; the ⌘N hint moves to a trailing group at the tab's trailing
+    // edge (right on the horizontal strip) — never the leading side where the close × reveals.
     renderStrip({ keymap: DEFAULT_KEYMAP });
     const tabEl = screen.getByTestId("tab-1");
     const content = tabEl.querySelector(".tab-strip__content")!;
     expect(content).not.toBeNull();
     expect(content.parentElement).toBe(tabEl);
     const children = [...content.children].map((c) => c.className);
-    expect(children[0]).toContain("tab-strip__hint");
-    expect(children[1]).toContain("tab-strip__title");
+    expect(children[0]).toContain("tab-strip__title");
+    expect(children[1]).toContain("tab-strip__trailing");
+    // the hint lives INSIDE the trailing group, not as a direct child of the content wrapper
+    const trailing = content.querySelector(".tab-strip__trailing")!;
+    expect(trailing.querySelector(".tab-strip__hint")).not.toBeNull();
+  });
+
+  it("orders the trailing group [dot][hint] (dot leading) inside the content wrapper", () => {
+    // trmx-163 (gap-1): a busy BACKGROUND tab shows the activity dot just LEFT of the hint; both sit
+    // in the trailing group, dot first. tab 1 busy, tab 2 active → tab 1 is a busy background tab.
+    renderStrip({
+      keymap: DEFAULT_KEYMAP,
+      activeTabId: 2,
+      tabs: [tab(1, "Shell", { busy: true }), tab(2, "vim"), tab(3, "build")],
+    });
+    const content = screen.getByTestId("tab-1").querySelector(".tab-strip__content")!;
+    const trailing = content.querySelector(".tab-strip__trailing")!;
+    expect(trailing).not.toBeNull();
+    expect(trailing.children[0].className).toContain("tab-strip__activity-dot");
+    expect(trailing.children[1].className).toContain("tab-strip__hint");
   });
 
   it("renders NO hints anywhere when shortcutHintsOn is false", () => {
@@ -825,10 +848,12 @@ describe("TabStrip shortcut hints (trmx-151)", () => {
     const title = screen.getByTestId("tab-1").querySelector(".tab-strip__title--vertical")!;
     expect(title).not.toBeNull();
     expect(title.contains(hint)).toBe(false);
-    // Both live in the (column) content wrapper, chip first (the header row above the label).
+    // trmx-163: the title is FIRST in the (column) content wrapper; the upright chip now sits in the
+    // trailing group at the tab's BOTTOM (grouped with the activity dot), no longer a top header row.
     const content = screen.getByTestId("tab-1").querySelector(".tab-strip__content")!;
-    expect(content.firstElementChild).toBe(hint);
-    expect(content.contains(title)).toBe(true);
+    expect(content.firstElementChild).toBe(title);
+    const trailing = content.querySelector(".tab-strip__trailing")!;
+    expect(trailing.contains(hint)).toBe(true);
   });
 
   it("horizontal strips carry NO upright modifier", () => {
@@ -864,14 +889,34 @@ describe("tab-strip CSS contract (trmx-151)", () => {
     expect(ruleBody(".tab-strip__tab")).not.toMatch(/container-type|contain\s*:/);
   });
 
-  it("centers the wrapped content (justify-content: center on the wrapper)", () => {
-    expect(ruleBody(".tab-strip__content")).toMatch(/justify-content:\s*center/);
+  it("centers the title pixel-perfectly via a symmetric 3-column grid (trmx-163)", () => {
+    // trmx-163: the content wrapper is a grid with two EQUAL minmax(0,1fr) side tracks around a
+    // minmax(0,auto) middle — the title (col 2) is centred to the tab's true midpoint regardless of
+    // the trailing group's width; the trailing group (col 3) pins to the trailing edge.
+    const content = ruleBody(".tab-strip__content");
+    expect(content).toMatch(/display:\s*grid/);
+    expect(content).toMatch(
+      /grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(0,\s*auto\)\s+minmax\(0,\s*1fr\)/,
+    );
+    expect(ruleBody(".tab-strip__title")).toMatch(/grid-column:\s*2/);
+    const trailing = ruleBody(".tab-strip__trailing");
+    expect(trailing).toMatch(/grid-column:\s*3/);
+    expect(trailing).toMatch(/justify-self:\s*end/);
   });
 
-  it("keeps the title shrink-only so the centering holds (no flex-grow land-grab)", () => {
-    // A grow-1 title (the pre-151 fill-to-the-close-slot layout) would consume the free space
-    // and pin the text left — the wrapper's justify-content could never center it.
-    expect(ruleBody(".tab-strip__title")).toMatch(/flex:\s*0\s+1\s+auto/);
+  it("keeps the title a shrinkable, centered grid item (trmx-163)", () => {
+    // As a grid item the title centres its text and shrinks to ellipsis under squeeze (min-width:0),
+    // no flex-grow land-grab needed — the equal side tracks do the centering.
+    const title = ruleBody(".tab-strip__title");
+    expect(title).toMatch(/text-align:\s*center/);
+    expect(title).toMatch(/min-width:\s*0/);
+  });
+
+  it("shares one --tab-bar-thickness token for strip height AND vertical-rail width (trmx-163)", () => {
+    // The bar has ONE thickness: the horizontal strip height and the vertical-label rail width both
+    // resolve to var(--tab-bar-thickness), so they are equal BY CONSTRUCTION (28px).
+    expect(ruleBody(".tab-strip")).toMatch(/height:\s*var\(--tab-bar-thickness\)/);
+    expect(ruleBody(".tab-strip--labels-vertical")).toMatch(/width:\s*var\(--tab-bar-thickness\)/);
   });
 
   it("drops the WHOLE hint prefix inside a narrow (≤90px) tab via a container query", () => {
@@ -879,21 +924,41 @@ describe("tab-strip CSS contract (trmx-151)", () => {
       /@container\s*\(max-width:\s*90px\)\s*\{\s*\.tab-strip__hint\s*\{[^}]*display:\s*none/,
     );
     // …and the upright rail chip wins by GENUINE specificity, not source order (step-8 review):
-    // the compound selector's (0,2,0) outranks the drop rule's (0,1,0). The 44px rail is always
+    // the compound selector's (0,2,0) outranks the drop rule's (0,1,0). The 28px rail is always
     // "narrow" but the header row is designed exactly for it.
     expect(ruleBody(".tab-strip__hint.tab-strip__hint--upright")).toMatch(/display:\s*/);
   });
 
-  it("anchors the close × absolutely at the tab's LEFT edge (the reveal never shifts content)", () => {
+  it("anchors the close × as an absolute overlay: LEFT on horizontal, TOP on the vertical rail", () => {
     const close = ruleBody(".tab-strip__close");
     expect(close).toMatch(/position:\s*absolute/);
     expect(close).toMatch(/left:\s*6px/);
     expect(close).toMatch(/top:\s*50%/);
     expect(close).toMatch(/translateY\(-50%\)/);
-    // The vertical-label END close resets back into the column flow (its pre-151 geometry).
-    const end = ruleBody(".tab-strip__close--end");
-    expect(end).toMatch(/position:\s*static/);
-    expect(end).toMatch(/margin-top:\s*auto/);
+    // trmx-163: in vertical-label mode the close is an absolute TOP overlay (mirrors the horizontal
+    // left overlay) — NOT the pre-163 static/margin-top:auto bottom-of-column close.
+    const vtop = ruleBody(".tab-strip__close--vtop");
+    expect(vtop).toMatch(/top:\s*6px/);
+    expect(vtop).toMatch(/left:\s*50%/);
+    expect(vtop).toMatch(/translateX\(-50%\)/);
+    expect(vtop).not.toMatch(/position:\s*static/);
+  });
+
+  it("keeps the vertical [dot][hint] trailing group pinned to the tab's BOTTOM (trmx-163)", () => {
+    const trailing = ruleBody(".tab-strip--labels-vertical .tab-strip__trailing");
+    expect(trailing).toMatch(/flex-direction:\s*column/); // dot above chip
+    expect(trailing).toMatch(/margin-top:\s*auto/); // pushed to the bottom of the column
+  });
+
+  it("makes the activity dot an in-flow flex item, not an absolute overlay (trmx-163)", () => {
+    // The dot moved into the trailing group; it must be in-flow (flex:none) with none of its old
+    // absolute anchors, or the [dot][hint] order test would pass while it painted elsewhere.
+    const dot = ruleBody(".tab-strip__activity-dot");
+    expect(dot).toMatch(/flex:\s*none/);
+    expect(dot).not.toMatch(/position:\s*absolute/);
+    expect(dot).not.toMatch(/\b(top|right|transform)\s*:/);
+    // …and the pre-163 hover-hide rule is gone (nothing competes for that corner now).
+    expect(indexCss).not.toMatch(/\.tab-strip__tab:hover\s+\.tab-strip__activity-dot/);
   });
 
   it("themes the hint via var(--tx-text-2) with ZERO new color literals", () => {

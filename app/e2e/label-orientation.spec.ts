@@ -7,16 +7,16 @@
 // `?setting.tabs.sideLabelOrientation=<o>` (trmx-82) — the packaged app never reaches that path.
 //
 // Covered here (the browser-level half; jsdom can't do real layout/writing-mode/fixed anchoring):
-// - left + vertical: both strip modifier classes, the 44px rail token (the inline
-//   --tab-rail-width var TabStrip owns AND the real boundingBox), rotated label spans on every
-//   tab, and the token bounds as real OUTER heights (60–180px border-box rows — padding must
-//   never push a row past the max token);
+// - left + vertical: both strip modifier classes, the slim 28px rail (trmx-163: the CSS-owned
+//   --tab-bar-thickness — equal to the horizontal strip height — verified via the real boundingBox;
+//   --tab-rail-width is retired), rotated label spans on every tab, and the token bounds as real
+//   OUTER heights (60–180px border-box rows — padding must never push a row past the max token);
 // - the core tab flows survive vertical-label mode: activate by click, y-axis drag reorder past
 //   the neighbor's midpoint, the synthetic ⌘-digit chord (the trmx-81 pattern — real ⌘ chords
 //   are browser-owned and flaky in the dev server, so KeyboardEvents are dispatched on `window`,
 //   where App's capture-phase keymap listens), close via ×;
 // - the D4 rename overlay on a SCROLLED rail: position:fixed with inline left/top, wider than
-//   the slim rail (never clipped by the 44px column), commit on Enter;
+//   the slim rail (never clipped by the 28px column), commit on Enter;
 // - the applicability gate: a TOP bar ignores a vertical setting (labelOrientationFor forces
 //   horizontal — no vertical-label class, NO geometry vars: the status-quo layout is CSS-owned);
 // - the Settings surface: the Appearance page's Orientation row is aria-disabled with the hint
@@ -48,7 +48,7 @@ function dispatchMetaChord(page: Page, key: string, shiftKey = false) {
   );
 }
 
-test("left bar + vertical setting: both modifier classes, the 44px rail, rotated labels on every tab", async ({
+test("left bar + vertical setting: both modifier classes, the 28px rail, rotated labels on every tab", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 900, height: 600 });
@@ -60,15 +60,16 @@ test("left bar + vertical setting: both modifier classes, the 44px rail, rotated
   await expect(strip).toHaveClass(/tab-strip--labels-vertical/);
 
   // The railGeometryFor tokens land as CSS custom properties on the strip's INLINE style
-  // (TabStrip owns and writes them in vertical-label mode)…
-  expect(await strip.evaluate((el) => el.style.getPropertyValue("--tab-rail-width"))).toBe(
-    "44px",
-  );
-  // …and the rail actually renders slim: ≈44px (±2 — the divider border is content-box-outside).
+  // (TabStrip owns and writes them in vertical-label mode); trmx-163 retired --tab-rail-width, so
+  // the surviving --tab-hint-header is the end-to-end signal here…
+  expect(await strip.evaluate((el) => el.style.getPropertyValue("--tab-hint-header"))).toBe("20px");
+  expect(await strip.evaluate((el) => el.style.getPropertyValue("--tab-rail-width"))).toBe("");
+  // …and the rail actually renders slim: ≈28px (±2 — the shared --tab-bar-thickness, equal to the
+  // horizontal strip height; the divider border is content-box-outside).
   const box = (await strip.boundingBox())!;
   expect(box).not.toBeNull();
-  expect(box.width).toBeGreaterThanOrEqual(42);
-  expect(box.width).toBeLessThanOrEqual(46);
+  expect(box.width).toBeGreaterThanOrEqual(26);
+  expect(box.width).toBeLessThanOrEqual(30);
   // Still pinned to the LEFT window edge (the trmx-81 flex trick is untouched by label mode).
   expect(box.x).toBeLessThanOrEqual(1);
 
@@ -125,7 +126,7 @@ test("core flows survive vertical labels: click-activate, y-drag reorder, synthe
   await expect(page.getByTestId("tab-2")).toHaveClass(ACTIVE);
 
   // trmx-151: on the vertical rail the ⌘N prefix renders as the UPRIGHT chip (horizontal text,
-  // outside the rotated writing-mode span) and stays visible despite the 44px rail being narrower
+  // outside the rotated writing-mode span) and stays visible despite the 28px rail being narrower
   // than the horizontal-drop threshold.
   const railHint = page.getByTestId("tab-1").locator(".tab-strip__hint");
   await expect(railHint).toHaveText("⌘1");
@@ -188,7 +189,7 @@ test("rename on a SCROLLED rail: the D4 fixed overlay is wider than the rail and
   await expect.poll(() => strip.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
 
   // Double-click a mid-rail tab: the rename input is the FIXED overlay, anchored to the tab's
-  // viewport rect measured at rename start (inline left/top), NOT squeezed into the 44px column.
+  // viewport rect measured at rename start (inline left/top), NOT squeezed into the 28px column.
   const target = page.getByTestId("tab-6");
   await target.scrollIntoViewIfNeeded();
   await target.dblclick();
@@ -223,8 +224,9 @@ test("a TOP bar ignores the vertical setting: horizontal labels enforced, status
   await expect(strip).not.toHaveClass(/tab-strip--labels-vertical/);
   await expect(page.locator(".tab-strip__title--vertical")).toHaveCount(0);
   // labelOrientationFor forced horizontal → NOT vertical-label mode, so TabStrip writes no
-  // geometry vars at all: the horizontal strip's layout is a CSS-owned constant.
-  expect(await strip.evaluate((el) => el.style.getPropertyValue("--tab-rail-width"))).toBe("");
+  // geometry vars at all: the horizontal strip's layout is a CSS-owned constant. (trmx-163:
+  // --tab-hint-header is a surviving written token — absent here proves no vertical-label geometry.)
+  expect(await strip.evaluate((el) => el.style.getPropertyValue("--tab-hint-header"))).toBe("");
 });
 
 test("Settings surface: the Orientation row is aria-disabled with the hint on the default bottom bar", async ({
