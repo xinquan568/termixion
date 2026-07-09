@@ -677,15 +677,16 @@ body {
 }
 /*
  * trmx-82 (FR-2.3) — vertical labels on the side rail (`tab-strip--labels-vertical`, only ever
- * set together with --vertical). The LABEL-LENGTH geometry comes from the railGeometryFor CSS
- * custom properties, consumed as BARE variables — NO numeric fallbacks: barLayout.ts is the single
- * source of the row heights (60–180px rows) and the ≥24px close target, and TabStrip writes the
- * vars on the same root it puts this class on, so they can never be absent here. trmx-163: the rail
- * WIDTH is the shared --tab-bar-thickness (28px, equal to the horizontal strip height), NOT a rail
- * token. Tabs become tall-and-narrow columns: natural height by label length between the min/max
- * tokens (border-box — the tokens bound the OUTER row, padding lives inside them), the label
- * rotated via writing-mode, the close × an absolute TOP overlay (leading edge). The + button needs
- * no override — it is already a full-width rail row.
+ * set together with --vertical). The sub-tab geometry (the ≥24px close target and the reserved
+ * hint/close rows) comes from the railGeometryFor CSS custom properties, consumed as BARE variables
+ * — NO numeric fallbacks: barLayout.ts is the single source, and TabStrip writes the vars on the
+ * same root it puts this class on, so they can never be absent here. trmx-163: the rail WIDTH is the
+ * shared --tab-bar-thickness (28px, equal to the horizontal strip height). trmx-169: the tab HEIGHT
+ * is the CSS-owned FIXED length calc(--tab-length + --tab-close-header) ≈ 204px (below) — a single
+ * uniform length, NOT a min/max range that grew with the label. Tabs are tall-and-narrow columns:
+ * the label rotated via writing-mode (clipping with an ellipsis within its row), the close × an
+ * absolute TOP overlay (leading edge). The + button needs no override — it is already a full-width
+ * rail row.
  */
 .tab-strip--labels-vertical {
   width: var(--tab-bar-thickness);
