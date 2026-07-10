@@ -5,7 +5,31 @@ The user-facing changes to Termixion are documented here. The format follows
 [Semantic Versioning](https://semver.org). Auto-generated from Conventional Commits by git-cliff;
 internal changes (build / CI / tests / refactors / docs) live in the git history and the linked issues.
 
-## [0.0.9] - 2026-07-06
+## [0.1.0] - 2026-07-10
+
+### Added
+- Confirm before closing a busy pane/tab or quitting (trmx-144) (#147)
+- Handle --version/--help before the GUI launches (trmx-146) (#152)
+- ITerm2-style tab bar — centered content, ⌘1–⌘9 prefixes (trmx-151) (#155)
+- Light the indicator only while a program executes user work (trmx-159) (#161)
+- Clone iTerm2's indeterminate progress bar for the activity line (trmx-160) (#162)
+- Refine tab bar toward iTerm2 — 28px thickness, top close, trailing ⌘N hint, centered title (trmx-163) (#164)
+- Move theme Duplicate to a right-click context menu (trmx-171) (#172)
+
+### Fixed
+- Route clipboard writes through the native pasteboard (trmx-145) (#150)
+- Open the config file backend-side, surface failures (trmx-148) (#153)
+- Match iTerm2's badge exactly — red, fit-to-box, Helvetica bold (trmx-149) (#154)
+- Default badge color pink #ff8da1, not red (trmx-149) (#156)
+- Give login shells a UTF-8 locale when the environment has none (trmx-145) (#157)
+- Render the per-pane badge text at 50% opacity (trmx-149) (#158)
+- Reserve a top gutter for the close × and centre the title on the vertical-label rail (trmx-165) (#167)
+- Pin a manual tab rename at tab scope so it survives pane focus/splits (trmx-166) (#168)
+- Size the vertical-label tab height to the horizontal tab length so rotated titles are readable (trmx-169) (#170)
+- Apply --tx-* vars in the main window so the tab bar recolors on theme switch (trmx-173) (#174)
+- Segment the active pane border to the focused pane's span (trmx-175) (#176)
+
+## [0.0.9] - 2026-07-07
 
 ### Added
 - Grapheme-cluster Unicode correctness + conformance group (trmx-97) (#128)
