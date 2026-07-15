@@ -403,6 +403,42 @@ mod tests {
         );
     }
 
+    /// The trmx-179 sibling of the trmx-37 guard above: a login-shell spec carries
+    /// `COLORTERM=truecolor` all the way to the child through a real PTY. The pre-spawn assert
+    /// on `login.env` is load-bearing: portable-pty only overrides keys present in `spec.env`,
+    /// so on a parent that already exports `COLORTERM=truecolor` (iTerm2/Kitty — or Termixion
+    /// itself) a reverted push would leak the parent's value through, and the child-output
+    /// assert alone would pass spuriously.
+    #[test]
+    fn login_shell_colorterm_reaches_child_through_real_pty() {
+        let login = SessionSpec::login_shell();
+        assert!(
+            login
+                .env
+                .iter()
+                .any(|(k, v)| k == "COLORTERM" && v == "truecolor"),
+            "login_shell() must push COLORTERM=truecolor into spec.env; got: {:?}",
+            login.env
+        );
+
+        // Same env as the production login shell, but a child that prints $COLORTERM and exits.
+        let mut spec = SessionSpec::shell("/bin/sh");
+        spec.args.push("-c".into());
+        spec.args
+            .push("printf 'COLORTERM=[%s]' \"$COLORTERM\"".into());
+        spec.env = login.env;
+
+        let factory = UnixPtyFactory;
+        let mut backend = factory
+            .spawn(&spec, PtySize::new(24, 80))
+            .expect("spawn sh");
+        let out = drain(&mut *backend);
+        assert!(
+            out.contains("COLORTERM=[truecolor]"),
+            "the login shell must export COLORTERM=truecolor to the child; got: {out:?}"
+        );
+    }
+
     /// The split output reader (ADR-0001 streaming) reads real PTY output on its own, can only be
     /// taken once, and leaves the control side (kill) working.
     #[test]
