@@ -86,6 +86,17 @@ pub struct SessionSpec {
 /// implements — the same value VS Code, Hyper, and other xterm.js front-ends export.
 pub const DEFAULT_TERM: &str = "xterm-256color";
 
+/// The color-depth advertisement Termixion exports to the child shell via `COLORTERM` (trmx-179).
+/// The emulator (xterm.js 5.5) renders 24-bit truecolor exactly — pinned by the trmx-64
+/// conformance harness — but [`DEFAULT_TERM`]'s terminfo entry carries no `RGB` capability, so
+/// without this variable color-depth auto-detection in child programs (nvim's `termguicolors`,
+/// `bat`, `delta`, the `supports-color` family) downgrades output to the 256-color palette.
+/// `COLORTERM=truecolor` is the de facto advertising convention — iTerm2, Kitty, and VS Code's
+/// terminal all export it. (Switching `TERM` to `xterm-direct`, the terminfo-pure alternative,
+/// was rejected: its palette-capability differences break real applications; mainstream
+/// terminals stay on `xterm-256color` + `COLORTERM`.)
+pub const DEFAULT_COLORTERM: &str = "truecolor";
+
 /// The `LANG` a login shell is given when the inherited environment carries **no locale at all**
 /// (trmx-145). A GUI launch (Finder / the `.app` bundle under `launchd`) inherits none of
 /// `LANG`/`LC_ALL`/`LC_CTYPE`, leaving the child shell in the C locale — where zsh's line editor
@@ -119,12 +130,18 @@ impl SessionSpec {
     /// layers `spec.env` over the inherited environment): the inherited value describes whatever
     /// terminal Termixion runs *in*, not the xterm.js surface Termixion presents to its child.
     ///
+    /// Sets `COLORTERM` to [`DEFAULT_COLORTERM`] so color-depth auto-detection in child
+    /// programs sees the 24-bit surface the emulator actually renders (trmx-179). Forced like
+    /// `TERM`, and for the same reason: an inherited `COLORTERM` describes whatever terminal
+    /// Termixion runs *in*, never the xterm.js surface Termixion presents to its child — and
+    /// that surface always renders truecolor, so the only honest value is unconditional.
+    ///
     /// Sets `LANG` to [`DEFAULT_UTF8_LANG`] **only when the inherited environment carries no
     /// locale at all** (`LANG`, `LC_ALL`, and `LC_CTYPE` all unset or empty — the GUI-launch
     /// state, trmx-145). An explicit value in any of the three — even `C` — is user/process
     /// configuration and is respected as-is (POSIX precedence for the input-rendering symptom:
     /// `LC_ALL` > `LC_CTYPE` > `LANG`), so an explicitly non-UTF-8 environment keeps its
-    /// behavior. Unlike `TERM`, this never overrides an inherited value.
+    /// behavior. Unlike `TERM` and `COLORTERM`, this never overrides an inherited value.
     pub fn login_shell() -> Self {
         Self::login_shell_with_env(|key| std::env::var_os(key))
     }
@@ -138,6 +155,10 @@ impl SessionSpec {
         }));
         spec.env
             .push((OsString::from("TERM"), OsString::from(DEFAULT_TERM)));
+        spec.env.push((
+            OsString::from("COLORTERM"),
+            OsString::from(DEFAULT_COLORTERM),
+        ));
         if locale_is_absent(&env) {
             spec.env
                 .push((OsString::from("LANG"), OsString::from(DEFAULT_UTF8_LANG)));
@@ -381,6 +402,40 @@ mod tests {
                 spec.env
             );
         }
+    }
+
+    #[test]
+    fn login_shell_advertises_truecolor_colorterm() {
+        // trmx-179: the emulator renders 24-bit truecolor exactly (pinned by the trmx-64
+        // conformance harness), but TERM=xterm-256color's terminfo carries no RGB capability —
+        // so without COLORTERM, color-depth auto-detection in child programs (nvim's
+        // termguicolors, bat, delta, the supports-color family) downgrades to the 256 palette.
+        let spec = SessionSpec::login_shell_with_env(env_from(&[("SHELL", "/bin/zsh")]));
+        assert_eq!(
+            env_value(&spec, "COLORTERM"),
+            Some(OsString::from("truecolor")),
+            "a login shell must advertise COLORTERM=truecolor; got env {:?}",
+            spec.env
+        );
+        assert_eq!(
+            env_value(&spec, "TERM"),
+            Some(OsString::from(DEFAULT_TERM)),
+            "the trmx-37 TERM contract must be unaffected"
+        );
+
+        // An inherited COLORTERM — even another spelling — is overridden, exactly like TERM:
+        // the inherited value describes the terminal Termixion runs *in*, never the xterm.js
+        // surface it presents to its child.
+        let spec = SessionSpec::login_shell_with_env(env_from(&[
+            ("SHELL", "/bin/zsh"),
+            ("COLORTERM", "24bit"),
+        ]));
+        assert_eq!(
+            env_value(&spec, "COLORTERM"),
+            Some(OsString::from("truecolor")),
+            "an inherited COLORTERM must be overridden (forced, like TERM); got env {:?}",
+            spec.env
+        );
     }
 
     #[test]
