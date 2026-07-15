@@ -45,6 +45,37 @@ describe("writeClipboardText (the native IPC sink)", () => {
     });
     expect(() => writeClipboardText("x")).not.toThrow();
   });
+
+  // trmx-180: the swallow stays (a clipboard set must never surface as a terminal error), but it
+  // is no longer SILENT — a debug line makes a dead IPC path diagnosable from the field.
+  it("a rejected write logs at debug level (still swallowed)", async () => {
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
+    const err = new Error("denied");
+    writeTextMock.mockRejectedValue(err);
+    writeClipboardText("x");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(debugSpy).toHaveBeenCalledWith("[termixion] clipboard write failed:", err);
+    debugSpy.mockRestore();
+  });
+
+  it("a synchronous throw logs at debug level (still swallowed)", () => {
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
+    const err = new Error("window.__TAURI_INTERNALS__ is undefined");
+    writeTextMock.mockImplementation(() => {
+      throw err;
+    });
+    writeClipboardText("x");
+    expect(debugSpy).toHaveBeenCalledWith("[termixion] clipboard write failed:", err);
+    debugSpy.mockRestore();
+  });
+
+  it("a successful write logs nothing", async () => {
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
+    writeClipboardText("x");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(debugSpy).not.toHaveBeenCalled();
+    debugSpy.mockRestore();
+  });
 });
 
 describe("one-sink identity (trmx-95 invariant, write side)", () => {

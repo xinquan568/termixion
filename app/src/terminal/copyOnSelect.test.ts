@@ -5,6 +5,13 @@
 // pointerup), never on mid-drag ticks; empty never clobbers; dedup; keyboard debounce; a gesture that
 // didn't change the selection copies nothing (no stale re-copy); cancel/blur aborts. Plus the ⌘C
 // byte-equality anchor. Uses a controllable fake `schedule` — deterministic, no real timers.
+//
+// trmx-180 (reliability review, test-first): the dedup latch is BOUNDED — reset by a fresh gesture
+// and expired by a time window — so re-selecting the same text after the pasteboard changed
+// elsewhere always lands; the release event order {pointerup, lostpointercapture} is tolerated
+// both ways (capture loss is a SOFT abort a same-turn release cancels); the deferred copy falls
+// back to the release-time text when streaming reflow clears the selection in the gap. A fake
+// `now` clock drives the dedup window.
 import { describe, expect, it, vi } from "vitest";
 import { attachCopyOnSelect, createCopyOnSelect, type Schedule } from "./copyOnSelect";
 import { handleCopyEvent, selectionText, type ClipboardEventLike } from "./clipboard";
@@ -35,8 +42,9 @@ function fakeSchedule() {
   };
 }
 
-function harness() {
+function harness(opts: { dedupWindowMs?: number } = {}) {
   let selection = "";
+  let clock = 0; // trmx-180: fake time for the dedup window — no real timers
   const writeClipboard = vi.fn<(t: string) => void>();
   const sched = fakeSchedule();
   const machine = createCopyOnSelect({
@@ -44,6 +52,8 @@ function harness() {
     hasSelection: () => selection !== "",
     writeClipboard,
     schedule: sched.schedule,
+    now: () => clock,
+    dedupWindowMs: opts.dedupWindowMs,
   });
   return {
     machine,
@@ -52,6 +62,9 @@ function harness() {
     pendingCount: sched.pendingCount,
     setSelection: (s: string) => {
       selection = s;
+    },
+    advance: (ms: number) => {
+      clock += ms;
     },
   };
 }
@@ -81,7 +94,7 @@ describe("createCopyOnSelect — mouse gesture", () => {
     expect(h.writeClipboard).not.toHaveBeenCalled();
   });
 
-  it("dedupes identical consecutive selections", () => {
+  it("a fresh gesture re-selecting the SAME text writes again — deliberate re-copy (trmx-180)", () => {
     const h = harness();
     const drag = (text: string) => {
       h.machine.onPointerDown();
@@ -91,10 +104,24 @@ describe("createCopyOnSelect — mouse gesture", () => {
       h.flush();
     };
     drag("abc");
-    drag("abc"); // same text again
-    expect(h.writeClipboard).toHaveBeenCalledTimes(1);
-    drag("def");
+    drag("abc"); // a NEW deliberate gesture over the same text — user intent, must land (D1.1)
     expect(h.writeClipboard).toHaveBeenCalledTimes(2);
+    drag("def");
+    expect(h.writeClipboard).toHaveBeenCalledTimes(3);
+  });
+
+  it("a trailing same-text keyboard tick right after a mouse copy stays deduped (trmx-95 anti-noise)", () => {
+    const h = harness();
+    h.machine.onPointerDown();
+    h.setSelection("abc");
+    h.machine.onSelectionChange();
+    h.machine.onPointerUp();
+    h.flush(); // the gesture copy
+    expect(h.writeClipboard).toHaveBeenCalledTimes(1);
+    // xterm fires a late no-pointer tick for the same selection: within the dedup window → no rewrite.
+    h.machine.onSelectionChange();
+    h.flush(); // the debounced keyboard-path copy attempt
+    expect(h.writeClipboard).toHaveBeenCalledTimes(1);
   });
 
   it("a gesture that did NOT change the selection copies nothing (no stale re-copy, finding 2)", () => {
@@ -152,6 +179,109 @@ describe("createCopyOnSelect — keyboard/programmatic", () => {
     expect(h.writeClipboard).toHaveBeenCalledTimes(1);
     expect(h.writeClipboard).toHaveBeenCalledWith("all");
   });
+
+  it("re-selecting the same text PAST the dedup window writes again (stale-latch fix, trmx-180)", () => {
+    const h = harness();
+    h.setSelection("all");
+    h.machine.onSelectionChange();
+    h.flush();
+    expect(h.writeClipboard).toHaveBeenCalledTimes(1);
+    // The pasteboard may have changed elsewhere since; a later re-selection is fresh intent.
+    h.advance(1500); // past the default 1000 ms window
+    h.machine.onSelectionChange();
+    h.flush();
+    expect(h.writeClipboard).toHaveBeenCalledTimes(2);
+  });
+
+  it("a pointerdown supersedes a pending keyboard debounce (no ghost copy)", () => {
+    const h = harness();
+    h.setSelection("all");
+    h.machine.onSelectionChange(); // debounce pending
+    h.machine.onPointerDown(); // a fresh gesture supersedes it
+    h.machine.onPointerUp(); // gesture changed nothing
+    h.flush();
+    expect(h.writeClipboard).not.toHaveBeenCalled();
+  });
+});
+
+describe("createCopyOnSelect — capture-loss orderings (trmx-180)", () => {
+  it("release order pointerup → captureLost copies once (the spec order)", () => {
+    const h = harness();
+    h.machine.onPointerDown();
+    h.setSelection("abc");
+    h.machine.onSelectionChange();
+    h.machine.onPointerUp();
+    h.machine.onCaptureLost(); // implicit capture release AFTER pointerup — must not kill the copy
+    h.flush();
+    expect(h.writeClipboard).toHaveBeenCalledTimes(1);
+    expect(h.writeClipboard).toHaveBeenCalledWith("abc");
+  });
+
+  it("release order captureLost → same-turn pointerup still copies (engine order variance)", () => {
+    const h = harness();
+    h.machine.onPointerDown();
+    h.setSelection("abc");
+    h.machine.onSelectionChange();
+    h.machine.onCaptureLost(); // delivered FIRST on some engines
+    h.machine.onPointerUp(); // same turn — the release wins over the soft abort
+    h.flush();
+    expect(h.writeClipboard).toHaveBeenCalledTimes(1);
+    expect(h.writeClipboard).toHaveBeenCalledWith("abc");
+  });
+
+  it("a genuine cancel (pointercancel-first) never copies; a stray pointerup stays inert", () => {
+    const h = harness();
+    h.machine.onPointerDown();
+    h.setSelection("abc");
+    h.machine.onSelectionChange();
+    h.machine.onCancel(); // pointercancel — hard abort
+    h.machine.onCaptureLost(); // the capture release that follows it
+    h.machine.onPointerUp(); // stray — no matching down
+    h.flush();
+    expect(h.writeClipboard).not.toHaveBeenCalled();
+  });
+
+  it("a capture loss with NO release aborts (one tick later) and does not stick", () => {
+    const h = harness();
+    h.machine.onPointerDown();
+    h.setSelection("abc");
+    h.machine.onSelectionChange();
+    h.machine.onCaptureLost(); // capture stolen mid-drag, no pointerup follows
+    h.flush(); // the soft abort fires
+    expect(h.writeClipboard).not.toHaveBeenCalled();
+    // Not stuck "dragging": a fresh gesture still works.
+    h.machine.onPointerDown();
+    h.setSelection("def");
+    h.machine.onSelectionChange();
+    h.machine.onPointerUp();
+    h.flush();
+    expect(h.writeClipboard).toHaveBeenCalledWith("def");
+  });
+});
+
+describe("createCopyOnSelect — release-time capture (trmx-180)", () => {
+  it("selection cleared between pointerup and the deferred tick still copies the release-time text", () => {
+    const h = harness();
+    h.machine.onPointerDown();
+    h.setSelection("abc");
+    h.machine.onSelectionChange();
+    h.machine.onPointerUp(); // captures "abc" at release
+    h.setSelection(""); // streaming reflow clears the live selection in the gap
+    h.flush();
+    expect(h.writeClipboard).toHaveBeenCalledTimes(1);
+    expect(h.writeClipboard).toHaveBeenCalledWith("abc");
+  });
+
+  it("dispose with a deferred copy pending writes nothing", () => {
+    const h = harness();
+    h.machine.onPointerDown();
+    h.setSelection("abc");
+    h.machine.onSelectionChange();
+    h.machine.onPointerUp(); // deferred copy pending
+    h.machine.dispose();
+    h.flush();
+    expect(h.writeClipboard).not.toHaveBeenCalled();
+  });
 });
 
 describe("attachCopyOnSelect — DOM wiring", () => {
@@ -203,6 +333,21 @@ describe("attachCopyOnSelect — DOM wiring", () => {
     h.host.dispatchEvent(new Event("pointerdown", { bubbles: true }));
     h.host.dispatchEvent(new Event("pointerup", { bubbles: true }));
     expect(h.writeClipboard).toHaveBeenCalledTimes(1);
+    h.host.remove();
+  });
+
+  it("a lostpointercapture after the in-host release never cancels the copy (trmx-180 contract)", () => {
+    const h = domHarness("abc");
+    h.host.setPointerCapture = () => {}; // capture succeeds
+    const teardown = attachCopyOnSelect(h.host, h.terminal, h.writeClipboard, syncSchedule);
+    h.host.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    h.fireSelectionChange();
+    h.host.dispatchEvent(new Event("pointerup", { bubbles: true }));
+    // The browser's implicit capture release — fired on EVERY captured release, after pointerup.
+    h.host.dispatchEvent(new Event("lostpointercapture", { bubbles: true }));
+    expect(h.writeClipboard).toHaveBeenCalledTimes(1);
+    expect(h.writeClipboard).toHaveBeenCalledWith("abc");
+    teardown();
     h.host.remove();
   });
 });
