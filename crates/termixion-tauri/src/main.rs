@@ -1973,6 +1973,15 @@ mod tests {
         assert_eq!(prod.cwd, Some(PathBuf::from("/tmp/somewhere")));
         assert!(prod.args.is_empty(), "login shell spawns with no args");
 
+        // trmx-185: with no explicit cwd the tauri layer adds no policy of its own — the spec
+        // carries exactly the core login_shell() default ($HOME when valid, else None).
+        let defaulted = session_spec_for(false, false, None);
+        assert_eq!(
+            defaulted.cwd,
+            SessionSpec::login_shell().cwd,
+            "session_spec_for must pass the core cwd default through untouched"
+        );
+
         // Smoke or perf (or both): deterministic rc-free `zsh -f`, cwd deliberately ignored so
         // rc/prompt noise and a surprising working dir can never pollute the driven sequence.
         for (smoke, perf) in [(true, false), (false, true), (true, true)] {
