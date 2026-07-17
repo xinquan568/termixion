@@ -63,7 +63,7 @@ literals outside the catalog (grep `#[0-9a-fA-F]{3,8}\b|rgba?\(` over `app/src`,
 | Cursor blink | off | off (parity) | iTerm2-default parity | trmx-55 |
 | Colors | one adaptive light/dark theme (16 ANSI shared; primaries flip with OS) | six-theme catalog (vmark-derived), explicit persisted choice; OS consulted only for the first-run default | theme catalog is a product feature (v0.0.7 grows it) | trmx-53 |
 | Chrome | native tabs/scrollbars | Termixion tab strip (trmx-74) + Kitty-style overlay scrollbar (trmx-41), themed via tokens | product identity | trmx-41/74 |
-| Catalog values vs vmark | — | two audited token deltas (below §4) | legibility gates | trmx-77 |
+| Catalog values vs vmark | — | two audited legibility deltas (trmx-77) + the pure-black Night window deltas (bg tiers + cursorAccent, trmx-183) — both below §4 | legibility gates; product ask | trmx-77/183 |
 
 Everything else at the chokepoint mirrors the iTerm2 default profile (§1 table). The side-by-side
 audit protocol to re-verify: fresh iTerm2 default profile vs packaged Termixion, same window size,
