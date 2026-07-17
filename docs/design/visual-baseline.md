@@ -44,8 +44,9 @@ literals outside the catalog (grep `#[0-9a-fA-F]{3,8}\b|rgba?\(` over `app/src`,
 
 1. **iTerm2 reference record** — `iterm2Theme.ts` (a pure record of the DefaultBookmark profile;
    not a runtime color source since trmx-53). Intentional.
-2. **Pre-theme static fallbacks** — `index.css` first-paint background (dark → Night `#23262b`,
-   light → White `#ffffff`) and `settings.css`'s pre-JS `:root` fallback block. Intentional —
+2. **Pre-theme static fallbacks** — `index.css` first-paint background (dark → Night `#000000`
+   since trmx-183, light → White `#ffffff`) and `settings.css`'s pre-JS `:root` fallback block.
+   Intentional —
    they prevent a flash before the persisted theme applies; values mirror the first-run defaults.
 3. **Physical affordances** — the toggle knob (`background: #fff` on the accent/border track)
    and `scrollbar.ts`'s theme-less defensive foreground fallback. Intentional.
@@ -81,13 +82,14 @@ enough that the audited failures were real legibility defects:
 | Gate | Pair | Floor | Post-audit minimum |
 |---|---|---|---|
 | G1 | `text.primary` vs `bg.primary` | ≥ 4.5:1 (AA normal text) | Solarized 5.61 |
-| G2 | each ANSI color vs `bg.primary` (**`black` exempt**) | ≥ 2.5:1 | Solarized brightBlack 2.79 (Night's, the audit fix, is 3.30 — was 1.83) |
+| G2 | each ANSI color vs `bg.primary` (**`black` exempt**) | ≥ 2.5:1 | Solarized brightBlack 2.79 (Night's, the audit fix, is 4.57 on the trmx-183 pure-black bg — was 1.83 on the vmark bg) |
 | G3 | `text.primary` vs composited `selectionBackground` | ≥ 4.5:1 | Solarized 4.62 (was 4.17) |
 | G4 | `terminal.cursor` vs `bg.primary` | ≥ 3:1 (UI component) | Solarized 5.61 |
 | G5 | `--tx-on-*` text vs its accent/success/error surface | ≥ 3:1 (UI component) | light-theme on-success 3.30 (white on `#16a34a`) |
 
 **The `black` exemption (G2):** ANSI black doubles as the TUI *background* color; every canonical
-dark theme keeps it ≈ its own background (iTerm2's black on its dark bg ≈ 1.0; Night 1.11,
+dark theme keeps it ≈ its own background (iTerm2's black on its dark bg ≈ 1.0; Night 1.24 —
+`#1a1d22` now sits just *above* the trmx-183 pure-black bg instead of below the old gray-blue one;
 Solarized 1.15). Failing it would "fix" every canonical dark palette into something else.
 
 **Selected-text definition (G3):** the token schema deliberately has no `selectionForeground`
@@ -98,23 +100,28 @@ by construction and is explicitly not a gate.
 **Why G1 is 4.5 and not 7 (AAA):** canonical Solarized base1-on-base03 measures 5.61 — its
 identity, not a defect. The floor is AA; actuals (5.61–17.40) are recorded here.
 
-**The vmark fork (trmx-77):** the catalog was ported value-exact from vmark @ d7e70e3f (trmx-53).
-The audit changed exactly two values, making the fixtures Termixion's own audited baseline:
+**The vmark fork (trmx-77, extended by trmx-183):** the catalog was ported value-exact from vmark
+@ d7e70e3f (trmx-53). The trmx-77 audit changed exactly two values; trmx-183 (the pure-black Night
+window) changed four more. The ratios in the trmx-77 rows were measured on the then-current
+`#23262b` Night bg:
 
 | Token | vmark | Termixion | Gate |
 |---|---|---|---|
 | `night.terminal.ansi.brightBlack` | `#484f58` (1.83:1) | `#6e7681` (3.30:1 — GitHub Dark's canonical bright black, same hue family) | G2 |
 | `solarized.terminal.selectionBackground` | `rgba(38,139,210,0.22)` (4.17:1) | `rgba(38,139,210,0.15)` (4.62:1; tint stays visible) | G3 |
+| `night.color.bg.primary/secondary/tertiary` | `#23262b`/`#2a2e34`/`#32363d` | `#000000`/`#0a0a0a`/`#141414` (pure-black window; tiers re-derived via themeDerive's dark-theme `shade(+4)/(+8)`) | trmx-183 product ask |
+| `night.terminal.cursorAccent` | `#23262b` | `#000000` (tracks `bg.primary`) | trmx-183, follows the bg |
 
 Full post-audit matrix (fg / selected-text / cursor vs `bg.primary`): White 17.40 / 11.95 / 17.40 ·
 Paper 14.89 / 10.42 / 14.89 · Mint 8.93 / 6.41 / 8.93 · Sepia 7.36 / 5.13 / 7.36 ·
-Night 10.73 / 7.16 / 10.73 · Solarized 5.61 / 4.62 / 5.61. All 6 themes × 15 gated ANSI colors
-pass G2 (catalog minimum: Solarized brightBlack 2.79; Night brightBlack, the audit fix, is 3.30).
+Night 14.84 / 10.98 / 14.84 (re-measured on the trmx-183 pure-black bg) · Solarized 5.61 / 4.62 /
+5.61. All 6 themes × 15 gated ANSI colors pass G2 (catalog minimum: Solarized brightBlack 2.79;
+Night brightBlack, the audit fix, is 4.57).
 
 **G5 picks** (derived by `pickReadableOn(surface, [#fff, bg.primary])`, never hardcoded): light
 themes keep white text on all three surfaces — on-accent 5.57–7.10, on-success 3.30 (white on
-`#16a34a`, the G5 catalog minimum), on-error 5.35; Night uses its own dark bg `#23262b` on all
-three (4.70–9.05); Solarized splits — dark `#002b36` on accent (4.08) and success (4.69), white
+`#16a34a`, the G5 catalog minimum), on-error 5.35; Night uses its own pure-black bg `#000000` on
+all three (6.26–12.05); Solarized splits — dark `#002b36` on accent (4.08) and success (4.69), white
 on error (4.63). The split is the proof the derivation is per-surface. The `:root` static
 fallback in `settings.css` mirrors Night's full mapping including the three on-* vars (guarded
 var-for-var by `txCssVars.test.ts`).

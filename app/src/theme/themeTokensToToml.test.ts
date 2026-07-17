@@ -62,7 +62,7 @@ describe("themeTokensToToml", () => {
   });
 
   it("quotes color strings and preserves an rgba value verbatim", () => {
-    expect(toml).toContain('primary = "#23262b"'); // hex, quoted
+    expect(toml).toContain('primary = "#000000"'); // hex, quoted (trmx-183 pure-black night bg)
     expect(toml).toContain('bright_black = "#6e7681"'); // the trmx-77 bright-black
     expect(toml).toContain('idle = "rgba(255, 255, 255, 0.12)"'); // rgba() preserved verbatim
   });

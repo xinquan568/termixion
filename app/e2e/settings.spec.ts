@@ -95,7 +95,7 @@ test("?window=settings&section=appearance shows the Theme row; a swatch click re
   await page.getByRole("radio", { name: "Sepia" }).click();
   await expect(page.locator(".tx-settings")).toHaveCSS("background-color", "rgb(249, 240, 219)");
   await page.getByRole("radio", { name: "Night" }).click();
-  await expect(page.locator(".tx-settings")).toHaveCSS("background-color", "rgb(35, 38, 43)");
+  await expect(page.locator(".tx-settings")).toHaveCSS("background-color", "rgb(0, 0, 0)");
 
   // NOTE (trmx-80): persistence-across-reload is no longer observable in the plain-browser dev
   // server. Settings now persist to the TOML config file through the Tauri backend; without a
