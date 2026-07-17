@@ -8,7 +8,10 @@
 // trmx-77 FORKED the pin: the fixtures now record Termixion's AUDITED visual baseline
 // (docs/design/visual-baseline.md), which deviates from vmark in exactly two values that failed
 // the legibility gates below — night.ansi.brightBlack #484f58 → #6e7681 (G2) and
-// solarized.selectionBackground alpha 0.22 → 0.15 (G3). Every other value remains vmark-exact;
+// solarized.selectionBackground alpha 0.22 → 0.15 (G3).
+// trmx-183 widened the Night deviation set: the command-line window background is pure black —
+// night.bg #23262b → #000000, its tiers re-derived via shade(+4)/(+8) (#0a0a0a/#141414), and
+// cursorAccent tracks the bg (#000000). Every other value remains vmark-exact;
 // any future drift must pass the CONTRAST_GATES and update docs/design/visual-baseline.md.
 import { describe, expect, it } from "vitest";
 import { compositeOver, contrastRatio, toOpaqueHex } from "./contrast";
@@ -25,7 +28,7 @@ const CORE: Record<BuiltinThemeId, { bg: string; bg2: string; text: string; acce
   paper: { bg: "#EEEDED", bg2: "#e5e4e4", text: "#1a1a1a", accent: "#0066cc", border: "#d5d4d4", dark: false },
   mint: { bg: "#CCE6D0", bg2: "#b8d9bd", text: "#2d3a35", accent: "#1a6b4a", border: "#a8c9ad", dark: false },
   sepia: { bg: "#F9F0DB", bg2: "#f0e5cc", text: "#5c4b37", accent: "#8b4513", border: "#e0d5bc", dark: false },
-  night: { bg: "#23262b", bg2: "#2a2e34", text: "#d6d9de", accent: "#58a6ff", border: "#3a3f46", dark: true },
+  night: { bg: "#000000", bg2: "#0a0a0a", text: "#d6d9de", accent: "#58a6ff", border: "#3a3f46", dark: true },
   solarized: { bg: "#002b36", bg2: "#073642", text: "#93a1a1", accent: "#268bd2", border: "#0e4753", dark: true },
 };
 
@@ -105,7 +108,7 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
       brightBlue: "#79c0ff", brightMagenta: "#d2a8ff", brightCyan: "#56d4dd", brightWhite: "#f0f6fc",
     },
     cursor: "#d6d9de",
-    cursorAccent: "#23262b",
+    cursorAccent: "#000000",
     selectionBackground: "rgba(90, 168, 255, 0.22)",
     badge: "#ff8da180",
     scrollbar: { idle: "rgba(255, 255, 255, 0.12)", hover: "rgba(255, 255, 255, 0.20)", active: "rgba(255, 255, 255, 0.30)" },

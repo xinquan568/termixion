@@ -39,9 +39,9 @@ describe("txCssVars — role mapping", () => {
 
   it("maps a dark theme's tokens onto the --tx-* roles, value-exactly (night)", () => {
     expect(txCssVars(themes.night)).toEqual({
-      "--tx-bg": "#23262b",
-      "--tx-bg-elev": "#32363d",
-      "--tx-bg-sunken": "#2a2e34",
+      "--tx-bg": "#000000",
+      "--tx-bg-elev": "#141414",
+      "--tx-bg-sunken": "#0a0a0a",
       "--tx-text": "#d6d9de",
       "--tx-text-2": "#9aa0a6",
       "--tx-text-3": "#6b7078",
@@ -51,9 +51,9 @@ describe("txCssVars — role mapping", () => {
       "--tx-primary": "#58a6ff",
       "--tx-success": "#4ade80",
       "--tx-error": "#f85149",
-      "--tx-on-accent": "#23262b",
-      "--tx-on-success": "#23262b",
-      "--tx-on-error": "#23262b",
+      "--tx-on-accent": "#000000",
+      "--tx-on-success": "#000000",
+      "--tx-on-error": "#000000",
     });
   });
 });
@@ -96,7 +96,7 @@ describe("applyTxTheme — runtime delivery (plan D4)", () => {
 
     // Switching themes overwrites in place (idempotent re-apply, no stale values).
     applyTxTheme("night", document);
-    expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#23262b");
+    expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#000000");
   });
 
   it("falls back safely on a junk id", () => {

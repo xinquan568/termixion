@@ -40,10 +40,10 @@ describe("buildXtermTheme", () => {
 
   it("maps the Night theme onto the full ITheme shape, value-exactly", () => {
     expect(buildXtermTheme("night")).toEqual({
-      background: "#23262b",
+      background: "#000000",
       foreground: "#d6d9de",
       cursor: "#d6d9de",
-      cursorAccent: "#23262b",
+      cursorAccent: "#000000",
       selectionBackground: "rgba(90, 168, 255, 0.22)",
       black: "#1a1d22",
       red: "#f85149",

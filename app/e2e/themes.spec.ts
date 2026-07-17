@@ -44,5 +44,5 @@ test("Appearance picker: built-ins still render + the user-theme affordances are
   await openFolder.click();
   await expect(swatches).toHaveCount(6);
   await page.getByRole("radio", { name: "Night" }).click();
-  await expect(page.locator(".tx-settings")).toHaveCSS("background-color", "rgb(35, 38, 43)");
+  await expect(page.locator(".tx-settings")).toHaveCSS("background-color", "rgb(0, 0, 0)");
 });

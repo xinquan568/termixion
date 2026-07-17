@@ -114,7 +114,7 @@ describe("SettingsApp shell", () => {
       "About",
     ]);
     // Mount applied the persisted theme (jsdom derivation → Night) to documentElement.
-    expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#23262b");
+    expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#000000");
 
     // Open the Appearance page and pick Sepia: the window re-derives its vars immediately
     // (local onThemeChange path — no bus required in plain dev).
@@ -127,7 +127,7 @@ describe("SettingsApp shell", () => {
     const bus = fakeListen();
     renderApp({ listen: bus.listen });
     await waitFor(() =>
-      expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#23262b"),
+      expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#000000"),
     );
 
     bus.deliver("settings:changed", { key: "appearance.theme", value: "mint", source: "settings" });

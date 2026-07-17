@@ -7,12 +7,16 @@
 // canonical bright black, same hue family): 1.83:1 on bg failed the G2 legibility gate (≥2.5:1);
 // brightBlack renders dim/comment text, so it carries real legibility stakes. See
 // docs/design/visual-baseline.md §4.
+// trmx-183: the command-line window background is PURE BLACK — bg.primary #23262b → #000000, the
+// sunken/elevated tiers re-derived by the canonical dark-theme rule (themeDerive's shade(+4)/(+8)
+// off primary → #0a0a0a/#141414), and cursorAccent tracks the bg. ansi.black stays #1a1d22
+// (iTerm2 convention: black ≈ bg, G2-exempt; it now sits just ABOVE the bg instead of below it).
 import type { ThemeTokens } from "../tokens";
 
 export const night: ThemeTokens = {
   isDark: true,
   color: {
-    bg: { primary: "#23262b", secondary: "#2a2e34", tertiary: "#32363d" },
+    bg: { primary: "#000000", secondary: "#0a0a0a", tertiary: "#141414" },
     text: { primary: "#d6d9de", secondary: "#9aa0a6", tertiary: "#6b7078" },
     accent: { primary: "#58a6ff", bg: "rgba(88, 166, 255, 0.12)" },
     border: "#3a3f46",
@@ -41,7 +45,7 @@ export const night: ThemeTokens = {
       brightWhite: "#f0f6fc",
     },
     cursor: "#d6d9de",
-    cursorAccent: "#23262b",
+    cursorAccent: "#000000",
     selectionBackground: "rgba(90, 168, 255, 0.22)",
     // trmx-90: per-pane badge watermark. trmx-149: translucent pink #ff8da180 (50% alpha; Termixion's
     // chosen badge color, a deliberate deviation from iTerm2's default red) replaces the faint white

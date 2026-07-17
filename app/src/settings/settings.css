@@ -15,9 +15,9 @@
  * prefers-color-scheme block is gone — the explicit persisted theme supersedes OS-following.
  */
 :root {
-  --tx-bg: #23262b;
-  --tx-bg-elev: #32363d;
-  --tx-bg-sunken: #2a2e34;
+  --tx-bg: #000000;
+  --tx-bg-elev: #141414;
+  --tx-bg-sunken: #0a0a0a;
   --tx-text: #d6d9de;
   --tx-text-2: #9aa0a6;
   --tx-text-3: #6b7078;
@@ -30,9 +30,9 @@
   /* trmx-77 G5: Night's derived on-surface text (all three resolve to Night's bg) — without
    * these, pre-JS button text falls back to white on the light-blue accent, the exact seam G5
    * fixed. Guarded: txCssVars.test.ts pins this block to equal txCssVars(night) var-for-var. */
-  --tx-on-accent: #23262b;
-  --tx-on-success: #23262b;
-  --tx-on-error: #23262b;
+  --tx-on-accent: #000000;
+  --tx-on-success: #000000;
+  --tx-on-error: #000000;
 }
 
 .tx-settings {
