@@ -826,11 +826,13 @@ describe("D1 e2e query seed (trmx-81)", () => {
   });
 
   it("a disallowed setting.* key never seeds (a deliberate per-key allowlist)", async () => {
-    // fontSize is NOT on the allowlist — a leak would serve 20, not the 12 default.
-    setSearch("?setting.terminal.fontSize=20");
+    // fontFamily is NOT on the allowlist, and its STRING value would pass coercion if the key
+    // leaked in — so this is a real leak detector (a number key like fontSize would be masked:
+    // coerce rejects query strings for number keys regardless of the allowlist).
+    setSearch("?setting.terminal.fontFamily=Menlo");
     const backend = fakeConfigBackend({}, { failRead: true });
     await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
-    expect(makeSettingsStore().get("terminal.fontSize")).toBe(12);
+    expect(makeSettingsStore().get("terminal.fontFamily")).toBe(""); // the platform-default sentinel
   });
 
   // trmx-195: appearance.theme JOINS the allowlist — the per-theme visibility e2e must boot the
