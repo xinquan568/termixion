@@ -772,6 +772,23 @@ describe("App activity toggle (trmx-191)", () => {
     expect(segment()).toBe("claude: 1/1");
   });
 
+  it("the missing-bar case: a dark interactive command force-shows, and the genuine end clears it", async () => {
+    // The by-design gap the issue reports as "missing bar": an interactive-classified epoch
+    // (bare claude — no argv) with no counted output stays DARK while rawBusy runs (trmx-159's
+    // idle-at-prompt trade; the light also drops HOLD_MS after output stops). ⌘⇧A is the rescue.
+    const { calls, activity } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
+    vi.useFakeTimers();
+    act(() => activity.fire(7, true, { name: "claude", stdinTty: true })); // interactive, no submit
+    act(() => vi.advanceTimersByTime(1000)); // far past the 150ms show delay — still dark
+    expect(barIn(1)).not.toBeInTheDocument();
+    chord(); // force-show the missing bar
+    expect(barIn(1)).toBeInTheDocument();
+    act(() => activity.fire(7, false)); // the command genuinely ends → the override auto-clears
+    act(() => vi.advanceTimersByTime(1000)); // past any min-visible linger
+    expect(barIn(1)).not.toBeInTheDocument();
+  });
+
   it("REGRESSION PIN (reopen-flash): a tab closed mid-flash leaves no bar in a fresh tab", async () => {
     const { calls } = renderApp();
     await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
