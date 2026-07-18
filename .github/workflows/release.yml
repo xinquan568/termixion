@@ -1,6 +1,7 @@
 # Release (E-2): on a pushed `v*` tag, build the Apple-silicon app on macos-14, then publish ONE (draft)
 # GitHub Release with the macOS installer + updater artifacts + latest.json. macOS-only since v0.1.1
-# (trmx-187) — the Linux AppImage/.deb pipeline (trmx-102, FR-1.7) shipped v0.0.9–v0.1.0 and was dropped.
+# (trmx-187) — the Linux release line (trmx-102, FR-1.7) shipped v0.0.9–v0.1.0 and was dropped; see
+# docs/RELEASE.md.
 #
 # SIGNING IS DUAL-MODE (trmx-49), decided by the "Signing mode" gate from the Apple secrets alone:
 #   - ALL six APPLE_* secrets → signed + notarized + stapled macOS build (independently verified).
