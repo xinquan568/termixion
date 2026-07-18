@@ -68,7 +68,9 @@ body {
   padding-right: 10px;
   background: var(--tx-bg-sunken);
   border-bottom: 1px solid var(--tx-border);
-  color: var(--tx-text-primary);
+  /* trmx-195: --tx-text is the role table's primary-text token; the old --tx-text-primary never
+     existed, so the color silently fell back to inherited BLACK — invisible on dark themes. */
+  color: var(--tx-text);
   font-size: 13px;
 }
 .title-bar__inset {
@@ -109,7 +111,8 @@ body {
   font-size: 12px;
   cursor: pointer;
   user-select: none;
-  color: var(--tx-text-primary);
+  /* trmx-195: --tx-text, not the never-defined --tx-text-primary (see .title-bar above). */
+  color: var(--tx-text);
 }
 .ai-counter--idle {
   opacity: 0.45;

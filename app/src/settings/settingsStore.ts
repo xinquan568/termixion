@@ -804,8 +804,16 @@ export async function hydrateSettings(deps: HydrateSettingsDeps = {}): Promise<v
 // trmx-81 D1: the ONLY keys the query seed may touch. A deliberate allowlist — widening it is a
 // review decision per key, never a default (the query string is untrusted input and the packaged
 // app must stay driven by the config file alone). trmx-82 adds tabs.sideLabelOrientation with the
-// same resolved-read-wins semantics.
-const QUERY_SEEDABLE_KEYS: readonly SettingKey[] = ["tabs.barPosition", "tabs.sideLabelOrientation"];
+// same resolved-read-wins semantics. trmx-195 adds appearance.theme so the per-theme visibility
+// e2e can boot the main window onto each built-in deterministically (the boot order guarantees
+// the seeded value paints: hydrateSettings seeds → applyStartupTheme reads it); the value still
+// re-validates through the registry's theme-id coercion, and the seam only ever runs in the
+// no-backend fallback the packaged app never hits.
+const QUERY_SEEDABLE_KEYS: readonly SettingKey[] = [
+  "tabs.barPosition",
+  "tabs.sideLabelOrientation",
+  "appearance.theme",
+];
 
 /**
  * trmx-81 D1: seed the snapshot from `?setting.<key>=<value>` query params — the dev/e2e seam,
