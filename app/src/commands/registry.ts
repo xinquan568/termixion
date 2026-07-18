@@ -30,6 +30,8 @@ export interface CommandContext {
   nextPane(): void;
   prevPane(): void;
   setBadge(): void;
+  /** trmx-191: the ⌘⇧A one-shot activity override on the focused pane (direction = rendered state). */
+  toggleActivity(): void;
   growPane(dir: "left" | "right" | "up" | "down"): void; // trmx-94 (FR-3.3)
   movePane(dir: "left" | "right" | "up" | "down"): void; // trmx-100 (FR-3.4) — re-dock the focused pane
   // terminal (trmx-94)
@@ -99,6 +101,9 @@ export function buildCommands(): Command[] {
     { id: "pane.next", title: "Next Pane", category: "Panes", run: (c) => c.nextPane(), when: (c) => c.paneCount() > 1 },
     { id: "pane.prev", title: "Previous Pane", category: "Panes", run: (c) => c.prevPane(), when: (c) => c.paneCount() > 1 },
     { id: "pane.set-badge", title: "Set Badge…", category: "Panes", run: (c) => c.setBadge(), when: (c) => c.paneCount() > 0 },
+    // trmx-191: the manual activity-bar escape hatch — force a stuck bar off / a missing one on;
+    // the override auto-clears on the next genuine detector transition (activityLine.ts).
+    { id: "pane.toggle-activity", title: "Toggle Activity for Current Pane", category: "Panes", run: (c) => c.toggleActivity(), when: (c) => c.paneCount() > 0 },
     ...DIRS.map((dir) => ({
       id: `pane.focus-${dir}`,
       title: `Focus Pane ${dir[0].toUpperCase()}${dir.slice(1)}`,

@@ -81,6 +81,15 @@ export interface ActivityState {
   readonly windowActivityAt?: number;
   readonly lastCountedOutputAt?: number;
   readonly lastInputAt?: number;
+  /**
+   * trmx-191: the ⌘⇧A manual override — a ONE-SHOT presentation correction (undefined = none).
+   * {@link lightActive} consults it FIRST; {@link isBusy} (the trmx-144 close guard) NEVER does.
+   * Auto-clears on the next detector-transition event — every {@link onBusyChange} invocation is
+   * one by upstream contract (the poller emits change-only; the OSC 133 path is busyChanged-
+   * guarded) — including a fall that finds this state already idle (the missed-rise recovery).
+   * Non-detector inputs (deadline fires, output, input, classify) leave it alone.
+   */
+  readonly override?: "on" | "off";
 }
 
 /** trmx-159: the classification metadata the poller carries on a busy rise (each field independent). */
@@ -186,11 +195,16 @@ function freshEpoch(epoch: number, now: number, meta: ActivityMeta | undefined):
  * layer resets); every other transition carries the class layer unchanged.
  */
 export function onBusyChange(
-  state: ActivityState,
+  rawState: ActivityState,
   busy: boolean,
   now: number,
   meta?: ActivityMeta,
 ): ActivityTransition {
+  // trmx-191: every invocation is a detector-transition event (change-only upstream), so the
+  // manual override's one-shot life ends HERE — before the normal transition logic — which is
+  // what lets a genuine fall clear a force-on even when the local phase never saw the rise.
+  const state: ActivityState =
+    rawState.override === undefined ? rawState : { ...rawState, override: undefined };
   const rise = (phase: ActivityPhase): ActivityState => ({
     ...state,
     ...freshEpoch(state.busyEpoch + 1, now, meta),
@@ -385,6 +399,9 @@ export function classDeadline(state: ActivityState, now: number): number | null 
  * within HOLD_MS (actually executing user work). The close guard still reads {@link isBusy}, not this.
  */
 export function lightActive(state: ActivityState, now: number): boolean {
+  // trmx-191: the manual override outranks everything below — a forced light neither decays with
+  // the interactive window nor waits for the debounce; only a detector event (onBusyChange) ends it.
+  if (state.override !== undefined) return state.override === "on";
   if (!isVisible(state)) return false;
   switch (state.klass) {
     case "plain":
@@ -398,6 +415,29 @@ export function lightActive(state: ActivityState, now: number): boolean {
     case "unknown":
     default:
       return false;
+  }
+}
+
+/**
+ * trmx-191: apply the ⌘⇧A manual force. The DIRECTION is the caller's decision (App derives it
+ * from the RENDERED state — `lightActive || flashing` — so a flash-only stuck bar forces off);
+ * this machine only records the one-shot override. The returned deadline PRESERVES the live phase
+ * timer: App's applyActivityTransition clears-then-rearms from the returned value, so returning
+ * null mid-`pendingShow`/`pendingHide` would strand the phase forever.
+ */
+export function onManualToggle(
+  state: ActivityState,
+  force: "on" | "off",
+  now: number,
+): ActivityTransition {
+  const next: ActivityState = { ...state, override: force };
+  switch (state.phase) {
+    case "pendingShow":
+      return transition(next, (state.busySince ?? now) + SHOW_DELAY_MS);
+    case "pendingHide":
+      return transition(next, hideDeadline(state, now));
+    default:
+      return transition(next, null);
   }
 }
 

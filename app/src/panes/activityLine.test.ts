@@ -22,6 +22,7 @@ import {
   onDeadline,
   onInput,
   onOutput,
+  onManualToggle,
   classDeadline,
   parseActivityPayload,
   type ActivityMeta,
@@ -180,6 +181,93 @@ describe("activityLine debounce (trmx-91)", () => {
       return trace;
     };
     expect(run()).toEqual(run());
+  });
+});
+
+// trmx-191: the manual override — a ONE-SHOT correction (⌘⇧A). The machine APPLIES an explicit
+// force (the direction is App's call, from the RENDERED state incl. the trmx-99 flash); lightActive
+// consults the override first; the override auto-clears on the NEXT DETECTOR-TRANSITION EVENT —
+// every onBusyChange invocation is one by upstream contract (poller change-only, OSC busyChanged-
+// guarded), including a fall that finds local state already idle (the missed-rise recovery).
+// Non-detector inputs (deadline fires, output, input, classify) never clear it. isBusy (the
+// trmx-144 close guard) never consults it. Phase deadlines are PRESERVED through a toggle —
+// applyActivityTransition clears-then-rearms from the returned deadline, so a null mid-phase
+// would strand a pendingShow/pendingHide forever.
+describe("manual override (trmx-191)", () => {
+  it("applies an explicit force regardless of the current light state", () => {
+    const idle = initialActivity();
+    expect(lightActive(idle, 0)).toBe(false);
+    const forcedOn = onManualToggle(idle, "on", 0).state;
+    expect(lightActive(forcedOn, 0)).toBe(true);
+    expect(lightActive(forcedOn, 60_000)).toBe(true); // steady — no decay under an override
+
+    // A lit plain pane forces off.
+    let t = onBusyChange(initialActivity(), true, 0, { name: "sleep" });
+    t = onDeadline(t.state, SHOW_DELAY_MS);
+    expect(lightActive(t.state, SHOW_DELAY_MS)).toBe(true);
+    const forcedOff = onManualToggle(t.state, "off", SHOW_DELAY_MS).state;
+    expect(lightActive(forcedOff, SHOW_DELAY_MS)).toBe(false);
+  });
+
+  it("auto-clears on the next detector event — rise, fall, AND the missed-rise fall", () => {
+    // Force-on over a fresh idle state; a genuine FALL arrives (missed rise — local state was
+    // never busy). The override must clear: the escape hatch recovers desync, not survive it.
+    const forcedOn = onManualToggle(initialActivity(), "on", 0).state;
+    const cleared = onBusyChange(forcedOn, false, 100).state;
+    expect(lightActive(cleared, 100)).toBe(false);
+
+    // Force-off over a lit pane; a genuine RISE (fresh epoch) clears the override — the new
+    // command's bar shows without further keypresses.
+    let t = onBusyChange(initialActivity(), true, 0, { name: "sleep" });
+    t = onDeadline(t.state, SHOW_DELAY_MS);
+    let s = onManualToggle(t.state, "off", SHOW_DELAY_MS).state;
+    s = onBusyChange(s, false, 400).state; // the running job ends (also clears — detector event)
+    s = onBusyChange(s, true, 1000, { name: "sleep" }).state; // a NEW command rises
+    const shown = onDeadline(s, 1000 + SHOW_DELAY_MS).state;
+    expect(lightActive(shown, 1000 + SHOW_DELAY_MS)).toBe(true); // no stale force-off
+  });
+
+  it("is NOT cleared by non-detector inputs (deadline, output, input, classify)", () => {
+    let s = onManualToggle(initialActivity(), "on", 0).state;
+    s = onDeadline(s, 5_000).state;
+    s = onOutput(s, 4096, 5_100).state;
+    s = onInput(s, "x", 5_200).state;
+    s = onClassifyMetadata(s, { name: "claude" }, 5_300).state;
+    expect(lightActive(s, 5_400)).toBe(true); // still forced on
+  });
+
+  it("never leaks into isBusy — the close guard reads the detector truth only", () => {
+    // Forced ON while genuinely idle: the close guard must stay false (no fake-busy prompt).
+    const forcedOn = onManualToggle(initialActivity(), "on", 0).state;
+    expect(isBusy(forcedOn)).toBe(false);
+
+    // Forced OFF while genuinely busy: the close guard must stay true (still guarded).
+    const busy = onBusyChange(initialActivity(), true, 0, { name: "sleep" }).state;
+    const forcedOff = onManualToggle(busy, "off", 10).state;
+    expect(isBusy(forcedOff)).toBe(true);
+  });
+
+  it("preserves the pendingShow deadline — the show still completes under an override", () => {
+    const t = onBusyChange(initialActivity(), true, 0, { name: "sleep" });
+    expect(t.deadline).toBe(SHOW_DELAY_MS);
+    const toggled = onManualToggle(t.state, "off", 50);
+    expect(toggled.deadline).toBe(SHOW_DELAY_MS); // the phase timer must be re-armed, not lost
+    // The fire still advances the phase (visible) even though the light stays forced off.
+    const fired = onDeadline(toggled.state, SHOW_DELAY_MS);
+    expect(isVisible(fired.state)).toBe(true);
+    expect(lightActive(fired.state, SHOW_DELAY_MS)).toBe(false); // override wins the render
+  });
+
+  it("preserves the pendingHide deadline — the linger still ends under an override", () => {
+    let t = onBusyChange(initialActivity(), true, 0, { name: "sleep" });
+    t = onDeadline(t.state, SHOW_DELAY_MS); // visible
+    t = onBusyChange(t.state, false, SHOW_DELAY_MS + 10); // pendingHide (also clears any override)
+    const hideAt = t.deadline!;
+    const toggled = onManualToggle(t.state, "on", SHOW_DELAY_MS + 20);
+    expect(toggled.deadline).toBe(hideAt); // the hide timer survives the toggle
+    const fired = onDeadline(toggled.state, hideAt);
+    expect(isVisible(fired.state)).toBe(false); // the phase completed its hide
+    expect(lightActive(fired.state, hideAt)).toBe(true); // but the light stays forced on
   });
 });
 

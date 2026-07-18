@@ -33,6 +33,7 @@ open a second picker (a theme / a script).
 | `pane.next` | Next Pane | Panes | `cmd+]` |
 | `pane.prev` | Previous Pane | Panes | `cmd+[` |
 | `pane.set-badge` | Set Badge… | Panes | `cmd+shift+b` |
+| `pane.toggle-activity` | Toggle Activity for Current Pane | Panes | `cmd+shift+a` |
 | `pane.focus-left` | Focus Pane Left | Panes | `cmd+alt+left` |
 | `pane.focus-right` | Focus Pane Right | Panes | `cmd+alt+right` |
 | `pane.focus-up` | Focus Pane Up | Panes | `cmd+alt+up` |
