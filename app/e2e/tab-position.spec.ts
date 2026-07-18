@@ -76,9 +76,15 @@ for (const position of POSITIONS) {
       }
 
       // The flex-direction trick actually lands the bar on the requested window edge.
+      // trmx-188: the app-drawn title bar owns the very top, so a TOP strip sits directly BELOW
+      // it (bar bottom = strip top), not at y=0; the other three edges are unchanged.
       const box = (await strip.boundingBox())!;
       expect(box).not.toBeNull();
-      if (position === "top") expect(box.y).toBeLessThanOrEqual(1);
+      if (position === "top") {
+        const bar = (await page.locator(".title-bar").boundingBox())!;
+        expect(box.y).toBeGreaterThanOrEqual(bar.y + bar.height - 1);
+        expect(box.y).toBeLessThanOrEqual(bar.y + bar.height + 1);
+      }
       if (position === "bottom") expect(box.y + box.height).toBeGreaterThanOrEqual(600 - 1);
       if (position === "left") expect(box.x).toBeLessThanOrEqual(1);
       if (position === "right") expect(box.x + box.width).toBeGreaterThanOrEqual(900 - 1);

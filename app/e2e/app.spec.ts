@@ -6,7 +6,7 @@
 // resize; the live PTY round-trip is the packaged `--smoke` (the authoritative gate).
 import { test, expect } from "@playwright/test";
 
-test("the terminal webview boots, fills the window, and has no in-page chrome", async ({
+test("the terminal webview boots, fills the window below the title bar", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 900, height: 600 });
@@ -16,19 +16,23 @@ test("the terminal webview boots, fills the window, and has no in-page chrome", 
   const xterm = page.locator(".xterm");
   await expect(xterm).toBeAttached();
 
-  // Issue 1: no in-page chrome — no program-name heading, no core-version status line.
+  // Issue 1: no stray in-page chrome — no program-name heading, no core-version status line.
+  // (trmx-188 added the app-drawn 38px title bar — deliberate chrome, asserted below.)
   await expect(page.locator("h1")).toHaveCount(0);
   await expect(page.getByTestId("core-version")).toHaveCount(0);
 
-  // Issue 1: the terminal is flush to the top-left and spans (about) the whole viewport — no body
-  // margin/padding. The fit addon leaves at most a sub-cell remainder at the bottom-right.
-  // trmx-74: the window now ends in the 34px tab strip, so the terminal owns everything ABOVE it.
+  // trmx-188: the title bar owns the very top; the terminal is flush left and starts directly
+  // below it. The fit addon leaves at most a sub-cell remainder at the bottom-right.
+  // trmx-74: the window ends in the 34px tab strip, so the terminal owns everything between.
+  const bar = await page.locator(".title-bar").boundingBox();
+  expect(bar).not.toBeNull();
+  expect(bar!.y).toBeLessThanOrEqual(1);
   const box = await xterm.boundingBox();
   expect(box).not.toBeNull();
   expect(box!.x).toBeLessThanOrEqual(2);
-  expect(box!.y).toBeLessThanOrEqual(2);
+  expect(box!.y).toBeLessThanOrEqual(bar!.y + bar!.height + 2);
   expect(box!.width).toBeGreaterThan(900 * 0.95);
-  expect(box!.height).toBeGreaterThan((600 - 34) * 0.95);
+  expect(box!.height).toBeGreaterThan((600 - bar!.height - 34) * 0.95);
 });
 
 test("the terminal content re-fits as the window grows (responsive)", async ({

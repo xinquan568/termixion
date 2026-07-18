@@ -49,16 +49,67 @@ body {
   display: flex;
   flex-direction: column;
 }
-.app--bar-bottom {
+/*
+ * trmx-188 — the app-drawn title bar (TitleBarStyle::Overlay hides the native chrome; the traffic
+ * lights float over the webview's top-left). The bar is the shell's FIRST child and the shell is
+ * ALWAYS a column, so the bar tops the window for every bar position: the trmx-81 direction flip
+ * moved off `.app` onto the `.app-body` wrapper below it. LEFT: a 78px inset clearing the lights
+ * (collapsed in fullscreen, where macOS auto-hides them) then the truncating active-tab title.
+ * RIGHT: the priority slot — flex-shrink: 0 with the title's min-width: 0 means the slot ALWAYS
+ * wins the width fight (trmx-190 mounts the counters here). Metrics are CSS-owned constants like
+ * every chrome metric in this file.
+ */
+.title-bar {
+  height: 38px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 10px;
+  background: var(--tx-bg-sunken);
+  border-bottom: 1px solid var(--tx-border);
+  color: var(--tx-text-primary);
+  font-size: 13px;
+}
+.title-bar__inset {
+  width: 78px;
+  height: 100%;
+  flex-shrink: 0;
+}
+.title-bar--fullscreen .title-bar__inset {
+  width: 0;
+}
+.title-bar__title {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.title-bar__slot {
+  flex-shrink: 0;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+}
+/* The trmx-81 direction-flipping container (hosts first, strip last — JSX order never changes). */
+.app-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
   flex-direction: column;
 }
-.app--bar-top {
+.app--bar-bottom .app-body {
+  flex-direction: column;
+}
+.app--bar-top .app-body {
   flex-direction: column-reverse;
 }
-.app--bar-right {
+.app--bar-right .app-body {
   flex-direction: row;
 }
-.app--bar-left {
+.app--bar-left .app-body {
   flex-direction: row-reverse;
 }
 

@@ -38,6 +38,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { TerminalView, type SettingsObservation } from "./terminal/TerminalView";
+import { TitleBar } from "./chrome/TitleBar";
 import { TabStrip } from "./tabs/TabStrip";
 import { barLayoutFor, labelOrientationFor } from "./tabs/barLayout";
 import {
@@ -1892,6 +1893,17 @@ export function App({
 
   return (
     <main className={`app app--bar-${barPosition}`}>
+      {/* trmx-188: the app-drawn title bar — FIRST child, OUTSIDE the direction-flipping app-body,
+          so it tops the window for every barPosition. It consumes the same active-tab derived
+          title the native-title effect pushes (the component never re-derives). The right slot is
+          trmx-190's mount point; the ?e2e.titleBarSlot= fixture (the trmx-81 D1 query-seam
+          precedent — the packaged app never navigates with a query) lets e2e prove the slot wins
+          against real content. */}
+      <TitleBar
+        title={activeTitle ?? ""}
+        rightSlot={titleBarSlotFixture !== null ? <span>{titleBarSlotFixture}</span> : null}
+      />
+      <div className="app-body">
       <div className="tab-hosts" ref={contentRef}>
         {state.tabs.map((tab) => {
           // KEEP-ALIVE: every tab's host stays mounted (keyed by the never-reused tabId); switching
@@ -2167,9 +2179,19 @@ export function App({
           onCancel={cancelPendingClose}
         />
       )}
+      </div>
     </main>
   );
 }
+
+/**
+ * trmx-188: the e2e right-slot fixture, read ONCE at module load (the slot's real content arrives
+ * with trmx-190). Guarded like every browser-global read in a module that jsdom also imports.
+ */
+const titleBarSlotFixture: string | null =
+  typeof window === "undefined"
+    ? null
+    : new URLSearchParams(window.location.search).get("e2e.titleBarSlot");
 
 /**
  * trmx-90: the ⇧⌘B inline BADGE EDITOR — a small centered input over the focused pane. Mirrors

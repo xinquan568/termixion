@@ -131,6 +131,25 @@ mod tests {
     }
 
     #[test]
+    fn the_main_window_declares_overlay_titlebar() {
+        // trmx-188: the main window's chrome is app-drawn. The main window is auto-built from
+        // tauri.conf.json BEFORE `setup` runs, so (unlike the settings window) the Overlay style
+        // cannot come from apply_macos_titlebar — it must be pinned in the window CONFIG. Tauri
+        // silently ignores unknown config fields, so this test is what catches a typo'd key.
+        let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+            .expect("tauri.conf.json parses as JSON");
+        let window = &config["app"]["windows"][0];
+        assert_eq!(
+            window["titleBarStyle"], "Overlay",
+            "the main window must declare the macOS Overlay title-bar style"
+        );
+        assert_eq!(
+            window["hiddenTitle"], true,
+            "the native title must be hidden under the overlay (the webview draws its own)"
+        );
+    }
+
+    #[test]
     fn the_settings_window_capability_grants_start_dragging() {
         // trmx-54: the Overlay-titlebar settings window has no native titlebar, so dragging only
         // works when the webview's `data-tauri-drag-region` chrome may invoke `start_dragging` —
