@@ -559,6 +559,56 @@ describe("setBadge (trmx-90 — per-pane badge state)", () => {
   });
 });
 
+describe("setForeground (trmx-190 — the pane's foreground process name, for AI counting)", () => {
+  it("sets the pane's foreground name; null clears it back to undefined", () => {
+    let s = run({ kind: "openTab" });
+    expect(s.tabs[0].panes[1].foreground).toBeUndefined(); // a fresh pane has no foreground
+    s = reduceTabs(s, { kind: "setForeground", tabId: 1, paneId: 1, name: "claude" });
+    expect(s.tabs[0].panes[1].foreground).toEqual({ name: "claude" });
+    s = reduceTabs(s, { kind: "setForeground", tabId: 1, paneId: 1, name: null });
+    expect(s.tabs[0].panes[1].foreground).toBeUndefined(); // null normalizes to undefined (none)
+  });
+
+  it("never moves the derived tab title (foreground is a counting slot, not a title source)", () => {
+    let s = run(
+      { kind: "openTab" },
+      { kind: "attachSession", tabId: 1, paneId: 1, sessionId: 7, title: "zsh" },
+    );
+    s = reduceTabs(s, { kind: "setForeground", tabId: 1, paneId: 1, name: "claude" });
+    expect(s.tabs[0].title).toBe("zsh"); // the tab label is untouched
+    expect(s.tabs[0].panes[1].title).toBe("zsh");
+    expect(s.tabs[0].panes[1].foreground).toEqual({ name: "claude" });
+  });
+
+  it("is a no-op (===) when the name is unchanged — the 1 Hz hint stream must not re-render", () => {
+    const on = reduceTabs(run({ kind: "openTab" }), {
+      kind: "setForeground",
+      tabId: 1,
+      paneId: 1,
+      name: "claude",
+    });
+    expect(reduceTabs(on, { kind: "setForeground", tabId: 1, paneId: 1, name: "claude" })).toBe(on);
+    // A fresh pane is already clear (undefined), so a redundant clear is === too.
+    const fresh = run({ kind: "openTab" });
+    expect(reduceTabs(fresh, { kind: "setForeground", tabId: 1, paneId: 1, name: null })).toBe(
+      fresh,
+    );
+  });
+
+  it("is a no-op (===) for an unknown tab or pane", () => {
+    const s = run({ kind: "openTab" });
+    expect(reduceTabs(s, { kind: "setForeground", tabId: 99, paneId: 1, name: "claude" })).toBe(s);
+    expect(reduceTabs(s, { kind: "setForeground", tabId: 1, paneId: 99, name: "claude" })).toBe(s);
+  });
+
+  it("closing the pane drops its foreground with the pane", () => {
+    let s = run({ kind: "openTab" }, { kind: "splitPane", tabId: 1, dir: "row" });
+    s = reduceTabs(s, { kind: "setForeground", tabId: 1, paneId: 2, name: "codex" });
+    s = reduceTabs(s, { kind: "closePane", tabId: 1, paneId: 2 });
+    expect(s.tabs[0].panes[2]).toBeUndefined();
+  });
+});
+
 describe("setActivity (trmx-91 — per-pane activity-line visibility)", () => {
   /** One tab with panes 1 | 2 (focus 2). */
   function split(): TabsState {

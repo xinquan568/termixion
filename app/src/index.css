@@ -92,6 +92,88 @@ body {
   display: flex;
   align-items: center;
 }
+/*
+ * trmx-190 — the AI-session counter in the title-bar right slot. Segments render `bucket: a/t`
+ * with All last; the DISPLAY truth table is CSS over the classes the pure model emits, so model
+ * and stylesheet cannot disagree: wide + multi → named + All; wide + single → named only (the
+ * --redundant All is hidden); narrow (≤719px viewport — the bar spans the viewport, so viewport
+ * width IS bar width) → All only, overriding the redundant suppression. The all-idle state dims
+ * the whole counter (opacity, still readable); the tooltip is a hover/focus panel anchored to the
+ * bar's right edge (right: 0 keeps it inside the viewport — the trmx-188 no-horizontal-scroll
+ * invariant).
+ */
+.ai-counter {
+  position: relative;
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+  color: var(--tx-text-primary);
+}
+.ai-counter--idle {
+  opacity: 0.45;
+}
+.ai-counter__segment {
+  padding: 0 6px;
+  white-space: nowrap;
+}
+.ai-counter__segment + .ai-counter__segment {
+  border-left: 1px solid var(--tx-border);
+}
+/* Wide mode: a redundant All (single visible bucket) is pure repetition — hidden. */
+.ai-counter__segment--all.ai-counter__segment--redundant {
+  display: none;
+}
+.ai-counter__tooltip {
+  display: none;
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  min-width: 180px;
+  max-width: 320px;
+  padding: 6px 10px;
+  background: var(--tx-bg-elev);
+  border: 1px solid var(--tx-border);
+  border-radius: 6px;
+}
+.ai-counter:hover .ai-counter__tooltip,
+.ai-counter:focus-visible .ai-counter__tooltip {
+  display: block;
+}
+.ai-counter__tooltip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  white-space: nowrap;
+}
+.ai-counter__tooltip-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ai-counter__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--tx-border);
+  flex-shrink: 0;
+}
+.ai-counter__dot--active {
+  background: var(--tx-success);
+}
+/* Narrow: collapse to All only. The two-class selectors out-specify the wide rules above, so the
+   redundant-suppressed All comes BACK when it is the only thing left to show. */
+@media (max-width: 719px) {
+  .ai-counter .ai-counter__segment {
+    display: none;
+  }
+  .ai-counter .ai-counter__segment--all {
+    display: inline-block;
+  }
+}
+
 /* The trmx-81 direction-flipping container (hosts first, strip last — JSX order never changes). */
 .app-body {
   flex: 1 1 auto;

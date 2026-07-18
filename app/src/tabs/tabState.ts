@@ -74,6 +74,13 @@ export interface PaneState {
    * single ephemeral slot orthogonal to the title, so toggling it never moves the derived tab label.
    */
   activityVisible?: boolean;
+  /**
+   * trmx-190: the pane's foreground process (undefined = the shell / none). Set from the 250 ms
+   * poller's busy-rise metadata, cleared on the fall, corrected by the 1 Hz title hint — a COUNTING
+   * slot for the AI-session counters, deliberately separate from `titleSources.process` (which is
+   * ~1 Hz, outranked by OSC/manual, and exists for labels). Never a title source.
+   */
+  foreground?: { name: string };
 }
 
 /** One tab: a stable identity, the pure pane tree, the focused pane, per-pane state, derived title. */
@@ -146,7 +153,8 @@ export type TabsAction =
   // trmx-90: set (string) or clear (null) a PANE's ephemeral badge — last-write-wins, title-independent.
   | { kind: "setBadge"; tabId: number; paneId: number; badge: string | null }
   // trmx-91: set the PANE's activity-line visibility — App-driven (the debounce owns the timing).
-  | { kind: "setActivity"; tabId: number; paneId: number; visible: boolean };
+  | { kind: "setActivity"; tabId: number; paneId: number; visible: boolean }
+  | { kind: "setForeground"; tabId: number; paneId: number; name: string | null };
 
 /** The empty strip: no tabs, nothing active, tab AND pane ids starting at 1. */
 export function initialTabsState(): TabsState {
@@ -445,6 +453,23 @@ export function reduceTabs(state: TabsState, action: TabsAction): TabsState {
       const activityVisible = action.visible ? true : undefined;
       if (pane.activityVisible === activityVisible) return state; // unchanged — === no-op
       const nextPane: PaneState = { ...pane, activityVisible };
+      return replacePane(state, tab, action.paneId, nextPane);
+    }
+
+    case "setForeground": {
+      const tab = state.tabs.find((t) => t.tabId === action.tabId);
+      if (!tab) return state;
+      const pane = tab.panes[action.paneId];
+      if (!pane) return state; // dead/unknown pane — no-op (===)
+      // trmx-190: the counting slot (the setActivity idiom): name → { name }, null → undefined.
+      // The === no-op on an unchanged name is load-bearing — the 1 Hz title-hint stream re-asserts
+      // the same name every tick, and a redundant dispatch must not re-render the app.
+      const name = action.name ?? undefined;
+      if (pane.foreground?.name === name) return state; // unchanged (incl. clear-when-clear)
+      const nextPane: PaneState = {
+        ...pane,
+        foreground: name === undefined ? undefined : { name },
+      };
       return replacePane(state, tab, action.paneId, nextPane);
     }
   }

@@ -99,6 +99,9 @@ export interface SettingsValues {
    * plain boolean like terminal.activityIndicator — the strip gates only the RENDER; the chords
    * themselves stay bound either way (mirrors core's `tabs.show_shortcut_hints`). */
   "tabs.showShortcutHints": boolean;
+  /** trmx-190: show the live AI-session counters in the title bar's right slot (default on). A
+   * plain boolean render gate like terminal.activityIndicator (mirrors core's `title_bar.ai_counter`). */
+  "titleBar.aiCounter": boolean;
   /** trmx-93 (FR-5): the startup script to source in the first tab on launch, as a scripts-root
    * relative path (e.g. "work/proj-x.sh"); "" = none. A free string, like terminal.fontFamily. */
   "scripts.startup": string;
@@ -159,6 +162,8 @@ export const SETTING_DEFAULTS: SettingsValues = {
   "tabs.sideLabelOrientation": "horizontal",
   // trmx-151: the ⌘N tab hints are ON by default (iTerm2 parity); off is a visual opt-out only.
   "tabs.showShortcutHints": true,
+  // trmx-190: the AI-session counter is ON by default (off is a render gate only).
+  "titleBar.aiCounter": true,
   // trmx-93 (FR-5): no startup script by default (empty = none).
   "scripts.startup": "",
   "remote_control.enabled": false,
@@ -195,6 +200,8 @@ const STORAGE_KEYS: Record<SettingKey, string> = {
   "tabs.barPosition": "termixion.tabs.barPosition",
   "tabs.sideLabelOrientation": "termixion.tabs.sideLabelOrientation",
   "tabs.showShortcutHints": "termixion.tabs.showShortcutHints",
+  // trmx-190: never existed pre-config-file, so the T3b migration finds nothing — harmless.
+  "titleBar.aiCounter": "termixion.titleBar.aiCounter",
   // trmx-93 (FR-5): never existed pre-config-file, so the migration finds nothing — harmless.
   "scripts.startup": "termixion.scripts.startup",
   "remote_control.enabled": "termixion.remote_control.enabled",

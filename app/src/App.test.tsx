@@ -566,6 +566,122 @@ describe("App title bar (trmx-188)", () => {
   });
 });
 
+// trmx-190: the AI-session counter in the title bar's right slot. The counter derives from
+// PaneState.foreground (set on the poller's busy RISE metadata, cleared on the fall, corrected by
+// the 1 Hz hint) + activityVisible (the NUMERATOR INVARIANT: numerator == lit activity bars).
+// These are the behavioral tests e2e cannot reach (no Tauri runtime there): live updates through
+// the injected seams, the invariant end-to-end, foreground lifecycle, and click-to-cycle focus.
+describe("App AI-session counter (trmx-190)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const counter = () => screen.queryByTestId("ai-counter");
+  const segment = (bucket: string) =>
+    counter()?.querySelector(`[data-bucket="${bucket}"]`)?.textContent;
+
+  it("a rise with AI metadata shows the total at once; the lit activity bar raises the numerator (the invariant)", async () => {
+    const { calls, activity } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
+    expect(counter()).not.toBeInTheDocument(); // no AI sessions → renders nothing
+    vi.useFakeTimers();
+
+    // claude in a PLAIN shape (a positional) — the light gates on the 150ms debounce only.
+    act(() => activity.fire(7, true, { name: "claude", args: ["task.md"], stdinTty: true }));
+    expect(segment("claude")).toBe("claude: 0/1"); // total immediate (the 250ms path), not yet active
+    act(() => vi.advanceTimersByTime(150)); // the activity bar lights...
+    expect(segment("claude")).toBe("claude: 1/1"); // ...and the numerator follows it exactly
+
+    // All is suppressed with a single visible bucket (redundant).
+    const all = counter()!.querySelector('[data-bucket="All"]');
+    expect(all?.className ?? "").toContain("ai-counter__segment--redundant");
+  });
+
+  it("the busy fall clears the foreground — quitting the AI drops the counter entirely", async () => {
+    const { calls, activity } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
+    act(() => activity.fire(7, true, { name: "codex", args: ["x"], stdinTty: true }));
+    expect(segment("codex")).toBe("codex: 0/1");
+    act(() => activity.fire(7, false));
+    expect(counter()).not.toBeInTheDocument();
+  });
+
+  it("a 1 Hz title hint corrects a missed rise (and a shell hint corrects it back)", async () => {
+    const { calls, titleHint } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
+    act(() => titleHint.fire(7, "codex"));
+    expect(segment("codex")).toBe("codex: 0/1");
+    act(() => titleHint.fire(7, "zsh"));
+    expect(counter()).not.toBeInTheDocument(); // zsh buckets to null — not an AI session
+  });
+
+  it("an OSC-133-owned pane still tracks foreground from the poller's rise (counting is carve-out-independent)", async () => {
+    const { calls, activity } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
+    const marker = recorder.mounts[0].onPromptMarker!;
+    act(() => marker({ kind: "C", busy: true, busyChanged: true })); // latch OSC-133 ownership
+    act(() => activity.fire(7, true, { name: "claude" })); // rawBusy ignored — foreground is not
+    expect(segment("claude")).toBe("claude: 0/1");
+  });
+
+  it("click cycles focus through the AI panes of ONE tab — focusPane, not just activateTab", async () => {
+    const { calls, activity } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
+    fireEvent.keyDown(document.body, { key: "d", metaKey: true }); // ⌘D split → pane 2, focused
+    await resolveAttach(calls[1], { sessionId: 8, title: "zsh" });
+    vi.useFakeTimers();
+    act(() => activity.fire(7, true, { name: "claude", args: ["a"], stdinTty: true }));
+    act(() => activity.fire(8, true, { name: "claude", args: ["b"], stdinTty: true }));
+    act(() => vi.advanceTimersByTime(150)); // both lit → both in the active cycle
+    expect(segment("claude")).toBe("claude: 2/2");
+    expect(screen.getByTestId("pane-host-2").className).toContain("pane-host--focused");
+
+    fireEvent.click(counter()!); // first active in tab order → pane 1
+    expect(screen.getByTestId("pane-host-1").className).toContain("pane-host--focused");
+    fireEvent.click(counter()!); // next → pane 2
+    expect(screen.getByTestId("pane-host-2").className).toContain("pane-host--focused");
+    fireEvent.click(counter()!); // wrap-around → pane 1 again
+    expect(screen.getByTestId("pane-host-1").className).toContain("pane-host--focused");
+  });
+
+  it("click activates the OTHER tab when the next AI session lives there (activateTab)", async () => {
+    const { calls, activity } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 7, title: "one" });
+    fireEvent.click(screen.getByTestId("tab-new"));
+    await resolveAttach(calls[1], { sessionId: 8, title: "two" });
+    // Tab 2 is active; the only AI session lives in tab 1 (idle → the fallback-all cycle).
+    act(() => activity.fire(7, true, { name: "codex", args: ["x"], stdinTty: true }));
+    expect(screen.getByTestId("tab-2").className).toContain(activeClass);
+    fireEvent.click(counter()!);
+    expect(screen.getByTestId("tab-1").className).toContain(activeClass);
+    expect(screen.getByTestId("pane-host-1").className).toContain("pane-host--focused");
+  });
+
+  it("titleBar.aiCounter OFF hides the counter (a pure render gate)", async () => {
+    const { calls, activity, settingsChanged } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
+    act(() => activity.fire(7, true, { name: "claude", args: ["x"], stdinTty: true }));
+    expect(counter()).toBeInTheDocument();
+    await act(async () => {
+      settingsChanged.fire({ key: "titleBar.aiCounter", value: false, source: "settings-window" });
+    });
+    expect(counter()).not.toBeInTheDocument();
+    await act(async () => {
+      settingsChanged.fire({ key: "titleBar.aiCounter", value: true, source: "config-file" });
+    });
+    expect(counter()).toBeInTheDocument();
+  });
+
+  it("the tooltip lists each AI session with its title and active state", async () => {
+    const { calls, activity } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 7, title: "build box" });
+    act(() => activity.fire(7, true, { name: "claude", args: ["x"], stdinTty: true }));
+    const tooltip = screen.getByTestId("ai-counter-tooltip");
+    expect(tooltip.textContent).toContain("build box");
+    expect(tooltip.textContent).toContain("claude");
+  });
+});
+
 // trmx-75 (FR-2.4): title routing — per-tab OSC callbacks, session:title-hint → process slot,
 // the native window title (ACTIVE tab only), and the core mirror (EFFECTIVE titles only).
 describe("App tab titles (trmx-75)", () => {

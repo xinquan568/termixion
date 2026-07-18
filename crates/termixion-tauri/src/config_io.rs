@@ -138,6 +138,7 @@ fn value_kind_for(registry_key: &str) -> Option<ValueKind> {
         | "terminal.activityIndicator"
         | "terminal.copyOnSelect"
         | "tabs.showShortcutHints" // trmx-151
+        | "titleBar.aiCounter" // trmx-190
         | "remote_control.enabled" => Some(ValueKind::Bool),
         "terminal.scrollbackLines" | "terminal.fontSize" => Some(ValueKind::Int),
         "update.checkFrequency"
@@ -891,6 +892,7 @@ mod tests {
             ("tabs.barPosition", ValueKind::Str),
             ("tabs.sideLabelOrientation", ValueKind::Str),
             ("tabs.showShortcutHints", ValueKind::Bool), // trmx-151
+            ("titleBar.aiCounter", ValueKind::Bool),     // trmx-190
             ("scripts.startup", ValueKind::Str),
             ("remote_control.enabled", ValueKind::Bool),
             ("remote_control.socketPath", ValueKind::Str),
