@@ -522,6 +522,50 @@ describe("App (the tab manager, trmx-74)", () => {
   });
 });
 
+// trmx-188: the app-drawn title bar consumes the SAME active-tab derived title the native window
+// title gets (App passes activeTab.title down — the component never re-derives). Structure pin:
+// the bar is the FIRST child of main.app, ABOVE the app-body wrapper that carries the trmx-81
+// direction-flipping flex (so the bar tops the window for every tabs.barPosition).
+describe("App title bar (trmx-188)", () => {
+  async function twoTabs() {
+    const ctx = renderApp();
+    await resolveAttach(ctx.calls[0], { sessionId: 11, title: "one" });
+    fireEvent.click(screen.getByTestId("tab-new"));
+    await resolveAttach(ctx.calls[1], { sessionId: 22, title: "two" });
+    return ctx;
+  }
+
+  it("is the first child of main.app, above the app-body wrapper", async () => {
+    const { calls } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 11, title: "one" });
+    const main = document.querySelector("main.app")!;
+    expect(main.firstElementChild?.className).toContain("title-bar");
+    expect(main.querySelector(".app-body")).not.toBeNull();
+    // The hosts + strip moved INSIDE app-body (the direction-flipping container).
+    expect(main.querySelector(".app-body .tab-hosts")).not.toBeNull();
+    expect(main.querySelector('.app-body [data-testid="tab-strip"]')).not.toBeNull();
+  });
+
+  it("shows the ACTIVE tab's derived title and follows switches", async () => {
+    await twoTabs();
+    const barTitle = () => document.querySelector(".title-bar__title")!.textContent;
+    expect(barTitle()).toBe("two");
+
+    clickTab(1);
+    expect(barTitle()).toBe("one");
+    clickTab(2);
+    expect(barTitle()).toBe("two");
+  });
+
+  it("a background tab's OSC title never reaches the bar", async () => {
+    await twoTabs();
+    await act(async () => {
+      recorder.mounts[0].onOscTitle?.("secret build"); // tab 1 is hidden behind tab 2
+    });
+    expect(document.querySelector(".title-bar__title")!.textContent).toBe("two");
+  });
+});
+
 // trmx-75 (FR-2.4): title routing — per-tab OSC callbacks, session:title-hint → process slot,
 // the native window title (ACTIVE tab only), and the core mirror (EFFECTIVE titles only).
 describe("App tab titles (trmx-75)", () => {
