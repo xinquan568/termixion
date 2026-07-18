@@ -682,6 +682,131 @@ describe("App AI-session counter (trmx-190)", () => {
   });
 });
 
+// trmx-191: the ⌘⇧A manual activity toggle — a one-shot override on the focused pane. Direction
+// derives from the RENDERED state (lightActive OR the trmx-99 flash), force-off clears the flash,
+// the override auto-clears on the next genuine detector event, and the trmx-190 counter numerator
+// moves in the same interaction (the shared invariant both issues pinned).
+describe("App activity toggle (trmx-191)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const barIn = (paneId: number) =>
+    within(screen.getByTestId(`pane-host-${paneId}`)).queryByTestId("pane-activity");
+  const chord = () =>
+    fireEvent.keyDown(document.body, { key: "a", metaKey: true, shiftKey: true });
+
+  it("⌘⇧A force-shows a hidden bar and force-hides it again on the focused pane", async () => {
+    const { calls } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
+    expect(barIn(1)).not.toBeInTheDocument();
+    chord();
+    expect(barIn(1)).toBeInTheDocument(); // forced on, no detector involved
+    chord();
+    expect(barIn(1)).not.toBeInTheDocument(); // rendered-active → forced off
+  });
+
+  it("a flash-only stuck bar toggles OFF (not on) and the flash clears", async () => {
+    const { calls } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
+    const marker = recorder.mounts[0].onPromptMarker!;
+    // A failed command's exit flash: D;1 with no busy state — the bar shows on the flash leg only.
+    act(() => marker({ kind: "D", busy: false, busyChanged: false, exitCode: 1 }));
+    expect(barIn(1)).toBeInTheDocument();
+    chord();
+    // The rendered-state direction rule: visible (via flash) → force OFF + clearFlash, not force on.
+    expect(barIn(1)).not.toBeInTheDocument();
+  });
+
+  it("acts on the FOCUSED pane only — a background pane's bar is untouched", async () => {
+    const { calls, activity } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
+    fireEvent.keyDown(document.body, { key: "d", metaKey: true }); // split → pane 2 focused
+    await resolveAttach(calls[1], { sessionId: 8, title: "zsh" });
+    vi.useFakeTimers();
+    act(() => activity.fire(7, true, { name: "sleep" })); // background pane 1 busy
+    act(() => vi.advanceTimersByTime(150));
+    expect(barIn(1)).toBeInTheDocument();
+    expect(barIn(2)).not.toBeInTheDocument();
+    chord(); // focused pane 2 forces ON; pane 1 untouched
+    expect(barIn(2)).toBeInTheDocument();
+    expect(barIn(1)).toBeInTheDocument();
+    chord(); // focused pane 2 forces OFF; pane 1 still lit
+    expect(barIn(2)).not.toBeInTheDocument();
+    expect(barIn(1)).toBeInTheDocument();
+  });
+
+  it("the override auto-clears on the next genuine detector event (no further keypresses)", async () => {
+    const { calls, activity } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
+    chord(); // force ON while genuinely idle
+    expect(barIn(1)).toBeInTheDocument();
+    act(() => activity.fire(7, false)); // a genuine fall (even a missed-rise one) clears it
+    expect(barIn(1)).not.toBeInTheDocument();
+
+    // Force OFF a lit bar; a genuinely started NEW command re-shows without a keypress.
+    vi.useFakeTimers();
+    act(() => activity.fire(7, true, { name: "sleep" }));
+    act(() => vi.advanceTimersByTime(150));
+    expect(barIn(1)).toBeInTheDocument();
+    chord(); // rendered-active → force OFF
+    expect(barIn(1)).not.toBeInTheDocument();
+    act(() => activity.fire(7, false)); // the stuck job "ends" — detector event clears the override
+    act(() => activity.fire(7, true, { name: "sleep" })); // a NEW command rises
+    act(() => vi.advanceTimersByTime(150));
+    expect(barIn(1)).toBeInTheDocument(); // no stale force-off
+  });
+
+  it("moves the AI counter numerator in the same interaction (the shared trmx-190 invariant)", async () => {
+    const { calls, activity } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
+    vi.useFakeTimers();
+    act(() => activity.fire(7, true, { name: "claude", args: ["task.md"], stdinTty: true }));
+    act(() => vi.advanceTimersByTime(150));
+    const segment = () =>
+      screen.getByTestId("ai-counter").querySelector('[data-bucket="claude"]')?.textContent;
+    expect(segment()).toBe("claude: 1/1");
+    chord(); // force the lit bar off → the numerator follows activityVisible
+    expect(segment()).toBe("claude: 0/1");
+    chord(); // force back on → it returns
+    expect(segment()).toBe("claude: 1/1");
+  });
+
+  it("the missing-bar case: a dark interactive command force-shows, and the genuine end clears it", async () => {
+    // The by-design gap the issue reports as "missing bar": an interactive-classified epoch
+    // (bare claude — no argv) with no counted output stays DARK while rawBusy runs (trmx-159's
+    // idle-at-prompt trade; the light also drops HOLD_MS after output stops). ⌘⇧A is the rescue.
+    const { calls, activity } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
+    vi.useFakeTimers();
+    act(() => activity.fire(7, true, { name: "claude", stdinTty: true })); // interactive, no submit
+    act(() => vi.advanceTimersByTime(1000)); // far past the 150ms show delay — still dark
+    expect(barIn(1)).not.toBeInTheDocument();
+    chord(); // force-show the missing bar
+    expect(barIn(1)).toBeInTheDocument();
+    act(() => activity.fire(7, false)); // the command genuinely ends → the override auto-clears
+    act(() => vi.advanceTimersByTime(1000)); // past any min-visible linger
+    expect(barIn(1)).not.toBeInTheDocument();
+  });
+
+  it("REGRESSION PIN (reopen-flash): a tab closed mid-flash leaves no bar in a fresh tab", async () => {
+    const { calls } = renderApp();
+    await resolveAttach(calls[0], { sessionId: 7, title: "zsh" });
+    fireEvent.click(screen.getByTestId("tab-new")); // a second tab so closing tab 1 keeps the window
+    await resolveAttach(calls[1], { sessionId: 8, title: "zsh" });
+    clickTab(1);
+    const marker = recorder.mounts[0].onPromptMarker!;
+    act(() => marker({ kind: "D", busy: false, busyChanged: false, exitCode: 1 })); // flashing
+    expect(barIn(1)).toBeInTheDocument();
+    // Close the flashing tab, open a fresh one — ids are never reused; dispose must clear the flash.
+    fireEvent.click(screen.getByTestId("tab-close-1"));
+    fireEvent.click(screen.getByTestId("tab-new"));
+    await resolveAttach(calls[calls.length - 1], { sessionId: 9, title: "zsh" });
+    // The fresh tab's pane (id 3 — monotonic allocation) boots with no bar and no stale flash.
+    expect(barIn(3)).not.toBeInTheDocument();
+  });
+});
+
 // trmx-75 (FR-2.4): title routing — per-tab OSC callbacks, session:title-hint → process slot,
 // the native window title (ACTIVE tab only), and the core mirror (EFFECTIVE titles only).
 describe("App tab titles (trmx-75)", () => {

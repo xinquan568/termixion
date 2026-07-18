@@ -74,6 +74,7 @@ import {
   onClassifyMetadata,
   onDeadline,
   onInput as onActivityInput,
+  onManualToggle,
   onOutput as onActivityOutput,
   type ActivityMeta,
   type ActivityState,
@@ -1145,6 +1146,26 @@ export function App({
     setBadge: () => {
       const tab = getActiveTab();
       if (tab) setBadgingPaneId(tab.focusedPaneId);
+    },
+    toggleActivity: () => {
+      // trmx-191: the ⌘⇧A one-shot override on the FOCUSED pane. The direction derives from the
+      // RENDERED state — lightActive OR the trmx-99 flash, the exact disjunction the overlay draws
+      // from — so a flash-only stuck bar forces OFF (and its flash clears) instead of stacking a
+      // force-on under it. The setActivity dispatch inside applyActivityTransition flips
+      // activityVisible, so the trmx-190 counter numerator moves in the same interaction (the
+      // shared invariant), with zero counter wiring here.
+      const tab = getActiveTab();
+      if (!tab) return;
+      const paneId = tab.focusedPaneId;
+      const now = Date.now();
+      const current = activityStatesRef.current.get(paneId) ?? initialActivity();
+      const renderedActive = lightActive(current, now) || flashingPanes.has(paneId);
+      if (renderedActive) clearFlashFor(paneId);
+      applyActivityTransition(
+        tab.tabId,
+        paneId,
+        onManualToggle(current, renderedActive ? "off" : "on", now),
+      );
     },
     growPane: (dir) => {
       const tab = getActiveTab();

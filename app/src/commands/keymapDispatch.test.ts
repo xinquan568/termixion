@@ -122,4 +122,9 @@ describe("keymap wiring invariants", () => {
   it("the default keymap targets only palette-excluded commands the webview can enforce", () => {
     for (const id of Object.values(FULL_DEFAULT_KEYS)) expect(isWebviewOwned(id)).toBe(true);
   });
+
+  it("⌘⇧A resolves to the activity toggle (trmx-191)", () => {
+    expect(FULL_DEFAULT_KEYS["cmd+shift+a"]).toBe("pane.toggle-activity");
+    expect(resolve(cmd("a", { shiftKey: true }), PAGE, DEFAULTS)).toBe("pane.toggle-activity");
+  });
 });

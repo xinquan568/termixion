@@ -11,7 +11,8 @@ function fakeCtx(over: Partial<CommandContext> = {}): CommandContext {
     selectTab: vi.fn(), renameActiveTab: vi.fn(), newTabWithScript: vi.fn(),
     splitRight: vi.fn(), splitBelow: vi.fn(), splitRightWithScript: vi.fn(),
     splitBelowWithScript: vi.fn(), closePane: vi.fn(), focusPane: vi.fn(),
-    nextPane: vi.fn(), prevPane: vi.fn(), setBadge: vi.fn(), growPane: vi.fn(), movePane: vi.fn(),
+    nextPane: vi.fn(), prevPane: vi.fn(), setBadge: vi.fn(), toggleActivity: vi.fn(),
+    growPane: vi.fn(), movePane: vi.fn(),
     clearScrollback: vi.fn(), openSettings: vi.fn(), checkForUpdates: vi.fn(),
     openSearch: vi.fn(), searchNext: vi.fn(), searchPrev: vi.fn(), closeSearch: vi.fn(),
     closeWindow: vi.fn(), openCommandPalette: vi.fn(), selectTheme: vi.fn(), runScript: vi.fn(),
@@ -32,6 +33,7 @@ describe("command registry — the frozen id set (stable public surface / FR-9.4
         "tab.select-6", "tab.select-7", "tab.select-8", "tab.select-9",
         "pane.split-right", "pane.split-below", "pane.split-right-with-script",
         "pane.split-below-with-script", "pane.close", "pane.next", "pane.prev", "pane.set-badge",
+        "pane.toggle-activity",
         "pane.focus-left", "pane.focus-right", "pane.focus-up", "pane.focus-down",
         "pane.grow-left", "pane.grow-right", "pane.grow-up", "pane.grow-down",
         "pane.move-left", "pane.move-right", "pane.move-up", "pane.move-down",
@@ -54,6 +56,7 @@ describe("command run() bodies call the right ctx method", () => {
     ["pane.close", "closePane"], // closes the focused pane (⌘W)
     ["pane.split-right", "splitRight"],
     ["pane.set-badge", "setBadge"],
+    ["pane.toggle-activity", "toggleActivity"], // trmx-191: the ⌘⇧A escape hatch
     ["terminal.clear-scrollback", "clearScrollback"],
     ["search.open", "openSearch"], // trmx-98
     ["search.next", "searchNext"],
