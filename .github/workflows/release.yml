@@ -1,16 +1,17 @@
-# Release (E-2): on a pushed `v*` tag, build the Apple-silicon app on macos-14 AND the x86_64 Linux
-# AppImage/.deb on ubuntu-22.04 (trmx-102, FR-1.7), then publish ONE (draft) GitHub Release with both
-# platforms' installers + updater artifacts + a merged latest.json.
+# Release (E-2): on a pushed `v*` tag, build the Apple-silicon app on macos-14, then publish ONE (draft)
+# GitHub Release with the macOS installer + updater artifacts + latest.json. macOS-only since v0.1.1
+# (trmx-187) — the Linux release line (trmx-102, FR-1.7) shipped v0.0.9–v0.1.0 and was dropped; see
+# docs/RELEASE.md.
 #
 # SIGNING IS DUAL-MODE (trmx-49), decided by the "Signing mode" gate from the Apple secrets alone:
 #   - ALL six APPLE_* secrets → signed + notarized + stapled macOS build (independently verified).
 #   - NONE                    → DELIBERATE unsigned personal-alpha macOS build (0.0.x).
 #   - a PARTIAL set           → fail fast — a half-configured release is never shipped.
-# TAURI_SIGNING_PRIVATE_KEY is ALWAYS required so the auto-updater can verify every update artifact (the
-# SAME minisign key signs both the macOS .app.tar.gz and the Linux .AppImage — trmx-102/trmx-139).
+# TAURI_SIGNING_PRIVATE_KEY is ALWAYS required so the auto-updater can verify every update artifact
+# (the minisign key signs the macOS .app.tar.gz).
 #
-# Three jobs so Linux never races the macOS publish (each build UPLOADS artifacts; `publish` NEEDS both,
-# downloads them, assembles the two-platform latest.json, and creates the release exactly once).
+# Two jobs (build UPLOADS artifacts; `publish` NEEDS it, downloads them, assembles latest.json, and
+# creates the release exactly once).
 name: release
 
 on:
@@ -147,93 +148,9 @@ jobs:
           path: dist-macos/
           if-no-files-found: error
 
-  build-linux:
-    name: build linux (x86_64 AppImage + .deb)
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Tauri Linux system deps (webkit2gtk 4.1 + gtk)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
-            build-essential curl wget file libssl-dev libxdo-dev
-      - name: Install the pinned toolchain (rust-toolchain.toml)
-        run: rustup toolchain install "$(sed -nE 's/^channel = "([^"]+)".*/\1/p' rust-toolchain.toml)"
-      - uses: Swatinem/rust-cache@v2
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11.6.0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-      - name: Install frontend deps
-        run: pnpm install --frozen-lockfile
-      - name: Bootstrap cargo-tauri (§2.4)
-        run: cargo install tauri-cli --version 2.11.3 --locked
-      - name: Release metadata + tag gate
-        env:
-          EXPECTED_TAG: ${{ github.ref_name }}
-        run: bash scripts/check-release-metadata.sh
-
-      # The SAME minisign key signs the Linux updater artifact — the .AppImage itself + a detached
-      # .AppImage.sig (trmx-139); deb is install-only.
-      - name: Build (tauri-action — appimage + deb, signed updater artifact)
-        uses: tauri-apps/tauri-action@v0
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          projectPath: crates/termixion-tauri
-          args: --bundles appimage,deb --config tauri.updater.conf.json
-
-      - name: Validate the .deb dependency metadata
-        run: |
-          set -euo pipefail
-          deb=$(find target -name '*.deb' -print -quit)
-          if [ -z "$deb" ]; then echo "::error::no .deb produced under target/"; exit 1; fi
-          echo "inspecting: $deb"
-          # Capture each dpkg-deb output ONCE, then grep the captured text via a here-string. Piping
-          # `dpkg-deb ... | grep -q` is unsafe under `set -o pipefail`: grep -q exits at the first match
-          # and closes the pipe, dpkg-deb's tar subprocess then hits a write error and exits non-zero, and
-          # pipefail promotes that to the pipeline's status — a false "missing" failure on a good .deb
-          # (trmx-137). A here-string has no upstream producer to SIGPIPE, so the guard is faithful.
-          info="$(dpkg-deb -I "$deb")"             # control + Depends must be present + sane
-          printf '%s\n' "$info"
-          grep -qi '^ Depends:' <<<"$info" || { echo "::error::.deb has no Depends"; exit 1; }
-          # Contents must carry the actual payload, not just metadata (a mispackaged .deb would else pass).
-          contents="$(dpkg-deb --contents "$deb")"
-          printf '%s\n' "$contents"
-          grep -q 'usr/bin/termixion' <<<"$contents" || { echo "::error::.deb is missing usr/bin/termixion"; exit 1; }
-          grep -q '\.desktop' <<<"$contents" || { echo "::error::.deb is missing the .desktop entry"; exit 1; }
-
-      - name: Stage + upload Linux artifacts
-        run: |
-          set -euo pipefail
-          echo "bundle tree:"; find target/release/bundle -maxdepth 2 -type f | sort
-          mkdir -p dist-linux
-          shopt -s nullglob
-          # Tauri v2's Linux updater artifact is the .AppImage itself + a detached .AppImage.sig — NOT a
-          # .AppImage.tar.gz (Tauri v1 / macOS's .app.tar.gz shape) — trmx-139. Match the app bundle by the
-          # `_amd64` arch suffix so the downloaded linuxdeploy-*-x86_64.AppImage build helpers never match.
-          appimage=(target/release/bundle/appimage/*_amd64.AppImage)
-          appsig=(target/release/bundle/appimage/*_amd64.AppImage.sig)
-          deb=(target/release/bundle/deb/*_amd64.deb)
-          [ "${#appimage[@]}" = 1 ] || { echo "::error::expected 1 .AppImage, found ${#appimage[@]}: ${appimage[*]:-<none>}"; exit 1; }
-          [ "${#appsig[@]}"   = 1 ] || { echo "::error::expected 1 .AppImage.sig, found ${#appsig[@]}: ${appsig[*]:-<none>}"; exit 1; }
-          [ "${#deb[@]}"      = 1 ] || { echo "::error::expected 1 .deb, found ${#deb[@]}: ${deb[*]:-<none>}"; exit 1; }
-          cp "${appimage[0]}" "${appsig[0]}" "${deb[0]}" dist-linux/
-          echo "staged:"; ls -l dist-linux/
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dist-linux
-          path: dist-linux/
-          if-no-files-found: error
-
   publish:
-    name: publish draft release (both platforms + merged latest.json)
-    needs: [build-macos, build-linux]
+    name: publish draft release (macOS + latest.json)
+    needs: [build-macos]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -241,24 +158,16 @@ jobs:
         with:
           name: dist-macos
           path: dist-macos
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist-linux
-          path: dist-linux
 
-      # Assemble ONE latest.json carrying BOTH platform entries (only after both artifact sets exist).
-      # The SAME minisign key signed both; verify each signature is present + non-empty.
-      - name: Assemble merged updater manifest (latest.json — darwin-aarch64 + linux-x86_64)
+      # Assemble latest.json (darwin-aarch64 — macOS-only since v0.1.1, trmx-187).
+      # Verify the signature is present + non-empty before publishing.
+      - name: Assemble updater manifest (latest.json — darwin-aarch64)
         id: updater
         run: |
           set -euo pipefail
           mac_art=$(find dist-macos -name '*.app.tar.gz' -print -quit)
           mac_sig=$(find dist-macos -name '*.app.tar.gz.sig' -print -quit)
-          # Tauri v2 Linux updater artifact = the .AppImage itself + its detached .AppImage.sig (trmx-139).
-          # '*.AppImage' does not match '*.AppImage.sig' (that ends in .sig), so the two finds stay distinct.
-          lin_art=$(find dist-linux -name '*.AppImage' -print -quit)
-          lin_sig=$(find dist-linux -name '*.AppImage.sig' -print -quit)
-          for f in "$mac_art" "$mac_sig" "$lin_art" "$lin_sig"; do
+          for f in "$mac_art" "$mac_sig"; do
             if [ -z "$f" ] || [ ! -s "$f" ]; then echo "::error::missing/empty updater artifact or signature: '$f'"; exit 1; fi
           done
           base="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}"
@@ -266,28 +175,25 @@ jobs:
           pub_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           jq -n --arg version "$version" --arg pub_date "$pub_date" \
                 --arg msig "$(cat "$mac_sig")" --arg murl "$base/$(basename "$mac_art")" \
-                --arg lsig "$(cat "$lin_sig")" --arg lurl "$base/$(basename "$lin_art")" \
             '{version: $version, pub_date: $pub_date,
               platforms: {
-                "darwin-aarch64": {signature: $msig, url: $murl},
-                "linux-x86_64":   {signature: $lsig, url: $lurl}
+                "darwin-aarch64": {signature: $msig, url: $murl}
               }}' > latest.json
-          echo "wrote latest.json for $version (darwin-aarch64 + linux-x86_64)"
+          echo "wrote latest.json for $version (darwin-aarch64)"
 
-      - name: Publish draft release (both installers + updater artifacts + latest.json)
+      - name: Publish draft release (installer + updater artifacts + latest.json)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SIGNED: ${{ needs.build-macos.outputs.signed }}
         run: |
           set -euo pipefail
           if [ "$SIGNED" = "true" ]; then
-            notes="Signed + notarized macOS (aarch64) build + x86_64 Linux AppImage/.deb. Auto-update artifacts (latest.json, both platforms) attached. (Alpha — see CHANGELOG.md.)"
+            notes="Signed + notarized macOS (aarch64) build. Auto-update artifacts (latest.json) attached. macOS-only since v0.1.1 (trmx-187). (Alpha — see CHANGELOG.md.)"
           else
-            notes="UNSIGNED macOS (aarch64) personal-alpha build (trmx-49) — Gatekeeper will block it: approve under System Settings → Privacy & Security → \"Open Anyway\", or run \`xattr -d com.apple.quarantine /Applications/Termixion.app\`. Plus x86_64 Linux AppImage (\`chmod +x\` to run; on a FUSE-less host set \`APPIMAGE_EXTRACT_AND_RUN=1\`) + .deb. Auto-updates are signature-verified by the updater key (latest.json attached, both platforms). (Alpha — see CHANGELOG.md.)"
+            notes="UNSIGNED macOS (aarch64) personal-alpha build (trmx-49) — Gatekeeper will block it: approve under System Settings → Privacy & Security → \"Open Anyway\", or run \`xattr -d com.apple.quarantine /Applications/Termixion.app\`. Auto-updates are signature-verified by the updater key (latest.json attached). macOS-only since v0.1.1 (trmx-187). (Alpha — see CHANGELOG.md.)"
           fi
           gh release create "${{ github.ref_name }}" \
             dist-macos/*.dmg dist-macos/*.app.tar.gz dist-macos/*.app.tar.gz.sig \
-            dist-linux/*.AppImage dist-linux/*.AppImage.sig dist-linux/*.deb \
             latest.json \
             --draft \
             --title "Termixion ${{ github.ref_name }}" \

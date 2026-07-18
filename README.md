@@ -1,7 +1,7 @@
 # Termixion
 
-A terminal suitable for personal use — a desktop terminal emulator for **macOS (Apple silicon)** and
-**Linux (x86_64)**, built with Tauri 2 and a React + xterm.js front end on a pure-Rust core.
+A terminal suitable for personal use — a desktop terminal emulator for **macOS (Apple silicon)**,
+built with Tauri 2 and a React + xterm.js front end on a pure-Rust core.
 
 Tabs and split panes, six built-in themes (plus your own as TOML files), per-pane badges, an iTerm2-style
 activity indicator, named scripts, a command palette (`⇧⌘P`), in-pane search (`⌘F`), and an opt-in
@@ -29,30 +29,13 @@ Download the artifacts for the latest release from the
      xattr -d com.apple.quarantine /Applications/Termixion.app
      ```
 
-### Linux (x86_64)
-
-Portable AppImage:
-
-```sh
-chmod +x Termixion_<version>_amd64.AppImage
-./Termixion_<version>_amd64.AppImage
-# On a host without FUSE (many minimal installs), extract-and-run instead of mounting:
-APPIMAGE_EXTRACT_AND_RUN=1 ./Termixion_<version>_amd64.AppImage
-```
-
-Or install the `.deb`:
-
-```sh
-sudo apt install ./Termixion_<version>_amd64.deb
-```
-
-Linux builds are x86_64-only for now; known limitations are recorded in the
-[release runbook](docs/RELEASE.md).
+> **Linux:** Termixion is **macOS-only since v0.1.1** (trmx-187). v0.1.0 and earlier keep their
+> Linux artifacts on the Releases page, but Linux installs no longer receive updates.
 
 ### Updates
 
 Termixion updates itself in-app; every update artifact is signature-verified against the project's
-updater key on both platforms — even though the alpha app itself is unsigned. Details in the
+updater key — even though the alpha app itself is unsigned. Details in the
 [release runbook](docs/RELEASE.md).
 
 ## First run — going further
