@@ -1,14 +1,13 @@
 # Release runbook
 
-**Distribution (Alpha):** GitHub Releases only. Since v0.0.9 (trmx-102, FR-1.7) each release ships **two
-platforms**: an **Apple-silicon** (`aarch64`) macOS `.dmg` built on `macos-14` (signed + notarized when the
-Apple secrets are configured; see **Unsigned mode** below) AND an **x86_64 Linux** `.AppImage` + `.deb`
-built on `ubuntu-22.04` (see the **Linux** section below). The pipeline
+**Distribution (Alpha):** GitHub Releases only. Since v0.1.1 (trmx-187) each release ships **one
+platform**: an **Apple-silicon** (`aarch64`) macOS `.dmg` built on `macos-14` (signed + notarized when the
+Apple secrets are configured; see **Unsigned mode** below). The pipeline
 [`.github/workflows/release.yml`](../.github/workflows/release.yml) (E-2) triggers on a pushed `v*` tag and
-runs **three jobs**: `build-macos` and `build-linux` each build + validate their installers and upload them
-as artifacts; a final **`publish`** job (which `needs` both) downloads them, assembles ONE `latest.json`
-with both `darwin-aarch64` + `linux-x86_64` updater entries (signed by the same minisign key), and creates
-the single draft Release. So Linux never races the macOS publish, and the release is created exactly once.
+runs **two jobs**: `build-macos` builds + validates the installer and uploads it as an artifact; a final
+**`publish`** job downloads it, assembles `latest.json` with the `darwin-aarch64` updater entry (signed by
+the minisign key), and creates the single draft Release exactly once. (Linux shipped v0.0.9–v0.1.0 and was
+dropped — see the **Linux** section below.)
 
 > ⚠️ **The repo ships the pipeline but NOT the secrets.** Signing/notarization credentials live **only**
 > as GitHub Actions secrets (R5 / P0-2); `.gitignore` blocks `*.p12`/`*.p8`/`*.cer`/`*.mobileprovision`
@@ -65,15 +64,14 @@ xattr -d com.apple.quarantine /Applications/Termixion.app
 3. Tag and push: `git tag v0.0.1 && git push origin v0.0.1`. **The tag must be `v<crate version>`** —
    the gate asserts `github.ref_name == v<workspace.package version>`, so a tag that disagrees with the
    crate version (which names the `.dmg`) fails before building.
-4. The `release` workflow runs **three jobs** (trmx-102): (a) **`build-macos`** (`macos-14`): signing-mode
+4. The `release` workflow runs **two jobs** (trmx-187): (a) **`build-macos`** (`macos-14`): signing-mode
    gate → metadata + tag gate → build the `.dmg` (+ codesign + notarize + staple in signed mode) →
    **verify** (`stapler validate` + `spctl` in signed mode; existence in unsigned mode) → upload the
-   `.dmg` + `.app.tar.gz(.sig)`. (b) **`build-linux`** (`ubuntu-22.04`): build the `.AppImage` + `.deb`,
-   validate the `.deb` (metadata + contents), upload the `.AppImage` + `.AppImage.sig` + `.deb`.
-   (c) **`publish`** (`needs` both): download both, assemble ONE `latest.json` (both platform entries, both
-   signatures verified) → create a **draft** release with every installer + updater artifact + `latest.json`
-   attached. **Not a prerelease** — the auto-updater's `/releases/latest/` endpoint resolves only to the
-   newest *full* release (trmx-48). The `--draft` gate holds it for human sign-off.
+   `.dmg` + `.app.tar.gz(.sig)`. (b) **`publish`** (`needs` it): download the artifacts, assemble
+   `latest.json` (the `darwin-aarch64` entry, signature verified) → create a **draft** release with the
+   installer + updater artifact + `latest.json` attached. **Not a prerelease** — the auto-updater's
+   `/releases/latest/` endpoint resolves only to the newest *full* release (trmx-48). The `--draft` gate
+   holds it for human sign-off.
 5. Review the draft Release on GitHub, then **publish** it. (The job creates a draft on purpose so a
    human signs off on the first signed artifact — flip `--draft` off in the workflow's publish step once
    you trust the pipeline. Re-running the same tag: delete the prior draft Release first.)
@@ -104,34 +102,21 @@ xcrun stapler validate Termixion_0.0.1_aarch64.dmg   # "The validate action work
 spctl --assess --type open --context context:primary-signature -vvv Termixion_0.0.1_aarch64.dmg
 ```
 
-## Linux (trmx-102, FR-1.7) — x86_64 AppImage + `.deb`
+## Linux — dropped in v0.1.1 (trmx-187)
 
-Since v0.0.9 the release also ships **x86_64 Linux** artifacts (built on `ubuntu-22.04`, in the
-`build-linux` job): a portable **`.AppImage`** — itself the signed updater artifact (Tauri v2, trmx-139),
-with a detached **`.AppImage.sig`** — and a **`.deb`** for install convenience. The `publish` job (which `needs` both the
-macOS and Linux builds) assembles ONE `latest.json` carrying both `darwin-aarch64` and `linux-x86_64`
-entries, signed by the **same** minisign updater key — there is **no notarization concept on Linux**
-(Gatekeeper is macOS-only).
+Linux support (x86_64 `.AppImage` + `.deb`, added in v0.0.9 by trmx-102/FR-1.7 with the Tauri v2
+updater artifact shape from trmx-139) was **dropped starting v0.1.1** — Termixion is macOS-only.
+What that means in practice:
 
-Running the AppImage:
-
-```sh
-chmod +x Termixion_<version>_amd64.AppImage
-./Termixion_<version>_amd64.AppImage
-# On a host without FUSE (many CI images / minimal installs), extract-and-run instead of mounting:
-APPIMAGE_EXTRACT_AND_RUN=1 ./Termixion_<version>_amd64.AppImage
-```
-
-Or install the `.deb`: `sudo apt install ./Termixion_<version>_amd64.deb`.
-
-**Verification checklist (manual, per release):** on a stock **Ubuntu 22.04** and **24.04** the AppImage
-launches, runs a live shell, and tabs / splits / themes / settings / the config file all function;
-`foreground_process` tab titles resolve (the `/proc`-backed `ps` path). **Known limitations (recorded, not
-fixed this release):** x86_64 only (**aarch64-linux deferred** — no runner/hardware need shown); in-webview
-keyboard shortcuts bind to Super/⌘ not Ctrl (native menu accelerators work; a Ctrl-based Linux keymap is a
-follow-up); **the Linux updater install/relaunch is operator-verified** (this release ships the artifacts +
-manifest — end-to-end self-update is checked by hand). GTK cosmetic deviations are filed as issues, not
-blockers (this release targets **functional** parity).
+- **v0.1.0 and earlier releases are untouched**: their Linux assets stay downloadable on the
+  Releases page and their published manifests keep both platform entries.
+- **From v0.1.1**, `latest.json` carries only the `darwin-aarch64` entry, so existing Linux
+  installs find no update at the `/releases/latest/` endpoint and silently stay on their version
+  (intended — Linux installs no longer receive updates).
+- The `build-linux` release job, the `full gate (linux)` CI job, and `scripts/smoke-linux.sh` were
+  removed with this change; the platform-agnostic core is still built + tested headless on Linux
+  runners by the `core-linux` and `seam-guard` CI jobs (R1 — architecture verification, not product
+  support).
 
 ## Release metadata (E-2a)
 
