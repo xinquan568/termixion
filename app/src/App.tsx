@@ -39,6 +39,8 @@ import {
 } from "react";
 import { TerminalView, type SettingsObservation } from "./terminal/TerminalView";
 import { TitleBar } from "./chrome/TitleBar";
+import { AiSessionCounter } from "./chrome/AiSessionCounter";
+import { NAMED_BUCKETS, sessionsFrom, type AiSession } from "./chrome/aiSessionBuckets";
 import { TabStrip } from "./tabs/TabStrip";
 import { barLayoutFor, labelOrientationFor } from "./tabs/barLayout";
 import {
@@ -465,6 +467,11 @@ export function App({
   // keymap (and the chords it binds) is untouched by the toggle.
   const [shortcutHintsOn, setShortcutHintsOn] = useState<boolean>(() =>
     makeSettingsStore().get("tabs.showShortcutHints"),
+  );
+  // trmx-190: whether the title bar shows the AI-session counter (titleBar.aiCounter, default
+  // true) — the exact activityIndicatorOn pattern; a pure render gate over the counting state.
+  const [aiCounterOn, setAiCounterOn] = useState<boolean>(() =>
+    makeSettingsStore().get("titleBar.aiCounter"),
   );
   // trmx-160: the active theme's MODE — the busy progress bar keys its track color + sweep period on
   // it (dark: black track / 3s; light: white track / 6s). Tracked as RESOLVED state and re-derived on
@@ -1325,6 +1332,15 @@ export function App({
           source: "process",
           value: name,
         });
+        // trmx-190: the 1 Hz hint also CORRECTS the foreground counting slot (a missed rise or an
+        // in-session program takeover). Non-AI names simply bucket to null downstream; the
+        // reducer's === no-op absorbs the steady-state stream. An empty name clears the slot.
+        dispatch({
+          kind: "setForeground",
+          tabId: hit.tab.tabId,
+          paneId: hit.paneId,
+          name: name === "" ? null : name,
+        });
         // trmx-159: the 1 Hz name hint also reclassifies the current epoch — recovering a still-unknown
         // epoch and catching an in-epoch program takeover (name-only ⇒ partial-metadata fail-safe).
         const current = activityStatesRef.current.get(hit.paneId) ?? initialActivity();
@@ -1362,6 +1378,15 @@ export function App({
     return observeActivity((sessionId, busy, meta) => {
       const hit = paneBySessionId(stateRef.current, sessionId);
       if (!hit) return; // no pane owns this session (session-less/closed) — inert
+      // trmx-190: the FOREGROUND counting slot — set from the metadata-bearing rise (the 250 ms
+      // path the counter's freshness rides on), cleared on the fall (the AI exited/suspended).
+      // Deliberately BEFORE the OSC-133 carve-out: that latch owns rawBusy, not foreground
+      // tracking, so a latched pane still counts. The reducer's === no-op absorbs redundancy.
+      if (busy && meta?.name !== undefined) {
+        dispatch({ kind: "setForeground", tabId: hit.tab.tabId, paneId: hit.paneId, name: meta.name });
+      } else if (!busy) {
+        dispatch({ kind: "setForeground", tabId: hit.tab.tabId, paneId: hit.paneId, name: null });
+      }
       const current = activityStatesRef.current.get(hit.paneId) ?? initialActivity();
       // trmx-159 (weakens the trmx-99 latch): once a pane is OSC-133-owned, the OSC 133 machine OWNS
       // rawBusy — so IGNORE the poller's `busy` field (do not feed it to onBusyChange). But still
@@ -1496,6 +1521,11 @@ export function App({
       // without touching the keymap — the chords stay bound either way.
       else if (key === "tabs.showShortcutHints" && typeof value === "boolean") {
         setShortcutHintsOn(value);
+      }
+      // trmx-190: keep the AI-session-counter toggle live (same boolean guard). A pure render
+      // gate — foreground tracking keeps running so re-enabling shows correct counts at once.
+      else if (key === "titleBar.aiCounter" && typeof value === "boolean") {
+        setAiCounterOn(value);
       }
       // trmx-90/91: recompute the badge watermark AND the activity-line color on every theme event so
       // both repaint on a theme switch AND on a trmx-89 same-id hot-reload (the token changed under the
@@ -1884,6 +1914,10 @@ export function App({
     };
   }, []);
 
+  // trmx-190: the AI sessions the counter renders — the e2e fixture (dev-server only) or the live
+  // derive over tab state. Cheap per render (a few tabs × panes); the pure module owns the rules.
+  const aiSessions = titleBarCounterFixture ?? sessionsFrom(state.tabs);
+
   // trmx-81: the position class + the strip's axis. The JSX order NEVER changes (hosts first, strip
   // LAST): barLayoutFor's flex direction moves the bar; the keyed pane hosts stay put (keep-alive).
   const barLayout = barLayoutFor(barPosition);
@@ -1901,7 +1935,22 @@ export function App({
           against real content. */}
       <TitleBar
         title={activeTitle ?? ""}
-        rightSlot={titleBarSlotFixture !== null ? <span>{titleBarSlotFixture}</span> : null}
+        rightSlot={
+          <>
+            {titleBarSlotFixture !== null ? <span>{titleBarSlotFixture}</span> : null}
+            {/* trmx-190: the AI-session counter — gated by titleBar.aiCounter, absent with no AI
+                sessions. The fixture (dev-server e2e only) substitutes synthetic sessions. */}
+            {aiCounterOn && aiSessions.length > 0 && (
+              <AiSessionCounter
+                sessions={aiSessions}
+                onFocusSession={({ tabId, paneId }) => {
+                  dispatch({ kind: "activateTab", tabId });
+                  dispatch({ kind: "focusPane", tabId, paneId });
+                }}
+              />
+            )}
+          </>
+        }
       />
       <div className="app-body">
       <div className="tab-hosts" ref={contentRef}>
@@ -2185,13 +2234,49 @@ export function App({
 }
 
 /**
- * trmx-188: the e2e right-slot fixture, read ONCE at module load (the slot's real content arrives
- * with trmx-190). Guarded like every browser-global read in a module that jsdom also imports.
+ * trmx-188: the e2e right-slot fixture, read ONCE at module load (the slot's real content is the
+ * trmx-190 counter). Guarded like every browser-global read in a module that jsdom also imports.
  */
 const titleBarSlotFixture: string | null =
   typeof window === "undefined"
     ? null
     : new URLSearchParams(window.location.search).get("e2e.titleBarSlot");
+
+/**
+ * trmx-190: the counter's e2e fixture — `?e2e.aiCounter=claude:2/3,codex:0/2,Other:1/1` becomes
+ * synthetic sessions (one per counted total, `active` for the first `active` of each bucket,
+ * titles `fixture-<bucket>-<i>`), letting the runtime-less Playwright tier drive the CSS contract.
+ * Junk-tolerant: any malformed part (or an unknown bucket, or active > total) → no fixture.
+ */
+export function parseAiCounterFixture(raw: string | null): AiSession[] | null {
+  if (raw === null) return null;
+  const buckets = new Set<string>([...NAMED_BUCKETS, "Other"]);
+  const sessions: AiSession[] = [];
+  let paneId = 1;
+  for (const part of raw.split(",")) {
+    const match = /^([A-Za-z-]+):(\d+)\/(\d+)$/.exec(part.trim());
+    if (!match || !buckets.has(match[1])) return null;
+    const active = Number(match[2]);
+    const total = Number(match[3]);
+    if (active > total) return null;
+    for (let i = 1; i <= total; i += 1) {
+      sessions.push({
+        tabId: 1,
+        paneId: paneId++,
+        bucket: match[1] as AiSession["bucket"],
+        name: match[1] === "Other" ? "gemini" : match[1],
+        title: `fixture-${match[1]}-${i}`,
+        active: i <= active,
+      });
+    }
+  }
+  return sessions;
+}
+
+const titleBarCounterFixture: AiSession[] | null =
+  typeof window === "undefined"
+    ? null
+    : parseAiCounterFixture(new URLSearchParams(window.location.search).get("e2e.aiCounter"));
 
 /**
  * trmx-90: the ⇧⌘B inline BADGE EDITOR — a small centered input over the focused pane. Mirrors

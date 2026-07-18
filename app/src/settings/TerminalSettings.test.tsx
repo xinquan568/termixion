@@ -59,15 +59,21 @@ describe("TerminalSettings", () => {
         'Applies when closing a pane, a tab, or quitting; "When busy" prompts only when a program is still running',
       ),
     ).toBeInTheDocument();
-    // EXACTLY these eight rows (no Shell / Panel / Line Height).
+    // trmx-190: the AI Session Counter toggle sits directly below Activity Indicator (its peer).
+    expect(screen.getByText("AI Session Counter")).toBeInTheDocument();
+    expect(
+      screen.getByText("Show live AI session counts in the title bar"),
+    ).toBeInTheDocument();
+    // EXACTLY these nine rows (no Shell / Panel / Line Height).
     const rows = container.querySelectorAll(".tx-setting-row");
-    expect(rows).toHaveLength(8);
+    expect(rows).toHaveLength(9);
     const labels = [...rows].map((r) => r.querySelector(".tx-setting-row__label")?.textContent);
     expect(labels).toEqual([
       "Cursor Style",
       "Cursor Blink",
       "Copy on Select",
       "Activity Indicator",
+      "AI Session Counter",
       "Confirm before closing",
       "Scrollback",
       "Font Family",
@@ -100,6 +106,15 @@ describe("TerminalSettings", () => {
     expect(toggle).toHaveAttribute("aria-checked", "true"); // default on
     fireEvent.click(toggle);
     expect(store.get("terminal.activityIndicator")).toBe(false); // toggled off, persisted
+  });
+
+  it("defaults AI Session Counter to ON and persists a toggle (trmx-190)", () => {
+    const store = makeSettingsStore(fakeStorage());
+    render(<TerminalSettings settings={store} />);
+    const toggle = screen.getByRole("switch", { name: "AI Session Counter" });
+    expect(toggle).toHaveAttribute("aria-checked", "true"); // default on
+    fireEvent.click(toggle);
+    expect(store.get("titleBar.aiCounter")).toBe(false); // toggled off, persisted
   });
 
   it("defaults Copy on Select to ON and persists a toggle (trmx-95)", () => {

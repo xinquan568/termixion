@@ -266,6 +266,20 @@ impl Default for TabsConfig {
     }
 }
 
+/// The `[title_bar]` table (trmx-190).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TitleBarConfig {
+    /// Show the live AI-session counters in the title bar's right slot (trmx-190).
+    pub ai_counter: bool,
+}
+
+impl Default for TitleBarConfig {
+    fn default() -> Self {
+        Self { ai_counter: true }
+    }
+}
+
 /// The `[scripts]` table (trmx-93, FR-5).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -285,6 +299,8 @@ pub struct Config {
     pub terminal: TerminalConfig,
     pub appearance: AppearanceConfig,
     pub tabs: TabsConfig,
+    /// trmx-190: the title-bar chrome table (the AI-session counter gate).
+    pub title_bar: TitleBarConfig,
     pub scripts: ScriptsConfig,
     /// trmx-101 (FR-9.4): the opt-in external control channel.
     pub remote_control: RemoteControlConfig,
@@ -387,6 +403,9 @@ pub const DEFAULT_TEMPLATE: &str = r##"# Termixion configuration (TOML).
 # side_label_orientation = "horizontal"   # "horizontal" | "vertical" (left/right bars only)
 # show_shortcut_hints = true      # false hides the ⌘1–⌘9 tab prefixes
 
+# [title_bar]
+# ai_counter = true               # live AI-session counters in the title bar (trmx-190)
+
 # [scripts]
 # startup = ""                    # a script under ~/.config/termixion/scripts/ to run in the first
                                   # tab on launch, e.g. "work/proj-x.sh" ("" = none)
@@ -447,6 +466,7 @@ pub fn toml_path_for(registry_key: &str) -> Option<(&'static str, &'static str)>
         "tabs.barPosition" => Some(("tabs", "bar_position")),
         "tabs.sideLabelOrientation" => Some(("tabs", "side_label_orientation")),
         "tabs.showShortcutHints" => Some(("tabs", "show_shortcut_hints")),
+        "titleBar.aiCounter" => Some(("title_bar", "ai_counter")),
         "scripts.startup" => Some(("scripts", "startup")),
         "remote_control.enabled" => Some(("remote_control", "enabled")),
         "remote_control.socketPath" => Some(("remote_control", "socket_path")),
@@ -539,6 +559,11 @@ pub fn diff_configs(old: &Config, new: &Config) -> Vec<(String, RegistryValue)> 
         RegistryValue::Bool(new.tabs.show_shortcut_hints),
     );
     push(
+        old.title_bar.ai_counter != new.title_bar.ai_counter,
+        "titleBar.aiCounter",
+        RegistryValue::Bool(new.title_bar.ai_counter),
+    );
+    push(
         old.scripts.startup != new.scripts.startup,
         "scripts.startup",
         RegistryValue::Str(new.scripts.startup.clone()),
@@ -609,6 +634,7 @@ fn parse_full(text: &str) -> (Config, Vec<(String, RegistryValue)>, Vec<ConfigWa
             "terminal" => Some(walk_terminal),
             "appearance" => Some(walk_appearance),
             "tabs" => Some(walk_tabs),
+            "title_bar" => Some(walk_title_bar),
             "scripts" => Some(walk_scripts),
             "remote_control" => Some(walk_remote_control),
             _ => None,
@@ -835,6 +861,23 @@ fn walk_tabs(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
     }
 }
 
+/// trmx-190: the `[title_bar]` table — the AI-session counter gate.
+fn walk_title_bar(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
+    for (key, value) in table {
+        match key.as_str() {
+            "ai_counter" => read_bool(
+                value,
+                ("title_bar.ai_counter", "titleBar.aiCounter"),
+                &mut config.title_bar.ai_counter,
+                sink,
+            ),
+            _ => sink.warnings.push(ConfigWarning::UnknownKey {
+                key: format!("title_bar.{key}"),
+            }),
+        }
+    }
+}
+
 /// Read a boolean field; `keys` is `(toml_path, registry_key)`.
 fn read_bool(value: &toml::Value, keys: (&str, &str), target: &mut bool, sink: &mut Sink) {
     match value.as_bool() {
@@ -1031,10 +1074,76 @@ show_shortcut_hints = false
                     side_label_orientation: LabelOrientation::Vertical,
                     show_shortcut_hints: false,
                 },
+                title_bar: TitleBarConfig::default(),
                 scripts: ScriptsConfig::default(),
                 remote_control: RemoteControlConfig::default(),
                 keys: BTreeMap::new(),
             }
+        );
+    }
+
+    // trmx-190: [title_bar] — ai_counter, the render gate for the title-bar AI-session counters.
+    // Bool default ON (tolerant read_bool, same as terminal.activity_indicator); present-only pair;
+    // the template documents the table commented out; diff yields the pair (the settings:changed
+    // path the frontend's aiCounterOn gate listens on).
+    #[test]
+    fn title_bar_ai_counter_defaults_on_and_maps_its_registry_key() {
+        assert!(Config::default().title_bar.ai_counter);
+        assert_eq!(
+            toml_path_for("titleBar.aiCounter"),
+            Some(("title_bar", "ai_counter"))
+        );
+        let (config, warnings) = parse_config("[title_bar]\n");
+        assert!(config.title_bar.ai_counter, "defaults to true");
+        assert_eq!(warnings, Vec::new());
+        let (pairs, _) = parse_registry_pairs("[title_bar]\n");
+        assert!(value_for(&pairs, "titleBar.aiCounter").is_none());
+        assert!(
+            DEFAULT_TEMPLATE.contains("# [title_bar]"),
+            "the template must document the [title_bar] table"
+        );
+        assert!(
+            DEFAULT_TEMPLATE.contains("# ai_counter = true"),
+            "the template must document title_bar.ai_counter (commented out)"
+        );
+    }
+
+    #[test]
+    fn title_bar_ai_counter_false_surfaces_config_and_pair() {
+        let text = "[title_bar]\nai_counter = false\n";
+        let (config, warnings) = parse_config(text);
+        assert!(!config.title_bar.ai_counter);
+        assert_eq!(warnings, Vec::new());
+        let (pairs, warnings) = parse_registry_pairs(text);
+        assert_eq!(warnings, Vec::new());
+        assert_eq!(
+            pairs,
+            vec![("titleBar.aiCounter".to_string(), RegistryValue::Bool(false))]
+        );
+    }
+
+    #[test]
+    fn title_bar_ai_counter_wrong_type_warns_and_keeps_default() {
+        let text = "[title_bar]\nai_counter = \"yes\"\n";
+        let (config, warnings) = parse_config(text);
+        assert!(config.title_bar.ai_counter, "wrong type keeps the default");
+        assert_eq!(warnings.len(), 1);
+        assert!(matches!(
+            &warnings[0],
+            ConfigWarning::InvalidValue { key, .. } if key == "title_bar.ai_counter"
+        ));
+        let (pairs, _) = parse_registry_pairs(text);
+        assert!(value_for(&pairs, "titleBar.aiCounter").is_none());
+    }
+
+    #[test]
+    fn title_bar_ai_counter_diff_yields_the_pair() {
+        let old = Config::default();
+        let mut new = Config::default();
+        new.title_bar.ai_counter = false;
+        assert_eq!(
+            diff_configs(&old, &new),
+            vec![("titleBar.aiCounter".to_string(), RegistryValue::Bool(false))]
         );
     }
 

@@ -27,18 +27,19 @@ test("?window=settings renders the settings surface with the vmark chrome", asyn
   const dragRegions = page.locator("[data-tauri-drag-region]");
   await expect(dragRegions).toHaveCount(3);
 
-  // Default landing: the Terminal page with exactly the seven boxed rows (trmx-80 added
-  // Scrollback / Font Family / Font Size below the two cursor rows; trmx-91 adds Activity Indicator;
-  // trmx-95 adds Copy on Select; trmx-144 adds Confirm Before Closing).
+  // Default landing: the Terminal page with exactly the boxed rows (trmx-80 added Scrollback /
+  // Font Family / Font Size below the two cursor rows; trmx-91 adds Activity Indicator; trmx-95
+  // adds Copy on Select; trmx-144 adds Confirm Before Closing; trmx-190 adds AI Session Counter).
   await expect(page.getByText("Cursor Style", { exact: true })).toBeVisible();
   await expect(page.getByText("Cursor Blink", { exact: true })).toBeVisible();
   await expect(page.getByText("Copy on Select", { exact: true })).toBeVisible();
   await expect(page.getByText("Activity Indicator", { exact: true })).toBeVisible();
+  await expect(page.getByText("AI Session Counter", { exact: true })).toBeVisible();
   await expect(page.getByText("Confirm before closing", { exact: true })).toBeVisible();
   await expect(page.getByText("Scrollback", { exact: true })).toBeVisible();
   await expect(page.getByText("Font Family", { exact: true })).toBeVisible();
   await expect(page.getByText("Font Size", { exact: true })).toBeVisible();
-  await expect(page.locator(".tx-setting-row")).toHaveCount(8);
+  await expect(page.locator(".tx-setting-row")).toHaveCount(9);
 });
 
 test("?window=settings&section=about lands on the vmark-parity About page", async ({ page }) => {

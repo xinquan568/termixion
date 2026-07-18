@@ -68,6 +68,9 @@ export function TerminalSettings({ settings, invoke = realInvoke }: TerminalSett
   const [activityIndicator, setActivityIndicator] = useState<boolean>(() =>
     settings.get("terminal.activityIndicator"),
   );
+  // trmx-190: the title-bar AI-session counter gate — a peer of the activity indicator (the
+  // counter's numerator IS the lit-activity-bar count, so the two toggles sit together).
+  const [aiCounter, setAiCounter] = useState<boolean>(() => settings.get("titleBar.aiCounter"));
   // trmx-144: confirm-before-closing tri-state (default "when-busy").
   const [confirmClose, setConfirmClose] = useState<ConfirmClose>(() =>
     settings.get("terminal.confirmClose"),
@@ -127,6 +130,19 @@ export function TerminalSettings({ settings, invoke = realInvoke }: TerminalSett
             onChange={(value) => {
               setActivityIndicator(value);
               settings.set("terminal.activityIndicator", value);
+            }}
+          />
+        </SettingRow>
+        <SettingRow
+          label="AI Session Counter"
+          description="Show live AI session counts in the title bar"
+        >
+          <Toggle
+            checked={aiCounter}
+            label="AI Session Counter"
+            onChange={(value) => {
+              setAiCounter(value);
+              settings.set("titleBar.aiCounter", value);
             }}
           />
         </SettingRow>
