@@ -95,4 +95,20 @@ test.describe("title bar (trmx-188)", () => {
     await expect(slot).toBeAttached();
     await expect(slot).toHaveText("");
   });
+
+  test("the bar is the 28px native-strip height so the default traffic lights center (trmx-199)", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 900, height: 600 });
+    await page.goto("/");
+
+    const bar = page.locator(".title-bar");
+    await expect(bar).toBeVisible();
+    // The 28px CONTENT box matches the native macOS title-bar strip AppKit vertically centers
+    // its floating traffic lights in; the 1px border-bottom is the divider BELOW that strip
+    // (content-box contract — computed style, not boundingBox, which would include the border).
+    await expect(bar).toHaveCSS("height", "28px");
+    // The left inset that clears the lights keeps its 78px clearance.
+    await expect(page.locator(".title-bar__inset")).toHaveCSS("width", "78px");
+  });
 });
