@@ -18,6 +18,7 @@ pub mod unix;
 #[cfg(unix)]
 pub use foreground::{
     ForegroundProcess, foreground_args, foreground_process, foreground_stdin_is_tty, is_busy,
+    is_interpreter, unwrap_interpreter_shim,
 };
 #[cfg(unix)]
 pub use unix::{Clipboard, UnixClipboard, UnixPtyFactory};
