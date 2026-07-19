@@ -17,7 +17,8 @@ use std::time::{Duration, Instant};
 
 use termixion_core::{PtyReader, PtySize, SessionRegistry, SessionSpec};
 use termixion_platform::{
-    ForegroundProcess, UnixPtyFactory, foreground_args, foreground_process, foreground_stdin_is_tty,
+    ForegroundProcess, UnixPtyFactory, foreground_args, foreground_process,
+    foreground_stdin_is_tty, is_interpreter, unwrap_interpreter_shim,
 };
 
 /// The process state of `pid` via `ps -o stat=` — `None` if the pid is gone, else the state string
@@ -198,4 +199,88 @@ fn foreground_meta_reports_args_and_stdin_tty_through_a_real_pty() {
 fn foreground_meta_is_none_for_an_unknown_pid() {
     assert!(foreground_args(u32::MAX).is_none());
     assert!(foreground_stdin_is_tty(u32::MAX).is_none());
+}
+
+/// trmx-197 golden test: an interpreter-shim CLI — the operator's exact codex failure shape,
+/// reproduced as a `#!/usr/bin/python3` script named `codex` — observed through a REAL PTY. The
+/// foreground leader's comm is the INTERPRETER (never `codex`), the script path sits in the real
+/// `KERN_PROCARGS2` argv tail, and [`unwrap_interpreter_shim`] recovers the CLI identity from
+/// exactly that data. The shebang targets `/usr/bin/python3` directly (not `env python3`) so the
+/// leader's comm is deterministic on a box where `python3` in PATH is itself a shim script.
+#[cfg(target_os = "macos")]
+#[test]
+fn foreground_unwraps_an_interpreter_shim_through_a_real_pty() {
+    use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt;
+
+    // A per-run fixture dir keeps parallel/aborted runs from colliding; removed on the way out.
+    let dir = std::env::temp_dir().join(format!("trmx197-shim-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create the fixture dir");
+    let script = dir.join("codex");
+    {
+        let mut f = std::fs::File::create(&script).expect("create the fake codex script");
+        f.write_all(b"#!/usr/bin/python3\nimport time\ntime.sleep(30)\n")
+            .expect("write the fake codex script");
+    }
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod +x");
+
+    let factory = UnixPtyFactory;
+    let mut registry = SessionRegistry::new();
+    let (id, reader) = registry
+        .spawn(&factory, &rc_free_zsh(), PtySize::new(24, 80))
+        .expect("spawn an rc-free shell through the registry");
+    let shell_pid = registry
+        .process_id(id)
+        .expect("the session is live")
+        .expect("a real PTY has a child pid");
+    let (_rx, pump) = pump_reader(reader);
+    poll_foreground_until(shell_pid, "zsh");
+
+    registry
+        .write(id, format!("{}\n", script.display()).as_bytes())
+        .expect("run the fake codex");
+
+    // Poll until the leader is the interpreter — its comm may be `python3` or a versioned
+    // `python3.N`, so match by family rather than an exact name.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let fg = loop {
+        if let Some(fg) = foreground_process(shell_pid) {
+            if is_interpreter(&fg.name) {
+                break fg;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the foreground of pid {shell_pid} never became an interpreter; last: {fg:?}"
+            );
+        } else {
+            assert!(
+                Instant::now() < deadline,
+                "the foreground of pid {shell_pid} never resolved"
+            );
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    // The reported bug shape: comm is the interpreter, NOT the CLI…
+    assert_ne!(fg.name, "codex", "the leader's comm is the interpreter");
+    // …and the unwrap recovers `codex` from the live argv (the script path, launched bare).
+    let argv = foreground_args(fg.pid).expect("argv resolves for a live leader");
+    let (name, rest) = unwrap_interpreter_shim(&fg.name, &argv).expect("the shim shape unwraps");
+    assert_eq!(
+        name, "codex",
+        "the effective identity is the CLI, not the interpreter"
+    );
+    assert!(
+        rest.is_empty(),
+        "the fake codex was launched with no arguments"
+    );
+
+    // Interrupt (KeyboardInterrupt exits python), reclaim the prompt, close, no zombies.
+    registry.write(id, &[0x03]).expect("write Ctrl-C");
+    poll_foreground_until(shell_pid, "zsh");
+    registry.close(id).expect("close the session");
+    assert_no_zombie(shell_pid);
+    assert_no_zombie(fg.pid);
+    pump.join().expect("the reader thread exits at EOF");
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -339,6 +339,70 @@ fn path_names_a_tty(path: &str) -> bool {
     path.starts_with("/dev/tty") || path.starts_with("/dev/pty") || path == "/dev/console"
 }
 
+// ============================================================================================
+// trmx-197: the interpreter-shim unwrap — resolve the EFFECTIVE foreground identity when the
+// process-group leader is an interpreter fronting a CLI via a shebang shim. The npm `codex`
+// launcher is `#!/usr/bin/env node` spawning the native binary as a same-group CHILD, so the
+// leader's comm is `node` and the CLI's identity lives in argv[1] (the script path as execve'd).
+// Pure name/argv mapping (no syscalls, no `cfg`): callers feed it `parse_comm`'s name plus
+// `foreground_args`' tail and fall back to the raw name on `None`, so a missing argv (non-macOS
+// stubs, a sysctl failure) degrades to today's behavior.
+// ============================================================================================
+
+/// Whether `name`'s basename is an interpreter that commonly fronts a CLI via a shebang shim:
+/// exact `node` / `bun` / `deno` (case-insensitive), or the python family — `python` followed by
+/// an optional version suffix of dot-separated numeric components (`python`, `python3`,
+/// `python3.12`; NOT `python-config`, `pythonw`, `python.`, `python3..12`).
+pub fn is_interpreter(name: &str) -> bool {
+    let stripped = name.rsplit('/').next().unwrap_or(name);
+    let base = stripped.to_ascii_lowercase();
+    if matches!(base.as_str(), "node" | "bun" | "deno") {
+        return true;
+    }
+    match base.strip_prefix("python") {
+        Some(suffix) => suffix.is_empty() || is_dotted_numeric(suffix),
+        None => false,
+    }
+}
+
+/// Whether `s` is a dot-separated sequence of NON-EMPTY digit runs (`3`, `3.12`) — the python
+/// version-suffix shape. Rejects a leading/trailing/doubled dot (`.`, `3.`, `3..12`).
+fn is_dotted_numeric(s: &str) -> bool {
+    !s.is_empty()
+        && s.split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The known script extensions a shim's basename may carry (pnpm-style shims exec the `.js`
+/// directly). Stripped only when a non-empty stem remains.
+const SHIM_SCRIPT_EXTENSIONS: [&str; 4] = [".js", ".mjs", ".cjs", ".py"];
+
+/// The interpreter-shim unwrap: `Some((effective_name, effective_args))` when `name` is an
+/// interpreter ([`is_interpreter`]) AND `args` (the leader's argv tail) starts with a NON-flag
+/// token (the script path) — effective_name = the script's basename with one known script
+/// extension stripped (`.js`/`.mjs`/`.cjs`/`.py`, only if a non-empty stem remains),
+/// effective_args = `args[1..]`. `None` otherwise (identity — the caller keeps the raw name/args).
+/// Conservative by construction: bare REPLs (empty tail) and flag-first forms (`node -e …`,
+/// `python -m …`) never unwrap.
+pub fn unwrap_interpreter_shim(name: &str, args: &[String]) -> Option<(String, Vec<String>)> {
+    if !is_interpreter(name) {
+        return None;
+    }
+    let script = args.first()?;
+    if script.starts_with('-') {
+        return None; // a flag-first invocation (`node -e …`, `python -m …`) is not the shim shape
+    }
+    let base = script.rsplit('/').next().unwrap_or(script);
+    let stem = SHIM_SCRIPT_EXTENSIONS
+        .iter()
+        .find_map(|ext| base.strip_suffix(ext).filter(|s| !s.is_empty()))
+        .unwrap_or(base);
+    if stem.is_empty() {
+        return None; // a trailing-slash token has no basename to name the session after
+    }
+    Some((stem.to_string(), args[1..].to_vec()))
+}
+
 /// One `ps -o <column> -p <pid>` invocation, as raw stdout. `None` on spawn failure or a non-zero
 /// exit (macOS `ps` exits 1 for a pid it cannot find).
 fn ps_column(column: &str, pid: u32) -> Option<String> {
@@ -552,5 +616,115 @@ mod tests {
             None,
             "an unknown pid stays None"
         );
+    }
+
+    // ---- trmx-197: the interpreter-shim unwrap (pure table) ----
+
+    /// String-slice sugar for the argv-tail fixtures below.
+    fn argv(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn is_interpreter_matches_node_bun_deno_and_the_python_family() {
+        for name in [
+            "node",
+            "bun",
+            "deno",
+            "Node",
+            "/usr/local/bin/node",
+            "python",
+            "python3",
+            "python3.12",
+            "/usr/bin/Python3",
+        ] {
+            assert!(is_interpreter(name), "{name} IS an interpreter");
+        }
+    }
+
+    #[test]
+    fn is_interpreter_rejects_non_interpreters_and_malformed_python_versions() {
+        for name in [
+            "",
+            "zsh",
+            "sleep",
+            "ruby",
+            "nodejs",
+            "python-config",
+            "pythonw",
+            "python.",
+            "python3.",
+            "python3..12",
+        ] {
+            assert!(!is_interpreter(name), "{name} is NOT an interpreter");
+        }
+    }
+
+    /// The unwrap recovers the CLI identity from the shebang-launcher shape — the operator's exact
+    /// codex case first (comm `node`, argv tail = the PATH-resolved launcher path, no user args).
+    #[test]
+    fn unwrap_interpreter_shim_unwraps_the_shebang_launcher_shape() {
+        assert_eq!(
+            unwrap_interpreter_shim(
+                "node",
+                &argv(&["/Users/x/.nvm/versions/node/v24.12.0/bin/codex"])
+            ),
+            Some(("codex".to_string(), vec![]))
+        );
+        // A relative script path; the CLI's own flags become the effective tail.
+        assert_eq!(
+            unwrap_interpreter_shim("node", &argv(&["./fakecodex", "--flag"])),
+            Some(("fakecodex".to_string(), vec!["--flag".to_string()]))
+        );
+        // A pip entry point under a versioned python.
+        assert_eq!(
+            unwrap_interpreter_shim("python3.12", &argv(&["/opt/bin/aider", "--model", "x"])),
+            Some((
+                "aider".to_string(),
+                vec!["--model".to_string(), "x".to_string()]
+            ))
+        );
+        // A known script extension is stripped (pnpm-style shims exec the .js directly)…
+        assert_eq!(
+            unwrap_interpreter_shim("node", &argv(&["/x/codex.js"])),
+            Some(("codex".to_string(), vec![]))
+        );
+        // …but never down to an empty stem; and the script's case is preserved (the TS consumers
+        // lowercase for comparison themselves).
+        assert_eq!(
+            unwrap_interpreter_shim("node", &argv(&["/x/.js"])),
+            Some((".js".to_string(), vec![]))
+        );
+        assert_eq!(
+            unwrap_interpreter_shim(
+                "/usr/local/bin/Python3",
+                &argv(&["/opt/homebrew/bin/Aider"])
+            ),
+            Some(("Aider".to_string(), vec![]))
+        );
+    }
+
+    /// Every non-shim shape is identity (`None`): bare REPLs, flag-first invocations, unlisted
+    /// leaders, and a script token with an empty basename. These pin that the unwrap can never
+    /// change today's behavior outside the shebang-launcher shape.
+    #[test]
+    fn unwrap_interpreter_shim_is_identity_for_bare_repls_flags_and_non_interpreters() {
+        assert_eq!(unwrap_interpreter_shim("node", &[]), None);
+        assert_eq!(unwrap_interpreter_shim("node", &argv(&["-e", "x"])), None);
+        assert_eq!(
+            unwrap_interpreter_shim("python3", &argv(&["-m", "aider"])),
+            None
+        );
+        assert_eq!(
+            unwrap_interpreter_shim("node", &argv(&["--max-old-space-size=4096", "/x/cli.js"])),
+            None
+        );
+        assert_eq!(unwrap_interpreter_shim("sleep", &argv(&["30"])), None);
+        assert_eq!(unwrap_interpreter_shim("zsh", &argv(&["script.sh"])), None);
+        assert_eq!(
+            unwrap_interpreter_shim("python-config", &argv(&["x"])),
+            None
+        );
+        assert_eq!(unwrap_interpreter_shim("node", &argv(&["/weird/"])), None);
     }
 }

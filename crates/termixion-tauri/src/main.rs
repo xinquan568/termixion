@@ -25,7 +25,7 @@ use tauri::{Emitter, Manager, State, WindowEvent};
 use termixion_core::{PtySize, SessionRegistry, SessionSpec};
 use termixion_platform::{
     ForegroundProcess, PlatformPtyFactory, foreground_args, foreground_process,
-    foreground_stdin_is_tty, is_busy,
+    foreground_stdin_is_tty, is_busy, is_interpreter, unwrap_interpreter_shim,
 };
 
 mod config_io;
@@ -238,9 +238,20 @@ fn enrich_rises<R: ForegroundResolver>(
             && let Some(fg) = resolver.foreground(shell_pid)
         {
             // finding #1: argv + stdin are the LEADER's (`fg.pid`), not the shell's (`shell_pid`).
-            event.foreground_args = resolver.args(fg.pid);
+            // trmx-197: an interpreter-shim leader (`node …/bin/codex`) is unwrapped to the CLI it
+            // fronts — name from the script's basename, args from the script's own tail — so the
+            // counter buckets it and the classifier sees the true invocation shape; a missing argv
+            // degrades to the raw comm name (today's behavior).
+            let (name, args) = match resolver.args(fg.pid) {
+                Some(raw) => match unwrap_interpreter_shim(&fg.name, &raw) {
+                    Some((unwrapped, rest)) => (unwrapped, Some(rest)),
+                    None => (fg.name, Some(raw)),
+                },
+                None => (fg.name, None),
+            };
+            event.foreground_args = args;
             event.foreground_stdin_tty = resolver.stdin_tty(fg.pid);
-            event.foreground_name = Some(fg.name);
+            event.foreground_name = Some(name);
         }
         prev_titles.remove(&event.session_id);
     }
@@ -251,6 +262,18 @@ fn enrich_rises<R: ForegroundResolver>(
 /// trmx-75). Pure so the cadence is a pinned test (trmx-159 kept it exactly as-is).
 fn resolves_titles(tick: u64) -> bool {
     tick.is_multiple_of(4)
+}
+
+/// trmx-197: the DISPLAY name for a resolved foreground leader — the interpreter-shim unwrap
+/// applied to the 1 Hz title path, so the hint agrees with the rise metadata. Load-bearing, not
+/// cosmetic: the App's title-hint handler also CORRECTS the foreground counting slot, so a
+/// disagreeing title would clobber the counter back to the interpreter within a second of a fixed
+/// rise. Pure (name/argv in, name out); the argv fetch stays in the loop glue.
+fn effective_title_name(fg: ForegroundProcess, args: Option<Vec<String>>) -> String {
+    match args.and_then(|a| unwrap_interpreter_shim(&fg.name, &a)) {
+        Some((name, _)) => name,
+        None => fg.name,
+    }
 }
 
 /// One activity tick's pure diff (trmx-91), the [`poll_tick`] shape for the boolean busy state:
@@ -354,7 +377,18 @@ fn run_title_poller(
                 .map(|(id, pid)| {
                     (
                         id,
-                        pid.and_then(|pid| foreground_process(pid).map(|fg| fg.name)),
+                        pid.and_then(|pid| {
+                            foreground_process(pid).map(|fg| {
+                                // trmx-197: fetch argv only for an interpreter leader — keeps the
+                                // KERN_PROCARGS2 sysctl off the 1 Hz path in the common case.
+                                let args = if is_interpreter(&fg.name) {
+                                    foreground_args(fg.pid)
+                                } else {
+                                    None
+                                };
+                                effective_title_name(fg, args)
+                            })
+                        }),
                     )
                 })
                 .collect();
@@ -1597,6 +1631,7 @@ mod tests {
     struct FakeForeground {
         leader: u32,
         name: String,
+        args: Vec<String>,
         foreground_calls: RefCell<Vec<u32>>,
         args_calls: RefCell<Vec<u32>>,
         stdin_calls: RefCell<Vec<u32>>,
@@ -1604,9 +1639,16 @@ mod tests {
 
     impl FakeForeground {
         fn new(leader: u32, name: &str) -> Self {
+            Self::with_args(leader, name, &["-p", "hi"])
+        }
+
+        /// trmx-197: a fake whose argv tail is chosen by the test (the shim cases need the script
+        /// path in argv[0] of the tail).
+        fn with_args(leader: u32, name: &str, args: &[&str]) -> Self {
             Self {
                 leader,
                 name: name.to_string(),
+                args: args.iter().map(|s| s.to_string()).collect(),
                 foreground_calls: RefCell::new(Vec::new()),
                 args_calls: RefCell::new(Vec::new()),
                 stdin_calls: RefCell::new(Vec::new()),
@@ -1624,7 +1666,7 @@ mod tests {
         }
         fn args(&self, pid: u32) -> Option<Vec<String>> {
             self.args_calls.borrow_mut().push(pid);
-            Some(vec!["-p".to_string(), "hi".to_string()])
+            Some(self.args.clone())
         }
         fn stdin_tty(&self, pid: u32) -> Option<bool> {
             self.stdin_calls.borrow_mut().push(pid);
@@ -1674,6 +1716,56 @@ mod tests {
         assert_eq!(*fake.foreground_calls.borrow(), vec![100]);
         assert_eq!(*fake.args_calls.borrow(), vec![9999]);
         assert_eq!(*fake.stdin_calls.borrow(), vec![9999]);
+    }
+
+    #[test]
+    fn enrich_rises_unwraps_an_interpreter_shim_leader() {
+        // trmx-197: an npm-shim CLI rises with leader comm `node` and the CLI's launcher path in
+        // the argv tail; the emitted metadata must carry the CLI identity — name `codex`, args =
+        // the CLI's OWN tail (empty here) — so the counter buckets it and the classifier sees the
+        // true invocation shape (bare ⇒ interactive).
+        let fake = FakeForeground::with_args(
+            9999,
+            "node",
+            &["/Users/x/.nvm/versions/node/v24.12.0/bin/codex"],
+        );
+        let mut prev_titles = HashMap::new();
+        let shell_pids = HashMap::from([(1u64, 100u32)]);
+        let enriched = enrich_rises(
+            vec![SessionActivity::bare(1, true)],
+            &[1],
+            &shell_pids,
+            &mut prev_titles,
+            &fake,
+        );
+        assert_eq!(enriched[0].foreground_name, Some("codex".to_string()));
+        assert_eq!(enriched[0].foreground_args, Some(vec![]));
+        assert_eq!(enriched[0].foreground_stdin_tty, Some(true));
+    }
+
+    #[test]
+    fn effective_title_name_unwraps_a_shim_and_keeps_raw_names_otherwise() {
+        // trmx-197: the title path applies the SAME unwrap as the rise metadata — the App's title
+        // hint corrects the counting slot, so the two sites must agree.
+        let fg = |name: &str| ForegroundProcess {
+            pid: 42,
+            name: name.to_string(),
+        };
+        assert_eq!(
+            effective_title_name(fg("node"), Some(vec!["/x/bin/codex".to_string()])),
+            "codex",
+            "the shim shape unwraps for the title hint"
+        );
+        assert_eq!(
+            effective_title_name(fg("node"), None),
+            "node",
+            "no argv (resolution failed / non-macOS) keeps the raw comm name"
+        );
+        assert_eq!(
+            effective_title_name(fg("sleep"), Some(vec!["30".to_string()])),
+            "sleep",
+            "a non-interpreter leader is untouched"
+        );
     }
 
     #[test]
