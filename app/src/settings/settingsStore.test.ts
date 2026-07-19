@@ -826,13 +826,32 @@ describe("D1 e2e query seed (trmx-81)", () => {
   });
 
   it("a disallowed setting.* key never seeds (a deliberate per-key allowlist)", async () => {
-    // `sepia` (not the jsdom-derived default `night`) so a leak would be OBSERVABLE: if the
-    // allowlist let appearance.theme through, the read below would serve sepia, not night.
-    setSearch("?setting.appearance.theme=sepia&setting.terminal.fontSize=20");
+    // fontFamily is NOT on the allowlist, and its STRING value would pass coercion if the key
+    // leaked in — so this is a real leak detector (a number key like fontSize would be masked:
+    // coerce rejects query strings for number keys regardless of the allowlist).
+    setSearch("?setting.terminal.fontFamily=Menlo");
+    const backend = fakeConfigBackend({}, { failRead: true });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    expect(makeSettingsStore().get("terminal.fontFamily")).toBe(""); // the platform-default sentinel
+  });
+
+  // trmx-195: appearance.theme JOINS the allowlist — the per-theme visibility e2e must boot the
+  // main window onto each built-in deterministically (the boot order guarantees the seeded value
+  // paints: hydrateSettings seeds → applyStartupTheme reads it). Same seam contract as the other
+  // keys: registry-coerced (junk ignored, never a fallback write), snapshot-only, no-backend only.
+  it("trmx-195: REJECTED config_read seeds appearance.theme from the query", async () => {
+    // `sepia` (not the jsdom-derived default `night`) so the seed is OBSERVABLE.
+    setSearch("?setting.appearance.theme=sepia");
+    const backend = fakeConfigBackend({}, { failRead: true });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    expect(makeSettingsStore().get("appearance.theme")).toBe("sepia");
+  });
+
+  it("trmx-195: a junk theme id in the query is ignored (registry coercion, not a fallback write)", async () => {
+    setSearch("?setting.appearance.theme=hotdog-stand");
     const backend = fakeConfigBackend({}, { failRead: true });
     await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
     expect(makeSettingsStore().get("appearance.theme")).toBe("night"); // the derived default
-    expect(makeSettingsStore().get("terminal.fontSize")).toBe(12);
   });
 
   // trmx-82: the seam guards, duplicated for the widened allowlist key — the SAME
