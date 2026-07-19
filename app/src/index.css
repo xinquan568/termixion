@@ -57,10 +57,13 @@ body {
  * (collapsed in fullscreen, where macOS auto-hides them) then the truncating active-tab title.
  * RIGHT: the priority slot — flex-shrink: 0 with the title's min-width: 0 means the slot ALWAYS
  * wins the width fight (trmx-190 mounts the counters here). Metrics are CSS-owned constants like
- * every chrome metric in this file.
+ * every chrome metric in this file. trmx-199: the 28px CONTENT box matches the native macOS
+ * title-bar strip, so the floating traffic lights (which AppKit centers in that strip) sit
+ * vertically centered in the bar; the 1px border-bottom is the divider BELOW the strip —
+ * content-box sizing is load-bearing here.
  */
 .title-bar {
-  height: 38px;
+  height: 28px;
   flex-shrink: 0;
   display: flex;
   align-items: center;

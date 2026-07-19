@@ -17,7 +17,7 @@ test("the terminal webview boots, fills the window below the title bar", async (
   await expect(xterm).toBeAttached();
 
   // Issue 1: no stray in-page chrome — no program-name heading, no core-version status line.
-  // (trmx-188 added the app-drawn 38px title bar — deliberate chrome, asserted below.)
+  // (trmx-188 added the app-drawn title bar — 28px since trmx-199 — deliberate chrome, asserted below.)
   await expect(page.locator("h1")).toHaveCount(0);
   await expect(page.getByTestId("core-version")).toHaveCount(0);
 
