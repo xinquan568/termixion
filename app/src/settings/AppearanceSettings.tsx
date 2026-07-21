@@ -288,7 +288,14 @@ function ThemeSwatch({
   const circle = (
     <span className="tx-swatch__circle" style={{ background: swatchColor }} />
   );
-  const label = <span className="tx-swatch__label">{entry.label}</span>;
+  // trmx-218: the title carries the FULL name for the (CSS-clamped) two-line label. It sits on the
+  // SPAN, not the button — the button's title is the warning/error diagnostics channel — and the
+  // span's content still wins accname computation, so the radio's accessible name is unchanged.
+  const label = (
+    <span className="tx-swatch__label" title={entry.label}>
+      {entry.label}
+    </span>
+  );
 
   return (
     <div className="tx-swatch-cell">
