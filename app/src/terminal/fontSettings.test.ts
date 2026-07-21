@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { applyFontSettingsChange, fontTerminalOptions, type FontOptionsSink } from "./fontSettings";
 import { ITERM2_FONT_FAMILY } from "./iterm2Theme";
+import { DEFAULT_FONT_FAMILY } from "./fontCatalog";
 import { makeSettingsStore, type KeyValueStore } from "../settings/settingsStore";
 
 function fakeStorage(initial: Record<string, string> = {}): KeyValueStore {
@@ -18,11 +19,16 @@ function fakeStorage(initial: Record<string, string> = {}): KeyValueStore {
 }
 
 describe("fontTerminalOptions", () => {
-  it("defaults to the platform stack (empty fontFamily → ITERM2_FONT_FAMILY) at 12 pt", () => {
+  it("defaults to the bundled SauceCodePro face (trmx-204) with the platform stack as fallback, at 12 pt", () => {
     expect(fontTerminalOptions(makeSettingsStore(fakeStorage()))).toEqual({
-      fontFamily: ITERM2_FONT_FAMILY,
+      fontFamily: `"${DEFAULT_FONT_FAMILY}", ${ITERM2_FONT_FAMILY}`,
       fontSize: 12,
     });
+  });
+
+  it("an explicit '' (System default) still resolves to the platform stack", () => {
+    const store = makeSettingsStore(fakeStorage({ "termixion.terminal.fontFamily": "" }));
+    expect(fontTerminalOptions(store).fontFamily).toBe(ITERM2_FONT_FAMILY);
   });
 
   it("treats a whitespace-only family as 'use the platform default stack' too", () => {
@@ -30,7 +36,14 @@ describe("fontTerminalOptions", () => {
     expect(fontTerminalOptions(store).fontFamily).toBe(ITERM2_FONT_FAMILY);
   });
 
-  it("prefers the persisted values", () => {
+  it("a persisted bundled family composes family-first with the platform stack appended", () => {
+    const store = makeSettingsStore(
+      fakeStorage({ "termixion.terminal.fontFamily": "MesloLGS NF" }),
+    );
+    expect(fontTerminalOptions(store).fontFamily).toBe(`"MesloLGS NF", ${ITERM2_FONT_FAMILY}`);
+  });
+
+  it("prefers the persisted values (a custom family passes through verbatim)", () => {
     const store = makeSettingsStore(
       fakeStorage({
         "termixion.terminal.fontFamily": "JetBrains Mono",
@@ -52,11 +65,20 @@ describe("applyFontSettingsChange", () => {
       }),
     ).toBe(true);
     expect(terminal.options.fontFamily).toBe("Fira Code");
-    // A reset broadcast carries the default "" — the live terminal reverts to the platform stack.
+    // A System-default broadcast carries "" — the live terminal reverts to the platform stack.
     expect(
       applyFontSettingsChange(terminal, { key: "terminal.fontFamily", value: "", source: "settings" }),
     ).toBe(true);
     expect(terminal.options.fontFamily).toBe(ITERM2_FONT_FAMILY);
+    // A bundled-family broadcast (trmx-204) applies the composed family-first stack.
+    expect(
+      applyFontSettingsChange(terminal, {
+        key: "terminal.fontFamily",
+        value: "Hack Nerd Font Mono",
+        source: "settings",
+      }),
+    ).toBe(true);
+    expect(terminal.options.fontFamily).toBe(`"Hack Nerd Font Mono", ${ITERM2_FONT_FAMILY}`);
   });
 
   it("applies fontSize changes, clamped into the registry range (untrusted payloads)", () => {

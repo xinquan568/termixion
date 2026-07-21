@@ -204,7 +204,8 @@ pub struct TerminalConfig {
     pub cursor_style: CursorStyle,
     pub cursor_blink: bool,
     pub scrollback_lines: u32,
-    /// Empty string = the platform default font stack.
+    /// Empty string = the platform default font stack. trmx-204: the default is the bundled
+    /// "SauceCodePro Nerd Font Mono" face; "" stays the explicit System-default sentinel.
     pub font_family: String,
     pub font_size: u32,
     /// Show an animated line while a command runs (trmx-91).
@@ -221,7 +222,7 @@ impl Default for TerminalConfig {
             cursor_style: CursorStyle::Underline,
             cursor_blink: false,
             scrollback_lines: 10_000,
-            font_family: String::new(),
+            font_family: "SauceCodePro Nerd Font Mono".to_string(),
             font_size: 12,
             activity_indicator: true,
             copy_on_select: true,
@@ -389,7 +390,7 @@ pub const DEFAULT_TEMPLATE: &str = r##"# Termixion configuration (TOML).
 # cursor_style = "underline"      # "bar" | "block" | "underline"
 # cursor_blink = false            # blink the cursor
 # scrollback_lines = 10000        # 0..=200000
-# font_family = ""                # "" = the platform default font stack
+# font_family = "SauceCodePro Nerd Font Mono"  # a bundled font (trmx-204); "" = the platform default font stack
 # font_size = 12                  # 6..=72
 # activity_indicator = true       # animated line while a command runs
 # copy_on_select = true           # auto-copy the mouse selection to the clipboard (iTerm2-style)
@@ -1812,6 +1813,31 @@ show_shortcut_hints = false
         assert_eq!(
             value_for(&pairs, "terminal.scrollbackLines"),
             Some(&RegistryValue::Int(200_000))
+        );
+    }
+
+    #[test]
+    fn font_family_defaults_to_the_bundled_sauce_code_pro_face() {
+        // trmx-204: an ABSENT key gets the bundled default; the dropdown's System-default entry
+        // persists an explicit "" which must survive parsing untouched (no default substitution).
+        assert_eq!(
+            TerminalConfig::default().font_family,
+            "SauceCodePro Nerd Font Mono"
+        );
+        let (config, warnings) = parse_config("");
+        assert_eq!(config.terminal.font_family, "SauceCodePro Nerd Font Mono");
+        assert_eq!(warnings, Vec::new());
+    }
+
+    #[test]
+    fn font_family_explicit_empty_stays_empty_after_the_trmx_204_default_flip() {
+        let (config, warnings) = parse_config("[terminal]\nfont_family = \"\"\n");
+        assert_eq!(config.terminal.font_family, "");
+        assert_eq!(warnings, Vec::new());
+        let (pairs, _) = parse_registry_pairs("[terminal]\nfont_family = \"\"\n");
+        assert_eq!(
+            value_for(&pairs, "terminal.fontFamily"),
+            Some(&RegistryValue::Str(String::new()))
         );
     }
 

@@ -24,11 +24,27 @@ describe("main.tsx startup ordering (trmx-80/89: hydrate → hydrateUserThemes �
   const smokeIndex = source.indexOf('realInvoke("smoke_config")');
   const perfIndex = source.indexOf('realInvoke("perf_config")');
   const mountIndex = source.indexOf("createRoot(");
+  // trmx-204: the bundled-font boot gate — the effective bundled face must be loadable before any
+  // terminal measures its cell grid (mountTerminal is fully synchronous once React mounts).
+  const fontGateIndex = source.indexOf("ensureStartupFontLoaded(");
 
   it("has boot() and every pinned step present", () => {
-    for (const index of [bootStart, bootInvoke, hydrateIndex, hydrateThemesIndex, themeIndex, smokeIndex, perfIndex, mountIndex]) {
+    for (const index of [bootStart, bootInvoke, hydrateIndex, hydrateThemesIndex, themeIndex, smokeIndex, perfIndex, mountIndex, fontGateIndex]) {
       expect(index).toBeGreaterThan(-1);
     }
+  });
+
+  it("awaits the trmx-204 font gate AFTER the theme paint and BEFORE the smoke/perf gates and mount", () => {
+    expect(fontGateIndex).toBeGreaterThan(bootStart);
+    expect(fontGateIndex).toBeLessThan(bootInvoke);
+    // Awaited: the face must be ready (or timed out into the fallback stack) before first render.
+    expect(source.slice(fontGateIndex - 20, fontGateIndex)).toContain("await ");
+    // After the theme paint (the themed first frame stays as early as possible), before the gates.
+    expect(fontGateIndex).toBeGreaterThan(themeIndex);
+    expect(fontGateIndex).toBeLessThan(smokeIndex);
+    expect(fontGateIndex).toBeLessThan(mountIndex);
+    // Exactly one invocation — the pinned one inside boot().
+    expect(source.match(/ensureStartupFontLoaded\(/g)).toHaveLength(1);
   });
 
   it("awaits hydrateSettings FIRST inside boot(), before the theme registry and the theme paint", () => {

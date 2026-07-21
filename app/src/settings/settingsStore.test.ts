@@ -124,10 +124,16 @@ describe("settingsStore defaults (legacy storage mode)", () => {
     expect(store.get("update.autoDownload")).toBe(true);
     expect(store.get("terminal.cursorStyle")).toBe("underline");
     expect(store.get("terminal.cursorBlink")).toBe(false);
-    // trmx-80 (FR-13): the scrollback/font trio.
+    // trmx-80 (FR-13): the scrollback/font trio. trmx-204: the font default is the bundled
+    // SauceCodePro face now; "" remains the explicit System-default sentinel.
     expect(store.get("terminal.scrollbackLines")).toBe(10_000);
-    expect(store.get("terminal.fontFamily")).toBe("");
+    expect(store.get("terminal.fontFamily")).toBe("SauceCodePro Nerd Font Mono");
     expect(store.get("terminal.fontSize")).toBe(12);
+  });
+
+  it("keeps an explicitly persisted '' fontFamily as '' (System default survives the trmx-204 default flip)", () => {
+    const store = makeSettingsStore(fakeStorage({ "termixion.terminal.fontFamily": "" }));
+    expect(store.get("terminal.fontFamily")).toBe("");
   });
 
   it("round-trips every setting", () => {
@@ -832,7 +838,8 @@ describe("D1 e2e query seed (trmx-81)", () => {
     setSearch("?setting.terminal.fontFamily=Menlo");
     const backend = fakeConfigBackend({}, { failRead: true });
     await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
-    expect(makeSettingsStore().get("terminal.fontFamily")).toBe(""); // the platform-default sentinel
+    // trmx-204: the registry default (bundled SauceCodePro), NOT the leaked query value.
+    expect(makeSettingsStore().get("terminal.fontFamily")).toBe("SauceCodePro Nerd Font Mono");
   });
 
   // trmx-195: appearance.theme JOINS the allowlist — the per-theme visibility e2e must boot the
@@ -917,7 +924,7 @@ describe("shared snapshot backend (trmx-80)", () => {
     const store = makeSettingsStore(undefined, fakeBus(), "main");
     expect(store.get("update.autoCheck")).toBe(true);
     expect(store.get("terminal.scrollbackLines")).toBe(10_000);
-    expect(store.get("terminal.fontFamily")).toBe("");
+    expect(store.get("terminal.fontFamily")).toBe("SauceCodePro Nerd Font Mono"); // trmx-204
     expect(store.get("terminal.fontSize")).toBe(12);
     // The OS-derived theme (jsdom: no matchMedia → night) still derives through defaultFor.
     expect(store.get("appearance.theme")).toBe("night");
