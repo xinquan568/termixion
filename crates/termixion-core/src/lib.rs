@@ -18,6 +18,7 @@ pub mod scripts;
 pub mod session;
 pub mod shells;
 pub mod theme;
+pub mod zdotdir;
 
 pub use config::{
     CheckFrequency, Config, ConfigWarning, CursorStyle, DEFAULT_TEMPLATE, LabelOrientation,

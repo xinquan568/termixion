@@ -73,10 +73,13 @@ export function Button({
 export function Toggle({
   checked,
   onChange,
+  disabled,
   label = "Toggle",
 }: {
   checked: boolean;
   onChange: (checked: boolean) => void;
+  /** trmx-206: a dependent toggle (e.g. a sub-option of a master switch) renders inert. */
+  disabled?: boolean;
   label?: string;
 }) {
   return (
@@ -85,6 +88,7 @@ export function Toggle({
       role="switch"
       aria-checked={checked}
       aria-label={label}
+      disabled={disabled}
       className={`tx-toggle${checked ? " tx-toggle--on" : ""}`}
       onClick={() => onChange(!checked)}
     >

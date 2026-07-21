@@ -50,6 +50,30 @@ pub fn shells_list() -> Vec<ShellEntry> {
     .collect()
 }
 
+/// trmx-206: the effective shell for UI gating — the SAME resolution the spawn uses
+/// (configured shell when valid, else the $SHELL chain), so the settings gate and the spawn
+/// gate can never drift.
+#[derive(Debug, Clone, Serialize)]
+pub struct EffectiveShell {
+    pub path: String,
+    pub kind: String,
+}
+
+#[tauri::command]
+pub fn effective_shell(state: tauri::State<'_, crate::config_io::ConfigState>) -> EffectiveShell {
+    let configured = crate::config_io::configured_shell(&state);
+    let spec = termixion_core::SessionSpec::login_shell_configured(
+        configured.map(std::ffi::OsString::from),
+        is_executable_file,
+    );
+    let path = spec.program.to_string_lossy().into_owned();
+    let kind = std::path::Path::new(&path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    EffectiveShell { path, kind }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

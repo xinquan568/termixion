@@ -437,6 +437,12 @@
   cursor: pointer;
   transition: background 0.15s ease;
 }
+.tx-toggle:disabled {
+  /* trmx-206: a dependent toggle under a switched-off master renders inert. */
+  opacity: 0.4;
+  pointer-events: none;
+}
+
 .tx-toggle--on {
   background: var(--tx-primary);
 }

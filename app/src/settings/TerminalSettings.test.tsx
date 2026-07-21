@@ -65,9 +65,10 @@ describe("TerminalSettings", () => {
     expect(
       screen.getByText("Show live AI session counts in the title bar"),
     ).toBeInTheDocument();
-    // EXACTLY these ten rows (trmx-205 adds Shell above Scrollback).
+    // EXACTLY these thirteen rows (trmx-205 adds Shell; trmx-206 the enhancement trio — shown
+    // by default because the degraded/unknown effective shell renders visible).
     const rows = container.querySelectorAll(".tx-setting-row");
-    expect(rows).toHaveLength(10);
+    expect(rows).toHaveLength(13);
     const labels = [...rows].map((r) => r.querySelector(".tx-setting-row__label")?.textContent);
     expect(labels).toEqual([
       "Cursor Style",
@@ -77,6 +78,9 @@ describe("TerminalSettings", () => {
       "AI Session Counter",
       "Confirm before closing",
       "Shell",
+      "Shell Enhancements",
+      "Autosuggestions",
+      "Syntax Highlighting",
       "Scrollback",
       "Font Family",
       "Font Size",
@@ -367,6 +371,79 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
     fireEvent.keyDown(input, { key: "Enter" });
     expect(store.get("terminal.shell")).toBe("/bin/dash");
     expect(screen.getByText(/Applies to new sessions/)).toBeInTheDocument();
+  });
+
+  it("trmx-206: enhancement toggles default on, master-off disables the sub-toggles", () => {
+    const store = makeSettingsStore(fakeStorage());
+    render(<TerminalSettings settings={store} invoke={vi.fn(() => Promise.resolve())} />);
+    const master = screen.getByRole("switch", { name: "Shell Enhancements" });
+    const auto = screen.getByRole("switch", { name: "Autosuggestions" });
+    const hl = screen.getByRole("switch", { name: "Syntax Highlighting" });
+    expect(master).toHaveAttribute("aria-checked", "true");
+    expect(auto).not.toBeDisabled();
+    expect(hl).not.toBeDisabled();
+    fireEvent.click(master);
+    expect(store.get("shell.enhancements")).toBe(false);
+    expect(screen.getByRole("switch", { name: "Autosuggestions" })).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "Syntax Highlighting" })).toBeDisabled();
+  });
+
+  it("trmx-206: the enhancement rows hide when the effective shell resolves to a non-zsh kind", async () => {
+    const invoke = vi.fn((cmd: string) =>
+      cmd === "effective_shell"
+        ? Promise.resolve({ path: "/opt/homebrew/bin/fish", kind: "fish" })
+        : Promise.resolve([]),
+    );
+    render(<TerminalSettings settings={makeSettingsStore(fakeStorage())} invoke={invoke} />);
+    await waitFor(() =>
+      expect(screen.queryByRole("switch", { name: "Shell Enhancements" })).toBeNull(),
+    );
+  });
+
+  it("trmx-206: the enhancement rows stay visible when the query resolves zsh or rejects", async () => {
+    const invoke = vi.fn((cmd: string) =>
+      cmd === "effective_shell"
+        ? Promise.resolve({ path: "/bin/zsh", kind: "zsh" })
+        : Promise.resolve([]),
+    );
+    render(<TerminalSettings settings={makeSettingsStore(fakeStorage())} invoke={invoke} />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("effective_shell"));
+    expect(screen.getByRole("switch", { name: "Shell Enhancements" })).toBeInTheDocument();
+
+    const rejecting = vi.fn(() => Promise.reject(new Error("no backend")));
+    render(<TerminalSettings settings={makeSettingsStore(fakeStorage())} invoke={rejecting} />);
+    await waitFor(() => expect(rejecting).toHaveBeenCalledWith("effective_shell"));
+    expect(screen.getAllByRole("switch", { name: "Shell Enhancements" }).length).toBeGreaterThan(0);
+  });
+
+  it("trmx-206: the gate re-queries after a shell change (zsh↔fish in one mounted view)", async () => {
+    let kind = "zsh";
+    const invoke = vi.fn((cmd: string) => {
+      if (cmd === "effective_shell") return Promise.resolve({ path: `/bin/${kind}`, kind });
+      if (cmd === "shells_list")
+        return Promise.resolve([{ id: "fish", label: "fish", path: "/opt/homebrew/bin/fish" }]);
+      return Promise.resolve();
+    });
+    const store = makeSettingsStore(fakeStorage());
+    render(<TerminalSettings settings={store} invoke={invoke} />);
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: "Shell Enhancements" })).toBeInTheDocument(),
+    );
+    // Switch the shell to fish: the write bumps the gate revision → re-query resolves fish →
+    // the enhancement rows hide, live.
+    kind = "fish";
+    const select = screen.getByRole("combobox", { name: "Shell" }) as HTMLSelectElement;
+    await waitFor(() => expect([...select.options].some((o) => o.label === "fish")).toBe(true));
+    fireEvent.change(select, { target: { value: "/opt/homebrew/bin/fish" } });
+    await waitFor(() =>
+      expect(screen.queryByRole("switch", { name: "Shell Enhancements" })).toBeNull(),
+    );
+    // And back to System default (kind zsh again): the rows return.
+    kind = "zsh";
+    fireEvent.change(select, { target: { value: "__system__" } });
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: "Shell Enhancements" })).toBeInTheDocument(),
+    );
   });
 
   it("notes the FiraCode ligature caveat in the row helper text when FiraCode is selected", async () => {
