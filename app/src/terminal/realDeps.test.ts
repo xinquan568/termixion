@@ -4,7 +4,7 @@
 // trmx-44/trmx-53 (test-first): the display chokepoint. It is not enough to test the pure option
 // values — we must prove that `realDeps.createTerminal` (the one place xterm is constructed)
 // actually feeds them into `new Terminal`. Since trmx-53 the COLORS come from the theme catalog
-// (the persisted appearance.theme, first-run-derived from the OS: dark → Night, light → White),
+// (the persisted appearance.theme, first-run-derived from the OS: dark → Night, light → Catppuccin Latte),
 // overlaying iTerm2's non-color profile facts (font/spacing, trmx-44/46) and the trmx-51 cursor.
 // trmx-80 (FR-13): settings are file-backed — persisted values are seeded through
 // hydrateSettings into the SHARED SNAPSHOT (no more localStorage), and the scrollback + font
@@ -99,13 +99,13 @@ describe("realDeps.createTerminal (the display chokepoint)", () => {
     });
   });
 
-  it("constructs xterm with the WHITE catalog theme (first-run derivation) when the system prefers light", () => {
+  it("constructs xterm with the CATPPUCCIN LATTE catalog theme (first-run derivation, trmx-202) when the system prefers light", () => {
     stubMatchMedia(false);
     realDeps.createTerminal();
     const defaults = makeSettingsStore();
     expect(vi.mocked(Terminal).mock.calls[0][0]).toEqual({
       ...iterm2TerminalOptions("light"),
-      theme: buildXtermTheme("white"),
+      theme: buildXtermTheme("catppuccin-latte"),
       ...fontTerminalOptions(defaults),
       ...TRMX51_CURSOR,
       ...scrollbackTerminalOptions(defaults),
@@ -131,10 +131,10 @@ describe("realDeps.createTerminal (the display chokepoint)", () => {
 
   it("uses the PERSISTED theme regardless of the OS appearance (no live OS-following, trmx-53)", async () => {
     stubMatchMedia(true);
-    await seedSettings({ "appearance.theme": "sepia" });
+    await seedSettings({ "appearance.theme": "solarized" });
     realDeps.createTerminal();
     const opts = vi.mocked(Terminal).mock.calls[0][0];
-    expect(opts?.theme).toEqual(buildXtermTheme("sepia"));
+    expect(opts?.theme).toEqual(buildXtermTheme("solarized"));
   });
 
   it("keeps the iTerm2 non-color profile facts and the trmx-51 cursor at the chokepoint", () => {

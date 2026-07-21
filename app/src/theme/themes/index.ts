@@ -3,12 +3,14 @@
 //
 // trmx-53: the theme catalog — the single source of truth for Termixion's BUILT-IN themes (vmark's
 // post-theme-unification shape, origin/main src/theme/themes/index.ts @ d7e70e3f). Adding a
-// built-in: (1) add `./<name>.ts` exporting a `ThemeTokens` value, (2) append it to the `themes`
+// built-in: (1) add `./<name>.ts` exporting a `ThemeTokens` value, (2) add it to the `themes`
 // map below. `BuiltinThemeId` and `THEME_IDS` are derived from the map, so neither the built-in
-// union nor the list can drift from the registered set. Declaration order is the issue's display
-// order (trmx-53): White, Paper, Mint, Sepia, Night, Solarized; trmx-201 appends Catppuccin
-// Mocha, Catppuccin Latte, Dracula, Gruvbox, Nord, Tokyo Night after them (that issue's table
-// order — reordering is trmx-202's job, not this one's).
+// union nor the list can drift from the registered set. trmx-202: display order is DERIVED, not
+// declared — `THEME_IDS` sorts the map keys by bg.primary relative luminance (lightest first,
+// tie-break ascending id), so a new theme slots into the ramp with zero ordering upkeep;
+// declaration order below is cosmetic grouping only. trmx-202 also REMOVED the trmx-53 light
+// novelty themes (white/paper/mint/sepia) — their ids live on in `REMOVED_BUILTIN_THEME_IDS` so
+// persisted configs mentioning them normalize silently (see defaultTheme.normalizeLegacyThemeId).
 //
 // trmx-89 (D): `ThemeId` is now the WIDENED, registry-backed `string` — a theme id may be a built-in
 // key OR a `user:<stem>` id contributed at runtime by the theme registry (registry.ts). This module
@@ -16,11 +18,8 @@
 // built-ins, not the reverse — no import cycle). Runtime validation of an arbitrary id therefore
 // moved to registry.ts (`isRegisteredThemeId`); the closed-catalog check lives on here as
 // `isBuiltinThemeId` for callers that specifically need "is this one of OUR built-ins".
+import { relativeLuminance } from "../contrast";
 import type { ThemeTokens } from "../tokens";
-import { white } from "./white";
-import { paper } from "./paper";
-import { mint } from "./mint";
-import { sepia } from "./sepia";
 import { night } from "./night";
 import { solarized } from "./solarized";
 import { catppuccinMocha } from "./catppuccin-mocha";
@@ -31,10 +30,6 @@ import { nord } from "./nord";
 import { tokyoNight } from "./tokyo-night";
 
 export const themes = {
-  white,
-  paper,
-  mint,
-  sepia,
   night,
   solarized,
   "catppuccin-mocha": catppuccinMocha,
@@ -56,8 +51,32 @@ export type BuiltinThemeId = keyof typeof themes;
  */
 export type ThemeId = string;
 
-/** The catalog's built-in ids in display order (object insertion order = declaration order above). */
-export const THEME_IDS = Object.keys(themes) as BuiltinThemeId[];
+/**
+ * The catalog's built-in ids in DISPLAY order (trmx-202): bg.primary relative luminance,
+ * lightest -> darkest, tie-break ascending id — computed, never hand-maintained.
+ */
+export const THEME_IDS = (Object.keys(themes) as BuiltinThemeId[]).sort((a, b) => {
+  const d =
+    relativeLuminance(themes[b].color.bg.primary) - relativeLuminance(themes[a].color.bg.primary);
+  return d !== 0 ? d : a < b ? -1 : a > b ? 1 : 0;
+});
+
+/**
+ * trmx-202: the four light novelty themes REMOVED from the catalog. They are not junk — a
+ * persisted config may still name them — so consumers normalize them silently to the derived
+ * default (defaultTheme.normalizeLegacyThemeId) instead of warning like an unknown id.
+ */
+export const REMOVED_BUILTIN_THEME_IDS = ["white", "paper", "mint", "sepia"] as const;
+
+/** Runtime guard for the removed-built-in set (the silent-normalization special case). */
+export function isRemovedBuiltinThemeId(
+  value: unknown,
+): value is (typeof REMOVED_BUILTIN_THEME_IDS)[number] {
+  return (
+    typeof value === "string" &&
+    (REMOVED_BUILTIN_THEME_IDS as readonly string[]).includes(value)
+  );
+}
 
 /**
  * Runtime guard for the closed BUILT-IN catalog (was `isThemeId` pre-trmx-89). `hasOwnProperty`, not

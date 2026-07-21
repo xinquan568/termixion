@@ -85,7 +85,7 @@ function supportsWebgl2(): boolean {
 // display chokepoint is unit-testable (realDeps.test.ts asserts the full option set is what reaches
 // `new Terminal`). trmx-44/46: the non-color profile facts (font, spacing, anti-aliasing) come from
 // iterm2TerminalOptions. trmx-53: the COLORS come from the theme catalog — the persisted
-// appearance.theme (first-run-derived from the OS: dark → Night, light → White) overrides the iTerm2
+// appearance.theme (first-run-derived from the OS: dark → Night, light → Catppuccin Latte, trmx-202) overrides the iTerm2
 // palette at this chokepoint; live theme switching arrives over settings:changed in the effect below.
 // trmx-51: the persisted cursor settings (default underline + no blink since trmx-55) overlay last.
 // trmx-80 (FR-13): the settings store reads the file-backed SHARED SNAPSHOT (hydrated in boot());

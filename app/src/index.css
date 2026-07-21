@@ -18,7 +18,7 @@ body {
   /*
    * trmx-53 (supersedes trmx-44's adaptive iTerm2 pair) — the static pre-JS fallback approximates
    * the FIRST-RUN theme derivation: dark OS → Night #000000 (pure black since trmx-183), light OS
-   * → White #ffffff. The real paint is the PERSISTED theme, applied synchronously before first
+   * → Catppuccin Latte #eff1f5 (trmx-202; was White). The real paint is the PERSISTED theme, applied synchronously before first
    * render by applyStartupTheme (main.tsx, module level) and kept live by TerminalView on
    * settings:changed broadcasts — this CSS only covers the instant before that module evaluates.
    */
@@ -29,7 +29,7 @@ body {
 
 @media (prefers-color-scheme: light) {
   body {
-    background: #ffffff;
+    background: #eff1f5;
   }
 }
 

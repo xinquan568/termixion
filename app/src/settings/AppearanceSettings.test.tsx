@@ -93,7 +93,7 @@ function duplicateViaMenu(themeLabel: string) {
 }
 
 describe("AppearanceSettings", () => {
-  it("renders the Theme group with the twelve labeled swatches in the issues' order", () => {
+  it("renders the Theme group with the eight labeled swatches, lightest to darkest (trmx-202)", () => {
     render(
       <AppearanceSettings
         settings={makeSettingsStore(fakeStorage())}
@@ -107,18 +107,14 @@ describe("AppearanceSettings", () => {
       "radio",
     );
     expect(swatches.map((s) => s.textContent)).toEqual([
-      "White",
-      "Paper",
-      "Mint",
-      "Sepia",
-      "Night",
-      "Solarized",
-      "Catppuccin Mocha",
       "Catppuccin Latte",
+      "Nord",
       "Dracula",
       "Gruvbox",
-      "Nord",
+      "Solarized",
+      "Catppuccin Mocha",
       "Tokyo Night",
+      "Night",
     ]);
   });
 
@@ -126,25 +122,25 @@ describe("AppearanceSettings", () => {
     const { rerender } = render(
       <AppearanceSettings
         settings={makeSettingsStore(fakeStorage())}
-        selected="sepia"
+        selected="solarized"
         barPosition="bottom"
       />,
     );
-    const sepia = screen.getByRole("radio", { name: "Sepia" });
+    const sepia = screen.getByRole("radio", { name: "Solarized" });
     expect(sepia).toHaveAttribute("aria-checked", "true");
     expect(sepia.className).toContain("tx-swatch--active");
-    expect(screen.getByRole("radio", { name: "White" })).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByRole("radio", { name: "Night" })).toHaveAttribute("aria-checked", "false");
 
     // The shell moving the selection (e.g. a cross-window broadcast) moves the ring.
     rerender(
       <AppearanceSettings
         settings={makeSettingsStore(fakeStorage())}
-        selected="mint"
+        selected="gruvbox"
         barPosition="bottom"
       />,
     );
-    expect(screen.getByRole("radio", { name: "Mint" })).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByRole("radio", { name: "Sepia" })).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByRole("radio", { name: "Gruvbox" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("radio", { name: "Solarized" })).toHaveAttribute("aria-checked", "false");
   });
 
   it("fills each swatch circle with that theme's background color", () => {
@@ -176,10 +172,10 @@ describe("AppearanceSettings", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("radio", { name: "Mint" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Gruvbox" }));
 
-    expect(storage.data.get("termixion.appearance.theme")).toBe("mint");
-    expect(onThemeChange).toHaveBeenCalledWith("mint");
+    expect(storage.data.get("termixion.appearance.theme")).toBe("gruvbox");
+    expect(onThemeChange).toHaveBeenCalledWith("gruvbox");
   });
 });
 
@@ -483,20 +479,16 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
         barPosition="bottom"
       />,
     );
-    // The twelve built-ins first, then the two user themes (registry insertion order).
+    // The eight built-ins first (luminance order), then the two user themes (registry insertion order).
     expect(within(themeGroup()).getAllByRole("radio").map((s) => s.textContent)).toEqual([
-      "White",
-      "Paper",
-      "Mint",
-      "Sepia",
-      "Night",
-      "Solarized",
-      "Catppuccin Mocha",
       "Catppuccin Latte",
+      "Nord",
       "Dracula",
       "Gruvbox",
-      "Nord",
+      "Solarized",
+      "Catppuccin Mocha",
       "Tokyo Night",
+      "Night",
       "Cool",
       "Zed",
     ]);
@@ -608,7 +600,7 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
     render(
       <AppearanceSettings
         settings={settings}
-        selected="white"
+        selected="night"
         onThemeChange={onThemeChange}
         barPosition="bottom"
         invoke={invoke}
@@ -642,7 +634,7 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
     render(
       <AppearanceSettings
         settings={makeSettingsStore(fakeStorage())}
-        selected="white"
+        selected="night"
         barPosition="bottom"
         invoke={invoke}
       />,
@@ -671,14 +663,14 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
     render(
       <AppearanceSettings
         settings={settings}
-        selected="white"
+        selected="night"
         onThemeChange={onThemeChange}
         barPosition="bottom"
         invoke={invoke}
       />,
     );
 
-    duplicateViaMenu("White");
+    duplicateViaMenu("Night");
 
     await waitFor(() =>
       expect(invoke.mock.calls.some((c) => c[0] === "themes_write")).toBe(true),
@@ -757,9 +749,9 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
       />,
     );
     fireEvent.contextMenu(screen.getByRole("radio", { name: "Night" }));
-    fireEvent.contextMenu(screen.getByRole("radio", { name: "Sepia" }));
+    fireEvent.contextMenu(screen.getByRole("radio", { name: "Solarized" }));
     expect(screen.getAllByRole("menu")).toHaveLength(1);
-    expect(screen.getByRole("menuitem", { name: "Duplicate Sepia" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Duplicate Solarized" })).toBeInTheDocument();
   });
 
   it("shows the right-click duplicate tip", () => {

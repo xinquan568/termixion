@@ -15,6 +15,7 @@
 // applyStartupTheme, themeSettings, the settings store/UI) import their resolution + guards from HERE.
 import { contrastRatio, toOpaqueHex } from "./contrast";
 import { deriveTheme, type ThemeSpec } from "./themeDerive";
+import { defaultThemeId } from "./defaultTheme";
 import { themes, THEME_IDS, themeLabel, type BuiltinThemeId } from "./themes";
 import type { ThemeTokens } from "./tokens";
 
@@ -175,11 +176,13 @@ export function getTheme(id: string): ThemeTokens | undefined {
 
 /**
  * Resolve `id` to applyable tokens, falling back to White for any unknown/invalid/junk id (the
- * defense-in-depth White fallback the old `buildXtermTheme` carried). `isBuiltin` uses hasOwnProperty
+ * defense-in-depth default fallback the old `buildXtermTheme` carried). `isBuiltin` uses hasOwnProperty
  * so `"__proto__"` cannot slip through, and the Map miss for an unregistered user id is safe too.
  */
 export function resolveTheme(id: string): ThemeTokens {
-  return getTheme(id) ?? themes.white;
+  // trmx-202: the last-resort anchor is the OS-derived first-run default ("serve what a fresh
+  // install would show") — was themes.white until that issue removed White.
+  return getTheme(id) ?? themes[defaultThemeId() as BuiltinThemeId];
 }
 
 /** True when `id` is a string AND names a built-in OR a registered user theme (valid or not). */
@@ -191,7 +194,7 @@ export function isRegisteredThemeId(id: unknown): id is string {
  * True when `id` is SHAPE-VALID as a user theme id (`user:<stem>`, stem free of `/` and `\`) — even
  * if it is not (yet) registered. trmx-89 C1: a persisted `user:` id must be honored on the pre-scan
  * read (before `themes_read()` populates the registry), so the settings store keeps it rather than
- * coercing it back to a built-in default; `resolveTheme` safely serves White until the scan resolves.
+ * coercing it back to a built-in default; `resolveTheme` safely serves the derived default until the scan resolves (trmx-202; was White).
  */
 export function isUserThemeIdShape(id: unknown): id is string {
   return typeof id === "string" && /^user:[^/\\]+$/.test(id);

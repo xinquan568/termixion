@@ -9,29 +9,29 @@ import { buildXtermTheme } from "./buildXtermTheme";
 import { THEME_IDS, themes } from "./themes";
 
 describe("buildXtermTheme", () => {
-  it("maps the White theme onto the full ITheme shape, value-exactly", () => {
-    expect(buildXtermTheme("white")).toEqual({
-      background: "#FFFFFF",
-      foreground: "#1a1a1a",
-      cursor: "#1a1a1a",
-      cursorAccent: "#FFFFFF",
-      selectionBackground: "rgba(0,102,204,0.25)",
-      black: "#2e3436",
-      red: "#cc0000",
-      green: "#3d7a04",
-      yellow: "#8a7000",
-      blue: "#3465a4",
-      magenta: "#75507b",
-      cyan: "#047a7c",
-      white: "#767676",
-      brightBlack: "#555753",
-      brightRed: "#d42020",
-      brightGreen: "#3a8000",
-      brightYellow: "#8a7000",
-      brightBlue: "#3a6faa",
-      brightMagenta: "#885088",
-      brightCyan: "#047878",
-      brightWhite: "#767676",
+  it("maps the Catppuccin Latte theme onto the full ITheme shape, value-exactly", () => {
+    expect(buildXtermTheme("catppuccin-latte")).toEqual({
+      background: "#eff1f5",
+      foreground: "#4c4f69",
+      cursor: "#4c4f69",
+      cursorAccent: "#eff1f5",
+      selectionBackground: "rgba(30, 102, 245, 0.22)",
+      black: "#bcc0cc",
+      red: "#d20f39",
+      green: "#40a02b",
+      yellow: "#c17d18",
+      blue: "#1e66f5",
+      magenta: "#d64ca8",
+      cyan: "#179299",
+      white: "#5c5f77",
+      brightBlack: "#8c8fa1",
+      brightRed: "#d20f39",
+      brightGreen: "#40a02b",
+      brightYellow: "#c17d18",
+      brightBlue: "#1e66f5",
+      brightMagenta: "#d64ca8",
+      brightCyan: "#179299",
+      brightWhite: "#6c6f85",
       scrollbarSliderBackground: "rgba(0,0,0,0.10)",
       scrollbarSliderHoverBackground: "rgba(0,0,0,0.18)",
       scrollbarSliderActiveBackground: "rgba(0,0,0,0.25)",
@@ -77,8 +77,8 @@ describe("buildXtermTheme", () => {
   });
 
   it("falls back safely on a junk id (defense-in-depth behind the registry's parse)", () => {
-    // trmx-89 (D): buildXtermTheme now takes a plain string; resolveTheme supplies the White fallback.
-    expect(buildXtermTheme("__proto__")).toEqual(buildXtermTheme("white"));
-    expect(buildXtermTheme("hotdog-stand")).toEqual(buildXtermTheme("white"));
+    // trmx-89 (D) / trmx-202: resolveTheme supplies the derived-default fallback (jsdom -> night).
+    expect(buildXtermTheme("__proto__")).toEqual(buildXtermTheme("night"));
+    expect(buildXtermTheme("hotdog-stand")).toEqual(buildXtermTheme("night"));
   });
 });

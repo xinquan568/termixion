@@ -16,8 +16,8 @@ import { test, expect, type Page } from "@playwright/test";
 import { themes } from "../src/theme/themes";
 
 const THEME_IDS = [
-  "white", "paper", "mint", "sepia", "night", "solarized",
-  "catppuccin-mocha", "catppuccin-latte", "dracula", "gruvbox", "nord", "tokyo-night",
+  "catppuccin-latte", "nord", "dracula", "gruvbox", "solarized",
+  "catppuccin-mocha", "tokyo-night", "night",
 ] as const;
 
 /** Serialize a literal CSS color through the browser's computed-style serializer. */

@@ -14,7 +14,7 @@
 // cursorAccent tracks the bg (#000000). Every other value remains vmark-exact;
 // any future drift must pass the CONTRAST_GATES and update docs/design/visual-baseline.md.
 import { describe, expect, it } from "vitest";
-import { compositeOver, contrastRatio, toOpaqueHex } from "./contrast";
+import { compositeOver, contrastRatio, relativeLuminance, toOpaqueHex } from "./contrast";
 import { THEME_IDS, themeLabel, themes, type BuiltinThemeId } from "./themes";
 import type { ThemeTokens } from "./tokens";
 
@@ -24,10 +24,6 @@ import type { ThemeTokens } from "./tokens";
 
 /** The issue's core-token table (bg.primary / bg.secondary / text.primary / accent / border / dark). */
 const CORE: Record<BuiltinThemeId, { bg: string; bg2: string; text: string; accent: string; border: string; dark: boolean }> = {
-  white: { bg: "#FFFFFF", bg2: "#f8f8f8", text: "#1a1a1a", accent: "#0066cc", border: "#eeeeee", dark: false },
-  paper: { bg: "#EEEDED", bg2: "#e5e4e4", text: "#1a1a1a", accent: "#0066cc", border: "#d5d4d4", dark: false },
-  mint: { bg: "#CCE6D0", bg2: "#b8d9bd", text: "#2d3a35", accent: "#1a6b4a", border: "#a8c9ad", dark: false },
-  sepia: { bg: "#F9F0DB", bg2: "#f0e5cc", text: "#5c4b37", accent: "#8b4513", border: "#e0d5bc", dark: false },
   night: { bg: "#000000", bg2: "#0a0a0a", text: "#d6d9de", accent: "#58a6ff", border: "#3a3f46", dark: true },
   solarized: { bg: "#002b36", bg2: "#073642", text: "#93a1a1", accent: "#268bd2", border: "#0e4753", dark: true },
   // trmx-201: the six community themes (issue-table order; upstream citations in each module).
@@ -46,66 +42,6 @@ const CORE: Record<BuiltinThemeId, { bg: string; bg2: string; text: string; acce
  *  that keeps the pink hue while matching iTerm2's watermark translucency),
  *  replacing the trmx-90 faint per-theme text tints. */
 const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
-  white: {
-    pane: { activeBorder: "#0066cc", inactiveBorder: "#eeeeee" },
-    ansi: {
-      black: "#2e3436", red: "#cc0000", green: "#3d7a04", yellow: "#8a7000",
-      blue: "#3465a4", magenta: "#75507b", cyan: "#047a7c", white: "#767676",
-      brightBlack: "#555753", brightRed: "#d42020", brightGreen: "#3a8000", brightYellow: "#8a7000",
-      brightBlue: "#3a6faa", brightMagenta: "#885088", brightCyan: "#047878", brightWhite: "#767676",
-    },
-    cursor: "#1a1a1a",
-    cursorAccent: "#FFFFFF",
-    selectionBackground: "rgba(0,102,204,0.25)",
-    badge: "#ff8da180",
-    scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
-    search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },
-  },
-  paper: {
-    pane: { activeBorder: "#0066cc", inactiveBorder: "#d5d4d4" },
-    ansi: {
-      black: "#2e3436", red: "#c33820", green: "#387204", yellow: "#806800",
-      blue: "#2f5a92", magenta: "#7b4d82", cyan: "#086e6e", white: "#595959",
-      brightBlack: "#5c5c5a", brightRed: "#c03820", brightGreen: "#367004", brightYellow: "#806800",
-      brightBlue: "#3a6494", brightMagenta: "#7d4d84", brightCyan: "#086c6c", brightWhite: "#595959",
-    },
-    cursor: "#1a1a1a",
-    cursorAccent: "#EEEDED",
-    selectionBackground: "rgba(0,102,204,0.25)",
-    badge: "#ff8da180",
-    scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
-    search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },
-  },
-  mint: {
-    pane: { activeBorder: "#1a6b4a", inactiveBorder: "#a8c9ad" },
-    ansi: {
-      black: "#2a3832", red: "#9e3020", green: "#246428", yellow: "#7a5c00",
-      blue: "#155878", magenta: "#7b4a8a", cyan: "#0a6571", white: "#3d5240",
-      brightBlack: "#4d6054", brightRed: "#a83828", brightGreen: "#2a6a2e", brightYellow: "#7a5c00",
-      brightBlue: "#1a6896", brightMagenta: "#7a4490", brightCyan: "#0e6b7a", brightWhite: "#3d5240",
-    },
-    cursor: "#2d3a35",
-    cursorAccent: "#CCE6D0",
-    selectionBackground: "rgba(0,102,204,0.25)",
-    badge: "#ff8da180",
-    scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
-    search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },
-  },
-  sepia: {
-    pane: { activeBorder: "#8b4513", inactiveBorder: "#e0d5bc" },
-    ansi: {
-      black: "#3e3328", red: "#b5421a", green: "#4a6818", yellow: "#7a5c00",
-      blue: "#4a6a8a", magenta: "#8a5470", cyan: "#1e645e", white: "#5e5345",
-      brightBlack: "#6b5d4f", brightRed: "#b04828", brightGreen: "#4e7018", brightYellow: "#886200",
-      brightBlue: "#3e6490", brightMagenta: "#8a5470", brightCyan: "#267a6e", brightWhite: "#5e5345",
-    },
-    cursor: "#5c4b37",
-    cursorAccent: "#F9F0DB",
-    selectionBackground: "rgba(0,102,204,0.25)",
-    badge: "#ff8da180",
-    scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
-    search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },
-  },
   night: {
     pane: { activeBorder: "#58a6ff", inactiveBorder: "#3a3f46" },
     ansi: {
@@ -231,36 +167,45 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
 };
 
 describe("theme catalog", () => {
-  // trmx-201: the trmx-53 six plus the six community themes, appended in that issue's table order.
-  it("registers exactly the twelve themes, in the issues' order", () => {
+  // trmx-202: the light novelty themes are gone; the catalog is the eight community/core themes
+  // displayed lightest -> darkest (the luminance-derived order below, not declaration order).
+  it("registers exactly the eight themes, lightest to darkest", () => {
     expect(THEME_IDS).toEqual([
-      "white", "paper", "mint", "sepia", "night", "solarized",
-      "catppuccin-mocha", "catppuccin-latte", "dracula", "gruvbox", "nord", "tokyo-night",
+      "catppuccin-latte", "nord", "dracula", "gruvbox", "solarized",
+      "catppuccin-mocha", "tokyo-night", "night",
     ]);
-    expect(Object.keys(themes)).toEqual(THEME_IDS);
+    expect([...Object.keys(themes)].sort()).toEqual([...THEME_IDS].sort());
   });
 
-  it("marks exactly the dark seven as dark (Latte is the light-side addition)", () => {
+  // trmx-202: the order is COMPUTED — bg.primary relative luminance desc, tie-break ascending id —
+  // so a future theme slots in with zero ordering upkeep and this test cannot drift from the impl.
+  it("derives the display order from bg.primary luminance", () => {
+    const computed = (Object.keys(themes) as BuiltinThemeId[]).sort((a, b) => {
+      const d =
+        relativeLuminance(themes[b].color.bg.primary) -
+        relativeLuminance(themes[a].color.bg.primary);
+      return d !== 0 ? d : a < b ? -1 : a > b ? 1 : 0;
+    });
+    expect(THEME_IDS).toEqual(computed);
+  });
+
+  it("marks all but catppuccin-latte as dark", () => {
     const dark = THEME_IDS.filter((id) => themes[id].isDark);
     expect(dark).toEqual([
-      "night", "solarized", "catppuccin-mocha", "dracula", "gruvbox", "nord", "tokyo-night",
+      "nord", "dracula", "gruvbox", "solarized", "catppuccin-mocha", "tokyo-night", "night",
     ]);
   });
 
   it("derives display labels from the ids", () => {
     expect(THEME_IDS.map(themeLabel)).toEqual([
-      "White",
-      "Paper",
-      "Mint",
-      "Sepia",
-      "Night",
-      "Solarized",
-      "Catppuccin Mocha",
       "Catppuccin Latte",
+      "Nord",
       "Dracula",
       "Gruvbox",
-      "Nord",
+      "Solarized",
+      "Catppuccin Mocha",
       "Tokyo Night",
+      "Night",
     ]);
   });
 });

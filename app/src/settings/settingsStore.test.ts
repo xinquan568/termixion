@@ -373,7 +373,7 @@ describe("scripts.startup (trmx-93)", () => {
   });
 
   it("snapshot mode: set writes through config_write and broadcasts", async () => {
-    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "night" } });
     await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
     const bus = fakeBus();
     const store = makeSettingsStore(undefined, bus, "settings");
@@ -412,7 +412,7 @@ describe("tabs.barPosition (trmx-81)", () => {
 
   it("snapshot mode: set validates, writes through config_write, and broadcasts; junk is rejected", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "night" } });
     await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
     const bus = fakeBus();
     const store = makeSettingsStore(undefined, bus, "settings");
@@ -438,9 +438,9 @@ describe("tabs.barPosition (trmx-81)", () => {
   it("keeps a shape-valid user: theme id even before the registry scan resolves (trmx-89 C1)", async () => {
     // themes_read() populates the theme registry only AFTER boot, so a persisted `user:<stem>` id
     // must SURVIVE the pre-scan set/coerce (isUserThemeIdShape) rather than being dropped back to a
-    // built-in default. resolveTheme serves White for it until the scan resolves.
+    // built-in default. resolveTheme serves the derived default for it until the scan resolves (trmx-202).
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "night" } });
     await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
     const store = makeSettingsStore(undefined, fakeBus(), "settings");
 
@@ -459,14 +459,14 @@ describe("tabs.barPosition (trmx-81)", () => {
 
   it("hydration seeds a valid file value; an invalid one falls to the default + client warning", async () => {
     const backend = fakeConfigBackend({
-      values: { "tabs.barPosition": "top", "appearance.theme": "white" },
+      values: { "tabs.barPosition": "top", "appearance.theme": "night" },
     });
     await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
     expect(makeSettingsStore().get("tabs.barPosition")).toBe("top");
 
     __resetSettingsForTest();
     const junk = fakeConfigBackend({
-      values: { "tabs.barPosition": "diagonal", "appearance.theme": "white" },
+      values: { "tabs.barPosition": "diagonal", "appearance.theme": "night" },
     });
     await hydrateSettings({ invoke: junk.invoke, bus: fakeListenBus(), storage: fakeStorage() });
     expect(makeSettingsStore().get("tabs.barPosition")).toBe("bottom");
@@ -479,7 +479,7 @@ describe("tabs.barPosition (trmx-81)", () => {
 
   it("live settings:changed applies a valid value; junk is inert (config-file junk warns)", async () => {
     const bus = fakeListenBus();
-    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "night" } });
     await hydrateSettings({ invoke: backend.invoke, bus, storage: fakeStorage() });
     const store = makeSettingsStore();
     bus.fire(SETTINGS_CHANGED_EVENT, { key: "tabs.barPosition", value: "right", source: "config-file" });
@@ -531,7 +531,7 @@ describe("tabs.sideLabelOrientation (trmx-82)", () => {
 
   it("snapshot mode: set validates, writes through config_write, and broadcasts; junk is rejected", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "night" } });
     await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
     const bus = fakeBus();
     const store = makeSettingsStore(undefined, bus, "settings");
@@ -556,14 +556,14 @@ describe("tabs.sideLabelOrientation (trmx-82)", () => {
 
   it("hydration seeds a valid file value; an invalid one falls to the default + client warning", async () => {
     const backend = fakeConfigBackend({
-      values: { "tabs.sideLabelOrientation": "vertical", "appearance.theme": "white" },
+      values: { "tabs.sideLabelOrientation": "vertical", "appearance.theme": "night" },
     });
     await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
     expect(makeSettingsStore().get("tabs.sideLabelOrientation")).toBe("vertical");
 
     __resetSettingsForTest();
     const junk = fakeConfigBackend({
-      values: { "tabs.sideLabelOrientation": "diagonal", "appearance.theme": "white" },
+      values: { "tabs.sideLabelOrientation": "diagonal", "appearance.theme": "night" },
     });
     await hydrateSettings({ invoke: junk.invoke, bus: fakeListenBus(), storage: fakeStorage() });
     expect(makeSettingsStore().get("tabs.sideLabelOrientation")).toBe("horizontal");
@@ -576,7 +576,7 @@ describe("tabs.sideLabelOrientation (trmx-82)", () => {
 
   it("live settings:changed applies a valid value; junk is inert (config-file junk warns)", async () => {
     const bus = fakeListenBus();
-    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "night" } });
     await hydrateSettings({ invoke: backend.invoke, bus, storage: fakeStorage() });
     const store = makeSettingsStore();
     bus.fire(SETTINGS_CHANGED_EVENT, {
@@ -626,7 +626,7 @@ describe("tabs.showShortcutHints (trmx-151)", () => {
 
   it("snapshot mode: set validates, writes through config_write, and broadcasts; junk is rejected", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "night" } });
     await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
     const bus = fakeBus();
     const store = makeSettingsStore(undefined, bus, "settings");
@@ -651,14 +651,14 @@ describe("tabs.showShortcutHints (trmx-151)", () => {
 
   it("hydration seeds a valid file value; an invalid one falls to the default + client warning", async () => {
     const backend = fakeConfigBackend({
-      values: { "tabs.showShortcutHints": false, "appearance.theme": "white" },
+      values: { "tabs.showShortcutHints": false, "appearance.theme": "night" },
     });
     await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
     expect(makeSettingsStore().get("tabs.showShortcutHints")).toBe(false);
 
     __resetSettingsForTest();
     const junk = fakeConfigBackend({
-      values: { "tabs.showShortcutHints": "yes", "appearance.theme": "white" },
+      values: { "tabs.showShortcutHints": "yes", "appearance.theme": "night" },
     });
     await hydrateSettings({ invoke: junk.invoke, bus: fakeListenBus(), storage: fakeStorage() });
     expect(makeSettingsStore().get("tabs.showShortcutHints")).toBe(true);
@@ -696,7 +696,7 @@ describe("terminal.confirmClose (trmx-144)", () => {
 
   it("snapshot mode: set validates, writes through config_write, and broadcasts; junk is rejected", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "night" } });
     await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
     const bus = fakeBus();
     const store = makeSettingsStore(undefined, bus, "settings");
@@ -721,14 +721,14 @@ describe("terminal.confirmClose (trmx-144)", () => {
 
   it("hydration seeds a valid file value; an invalid one falls to the default + client warning", async () => {
     const backend = fakeConfigBackend({
-      values: { "terminal.confirmClose": "never", "appearance.theme": "white" },
+      values: { "terminal.confirmClose": "never", "appearance.theme": "night" },
     });
     await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
     expect(makeSettingsStore().get("terminal.confirmClose")).toBe("never");
 
     __resetSettingsForTest();
     const junk = fakeConfigBackend({
-      values: { "terminal.confirmClose": "sometimes", "appearance.theme": "white" },
+      values: { "terminal.confirmClose": "sometimes", "appearance.theme": "night" },
     });
     await hydrateSettings({ invoke: junk.invoke, bus: fakeListenBus(), storage: fakeStorage() });
     expect(makeSettingsStore().get("terminal.confirmClose")).toBe("when-busy");
@@ -741,7 +741,7 @@ describe("terminal.confirmClose (trmx-144)", () => {
     // Wrong TYPE entirely (a number) is rejected by coerce the same way.
     __resetSettingsForTest();
     const wrongType = fakeConfigBackend({
-      values: { "terminal.confirmClose": 7, "appearance.theme": "white" },
+      values: { "terminal.confirmClose": 7, "appearance.theme": "night" },
     });
     await hydrateSettings({ invoke: wrongType.invoke, bus: fakeListenBus(), storage: fakeStorage() });
     expect(makeSettingsStore().get("terminal.confirmClose")).toBe("when-busy");
@@ -749,7 +749,7 @@ describe("terminal.confirmClose (trmx-144)", () => {
 
   it("live settings:changed applies a valid value; junk is inert (config-file junk warns)", async () => {
     const bus = fakeListenBus();
-    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "night" } });
     await hydrateSettings({ invoke: backend.invoke, bus, storage: fakeStorage() });
     const store = makeSettingsStore();
     bus.fire(SETTINGS_CHANGED_EVENT, {
@@ -795,7 +795,7 @@ describe("D1 e2e query seed (trmx-81)", () => {
 
   it("RESOLVED config_read: the query is ignored entirely (a backend is present)", async () => {
     setSearch("?setting.tabs.barPosition=top");
-    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "night" } });
     await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
     expect(makeSettingsStore().get("tabs.barPosition")).toBe("bottom");
   });
@@ -812,7 +812,7 @@ describe("D1 e2e query seed (trmx-81)", () => {
     __resetSettingsForTest();
     setSearch("?setting.tabs.barPosition=top");
     const junkValues = fakeConfigBackend({
-      values: { "tabs.barPosition": "diagonal", "appearance.theme": "white" },
+      values: { "tabs.barPosition": "diagonal", "appearance.theme": "night" },
     });
     await hydrateSettings({ invoke: junkValues.invoke, bus: fakeListenBus(), storage: fakeStorage() });
     expect(makeSettingsStore().get("tabs.barPosition")).toBe("bottom");
@@ -841,10 +841,10 @@ describe("D1 e2e query seed (trmx-81)", () => {
   // keys: registry-coerced (junk ignored, never a fallback write), snapshot-only, no-backend only.
   it("trmx-195: REJECTED config_read seeds appearance.theme from the query", async () => {
     // `sepia` (not the jsdom-derived default `night`) so the seed is OBSERVABLE.
-    setSearch("?setting.appearance.theme=sepia");
+    setSearch("?setting.appearance.theme=solarized");
     const backend = fakeConfigBackend({}, { failRead: true });
     await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
-    expect(makeSettingsStore().get("appearance.theme")).toBe("sepia");
+    expect(makeSettingsStore().get("appearance.theme")).toBe("solarized");
   });
 
   it("trmx-195: a junk theme id in the query is ignored (registry coercion, not a fallback write)", async () => {
@@ -866,7 +866,7 @@ describe("D1 e2e query seed (trmx-81)", () => {
 
   it("trmx-82: a RESOLVED config_read ignores the tabs.sideLabelOrientation query entirely", async () => {
     setSearch("?setting.tabs.sideLabelOrientation=vertical");
-    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "night" } });
     await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
     expect(makeSettingsStore().get("tabs.sideLabelOrientation")).toBe("horizontal");
   });
@@ -900,8 +900,8 @@ describe("appearance.theme (trmx-53, legacy storage mode)", () => {
 
   it("round-trips an explicit choice and treats junk as the derived default", () => {
     const store = makeSettingsStore(fakeStorage());
-    store.set("appearance.theme", "sepia");
-    expect(store.get("appearance.theme")).toBe("sepia");
+    store.set("appearance.theme", "solarized");
+    expect(store.get("appearance.theme")).toBe("solarized");
     const junk = makeSettingsStore(fakeStorage({ [THEME_STORAGE_KEY]: "hotdog-stand" }));
     expect(junk.get("appearance.theme")).toBe("night");
   });
@@ -924,7 +924,7 @@ describe("shared snapshot backend (trmx-80)", () => {
   });
 
   it("all storage-less instances share the one snapshot", async () => {
-    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "night" } });
     await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
     const a = makeSettingsStore(undefined, fakeBus(), "settings");
     const b = makeSettingsStore();
@@ -933,7 +933,7 @@ describe("shared snapshot backend (trmx-80)", () => {
   });
 
   it("set validates/clamps, updates the snapshot optimistically, writes through config_write, and broadcasts", async () => {
-    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "night" } });
     await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
     const bus = fakeBus();
     const store = makeSettingsStore(undefined, bus, "settings");
@@ -952,7 +952,7 @@ describe("shared snapshot backend (trmx-80)", () => {
     // trmx-80 review R4 — STRICT REJECTION, matching the backend: config_write refuses fractional
     // numbers, so committing one optimistically would diverge the UI/session from the file.
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "night" } });
     await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
     const bus = fakeBus();
     const store = makeSettingsStore(undefined, bus, "settings");
@@ -968,7 +968,7 @@ describe("shared snapshot backend (trmx-80)", () => {
 
   it("a failing config_write never throws — the optimistic snapshot value stands (warned)", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } }, { failWrites: true });
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "night" } }, { failWrites: true });
     await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
     const store = makeSettingsStore(undefined, fakeBus(), "settings");
     expect(() => store.set("terminal.fontSize", 18)).not.toThrow();
@@ -980,7 +980,7 @@ describe("shared snapshot backend (trmx-80)", () => {
   });
 
   it("resetAll clears the snapshot to defaults, invokes config_reset_all, and broadcasts each default", async () => {
-    const backend = fakeConfigBackend({ values: { "appearance.theme": "sepia" } });
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "solarized" } });
     await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
     const bus = fakeBus();
     const store = makeSettingsStore(undefined, bus, "settings");
@@ -1033,7 +1033,7 @@ describe("openConfigFile (trmx-148)", () => {
         return Promise.resolve({
           exists: true,
           path: "/tmp/termixion/config.toml",
-          values: { "appearance.theme": "white" },
+          values: { "appearance.theme": "night" },
           warnings: [],
         });
       }
@@ -1069,7 +1069,7 @@ describe("hydrateSettings (trmx-80)", () => {
         "terminal.fontSize": 14,
         "terminal.fontFamily": "Menlo",
         "terminal.scrollbackLines": 250_000, // client clamps defensively even if the backend didn't
-        "appearance.theme": "sepia",
+        "appearance.theme": "solarized",
       },
     });
     await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
@@ -1078,7 +1078,7 @@ describe("hydrateSettings (trmx-80)", () => {
     expect(store.get("terminal.fontSize")).toBe(14);
     expect(store.get("terminal.fontFamily")).toBe("Menlo");
     expect(store.get("terminal.scrollbackLines")).toBe(200_000);
-    expect(store.get("appearance.theme")).toBe("sepia");
+    expect(store.get("appearance.theme")).toBe("solarized");
     // PRESENT-ONLY: keys absent from the file stay on their defaults.
     expect(store.get("terminal.cursorStyle")).toBe("underline");
   });
@@ -1089,7 +1089,7 @@ describe("hydrateSettings (trmx-80)", () => {
         "terminal.cursorBlink": "yes", // string where a boolean is required
         "update.checkFrequency": "hourly", // not an enum member
         "terminal.fontSize": "big", // string where a number is required
-        "appearance.theme": "white",
+        "appearance.theme": "night",
       },
     });
     await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
@@ -1107,7 +1107,7 @@ describe("hydrateSettings (trmx-80)", () => {
   it("stores the config path and renders backend warnings human-readably (source: file)", async () => {
     const backend = fakeConfigBackend({
       path: "/Users/me/.config/termixion/config.toml",
-      values: { "appearance.theme": "white" },
+      values: { "appearance.theme": "night" },
       warnings: [
         { type: "SyntaxError", message: "expected `=` at line 3" },
         { type: "UnknownKey", key: "terminal.zoom" },
@@ -1153,7 +1153,7 @@ describe("hydrateSettings (trmx-80)", () => {
 
   it("subscribes ONCE to settings:changed — a second hydrate does not double-subscribe", async () => {
     const bus = fakeListenBus();
-    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "night" } });
     await hydrateSettings({ invoke: backend.invoke, bus, storage: fakeStorage() });
     await hydrateSettings({ invoke: backend.invoke, bus, storage: fakeStorage() });
     expect(bus.listened.filter((e) => e === SETTINGS_CHANGED_EVENT)).toHaveLength(1);
@@ -1163,7 +1163,7 @@ describe("hydrateSettings (trmx-80)", () => {
 describe("live snapshot updates over the bus (trmx-80)", () => {
   it("keeps the snapshot current for other-window and config-file-watcher changes", async () => {
     const bus = fakeListenBus();
-    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "night" } });
     await hydrateSettings({ invoke: backend.invoke, bus, storage: fakeStorage() });
     const store = makeSettingsStore();
     bus.fire(SETTINGS_CHANGED_EVENT, { key: "terminal.fontSize", value: 18, source: "config-file" });
@@ -1174,7 +1174,7 @@ describe("live snapshot updates over the bus (trmx-80)", () => {
 
   it("re-validates config-file-origin values: invalid → ignored + client warning", async () => {
     const bus = fakeListenBus();
-    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "night" } });
     await hydrateSettings({ invoke: backend.invoke, bus, storage: fakeStorage() });
     const store = makeSettingsStore();
     bus.fire(SETTINGS_CHANGED_EVENT, { key: "terminal.fontSize", value: 18, source: "config-file" });
@@ -1194,10 +1194,10 @@ describe("live snapshot updates over the bus (trmx-80)", () => {
     // can. A broken live theme must serve the derived default so gets stay consistent with what
     // a fresh parse of the file would yield, NOT the stale previous value.
     const bus = fakeListenBus();
-    const backend = fakeConfigBackend({ values: { "appearance.theme": "sepia" } });
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "solarized" } });
     await hydrateSettings({ invoke: backend.invoke, bus, storage: fakeStorage() });
     const store = makeSettingsStore();
-    expect(store.get("appearance.theme")).toBe("sepia");
+    expect(store.get("appearance.theme")).toBe("solarized");
     bus.fire(SETTINGS_CHANGED_EVENT, {
       key: "appearance.theme",
       value: "nihgt",
@@ -1218,7 +1218,7 @@ describe("live snapshot updates over the bus (trmx-80)", () => {
 
   it("a fractional number over the bus never reaches the snapshot (integers only)", async () => {
     const bus = fakeListenBus();
-    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "night" } });
     await hydrateSettings({ invoke: backend.invoke, bus, storage: fakeStorage() });
     const store = makeSettingsStore();
     bus.fire(SETTINGS_CHANGED_EVENT, { key: "terminal.fontSize", value: 12.5, source: "settings" });
@@ -1234,7 +1234,7 @@ describe("live snapshot updates over the bus (trmx-80)", () => {
   it("config:warnings broadcasts REPLACE the stored warnings (a re-parse supersedes older ones)", async () => {
     const bus = fakeListenBus();
     const backend = fakeConfigBackend({
-      values: { "appearance.theme": "white" },
+      values: { "appearance.theme": "night" },
       warnings: [{ type: "UnknownKey", key: "old.key" }],
     });
     await hydrateSettings({ invoke: backend.invoke, bus, storage: fakeStorage() });
@@ -1252,7 +1252,7 @@ describe("live snapshot updates over the bus (trmx-80)", () => {
 describe("onConfigWarningsChanged (trmx-80)", () => {
   it("notifies on a config:warnings broadcast INCLUDING an empty one (the banner-clear path)", async () => {
     const bus = fakeListenBus();
-    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "night" } });
     await hydrateSettings({ invoke: backend.invoke, bus, storage: fakeStorage() });
     const seen: ConfigWarningItem[][] = [];
     const off = onConfigWarningsChanged((items) => void seen.push(items));
@@ -1270,7 +1270,7 @@ describe("onConfigWarningsChanged (trmx-80)", () => {
 
   it("notifies when a CLIENT warning is authored (an invalid config-file value)", async () => {
     const bus = fakeListenBus();
-    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "night" } });
     await hydrateSettings({ invoke: backend.invoke, bus, storage: fakeStorage() });
     const seen: ConfigWarningItem[][] = [];
     onConfigWarningsChanged((items) => void seen.push(items));
@@ -1294,7 +1294,7 @@ describe("onConfigWarningsChanged (trmx-80)", () => {
 describe("file vs client warning ledgers (trmx-80)", () => {
   it("a client warning SURVIVES the backend's empty config:warnings that follows it", async () => {
     const bus = fakeListenBus();
-    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "night" } });
     await hydrateSettings({ invoke: backend.invoke, bus, storage: fakeStorage() });
     // The watcher's sequence for a hand edit that breaks the theme: settings:changed (invalid
     // theme id — the CLIENT authors the warning) then config:warnings [] (the core parsed the
@@ -1320,7 +1320,7 @@ describe("file vs client warning ledgers (trmx-80)", () => {
     // A LATER VALID value for the key is what clears it — the merged list goes empty.
     bus.fire(SETTINGS_CHANGED_EVENT, {
       key: "appearance.theme",
-      value: "mint",
+      value: "solarized",
       source: "config-file",
     });
     bus.fire(CONFIG_WARNINGS_EVENT, []);
@@ -1345,7 +1345,7 @@ describe("file vs client warning ledgers (trmx-80)", () => {
     // The user fixes the theme: the valid value clears exactly that key's client warning.
     bus.fire(SETTINGS_CHANGED_EVENT, {
       key: "appearance.theme",
-      value: "mint",
+      value: "gruvbox",
       source: "config-file",
     });
     expect(getConfigWarnings()).toEqual([]);
@@ -1353,7 +1353,7 @@ describe("file vs client warning ledgers (trmx-80)", () => {
 
   it("notifies subscribers when a valid value clears a client warning (merged result changed)", async () => {
     const bus = fakeListenBus();
-    const backend = fakeConfigBackend({ values: { "appearance.theme": "white" } });
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "night" } });
     await hydrateSettings({ invoke: backend.invoke, bus, storage: fakeStorage() });
     bus.fire(SETTINGS_CHANGED_EVENT, {
       key: "appearance.theme",
@@ -1364,7 +1364,7 @@ describe("file vs client warning ledgers (trmx-80)", () => {
     onConfigWarningsChanged((items) => void seen.push(items));
     bus.fire(SETTINGS_CHANGED_EVENT, {
       key: "appearance.theme",
-      value: "mint",
+      value: "gruvbox",
       source: "config-file",
     });
     expect(seen).toHaveLength(1);
@@ -1384,7 +1384,7 @@ describe("legacy localStorage migration (trmx-80 T3b)", () => {
       "termixion.update.autoCheck": "false",
       "termixion.terminal.cursorStyle": "block",
       "termixion.terminal.scrollbackLines": "999999", // clamped through the same per-key parse
-      "termixion.appearance.theme": "sepia",
+      "termixion.appearance.theme": "solarized",
       "termixion.update.lastCheckAt": "2026-07-01T00:00:00Z", // NOT migrated, stays forever
     });
     const backend = fakeConfigBackend({ exists: false, values: {} });
@@ -1393,7 +1393,7 @@ describe("legacy localStorage migration (trmx-80 T3b)", () => {
     expect(writes).toContainEqual({ key: "update.autoCheck", value: false });
     expect(writes).toContainEqual({ key: "terminal.cursorStyle", value: "block" });
     expect(writes).toContainEqual({ key: "terminal.scrollbackLines", value: 200_000 });
-    expect(writes).toContainEqual({ key: "appearance.theme", value: "sepia" });
+    expect(writes).toContainEqual({ key: "appearance.theme", value: "solarized" });
     // The migrated theme suppresses materialization: exactly ONE appearance.theme write.
     expect(writes.filter((w) => w.key === "appearance.theme")).toHaveLength(1);
     // lastCheckAt is bookkeeping, not user config: never written to the file, never removed.
@@ -1407,14 +1407,14 @@ describe("legacy localStorage migration (trmx-80 T3b)", () => {
     const store = makeSettingsStore();
     expect(store.get("update.autoCheck")).toBe(false);
     expect(store.get("terminal.cursorStyle")).toBe("block");
-    expect(store.get("appearance.theme")).toBe("sepia");
+    expect(store.get("appearance.theme")).toBe("solarized");
   });
 
   it("both present: the FILE wins — no migration, legacy keys untouched", async () => {
     const storage = fakeStorage({ "termixion.terminal.cursorStyle": "block" });
     const backend = fakeConfigBackend({
       exists: true,
-      values: { "terminal.cursorStyle": "bar", "appearance.theme": "white" },
+      values: { "terminal.cursorStyle": "bar", "appearance.theme": "night" },
     });
     await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage });
     expect(makeSettingsStore().get("terminal.cursorStyle")).toBe("bar");
@@ -1441,9 +1441,9 @@ describe("theme materialization at hydration (trmx-80, superseding get()-time tr
   });
 
   it("theme present in the file: no materialization write", async () => {
-    const backend = fakeConfigBackend({ exists: true, values: { "appearance.theme": "mint" } });
+    const backend = fakeConfigBackend({ exists: true, values: { "appearance.theme": "gruvbox" } });
     await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
-    expect(makeSettingsStore().get("appearance.theme")).toBe("mint");
+    expect(makeSettingsStore().get("appearance.theme")).toBe("gruvbox");
     expect(backend.writes().some((w) => w.key === "appearance.theme")).toBe(false);
   });
 
@@ -1473,5 +1473,91 @@ describe("theme materialization at hydration (trmx-80, superseding get()-time tr
         (w) => w.source === "client" && w.message.includes("appearance.theme"),
       ),
     ).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// trmx-202: the four REMOVED built-ins (white/paper/mint/sepia) are recognized legacy ids, not
+// junk — every persisted-theme path serves the derived default for them SILENTLY (no client
+// warning, no repair write), while truly unknown junk keeps the warning behavior pinned above.
+// (Both-appearance derivation is defaultTheme.test's job; jsdom here derives night.)
+describe("removed built-in ids fall back silently (trmx-202)", () => {
+  const REMOVED = ["white", "paper", "mint", "sepia"] as const;
+  const THEME_STORAGE_KEY = "termixion.appearance.theme";
+
+  it("hydration with a removed id in the config file: derived default, no warning, no write", async () => {
+    for (const id of REMOVED) {
+      const backend = fakeConfigBackend({ exists: true, values: { "appearance.theme": id } });
+      await hydrateSettings({
+        invoke: backend.invoke,
+        bus: fakeListenBus(),
+        storage: fakeStorage(),
+      });
+      expect(makeSettingsStore().get("appearance.theme")).toBe("night");
+      expect(backend.writes().some((w) => w.key === "appearance.theme")).toBe(false);
+      expect(
+        getConfigWarnings().some(
+          (w) => w.source === "client" && w.message.includes("appearance.theme"),
+        ),
+      ).toBe(false);
+    }
+  });
+
+  it("junk in the config file still warns (the removed-id special case never widens)", async () => {
+    const backend = fakeConfigBackend({
+      exists: true,
+      values: { "appearance.theme": "hotdog-stand" },
+    });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    expect(
+      getConfigWarnings().some(
+        (w) => w.source === "client" && w.message.includes("appearance.theme"),
+      ),
+    ).toBe(true);
+  });
+
+  it("a live removed-id config edit seeds the default, CLEARS a prior theme warning, writes nothing", async () => {
+    const bus = fakeListenBus();
+    const backend = fakeConfigBackend({ exists: true, values: { "appearance.theme": "night" } });
+    await hydrateSettings({ invoke: backend.invoke, bus, storage: fakeStorage() });
+    // A hand edit breaks the theme (junk): the client authors the warning…
+    bus.fire(SETTINGS_CHANGED_EVENT, {
+      key: "appearance.theme",
+      value: "nihgt",
+      source: "config-file",
+    });
+    expect(getConfigWarnings().filter((w) => w.source === "client")).toHaveLength(1);
+    // …then a REMOVED id arrives (a hand edit, or the watcher broadcasting the Rust default
+    // "white" after the key is deleted): silent — derived default served, the stale warning
+    // cleared, still no write.
+    bus.fire(SETTINGS_CHANGED_EVENT, {
+      key: "appearance.theme",
+      value: "sepia",
+      source: "config-file",
+    });
+    expect(makeSettingsStore().get("appearance.theme")).toBe("night");
+    expect(getConfigWarnings().filter((w) => w.source === "client")).toHaveLength(0);
+    expect(backend.writes().some((w) => w.key === "appearance.theme")).toBe(false);
+  });
+
+  it("legacy migration normalizes a removed id into the one file-creation write, silently", async () => {
+    // No config file yet (pre-FR-13 install): migration parses the legacy value silently and its
+    // config_write IS the file-creation write — the documented exemption from no-repair-write.
+    const backend = fakeConfigBackend({ exists: false });
+    const storage = fakeStorage({ [THEME_STORAGE_KEY]: "sepia" });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage });
+    expect(makeSettingsStore().get("appearance.theme")).toBe("night");
+    const themeWrites = backend.writes().filter((w) => w.key === "appearance.theme");
+    expect(themeWrites).toEqual([{ key: "appearance.theme", value: "night" }]);
+    expect(
+      getConfigWarnings().some(
+        (w) => w.source === "client" && w.message.includes("appearance.theme"),
+      ),
+    ).toBe(false);
+  });
+
+  it("read-time storage path: a stored removed id silently re-derives", () => {
+    const store = makeSettingsStore(fakeStorage({ [THEME_STORAGE_KEY]: "sepia" }));
+    expect(store.get("appearance.theme")).toBe("night");
   });
 });

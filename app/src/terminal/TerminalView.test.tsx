@@ -166,7 +166,7 @@ describe("TerminalView", () => {
     expect(attachCopyOnSelect).toHaveBeenCalledTimes(2); // toggled on → re-attached
 
     // An unrelated settings change does not re-toggle.
-    fireSettings?.({ key: "appearance.theme", value: "sepia", source: "settings" });
+    fireSettings?.({ key: "appearance.theme", value: "solarized", source: "settings" });
     expect(attachCopyOnSelect).toHaveBeenCalledTimes(2);
   });
 
@@ -521,9 +521,9 @@ describe("TerminalView", () => {
     const host = mount.mock.calls[0][0];
     const body = host.ownerDocument.body;
 
-    // The settings window picks Sepia → the terminal adopts it wholesale, without a remount.
-    fireSettings?.({ key: "appearance.theme", value: "sepia", source: "settings" });
-    expect(terminal.options.theme).toEqual(buildXtermTheme("sepia"));
+    // The settings window picks Solarized → the terminal adopts it wholesale, without a remount.
+    fireSettings?.({ key: "appearance.theme", value: "solarized", source: "settings" });
+    expect(terminal.options.theme).toEqual(buildXtermTheme("solarized"));
     expect(mount).toHaveBeenCalledTimes(1);
     // The host AND body background are synced to the theme (no wrong-color inset margin), and
     // the scrollbar is recomputed. (Compare host===body + theme≠theme rather than a color

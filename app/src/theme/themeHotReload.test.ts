@@ -41,9 +41,9 @@ const userInvalid: ThemeListEntry = {
 
 describe("decideHotReload (trmx-89 truth table)", () => {
   it("a BUILT-IN active theme is never affected by a user-theme change → none", () => {
-    expect(decideHotReload("night", [builtin, userValid], "white")).toEqual<HotReloadAction>({ kind: "none" });
+    expect(decideHotReload("night", [builtin, userValid], "night")).toEqual<HotReloadAction>({ kind: "none" });
     // A junk / non-user-shaped id is also `none` (only a user:<stem> id participates).
-    expect(decideHotReload("white", [], "white")).toEqual<HotReloadAction>({ kind: "none" });
+    expect(decideHotReload("solarized", [], "solarized")).toEqual<HotReloadAction>({ kind: "none" });
     expect(decideHotReload("__proto__", [builtin], "night")).toEqual<HotReloadAction>({ kind: "none" });
   });
 
@@ -53,21 +53,21 @@ describe("decideHotReload (trmx-89 truth table)", () => {
       to: "night",
     });
     // The fallback carries whatever derived default it was handed.
-    expect(decideHotReload("user:gone", [builtin], "white")).toEqual<HotReloadAction>({
+    expect(decideHotReload("user:gone", [builtin], "night")).toEqual<HotReloadAction>({
       kind: "fallback",
-      to: "white",
+      to: "night",
     });
   });
 
   it("an active user theme PRESENT-but-INVALID (edited into a parse error) → invalidated (keep colors)", () => {
-    expect(decideHotReload("user:bad", [builtin, userInvalid], "white")).toEqual<HotReloadAction>({
+    expect(decideHotReload("user:bad", [builtin, userInvalid], "night")).toEqual<HotReloadAction>({
       kind: "invalidated",
       id: "user:bad",
     });
   });
 
   it("an active user theme PRESENT-and-VALID → reapply its fresh tokens under the same id", () => {
-    expect(decideHotReload("user:ok", [builtin, userValid], "white")).toEqual<HotReloadAction>({
+    expect(decideHotReload("user:ok", [builtin, userValid], "night")).toEqual<HotReloadAction>({
       kind: "reapply",
       id: "user:ok",
     });
@@ -140,7 +140,7 @@ function makeSubscribe() {
 /** Drain the microtask chain the async handler runs (one macrotask fully flushes it). */
 const tick = () => new Promise<void>((r) => setTimeout(r, 0));
 
-/** A window whose OS appearance is light → the derived default is White (deterministic). */
+/** A window whose OS appearance is light → the derived default is Catppuccin Latte (trmx-202). */
 const lightWin = { matchMedia: () => ({ matches: false }) } as unknown as Window;
 
 describe("installThemeHotReload (trmx-89)", () => {
@@ -204,7 +204,7 @@ describe("installThemeHotReload (trmx-89)", () => {
     fire();
     await tick();
 
-    expect(set).toHaveBeenCalledExactlyOnceWith("appearance.theme", "white"); // lightWin → White
+    expect(set).toHaveBeenCalledExactlyOnceWith("appearance.theme", "catppuccin-latte"); // lightWin → Latte (trmx-202)
     expect(emit).not.toHaveBeenCalled(); // fallback goes through settings.set, not a raw re-emit
     expect(warn).toHaveBeenCalledOnce();
     expect(String(warn.mock.calls[0][0])).toContain("user:gone"); // the deleted theme is named

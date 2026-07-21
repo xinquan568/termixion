@@ -55,7 +55,7 @@ beyond the new cap is discarded at apply time.
 ² The platform default stack is `ui-monospace, "SF Mono", Menlo, monospace` (the current macOS
 system monospaced font at the front).
 
-³ First launch derives the theme from the OS appearance (dark → `night`, light → `white`) and
+³ First launch derives the theme from the OS appearance (dark → `night`, light → `catppuccin-latte` — trmx-202) and
 writes it into the file ("derive once, then persist"). After that, the file value wins.
 
 ⁴ The activity indicator (the green line shown while a command runs) — see

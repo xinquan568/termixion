@@ -32,7 +32,7 @@ async function boot() {
   // trmx-89: the persisted `appearance.theme` can be a `user:<stem>` id, so the runtime theme
   // registry must be populated (themes_read → registerUserThemes) BEFORE the startup theme paint
   // resolves that id — otherwise resolveTheme can't find a valid persisted user theme yet and it
-  // paints as the White fallback on the very first frame. A no-op without a backend (the read
+  // paints as the derived-default fallback on the very first frame (trmx-202). A no-op without a backend (the read
   // rejects and nothing registers), so it stays safe on every launch surface.
   await hydrateUserThemes();
   applyStartupTheme();
