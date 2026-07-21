@@ -12,10 +12,22 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
 APP="${1:-target/debug/bundle/macos/Termixion.app}"
-# Accept a .app bundle (resolve its single executable, whatever Tauri named/cased it) or a direct binary.
+# Accept a .app bundle or a direct binary. The bundle's MAIN executable comes from
+# CFBundleExecutable — Contents/MacOS/ also carries sidecars since trmx-207 (starship), so a
+# first-executable glob would pick the wrong binary (the exact CI failure this replaces).
 if [ -d "$APP" ]; then
-  bin="$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -perm -111 2>/dev/null | head -1)"
-  [ -n "$bin" ] && APP="$bin"
+  main="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist" 2>/dev/null || true)"
+  if [ -n "$main" ] && [ -x "$APP/Contents/MacOS/$main" ]; then
+    APP="$APP/Contents/MacOS/$main"
+  else
+    # Plist unavailable: fall back to the sole executable, refusing ambiguity.
+    count="$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -perm -111 2>/dev/null | wc -l | tr -d ' ')"
+    if [ "$count" != "1" ]; then
+      echo "smoke: cannot determine the main executable in $APP (CFBundleExecutable unreadable, $count candidates)" >&2
+      exit 2
+    fi
+    APP="$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -perm -111 2>/dev/null | head -1)"
+  fi
 fi
 if [ ! -x "$APP" ]; then
   echo "smoke: app/binary not found: $APP" >&2
