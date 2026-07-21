@@ -3,9 +3,22 @@
 Termixion is licensed **ISC** (see `LICENSE`). This file records any third-party code or assets
 incorporated into the repo, per the authority plan §7.5.
 
-## Status: none copied yet.
+## Status
 
-No third-party source or theme palette has been incorporated as of the A-1 skeleton.
+### Theme palettes (trmx-201 — color values only, no code copied)
+
+Six community color palettes are incorporated as built-in themes under
+`app/src/theme/themes/` (color values transcribed into Termixion's `ThemeTokens` shape; each
+module's header pins the upstream commit and lists any audited legibility deviation per
+`docs/design/visual-baseline.md` §4):
+
+| Theme(s) | Upstream | Commit | License |
+|---|---|---|---|
+| Catppuccin Mocha, Catppuccin Latte | [catppuccin/catppuccin](https://github.com/catppuccin/catppuccin) | `3376efaebc3e` | MIT |
+| Dracula | [dracula/dracula-theme](https://github.com/dracula/dracula-theme) | `c988d3d1c9e4` | MIT |
+| Gruvbox (dark, medium) | [morhetz/gruvbox](https://github.com/morhetz/gruvbox) | `5d15b2765f59` | MIT/X11 |
+| Nord | [nordtheme/nord](https://github.com/nordtheme/nord) | `1cef71605416` | MIT |
+| Tokyo Night (night style) | [folke/tokyonight.nvim](https://github.com/folke/tokyonight.nvim) | `cdc07ac78467` | Apache-2.0 |
 
 ## Record format (use when something is copied)
 

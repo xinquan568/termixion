@@ -93,7 +93,7 @@ function duplicateViaMenu(themeLabel: string) {
 }
 
 describe("AppearanceSettings", () => {
-  it("renders the Theme group with the six labeled swatches in the issue's order", () => {
+  it("renders the Theme group with the twelve labeled swatches in the issues' order", () => {
     render(
       <AppearanceSettings
         settings={makeSettingsStore(fakeStorage())}
@@ -113,6 +113,12 @@ describe("AppearanceSettings", () => {
       "Sepia",
       "Night",
       "Solarized",
+      "Catppuccin Mocha",
+      "Catppuccin Latte",
+      "Dracula",
+      "Gruvbox",
+      "Nord",
+      "Tokyo Night",
     ]);
   });
 
@@ -477,7 +483,7 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
         barPosition="bottom"
       />,
     );
-    // The six built-ins first, then the two user themes (registry insertion order).
+    // The twelve built-ins first, then the two user themes (registry insertion order).
     expect(within(themeGroup()).getAllByRole("radio").map((s) => s.textContent)).toEqual([
       "White",
       "Paper",
@@ -485,6 +491,12 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
       "Sepia",
       "Night",
       "Solarized",
+      "Catppuccin Mocha",
+      "Catppuccin Latte",
+      "Dracula",
+      "Gruvbox",
+      "Nord",
+      "Tokyo Night",
       "Cool",
       "Zed",
     ]);

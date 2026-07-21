@@ -112,6 +112,21 @@ window) changed four more. The ratios in the trmx-77 rows were measured on the t
 | `night.color.bg.primary/secondary/tertiary` | `#23262b`/`#2a2e34`/`#32363d` | `#000000`/`#0a0a0a`/`#141414` (pure-black window; tiers re-derived via themeDerive's dark-theme `shade(+4)/(+8)`) | trmx-183 product ask |
 | `night.terminal.cursorAccent` | `#23262b` | `#000000` (tracks `bg.primary`) | trmx-183, follows the bg |
 
+**The trmx-201 additions:** six community palettes joined the catalog (Catppuccin Mocha & Latte,
+Dracula, Gruvbox dark-medium, Nord, Tokyo Night "night" — upstream repo@commit pinned in each
+module header). **Dracula and Gruvbox pass every gate canonically — zero deviations.** The audited
+deviations (measured with `contrast.ts` on each theme's own `bg.primary`; canonical ratio → new):
+
+| Token | Canonical | Termixion | Gate |
+|---|---|---|---|
+| `catppuccin-mocha.ansi.brightBlack` | Surface2 `#585b70` (2.46) | Overlay0 `#6c7086` (3.36) — one step up the flavor ladder | G2 |
+| `catppuccin-latte.ansi.brightBlack` | Surface2 `#acb0be` (1.91) | Overlay1 `#8c8fa1` (2.83) — minimal ladder step; Overlay0 still fails at 2.30 | G2 |
+| `catppuccin-latte.ansi.yellow`+`brightYellow` | `#df8e1d` (2.31) | `#c17d18` (2.99) — same hue, darkened | G2 |
+| `catppuccin-latte.ansi.magenta`+`brightMagenta` | Pink `#ea76cb` (2.34) | `#d64ca8` (3.40) — same hue, darkened | G2 |
+| `catppuccin-latte.terminal.cursor` | Rosewater `#dc8a78` (2.34) | flavor text `#4c4f69` (7.06) — the light-theme cursor convention (white/paper/mint/sepia) | G4 |
+| `nord.ansi.brightBlack` | nord3 `#4c566a` (1.69) | `#66738f` (2.63) — Nord's documented comment tone `#616e88` still fails at 2.44; minimal in-family brighten | G2 |
+| `tokyo-night.ansi.brightBlack` | terminal `#414868` (1.91) | the style's comment color `#565f89` (2.76) | G2 |
+
 Full post-audit matrix (fg / selected-text / cursor vs `bg.primary`): White 17.40 / 11.95 / 17.40 ·
 Paper 14.89 / 10.42 / 14.89 · Mint 8.93 / 6.41 / 8.93 · Sepia 7.36 / 5.13 / 7.36 ·
 Night 14.84 / 10.98 / 14.84 (re-measured on the trmx-183 pure-black bg) · Solarized 5.61 / 4.62 /

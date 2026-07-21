@@ -75,11 +75,12 @@ test("?window=settings&section=appearance shows the Theme row; a swatch click re
   await expect(page.locator(".tx-nav-item").first()).toHaveText("Appearance");
   await expect(page.locator(".tx-nav-item--active")).toHaveText("Appearance");
 
-  // The Theme row: six labeled swatches in the issue's order (scoped to the Theme radiogroup —
+  // The Theme row: twelve labeled swatches in the issues' order (trmx-53 six + trmx-201 six;
+  // scoped to the Theme radiogroup —
   // trmx-81 adds the Tab bar Position radiogroup below it).
   const swatches = page.getByRole("radiogroup", { name: "Theme" }).getByRole("radio");
-  await expect(swatches).toHaveCount(6);
-  await expect(swatches).toHaveText(["White", "Paper", "Mint", "Sepia", "Night", "Solarized"]);
+  await expect(swatches).toHaveCount(12);
+  await expect(swatches).toHaveText(["White", "Paper", "Mint", "Sepia", "Night", "Solarized", "Catppuccin Mocha", "Catppuccin Latte", "Dracula", "Gruvbox", "Nord", "Tokyo Night"]);
 
   // trmx-81 (FR-2.2): the Tab bar group below Theme — the four-way Position segmented control,
   // Bottom (the registry default) selected. The live application is covered by
@@ -95,7 +96,7 @@ test("?window=settings&section=appearance shows the Theme row; a swatch click re
   // the runtime documentElement vars must beat the :root fallback (plan D4).
   await page.getByRole("radio", { name: "Sepia" }).click();
   await expect(page.locator(".tx-settings")).toHaveCSS("background-color", "rgb(249, 240, 219)");
-  await page.getByRole("radio", { name: "Night" }).click();
+  await page.getByRole("radio", { name: "Night", exact: true }).click();
   await expect(page.locator(".tx-settings")).toHaveCSS("background-color", "rgb(0, 0, 0)");
 
   // NOTE (trmx-80): persistence-across-reload is no longer observable in the plain-browser dev
@@ -109,7 +110,7 @@ test("theme Duplicate is a right-click context menu, not a per-swatch button (tr
   page,
 }) => {
   await page.goto("/?window=settings&section=appearance");
-  await expect(page.getByRole("radiogroup", { name: "Theme" }).getByRole("radio")).toHaveCount(6);
+  await expect(page.getByRole("radiogroup", { name: "Theme" }).getByRole("radio")).toHaveCount(12);
 
   // No visible "Duplicate" button anywhere; the tip explains the right-click.
   await expect(page.getByRole("button", { name: /^Duplicate/ })).toHaveCount(0);
@@ -117,7 +118,7 @@ test("theme Duplicate is a right-click context menu, not a per-swatch button (tr
     page.getByText("Right-click a theme to duplicate it, or create a brand-new one."),
   ).toBeVisible();
 
-  const night = page.getByRole("radio", { name: "Night" });
+  const night = page.getByRole("radio", { name: "Night", exact: true });
 
   // Right-click opens the custom in-DOM menu with a Duplicate item…
   await night.click({ button: "right" });
