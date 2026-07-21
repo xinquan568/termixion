@@ -134,7 +134,7 @@ numbers in the commit message, re-run `perf.sh` between steps, stop at green:
    allowed only with a golden test — it changes the pump's chunking contract.
 3. **ADR tier:** if profiling shows Channel IPC itself is the bottleneck and budgets still fail,
    ADR-0001's documented fallback applies — move the output stream (only) to a local WebSocket,
-   re-measure, record **ADR-0002**. Lands in `termixion-tauri` + `app`; not a casual commit.
+   re-measure, record **a future ADR (ADR-0002 records the no-chezmoi decision, trmx-208)**. Lands in `termixion-tauri` + `app`; not a casual commit.
 
 ## 9. Multi-pane load (v0.0.9)
 
