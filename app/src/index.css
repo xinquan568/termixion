@@ -34,6 +34,21 @@ body {
 }
 
 /*
+ * trmx-220 — the two-variable font chokepoint. ALL chrome typography routes through these (the
+ * fontChokepoint guard enforces it): --tx-ui-font is the system sans for long prose (settings
+ * descriptions, dialog bodies); --tx-mono is the bundled terminal face (trmx-204 fonts.css)
+ * applied by ROLE — titles, tab labels, names, values/numbers, keybinding hints. Fixed design
+ * constants, NOT theme tokens: they never follow terminal.fontFamily, so they live here (static
+ * :root), not in txCssVars. Both sheets ship in the one main.tsx bundle, so these definitions
+ * reach the settings window too. Sole exemption: .tx-badge (bold Helvetica — trmx-149 iTerm2
+ * fidelity; mirrors BADGE_FONT_FAMILY so the badgeFit canvas measures the painted font).
+ */
+:root {
+  --tx-ui-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  --tx-mono: "SauceCodePro Nerd Font Mono", ui-monospace, monospace;
+}
+
+/*
  * trmx-74 — the app is now a flex shell: the tab hosts fill the window, the tab strip is a fixed
  * bar along one edge (bottom is the vision default). `min-height: 0` / `min-width: 0` let the
  * hosts area actually shrink below its content on EITHER axis so the strip never gets pushed out.
@@ -48,6 +63,9 @@ body {
   height: 100%;
   display: flex;
   flex-direction: column;
+  /* trmx-220: the explicit sans base — title bar / counters / find bar previously inherited the
+     WebKit default. The terminal is unaffected (xterm sets its own font via fontCatalog). */
+  font-family: var(--tx-ui-font);
 }
 /*
  * trmx-188 — the app-drawn title bar (TitleBarStyle::Overlay hides the native chrome; the traffic
@@ -85,6 +103,7 @@ body {
   width: 0;
 }
 .title-bar__title {
+  font-family: var(--tx-mono);
   min-width: 0;
   flex: 0 1 auto;
   overflow: hidden;
@@ -108,6 +127,7 @@ body {
  * invariant).
  */
 .ai-counter {
+  font-family: var(--tx-mono);
   position: relative;
   display: flex;
   align-items: center;
@@ -534,11 +554,7 @@ body {
   z-index: 6;
   width: min(60%, 320px);
   box-sizing: border-box;
-  font:
-    13px -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
+  font: 13px var(--tx-ui-font);
   color: var(--tx-text);
   background: var(--tx-bg);
   border: 1px solid var(--tx-primary);
@@ -575,11 +591,7 @@ body {
   overflow-y: hidden;
   background: var(--tx-bg-sunken);
   border-top: 1px solid var(--tx-border);
-  font:
-    12px -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
+  font: 12px var(--tx-ui-font);
   user-select: none;
   -webkit-user-select: none;
 }
@@ -689,6 +701,7 @@ body {
    color literals), never wraps, never shrinks (the TITLE ellipsizes instead; a truncated chord
    would read as a different shortcut). A point under the strip's 12px so it reads as a prefix. */
 .tab-strip__hint {
+  font-family: var(--tx-mono);
   color: var(--tx-text-2);
   white-space: nowrap;
   flex: none;
@@ -704,6 +717,7 @@ body {
   }
 }
 .tab-strip__title {
+  font-family: var(--tx-mono);
   /* trmx-163: the title is the grid's middle (auto) column — it hugs its text and the equal side
      tracks centre it; text-align keeps it centred if the column ever exceeds the text, and
      min-width:0 lets it shrink to an ellipsis under squeeze instead of overflowing the track. */
@@ -721,6 +735,7 @@ body {
  * ring so the edit state reads across all six themes.
  */
 .tab-strip__rename {
+  font-family: var(--tx-mono);
   flex: 1 1 auto;
   min-width: 0;
   font: inherit;
@@ -998,11 +1013,7 @@ body {
 }
 .tx-script-picker__input {
   padding: 12px 14px;
-  font:
-    14px -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
+  font: 14px var(--tx-ui-font);
   color: var(--tx-text);
   background: transparent;
   border: none;
@@ -1029,9 +1040,11 @@ body {
   background: var(--tx-primary);
 }
 .tx-script-picker__name {
-  font-weight: 600;
+  font-family: var(--tx-mono);
+  font-weight: 700;
 }
 .tx-script-picker__path {
+  font-family: var(--tx-mono);
   color: var(--tx-text-2);
   font-size: 12px;
 }
@@ -1076,11 +1089,7 @@ body {
 }
 .tx-command-palette__input {
   padding: 12px 14px;
-  font:
-    14px -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
+  font: 14px var(--tx-ui-font);
   color: var(--tx-text);
   background: transparent;
   border: none;
@@ -1106,13 +1115,15 @@ body {
   background: var(--tx-primary);
 }
 .tx-command-palette__title {
-  font-weight: 600;
+  font-family: var(--tx-mono);
+  font-weight: 700;
 }
 .tx-command-palette__category {
   color: var(--tx-text-2);
   font-size: 12px;
 }
 .tx-command-palette__hint {
+  font-family: var(--tx-mono);
   margin-left: auto;
   padding: 1px 6px;
   color: var(--tx-text-2);
@@ -1172,6 +1183,7 @@ body {
   box-shadow: 0 0 0 1px var(--tx-semantic-error, #f85149);
 }
 .tx-find-bar__count {
+  font-family: var(--tx-mono);
   min-width: 34px;
   text-align: center;
   color: var(--tx-text-secondary, #9aa0a6);
@@ -1230,7 +1242,7 @@ body {
   padding: 6px 8px;
   border-radius: 4px;
   background: var(--tx-bg-secondary, rgba(0, 0, 0, 0.06));
-  font-family: var(--tx-mono, ui-monospace, monospace);
+  font-family: var(--tx-mono);
   font-size: 12px;
   user-select: all;
   overflow-x: auto;
@@ -1258,11 +1270,7 @@ body {
   gap: 10px;
   width: min(420px, 90vw);
   padding: 16px 18px;
-  font:
-    13px -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
+  font: 13px var(--tx-ui-font);
   color: var(--tx-text);
   background: var(--tx-bg);
   border: 1px solid var(--tx-border);
@@ -1270,9 +1278,10 @@ body {
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
 }
 .tx-confirm-close__title {
+  font-family: var(--tx-mono);
   margin: 0;
   font-size: 15px;
-  font-weight: 600;
+  font-weight: 700;
 }
 .tx-confirm-close__programs {
   margin: 0;
