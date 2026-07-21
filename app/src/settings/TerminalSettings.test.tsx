@@ -289,6 +289,32 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
     expect(store.get("terminal.fontFamily")).toBe("Menlo, monospace");
   });
 
+  it("a stale bundled-font load never overwrites a newer selection (trmx-204 race guard)", async () => {
+    // A deferred FontFaceSet: the bundled selection's ensureFontLoaded stays PENDING until we
+    // resolve it — after the user has already moved on to System default.
+    let resolveLoad!: (value: unknown) => void;
+    const pending = new Promise((resolve) => {
+      resolveLoad = resolve;
+    });
+    const load = vi.fn(() => pending);
+    Object.defineProperty(document, "fonts", { value: { load }, configurable: true });
+    try {
+      const store = makeSettingsStore(fakeStorage());
+      render(<TerminalSettings settings={store} />);
+      const select = screen.getByRole("combobox", { name: "Font Family" }) as HTMLSelectElement;
+      fireEvent.change(select, { target: { value: "MesloLGS NF" } }); // load pending…
+      fireEvent.change(select, { target: { value: "__system__" } }); // …newer choice wins now
+      expect(store.get("terminal.fontFamily")).toBe("");
+      resolveLoad([]); // the STALE load settles late
+      await Promise.resolve();
+      await Promise.resolve();
+      await waitFor(() => expect(select.value).toBe("__system__"));
+      expect(store.get("terminal.fontFamily")).toBe(""); // never overwritten by the stale write
+    } finally {
+      delete (document as { fonts?: unknown }).fonts;
+    }
+  });
+
   it("notes the FiraCode ligature caveat in the row helper text when FiraCode is selected", async () => {
     const store = makeSettingsStore(fakeStorage());
     render(<TerminalSettings settings={store} />);

@@ -96,6 +96,13 @@ describe("ensureFontLoaded", () => {
     await expect(ensureFontLoaded("FiraCode Nerd Font Mono")).resolves.toBeUndefined();
   });
 
+  it("never throws: a SYNCHRONOUSLY throwing fonts.load resolves anyway (step-8 finding 3)", async () => {
+    stubFonts(() => {
+      throw new Error("invalid font shorthand");
+    });
+    await expect(ensureFontLoaded("MesloLGS NF")).resolves.toBeUndefined();
+  });
+
   it("never hangs: a stuck load resolves after the timeout", async () => {
     stubFonts(() => new Promise(() => {})); // never settles
     await expect(

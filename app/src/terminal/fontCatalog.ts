@@ -58,17 +58,27 @@ function documentFonts(): FontsLike | undefined {
   return typeof fonts?.load === "function" ? fonts : undefined;
 }
 
+/** fonts.load can throw SYNCHRONOUSLY on a bad shorthand — fold that into the settled promise. */
+function safeLoad(fonts: FontsLike, spec: string): Promise<unknown> {
+  try {
+    return Promise.resolve(fonts.load(spec));
+  } catch {
+    return Promise.resolve(undefined);
+  }
+}
+
 /**
  * Best-effort load of a bundled family's regular + bold faces. NEVER throws and NEVER hangs:
- * a rejecting load resolves (the composed stack falls back), a stuck load loses the timeout race.
- * The 12px probe size is arbitrary — FontFaceSet.load keys on the family, not the size.
+ * a rejecting (or synchronously throwing) load resolves (the composed stack falls back), a stuck
+ * load loses the timeout race. The 12px probe size is arbitrary — FontFaceSet.load keys on the
+ * family, not the size.
  */
 export async function ensureFontLoaded(family: string, timeoutMs = 2000): Promise<void> {
   const fonts = documentFonts();
   if (!fonts) return;
   const loads = Promise.allSettled([
-    fonts.load(`12px "${family}"`),
-    fonts.load(`bold 12px "${family}"`),
+    safeLoad(fonts, `12px "${family}"`),
+    safeLoad(fonts, `bold 12px "${family}"`),
   ]);
   await Promise.race([loads, new Promise((resolve) => setTimeout(resolve, timeoutMs))]);
 }

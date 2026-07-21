@@ -17,7 +17,7 @@
 // trmx-80 free-text field; any unknown persisted value lands here so nobody's hand-typed font
 // regresses). Selecting a bundled entry awaits ensureFontLoaded first so the live terminal
 // re-measures with the face already available.
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   NumberField,
   SegmentedControl,
@@ -118,7 +118,13 @@ export function TerminalSettings({ settings, invoke = realInvoke }: TerminalSett
         ? fontFamily
         : FONT_CUSTOM;
 
+  // Step-8 finding 1 (race guard): a bundled selection persists only after its (async) face load,
+  // so EVERY selection bumps the request id and a stale load's completion is ignored — the newest
+  // user choice always wins, regardless of load latency.
+  const fontRequestRef = useRef(0);
+
   function onFontSelect(value: string) {
+    const request = ++fontRequestRef.current;
     if (value === FONT_CUSTOM) {
       setFontCustomMode(true);
       return; // nothing persists until the user commits a custom value
@@ -132,6 +138,7 @@ export function TerminalSettings({ settings, invoke = realInvoke }: TerminalSett
     // A bundled family: make the face available BEFORE the live terminal re-measures on the
     // broadcast (ensureFontLoaded never throws and never hangs — bounded timeout).
     void ensureFontLoaded(value).then(() => {
+      if (fontRequestRef.current !== request) return; // a newer selection superseded this load
       setFontFamily(value);
       settings.set("terminal.fontFamily", value);
     });
@@ -244,6 +251,7 @@ export function TerminalSettings({ settings, invoke = realInvoke }: TerminalSett
               placeholder={ITERM2_FONT_FAMILY}
               label="Font Family"
               onCommit={(value) => {
+                fontRequestRef.current++; // a custom commit also supersedes any pending load
                 setFontFamily(value);
                 setFontCustomMode(value.trim() !== "" && !isBundledFamily(value));
                 settings.set("terminal.fontFamily", value);
