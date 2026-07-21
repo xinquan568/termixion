@@ -416,6 +416,36 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
     expect(screen.getAllByRole("switch", { name: "Shell Enhancements" }).length).toBeGreaterThan(0);
   });
 
+  it("trmx-206: the gate re-queries after a shell change (zsh↔fish in one mounted view)", async () => {
+    let kind = "zsh";
+    const invoke = vi.fn((cmd: string) => {
+      if (cmd === "effective_shell") return Promise.resolve({ path: `/bin/${kind}`, kind });
+      if (cmd === "shells_list")
+        return Promise.resolve([{ id: "fish", label: "fish", path: "/opt/homebrew/bin/fish" }]);
+      return Promise.resolve();
+    });
+    const store = makeSettingsStore(fakeStorage());
+    render(<TerminalSettings settings={store} invoke={invoke} />);
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: "Shell Enhancements" })).toBeInTheDocument(),
+    );
+    // Switch the shell to fish: the write bumps the gate revision → re-query resolves fish →
+    // the enhancement rows hide, live.
+    kind = "fish";
+    const select = screen.getByRole("combobox", { name: "Shell" }) as HTMLSelectElement;
+    await waitFor(() => expect([...select.options].some((o) => o.label === "fish")).toBe(true));
+    fireEvent.change(select, { target: { value: "/opt/homebrew/bin/fish" } });
+    await waitFor(() =>
+      expect(screen.queryByRole("switch", { name: "Shell Enhancements" })).toBeNull(),
+    );
+    // And back to System default (kind zsh again): the rows return.
+    kind = "zsh";
+    fireEvent.change(select, { target: { value: "__system__" } });
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: "Shell Enhancements" })).toBeInTheDocument(),
+    );
+  });
+
   it("notes the FiraCode ligature caveat in the row helper text when FiraCode is selected", async () => {
     const store = makeSettingsStore(fakeStorage());
     render(<TerminalSettings settings={store} />);

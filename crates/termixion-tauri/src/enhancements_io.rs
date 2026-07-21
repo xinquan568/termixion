@@ -16,6 +16,7 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use include_dir::{Dir, include_dir};
 use termixion_core::config::ShellConfig;
@@ -107,7 +108,11 @@ pub fn materialize_enhancements(base: &Path) -> Result<Materialized, String> {
         return Ok(paths_for(&version_dir));
     }
 
-    let staging = versions.join(format!(".staging-{key}-{}", std::process::id()));
+    // Unique per CALL (finding 2): concurrent open_pty materializers in one process must never
+    // share a staging path — pid alone collides; the atomic counter disambiguates.
+    static STAGING_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nonce = STAGING_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let staging = versions.join(format!(".staging-{key}-{}-{nonce}", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
     let zdotdir = staging.join("zdotdir");
     std::fs::create_dir_all(&zdotdir).map_err(|e| format!("mkdir {zdotdir:?}: {e}"))?;
@@ -142,13 +147,17 @@ pub fn materialize_enhancements(base: &Path) -> Result<Materialized, String> {
     Ok(paths_for(&version_dir))
 }
 
-/// Best-effort retention: keep the current version + the most recent other complete one (a
-/// long-lived session may still be pointing at it); drop older versions and dead staging dirs.
+/// Best-effort retention: keep the current version + the most recent other COMPLETE one (a
+/// long-lived session may still be pointing at it — an incomplete tree was never selectable and
+/// holds no retention slot, step-8 finding 3); drop older/incomplete versions. Staging dirs
+/// belong to their builder — only AGE-STALE ones (a crashed builder) are swept, never a live
+/// concurrent build (step-8 finding 2).
 fn gc_stale_versions(versions: &Path, current: &str) {
+    const STALE_STAGING: Duration = Duration::from_secs(60 * 60);
     let Ok(entries) = std::fs::read_dir(versions) else {
         return;
     };
-    let mut others: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    let mut complete_others: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name();
@@ -156,18 +165,29 @@ fn gc_stale_versions(versions: &Path, current: &str) {
         if name == current {
             continue;
         }
-        if name.starts_with(".staging-") {
-            let _ = std::fs::remove_dir_all(&path);
-            continue;
-        }
         let modified = entry
             .metadata()
             .and_then(|m| m.modified())
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        others.push((modified, path));
+        if name.starts_with(".staging-") {
+            let age_stale = std::time::SystemTime::now()
+                .duration_since(modified)
+                .map(|age| age > STALE_STAGING)
+                .unwrap_or(false);
+            if age_stale {
+                let _ = std::fs::remove_dir_all(&path);
+            }
+            continue;
+        }
+        if path.join(".complete").is_file() {
+            complete_others.push((modified, path));
+        } else {
+            // Never selectable — a crashed materializer's leftover; safe to drop.
+            let _ = std::fs::remove_dir_all(&path);
+        }
     }
-    others.sort_by(|a, b| b.0.cmp(&a.0));
-    for (_, path) in others.into_iter().skip(1) {
+    complete_others.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, path) in complete_others.into_iter().skip(1) {
         let _ = std::fs::remove_dir_all(&path);
     }
 }
@@ -391,6 +411,57 @@ mod tests {
         );
         assert!(version_dir.join(".complete").is_file());
 
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn concurrent_materializers_coexist_and_converge() {
+        // finding 2: distinct staging paths per call — N threads all succeed and agree.
+        let base = std::env::temp_dir().join(format!("trmx206-conc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let results: Vec<_> = std::thread::scope(|scope| {
+            (0..4)
+                .map(|_| scope.spawn(|| materialize_enhancements(&base)))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|handle| handle.join().expect("no panic").expect("materializes"))
+                .collect()
+        });
+        for result in &results {
+            assert_eq!(result, &results[0]);
+            assert!(result.zdotdir.join(".zshrc").is_file());
+        }
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn gc_retains_only_complete_versions_and_spares_fresh_staging() {
+        // finding 3: an incomplete recent dir must not consume the retention slot; a FRESH
+        // staging dir (a live concurrent builder) must survive the sweep.
+        let base = std::env::temp_dir().join(format!("trmx206-gc-{}", std::process::id()));
+        let versions = base.join("versions");
+        let _ = std::fs::remove_dir_all(&base);
+        let old_complete = versions.join("v0-oldcomplete");
+        let incomplete = versions.join("v0-incomplete");
+        let live_staging = versions.join(".staging-v0-live-1-0");
+        for dir in [&old_complete, &incomplete, &live_staging] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(old_complete.join(".complete"), "v0").unwrap();
+        let current = materialize_enhancements(&base).expect("materializes current");
+        assert!(current.zdotdir.is_dir());
+        assert!(
+            old_complete.is_dir(),
+            "the complete previous version is retained"
+        );
+        assert!(
+            !incomplete.exists(),
+            "an incomplete dir never holds the slot"
+        );
+        assert!(
+            live_staging.is_dir(),
+            "a fresh staging dir is another builder's — spared"
+        );
         std::fs::remove_dir_all(&base).ok();
     }
 

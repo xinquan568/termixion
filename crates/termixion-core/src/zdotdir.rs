@@ -92,16 +92,16 @@ if [[ -r \"$_termixion_user_zdotdir/.zshrc\" ]]; then\n\
 fi\n\
 # Layer the bundled enhancements. The guards make an already-loaded plugin a no-op, so a\n\
 # setup that sources either plugin itself (oh-my-zsh etc.) double-loads nothing.\n\
-if [[ \"${{{auto}}}\" == \"1\" ]] && (( ! $+functions[_zsh_autosuggest_start] )); then\n\
-  if [[ -r \"${{{plugins}}}/zsh-autosuggestions/zsh-autosuggestions.zsh\" ]]; then\n\
-    source \"${{{plugins}}}/zsh-autosuggestions/zsh-autosuggestions.zsh\"\n\
+if [[ \"${{{auto}-}}\" == \"1\" ]] && (( ! $+functions[_zsh_autosuggest_start] )); then\n\
+  if [[ -r \"${{{plugins}-}}/zsh-autosuggestions/zsh-autosuggestions.zsh\" ]]; then\n\
+    source \"${{{plugins}-}}/zsh-autosuggestions/zsh-autosuggestions.zsh\"\n\
   fi\n\
 fi\n\
 # zsh-syntax-highlighting MUST be sourced last (its documented requirement) — keep this the\n\
 # final layering block in this file.\n\
-if [[ \"${{{hl}}}\" == \"1\" ]] && [[ -z \"$ZSH_HIGHLIGHT_VERSION\" ]]; then\n\
-  if [[ -r \"${{{plugins}}}/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh\" ]]; then\n\
-    source \"${{{plugins}}}/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh\"\n\
+if [[ \"${{{hl}-}}\" == \"1\" ]] && [[ -z \"${{ZSH_HIGHLIGHT_VERSION-}}\" ]]; then\n\
+  if [[ -r \"${{{plugins}-}}/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh\" ]]; then\n\
+    source \"${{{plugins}-}}/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh\"\n\
   fi\n\
 fi\n\
 unset _termixion_shim_dir _termixion_user_zdotdir _termixion_orig_set\n",
@@ -232,7 +232,7 @@ mod tests {
         assert!(restore_set < user_rc && restore_unset < user_rc);
         // Guards: autosuggestions skips when already loaded; highlighting when version is set.
         assert!(rc.contains("$+functions[_zsh_autosuggest_start]"));
-        assert!(rc.contains("-z \"$ZSH_HIGHLIGHT_VERSION\""));
+        assert!(rc.contains("-z \"${ZSH_HIGHLIGHT_VERSION-}\"")); // nounset-safe (step-8 finding 1)
         // Flags gate each layer through the contract vars.
         assert!(
             rc.contains(ENV_AUTOSUGGEST)

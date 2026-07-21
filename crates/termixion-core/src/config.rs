@@ -899,7 +899,9 @@ fn walk_shell(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
                 &mut config.shell.syntax_highlighting,
                 sink,
             ),
-            _ => {}
+            _ => sink.warnings.push(ConfigWarning::UnknownKey {
+                key: format!("shell.{key}"),
+            }),
         }
     }
 }
@@ -1942,6 +1944,17 @@ show_shortcut_hints = false
         assert_eq!(
             value_for(&pairs, "shell.autosuggestions"),
             Some(&RegistryValue::Bool(false))
+        );
+    }
+
+    #[test]
+    fn shell_table_reports_unknown_keys_like_every_fixed_schema_table() {
+        let (_, warnings) = parse_config("[shell]\ntypo_key = true\n");
+        assert_eq!(
+            warnings,
+            vec![ConfigWarning::UnknownKey {
+                key: "shell.typo_key".to_string()
+            }]
         );
     }
 

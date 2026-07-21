@@ -144,12 +144,16 @@ export function TerminalSettings({ settings, invoke = realInvoke }: TerminalSett
     const next = value === SHELL_SYSTEM ? "" : value;
     setShellValue(next);
     settings.set("terminal.shell", next);
+    setShellRevision((revision) => revision + 1);
   }
 
   // trmx-206: the zsh enhancement toggles — gated on the effective shell (the backend resolves
   // the SAME chain the spawn uses). A rejected query (plain-browser dev server) degrades
   // VISIBLE so the surface stays testable; a resolved non-zsh kind hides the rows.
   const [effectiveShellKind, setEffectiveShellKind] = useState<string | null>(null);
+  // Bumped on every terminal.shell write so the gate re-queries — switching zsh↔fish in the
+  // same mounted view shows/hides the rows live (step-8 finding 4).
+  const [shellRevision, setShellRevision] = useState(0);
   const [enhancements, setEnhancements] = useState<boolean>(() =>
     settings.get("shell.enhancements"),
   );
@@ -170,7 +174,7 @@ export function TerminalSettings({ settings, invoke = realInvoke }: TerminalSett
     return () => {
       cancelled = true;
     };
-  }, [invoke]);
+  }, [invoke, shellRevision]);
   const showEnhancements = effectiveShellKind === null || effectiveShellKind === "zsh";
 
   const [scrollback, setScrollback] = useState<number>(() =>
@@ -320,6 +324,7 @@ export function TerminalSettings({ settings, invoke = realInvoke }: TerminalSett
                 setShellValue(value);
                 setShellCustomMode(value.trim() !== "" && !isListedShell(value));
                 settings.set("terminal.shell", value);
+                setShellRevision((revision) => revision + 1);
               }}
             />
           ) : null}
