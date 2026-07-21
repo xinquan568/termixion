@@ -2000,6 +2000,20 @@ describe("App main-window theme vars (trmx-173)", () => {
     expect(sunken()).not.toBe("#e6e9ef"); // …and different from Latte's
   });
 
+  // trmx-202: a REMOVED built-in over the bus normalizes to the derived default (jsdom → night)
+  // so the chrome re-themes instead of ignoring the event.
+  it("re-themes the chrome to the derived default on a removed built-in id", async () => {
+    const { settingsChanged } = renderApp();
+    await act(async () =>
+      settingsChanged.fire({ key: "appearance.theme", value: "catppuccin-latte", source: "settings-window" }),
+    );
+    expect(sunken()).toBe("#e6e9ef"); // parked on Latte first
+    await act(async () =>
+      settingsChanged.fire({ key: "appearance.theme", value: "white", source: "config-file" }),
+    );
+    expect(sunken()).toBe("#0a0a0a"); // normalized to Night's sunken bg, not ignored
+  });
+
   it("re-applies the --tx-* vars on a same-id user-theme hot reload (changed bg tokens)", async () => {
     const ANSI = {
       black: "#000", red: "#f00", green: "#0f0", yellow: "#ff0", blue: "#00f", magenta: "#f0f",

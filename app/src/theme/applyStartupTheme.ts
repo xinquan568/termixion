@@ -7,7 +7,7 @@
 // the theme now lives in the backend's config file and needs one IPC read before the themed first
 // paint (ordering guarded by main.order.test.ts). It reads through the snapshot-backed settings
 // registry (hydration already materialized the first-run derivation: dark OS → Night, light →
-// White) and applies the theme via applyTxTheme. trmx-173: BOTH surfaces get the --tx-* vars (not
+// Catppuccin Latte, trmx-202) and applies the theme via applyTxTheme. trmx-173: BOTH surfaces get the --tx-* vars (not
 // just the body) — the main/terminal window's chrome is themed only via them, so painting just the
 // body left it on the static `:root` fallback. Defensive on every edge: no document (headless) →
 // no-op; an unhydrated snapshot (plain browser) → the derived default.

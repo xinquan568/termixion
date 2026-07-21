@@ -23,7 +23,7 @@ export interface TerminalTheme extends ITheme {
  * Build the complete xterm theme for any theme id (built-in or `user:<stem>`). trmx-89 (D):
  * resolution + the derived-default fallback for junk ids (corrupted storage past the registry's parse,
  * `"__proto__"`, an unregistered user id) live in `resolveTheme` now — one hasOwnProperty-guarded
- * White fallback shared with every other consumer.
+ * derived-default fallback shared with every other consumer.
  */
 export function buildXtermTheme(id: string): TerminalTheme {
   const theme = resolveTheme(id);

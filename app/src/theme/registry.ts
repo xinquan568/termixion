@@ -175,7 +175,7 @@ export function getTheme(id: string): ThemeTokens | undefined {
 }
 
 /**
- * Resolve `id` to applyable tokens, falling back to White for any unknown/invalid/junk id (the
+ * Resolve `id` to applyable tokens, falling back to the derived default for any unknown/invalid/junk id (the
  * defense-in-depth default fallback the old `buildXtermTheme` carried). `isBuiltin` uses hasOwnProperty
  * so `"__proto__"` cannot slip through, and the Map miss for an unregistered user id is safe too.
  */

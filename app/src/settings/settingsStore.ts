@@ -8,7 +8,7 @@
 // terminal in the main window) apply changes immediately.
 //
 // trmx-53 adds appearance.theme — the registry's ONE dynamic default: with no persisted value it
-// derives from the OS appearance (defaultThemeId: dark → night, light → white) and materializes
+// derives from the OS appearance (defaultThemeId: dark → night, light → catppuccin-latte) and materializes
 // (writes back) so the OS is consulted only once; Reset all removes the key, so a post-reset read
 // re-derives like a fresh first run, and the reset broadcast carries the derived value.
 //

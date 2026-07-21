@@ -1560,4 +1560,38 @@ describe("removed built-in ids fall back silently (trmx-202)", () => {
     const store = makeSettingsStore(fakeStorage({ [THEME_STORAGE_KEY]: "sepia" }));
     expect(store.get("appearance.theme")).toBe("night");
   });
+
+  // Both-appearance coverage: a LIGHT OS derives Catppuccin Latte for the same removed ids —
+  // window.matchMedia is stubbed (present + matches:false = light) and restored per test.
+  describe("on a light OS (matchMedia stubbed)", () => {
+    const lightMatchMedia = ((query: string) =>
+      ({ matches: false, media: query }) as MediaQueryList) as typeof window.matchMedia;
+
+    it("hydration and read-time serve catppuccin-latte for removed ids, silently", async () => {
+      const original = window.matchMedia;
+      window.matchMedia = lightMatchMedia;
+      try {
+        const backend = fakeConfigBackend({
+          exists: true,
+          values: { "appearance.theme": "sepia" },
+        });
+        await hydrateSettings({
+          invoke: backend.invoke,
+          bus: fakeListenBus(),
+          storage: fakeStorage(),
+        });
+        expect(makeSettingsStore().get("appearance.theme")).toBe("catppuccin-latte");
+        expect(backend.writes().some((w) => w.key === "appearance.theme")).toBe(false);
+        expect(
+          getConfigWarnings().some(
+            (w) => w.source === "client" && w.message.includes("appearance.theme"),
+          ),
+        ).toBe(false);
+        const store = makeSettingsStore(fakeStorage({ [THEME_STORAGE_KEY]: "white" }));
+        expect(store.get("appearance.theme")).toBe("catppuccin-latte");
+      } finally {
+        window.matchMedia = original;
+      }
+    });
+  });
 });

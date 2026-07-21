@@ -163,6 +163,26 @@ describe("SettingsApp shell", () => {
     });
   });
 
+  // trmx-202: a REMOVED built-in over the bus (live config edit / the Rust watcher's default
+  // "white") normalizes to the derived default (jsdom → night) instead of being ignored.
+  it("re-themes to the derived default when a removed built-in id is broadcast", async () => {
+    const bus = fakeListen();
+    renderApp({ listen: bus.listen, initialSection: "appearance" });
+    await waitFor(() =>
+      expect(screen.getByRole("radio", { name: "Night" })).toHaveAttribute("aria-checked", "true"),
+    );
+    // Move off the default first so the normalization visibly re-themes.
+    bus.deliver("settings:changed", { key: "appearance.theme", value: "nord", source: "main" });
+    await waitFor(() =>
+      expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#2e3440"),
+    );
+    bus.deliver("settings:changed", { key: "appearance.theme", value: "sepia", source: "main" });
+    await waitFor(() => {
+      expect(screen.getByRole("radio", { name: "Night" })).toHaveAttribute("aria-checked", "true");
+      expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#000000");
+    });
+  });
+
   it("renders the sidebar with the search field and the Terminal + About entries", () => {
     renderApp();
     expect(screen.getByPlaceholderText("Search settings…")).toBeInTheDocument();

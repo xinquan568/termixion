@@ -126,9 +126,9 @@ describe("AppearanceSettings", () => {
         barPosition="bottom"
       />,
     );
-    const sepia = screen.getByRole("radio", { name: "Solarized" });
-    expect(sepia).toHaveAttribute("aria-checked", "true");
-    expect(sepia.className).toContain("tx-swatch--active");
+    const solarized = screen.getByRole("radio", { name: "Solarized" });
+    expect(solarized).toHaveAttribute("aria-checked", "true");
+    expect(solarized.className).toContain("tx-swatch--active");
     expect(screen.getByRole("radio", { name: "Night" })).toHaveAttribute("aria-checked", "false");
 
     // The shell moving the selection (e.g. a cross-window broadcast) moves the ring.
