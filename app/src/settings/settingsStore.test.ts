@@ -131,6 +131,15 @@ describe("settingsStore defaults (legacy storage mode)", () => {
     expect(store.get("terminal.fontSize")).toBe(12);
   });
 
+  it("trmx-206: the shell-enhancement toggles default ON and round-trip", () => {
+    const store = makeSettingsStore(fakeStorage());
+    expect(store.get("shell.enhancements")).toBe(true);
+    expect(store.get("shell.autosuggestions")).toBe(true);
+    expect(store.get("shell.syntaxHighlighting")).toBe(true);
+    store.set("shell.enhancements", false);
+    expect(store.get("shell.enhancements")).toBe(false);
+  });
+
   it("trmx-205: terminal.shell defaults to '' and round-trips a free-form path", () => {
     const store = makeSettingsStore(fakeStorage());
     expect(store.get("terminal.shell")).toBe("");
@@ -338,6 +347,9 @@ describe("registry shape", () => {
         "terminal.fontFamily",
         "terminal.fontSize",
         "terminal.shell",
+        "shell.enhancements",
+        "shell.autosuggestions",
+        "shell.syntaxHighlighting",
         "appearance.theme",
         "tabs.barPosition",
         "tabs.sideLabelOrientation",

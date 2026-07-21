@@ -109,6 +109,12 @@ export interface SettingsValues {
    * absolute path to an installed shell. A free string like terminal.fontFamily; validated
    * impurely by the backend (spawn falls back + warns on an invalid path). */
   "terminal.shell": string;
+  /** trmx-206: master switch for the bundled zsh enhancement layer (new sessions only). */
+  "shell.enhancements": boolean;
+  /** trmx-206: fish-style inline suggestions (zsh-autosuggestions, bundled). */
+  "shell.autosuggestions": boolean;
+  /** trmx-206: command colorization (zsh-syntax-highlighting, bundled; sourced last). */
+  "shell.syntaxHighlighting": boolean;
   /** trmx-101 (FR-9.4): the external control channel — OFF by default; a local socket that lets scripts
    * drive the terminal. `socketPath` "" = the default path. The socket itself lives in the Rust shell. */
   "remote_control.enabled": boolean;
@@ -172,6 +178,9 @@ export const SETTING_DEFAULTS: SettingsValues = {
   // trmx-93 (FR-5): no startup script by default (empty = none).
   "scripts.startup": "",
   "terminal.shell": "",
+  "shell.enhancements": true,
+  "shell.autosuggestions": true,
+  "shell.syntaxHighlighting": true,
   "remote_control.enabled": false,
   "remote_control.socketPath": "",
 };
@@ -211,6 +220,9 @@ const STORAGE_KEYS: Record<SettingKey, string> = {
   // trmx-93 (FR-5): never existed pre-config-file, so the migration finds nothing — harmless.
   "scripts.startup": "termixion.scripts.startup",
   "terminal.shell": "termixion.terminal.shell",
+  "shell.enhancements": "termixion.shell.enhancements",
+  "shell.autosuggestions": "termixion.shell.autosuggestions",
+  "shell.syntaxHighlighting": "termixion.shell.syntaxHighlighting",
   "remote_control.enabled": "termixion.remote_control.enabled",
   "remote_control.socketPath": "termixion.remote_control.socketPath",
 };

@@ -146,6 +146,33 @@ export function TerminalSettings({ settings, invoke = realInvoke }: TerminalSett
     settings.set("terminal.shell", next);
   }
 
+  // trmx-206: the zsh enhancement toggles — gated on the effective shell (the backend resolves
+  // the SAME chain the spawn uses). A rejected query (plain-browser dev server) degrades
+  // VISIBLE so the surface stays testable; a resolved non-zsh kind hides the rows.
+  const [effectiveShellKind, setEffectiveShellKind] = useState<string | null>(null);
+  const [enhancements, setEnhancements] = useState<boolean>(() =>
+    settings.get("shell.enhancements"),
+  );
+  const [autosuggest, setAutosuggest] = useState<boolean>(() =>
+    settings.get("shell.autosuggestions"),
+  );
+  const [highlight, setHighlight] = useState<boolean>(() =>
+    settings.get("shell.syntaxHighlighting"),
+  );
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.resolve(invoke("effective_shell"))
+      .then((result) => {
+        const kind = (result as { kind?: unknown } | null)?.kind;
+        if (!cancelled && typeof kind === "string") setEffectiveShellKind(kind);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [invoke]);
+  const showEnhancements = effectiveShellKind === null || effectiveShellKind === "zsh";
+
   const [scrollback, setScrollback] = useState<number>(() =>
     settings.get("terminal.scrollbackLines"),
   );
@@ -297,6 +324,51 @@ export function TerminalSettings({ settings, invoke = realInvoke }: TerminalSett
             />
           ) : null}
         </SettingRow>
+        {showEnhancements ? (
+          <>
+            <SettingRow
+              label="Shell Enhancements"
+              description="Bundled zsh plugins for new sessions — never edits your rc files"
+            >
+              <Toggle
+                checked={enhancements}
+                label="Shell Enhancements"
+                onChange={(value) => {
+                  setEnhancements(value);
+                  settings.set("shell.enhancements", value);
+                }}
+              />
+            </SettingRow>
+            <SettingRow
+              label="Autosuggestions"
+              description="Fish-style inline suggestions (zsh-autosuggestions)"
+            >
+              <Toggle
+                checked={autosuggest}
+                disabled={!enhancements}
+                label="Autosuggestions"
+                onChange={(value) => {
+                  setAutosuggest(value);
+                  settings.set("shell.autosuggestions", value);
+                }}
+              />
+            </SettingRow>
+            <SettingRow
+              label="Syntax Highlighting"
+              description="Command colorization (zsh-syntax-highlighting)"
+            >
+              <Toggle
+                checked={highlight}
+                disabled={!enhancements}
+                label="Syntax Highlighting"
+                onChange={(value) => {
+                  setHighlight(value);
+                  settings.set("shell.syntaxHighlighting", value);
+                }}
+              />
+            </SettingRow>
+          </>
+        ) : null}
         <SettingRow label="Scrollback" description="Lines of history kept per terminal">
           <NumberField
             value={scrollback}

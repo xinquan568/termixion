@@ -236,6 +236,29 @@ impl Default for TerminalConfig {
     }
 }
 
+/// The `[shell]` table (trmx-206): the zsh enhancement layer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ShellConfig {
+    /// Master kill switch: `false` ⇒ spawns are byte-identical to the un-enhanced baseline
+    /// (no ZDOTDIR shim, no TERMIXION_* vars, no materialization).
+    pub enhancements: bool,
+    /// Layer zsh-autosuggestions (skipped if the user's own setup already loads it).
+    pub autosuggestions: bool,
+    /// Layer zsh-syntax-highlighting (skipped if already loaded; always sourced last).
+    pub syntax_highlighting: bool,
+}
+
+impl Default for ShellConfig {
+    fn default() -> Self {
+        Self {
+            enhancements: true,
+            autosuggestions: true,
+            syntax_highlighting: true,
+        }
+    }
+}
+
 /// The `[appearance]` table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -303,6 +326,8 @@ pub struct ScriptsConfig {
 pub struct Config {
     pub update: UpdateConfig,
     pub terminal: TerminalConfig,
+    /// trmx-206: the zsh enhancement layer.
+    pub shell: ShellConfig,
     pub appearance: AppearanceConfig,
     pub tabs: TabsConfig,
     /// trmx-190: the title-bar chrome table (the AI-session counter gate).
@@ -402,6 +427,11 @@ pub const DEFAULT_TEMPLATE: &str = r##"# Termixion configuration (TOML).
 # copy_on_select = true           # auto-copy the mouse selection to the clipboard (iTerm2-style)
 # confirm_close = "when-busy"     # confirm before closing a busy pane/tab or quitting: "never" | "when-busy" | "always"
 
+# [shell]
+# enhancements = true             # master switch for the zsh enhancement layer (trmx-206)
+# autosuggestions = true          # fish-style suggestions (zsh-autosuggestions, bundled)
+# syntax_highlighting = true      # command colorization (zsh-syntax-highlighting, bundled)
+
 # [appearance]
 # theme = "night"                 # a theme id from the theme catalog
 
@@ -466,6 +496,9 @@ pub fn toml_path_for(registry_key: &str) -> Option<(&'static str, &'static str)>
         "terminal.scrollbackLines" => Some(("terminal", "scrollback_lines")),
         "terminal.fontFamily" => Some(("terminal", "font_family")),
         "terminal.shell" => Some(("terminal", "shell")),
+        "shell.enhancements" => Some(("shell", "enhancements")),
+        "shell.autosuggestions" => Some(("shell", "autosuggestions")),
+        "shell.syntaxHighlighting" => Some(("shell", "syntax_highlighting")),
         "terminal.fontSize" => Some(("terminal", "font_size")),
         "terminal.activityIndicator" => Some(("terminal", "activity_indicator")),
         "terminal.copyOnSelect" => Some(("terminal", "copy_on_select")),
@@ -545,6 +578,21 @@ pub fn diff_configs(old: &Config, new: &Config) -> Vec<(String, RegistryValue)> 
         old.terminal.shell != new.terminal.shell,
         "terminal.shell",
         RegistryValue::Str(new.terminal.shell.clone()),
+    );
+    push(
+        old.shell.enhancements != new.shell.enhancements,
+        "shell.enhancements",
+        RegistryValue::Bool(new.shell.enhancements),
+    );
+    push(
+        old.shell.autosuggestions != new.shell.autosuggestions,
+        "shell.autosuggestions",
+        RegistryValue::Bool(new.shell.autosuggestions),
+    );
+    push(
+        old.shell.syntax_highlighting != new.shell.syntax_highlighting,
+        "shell.syntaxHighlighting",
+        RegistryValue::Bool(new.shell.syntax_highlighting),
     );
     push(
         old.terminal.confirm_close != new.terminal.confirm_close,
@@ -645,6 +693,7 @@ fn parse_full(text: &str) -> (Config, Vec<(String, RegistryValue)>, Vec<ConfigWa
         let walk_table: Option<fn(&toml::Table, &mut Config, &mut Sink)> = match name.as_str() {
             "update" => Some(walk_update),
             "terminal" => Some(walk_terminal),
+            "shell" => Some(walk_shell),
             "appearance" => Some(walk_appearance),
             "tabs" => Some(walk_tabs),
             "title_bar" => Some(walk_title_bar),
@@ -825,6 +874,32 @@ fn walk_keys(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
                 got: describe_value(value),
                 expected: "a command id string".to_string(),
             }),
+        }
+    }
+}
+
+fn walk_shell(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
+    for (key, value) in table {
+        match key.as_str() {
+            "enhancements" => read_bool(
+                value,
+                ("shell.enhancements", "shell.enhancements"),
+                &mut config.shell.enhancements,
+                sink,
+            ),
+            "autosuggestions" => read_bool(
+                value,
+                ("shell.autosuggestions", "shell.autosuggestions"),
+                &mut config.shell.autosuggestions,
+                sink,
+            ),
+            "syntax_highlighting" => read_bool(
+                value,
+                ("shell.syntax_highlighting", "shell.syntaxHighlighting"),
+                &mut config.shell.syntax_highlighting,
+                sink,
+            ),
+            _ => {}
         }
     }
 }
@@ -1015,7 +1090,7 @@ mod tests {
     use super::*;
 
     /// All 15 registry keys.
-    const REGISTRY_KEYS: [&str; 16] = [
+    const REGISTRY_KEYS: [&str; 19] = [
         "update.autoCheck",
         "update.checkFrequency",
         "update.autoDownload",
@@ -1028,6 +1103,9 @@ mod tests {
         "terminal.copyOnSelect",
         "terminal.confirmClose",
         "terminal.shell",
+        "shell.enhancements",
+        "shell.autosuggestions",
+        "shell.syntaxHighlighting",
         "appearance.theme",
         "tabs.barPosition",
         "tabs.sideLabelOrientation",
@@ -1054,6 +1132,11 @@ activity_indicator = false
 copy_on_select = false
 confirm_close = "always"
 shell = "/opt/homebrew/bin/fish"
+
+[shell]
+enhancements = false
+autosuggestions = false
+syntax_highlighting = false
 
 [appearance]
 theme = "night"
@@ -1087,6 +1170,11 @@ show_shortcut_hints = false
                     copy_on_select: false,
                     confirm_close: ConfirmClose::Always,
                     shell: "/opt/homebrew/bin/fish".to_string(),
+                },
+                shell: ShellConfig {
+                    enhancements: false,
+                    autosuggestions: false,
+                    syntax_highlighting: false,
                 },
                 appearance: AppearanceConfig {
                     theme: "night".to_string(),
@@ -1217,7 +1305,7 @@ show_shortcut_hints = false
     fn full_file_yields_all_twelve_registry_pairs() {
         let (pairs, warnings) = parse_registry_pairs(FULL_NON_DEFAULT);
         assert_eq!(warnings, Vec::new());
-        assert_eq!(pairs.len(), 16);
+        assert_eq!(pairs.len(), 19);
         for key in REGISTRY_KEYS {
             assert!(value_for(&pairs, key).is_some(), "missing pair for {key}");
         }
@@ -1834,6 +1922,38 @@ show_shortcut_hints = false
         assert_eq!(
             value_for(&pairs, "terminal.scrollbackLines"),
             Some(&RegistryValue::Int(200_000))
+        );
+    }
+
+    #[test]
+    fn shell_table_defaults_on_and_round_trips_toggles() {
+        let d = ShellConfig::default();
+        assert!(d.enhancements && d.autosuggestions && d.syntax_highlighting);
+        let (config, warnings) =
+            parse_config("[shell]\nenhancements = false\nsyntax_highlighting = false\n");
+        assert!(!config.shell.enhancements);
+        assert!(config.shell.autosuggestions);
+        assert!(!config.shell.syntax_highlighting);
+        assert_eq!(warnings, Vec::new());
+        let (config, warnings) = parse_config("[shell]\nenhancements = 3\n");
+        assert!(config.shell.enhancements);
+        assert_eq!(warnings.len(), 1);
+        let (pairs, _) = parse_registry_pairs("[shell]\nautosuggestions = false\n");
+        assert_eq!(
+            value_for(&pairs, "shell.autosuggestions"),
+            Some(&RegistryValue::Bool(false))
+        );
+    }
+
+    #[test]
+    fn shell_table_changes_surface_in_the_watcher_diff() {
+        let old = Config::default();
+        let mut new = Config::default();
+        new.shell.enhancements = false;
+        let changed = diff_configs(&old, &new);
+        assert_eq!(
+            changed,
+            vec![("shell.enhancements".to_string(), RegistryValue::Bool(false))]
         );
     }
 

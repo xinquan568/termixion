@@ -31,6 +31,7 @@ use termixion_platform::{
 mod config_io;
 mod control;
 mod control_io;
+mod enhancements_io;
 mod menu;
 mod scripts_io;
 mod shell_integration_io;
@@ -694,12 +695,27 @@ fn open_pty(
             shells_io::is_executable_file,
         );
     }
-    let spec = session_spec_for(
+    let mut spec = session_spec_for(
         launch.smoke.is_some(),
         launch.perf.is_some(),
         cwd,
         configured_shell,
     );
+    // trmx-206: the zsh enhancement layer — enhancement_env is the ONE gate (None = smoke/perf,
+    // non-zsh, kill switch, nothing-to-layer, or materialization failure ⇒ byte-identical
+    // baseline spawn; the materializer is provably untouched on every None path).
+    if let Some(enhancement_env) = enhancements_io::enhancement_env(
+        launch.smoke.is_some() || launch.perf.is_some(),
+        &spec.program,
+        &config_io::shell_config(&app.state::<config_io::ConfigState>()),
+        std::env::var_os("ZDOTDIR"),
+        || {
+            enhancements_io::default_base_dir()
+                .and_then(|base| enhancements_io::materialize_enhancements(&base))
+        },
+    ) {
+        spec.env.extend(enhancement_env);
+    }
 
     let (id, reader) = state
         .registry
@@ -1317,6 +1333,7 @@ fn main() -> ExitCode {
             perf_done,
             config_io::config_read,
             shells_io::shells_list,
+            shells_io::effective_shell,
             config_io::config_write,
             config_io::config_reset_all,
             config_io::config_open_file,

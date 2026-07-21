@@ -39,6 +39,9 @@ tables; internally each maps 1:1 to a camelCase registry key (the mapping is own
 | `terminal.copy_on_select` | `terminal.copyOnSelect` | bool | `true` | — | immediate (attaches/detaches per pane)⁶ |
 | `terminal.confirm_close` | `terminal.confirmClose` | string | `"when-busy"` | `never` · `when-busy` · `always` | immediate (read at the next close)⁸ |
 | `terminal.scrollback_lines` | `terminal.scrollbackLines` | integer | `10000` | `0`–`200000` (clamped) | immediate¹ |
+| `shell.enhancements` | `shell.enhancements` | bool | `true` | master switch for the bundled zsh enhancement layer (trmx-206); `false` = spawns byte-identical to the un-enhanced baseline | new sessions only |
+| `shell.autosuggestions` | `shell.autosuggestions` | bool | `true` | fish-style suggestions (zsh-autosuggestions, bundled); skipped if your setup already loads it | new sessions only |
+| `shell.syntax_highlighting` | `shell.syntaxHighlighting` | bool | `true` | command colorization (zsh-syntax-highlighting, bundled; always sourced last); skipped if already loaded | new sessions only |
 | `terminal.shell` | `terminal.shell` | string | `""` | `""` = System default (`$SHELL` → `/bin/zsh` → `/bin/bash`); or an absolute path to an executable shell — invalid values warn (config warnings) and new sessions fall back to System default | new sessions only |
 | `terminal.font_family` | `terminal.fontFamily` | string | `"SauceCodePro Nerd Font Mono"` | a bundled font name (SauceCodePro Nerd Font Mono · JetBrainsMono Nerd Font Mono · MesloLGS NF · Hack Nerd Font Mono · FiraCode Nerd Font Mono), or any font stack; `""` = platform default² | immediate (re-measure + refit) |
 | `terminal.font_size` | `terminal.fontSize` | integer | `12` | `6`–`72` (clamped) | immediate (re-measure + refit) |

@@ -143,6 +143,9 @@ fn value_kind_for(registry_key: &str) -> Option<ValueKind> {
         | "terminal.copyOnSelect"
         | "tabs.showShortcutHints" // trmx-151
         | "titleBar.aiCounter" // trmx-190
+        | "shell.enhancements" // trmx-206
+        | "shell.autosuggestions"
+        | "shell.syntaxHighlighting"
         | "remote_control.enabled" => Some(ValueKind::Bool),
         "terminal.scrollbackLines" | "terminal.fontSize" => Some(ValueKind::Int),
         "update.checkFrequency"
@@ -447,6 +450,17 @@ fn shell_validity_warning(config: &Config, valid: impl Fn(&str) -> bool) -> Opti
 /// trmx-205: the configured shell for the spawn path — `None` for empty/unset (System default).
 /// Reads the cached `last` config; before the first `config_read`/watch apply this is the
 /// default (empty), which is benign: the frontend hydrates before any terminal mounts.
+/// trmx-206: the [shell] enhancement config for the spawn path (defaults before hydration —
+/// benign for the same reason as configured_shell below).
+pub fn shell_config(state: &ConfigState) -> termixion_core::config::ShellConfig {
+    state
+        .0
+        .lock()
+        .ok()
+        .map(|inner| inner.last.shell.clone())
+        .unwrap_or_default()
+}
+
 pub fn configured_shell(state: &ConfigState) -> Option<String> {
     state
         .0
@@ -1091,7 +1105,10 @@ mod tests {
             ("terminal.confirmClose", ValueKind::Str),
             ("terminal.scrollbackLines", ValueKind::Int),
             ("terminal.fontFamily", ValueKind::Str),
-            ("terminal.shell", ValueKind::Str), // trmx-205
+            ("terminal.shell", ValueKind::Str),      // trmx-205
+            ("shell.enhancements", ValueKind::Bool), // trmx-206
+            ("shell.autosuggestions", ValueKind::Bool),
+            ("shell.syntaxHighlighting", ValueKind::Bool),
             ("terminal.fontSize", ValueKind::Int),
             ("appearance.theme", ValueKind::Str),
             ("tabs.barPosition", ValueKind::Str),
