@@ -69,7 +69,9 @@ test("Appearance picker: swatches align in a uniform grid; long labels clamp to 
                 source: "user",
                 valid: false,
                 spec: null,
-                warnings: [{ type: "InvalidColor", message: "invalid color at color.bg.primary" }],
+                // Wire-realistic (step-8 F1): Rust serializes InvalidColor as { type, key, got },
+                // so the badge exercises the same firstMessage branch production hits.
+                warnings: [{ type: "InvalidColor", key: "color.bg.primary", got: "not-a-color" }],
               },
             ])
           : Promise.reject(new Error(`e2e fake backend: unhandled command ${cmd}`)),
