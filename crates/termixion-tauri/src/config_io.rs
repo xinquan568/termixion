@@ -375,7 +375,11 @@ fn write_atomic(path: &Path, contents: &str) -> Result<u64, String> {
 /// Read the file (absent → template) and edit `key` into it — the lazy file creation: the first
 /// write materializes the fully-commented [`DEFAULT_TEMPLATE`] so the user's file always carries
 /// the reference header. Returns the written text's hash + its parsed config for the state.
-fn write_key_at(path: &Path, key: &str, value: &JsonValue) -> Result<(u64, Config), String> {
+fn write_key_at(
+    path: &Path,
+    key: &str,
+    value: &JsonValue,
+) -> Result<(u64, Config, Vec<ConfigWarning>), String> {
     let current = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => DEFAULT_TEMPLATE.to_string(),
@@ -383,8 +387,8 @@ fn write_key_at(path: &Path, key: &str, value: &JsonValue) -> Result<(u64, Confi
     };
     let edited = edit_document(&current, key, value)?;
     let hash = write_atomic(path, &edited)?;
-    let (config, _warnings) = parse_config(&edited);
-    Ok((hash, config))
+    let (config, warnings) = parse_config(&edited);
+    Ok((hash, config, warnings))
 }
 
 /// Reset the file to the pristine [`DEFAULT_TEMPLATE`], atomically. Returns the written hash.
@@ -405,6 +409,22 @@ fn ensure_config_file_at(path: &Path) -> Result<bool, String> {
         }
         Err(error) => Err(format!("could not read {}: {error}", path.display())),
     }
+}
+
+/// trmx-205: the warning set a surface (config_read response / watcher emission / spawn
+/// re-emission) publishes: the PARSE-ONLY base plus at most ONE fresh shell-validity warning.
+/// Every publisher derives from a parse-only base through this one function, so the shell
+/// warning can never stack no matter how many times a surface re-emits (pure, testable).
+fn warnings_for_surface(
+    parse: &[ConfigWarning],
+    config: &Config,
+    valid: impl Fn(&str) -> bool,
+) -> Vec<ConfigWarning> {
+    let mut out = parse.to_vec();
+    if let Some(warning) = shell_validity_warning(config, valid) {
+        out.push(warning);
+    }
+    out
 }
 
 /// trmx-205: the IMPURE validity warning for a configured shell. `None` for the empty (System
@@ -446,10 +466,7 @@ pub fn emit_shell_fallback_warning(
     valid: impl Fn(&str) -> bool,
 ) {
     let Ok(inner) = state.0.lock() else { return };
-    let mut warnings = inner.last_warnings.clone();
-    if let Some(warning) = shell_validity_warning(&inner.last, valid) {
-        warnings.push(warning);
-    }
+    let warnings = warnings_for_surface(&inner.last_warnings, &inner.last, valid);
     drop(inner);
     let payload = serde_json::to_value(&warnings).unwrap_or_else(|_| JsonValue::Array(Vec::new()));
     let _ = app.emit("config:warnings", payload);
@@ -467,15 +484,19 @@ pub fn config_read(state: State<'_, ConfigState>) -> ConfigReadResponse {
     let text = std::fs::read_to_string(&path).ok();
     let mut response = read_response_from(text.as_deref(), &path);
     let (config, _) = parse_config(text.as_deref().unwrap_or_default());
-    // trmx-205: the impure shell-validity warning joins the parse warnings (the cached base
-    // stays parse-only; spawn-time re-emission recomputes the shell check freshly).
-    if let Some(warning) = shell_validity_warning(&config, crate::shells_io::is_executable_file) {
-        response.warnings.push(warning);
-    }
+    // trmx-205: the cached base stays PARSE-ONLY (the spawn-time re-emission recomputes the
+    // shell check freshly over it — caching the synthesized warning would stack duplicates);
+    // the published response carries parse + at most one fresh shell warning.
+    let parse_warnings = response.warnings.clone();
+    response.warnings = warnings_for_surface(
+        &parse_warnings,
+        &config,
+        crate::shells_io::is_executable_file,
+    );
     match state.0.lock() {
         Ok(mut inner) => {
             inner.last = config;
-            inner.last_warnings = response.warnings.clone();
+            inner.last_warnings = parse_warnings;
         }
         Err(_) => eprintln!("termixion: config state poisoned; skipping diff-base update"),
     }
@@ -500,7 +521,7 @@ pub fn config_write(
     key: String,
     value: JsonValue,
 ) -> Result<(), String> {
-    let (hash, config) = write_key_at(&config_path(), &key, &value)?;
+    let (hash, config, parse_warnings) = write_key_at(&config_path(), &key, &value)?;
     // trmx-101: an app-originated write suppresses the watcher's self-echo, so apply remote_control here.
     let new_remote_control = config.remote_control.clone();
     let mut inner = state
@@ -509,6 +530,9 @@ pub fn config_write(
         .map_err(|_| "config state poisoned".to_string())?;
     inner.last_write_hash = Some(hash);
     inner.last = config;
+    // trmx-205: keep the parse-only warnings cache fresh across local writes, so a later
+    // spawn-time re-emission reflects the just-written file, not a stale read.
+    inner.last_warnings = parse_warnings;
     drop(inner);
     crate::control::apply_remote_control(&app, &new_remote_control, &control_state);
     Ok(())
@@ -528,6 +552,7 @@ pub fn config_reset_all(
         .map_err(|_| "config state poisoned".to_string())?;
     inner.last_write_hash = Some(hash);
     inner.last = Config::default();
+    inner.last_warnings = Vec::new(); // trmx-205: pristine template ⇒ no stale warning base
     drop(inner);
     // A reset restores every default → remote control OFF.
     crate::control::apply_remote_control(&app, &Config::default().remote_control, &control_state);
@@ -630,15 +655,15 @@ fn on_config_file_event(app: &tauri::AppHandle, path: &Path) {
     let Some(application) = apply_file_text(&text, &inner.last, inner.last_write_hash) else {
         return; // self-echo of our own write (D6)
     };
-    // trmx-205: the impure shell-validity warning joins this wake's warning set BEFORE the pure
-    // emission decision, so an external edit to an invalid shell path surfaces (and a later
-    // valid/empty edit clears it — warnings are recomputed wholesale per wake).
+    // trmx-205: publish parse + at most one fresh shell warning; the cached base stays
+    // PARSE-ONLY so the spawn-time re-emission can never stack duplicates.
     let mut application = application;
-    if let Some(warning) =
-        shell_validity_warning(&application.config, crate::shells_io::is_executable_file)
-    {
-        application.warnings.push(warning);
-    }
+    let parse_warnings = application.warnings.clone();
+    application.warnings = warnings_for_surface(
+        &parse_warnings,
+        &application.config,
+        crate::shells_io::is_executable_file,
+    );
     // The pure decision, computed before `application.config` moves into the diff base.
     let mut emissions = emissions_for(&application);
     // trmx-94: the scalar diff/settings:changed path is blind to the [keys] map — emit a bare
@@ -649,7 +674,7 @@ fn on_config_file_event(app: &tauri::AppHandle, path: &Path) {
     // trmx-101: capture the new remote-control config before `application.config` moves into `last`, so
     // the socket listener is (re)started/stopped AFTER the config lock is released (never held across it).
     let new_remote_control = application.config.remote_control.clone();
-    inner.last_warnings = application.warnings.clone();
+    inner.last_warnings = parse_warnings;
     inner.last = application.config;
     // An EXTERNAL edit was applied: clear the self-echo latch so a stale hash can never
     // suppress a later external edit that happens to restore our last-written bytes.
@@ -918,6 +943,55 @@ mod tests {
     }
 
     #[test]
+    fn spawn_reemission_never_stacks_the_shell_warning() {
+        // Step-8 finding: every publisher derives from a PARSE-ONLY base through
+        // warnings_for_surface, so re-deriving any number of times yields exactly one
+        // terminal.shell warning — never two.
+        let mut config = Config::default();
+        config.terminal.shell = "/bin/gone".to_string();
+        let parse_only = vec![ConfigWarning::InvalidValue {
+            key: "terminal.font_size".to_string(),
+            got: "\"big\"".to_string(),
+            expected: "an integer".to_string(),
+        }];
+        let first = warnings_for_surface(&parse_only, &config, |_| false);
+        assert_eq!(first.len(), 2); // the parse warning + ONE shell warning
+        // A second derivation from the same parse-only base (the spawn re-emission) is
+        // identical — deriving from `first` would be the stacking bug.
+        let second = warnings_for_surface(&parse_only, &config, |_| false);
+        assert_eq!(second, first);
+        let shell_count = second
+            .iter()
+            .filter(
+                |w| matches!(w, ConfigWarning::InvalidValue { key, .. } if key == "terminal.shell"),
+            )
+            .count();
+        assert_eq!(shell_count, 1);
+        // A fixed shell clears it wholesale.
+        config.terminal.shell = String::new();
+        assert_eq!(
+            warnings_for_surface(&parse_only, &config, |_| false),
+            parse_only
+        );
+    }
+
+    #[test]
+    fn write_key_at_returns_the_parse_warnings_of_the_written_file() {
+        // trmx-205: config_write refreshes the parse-only cache from the just-written text.
+        let dir = test_dir("shell-write-warnings");
+        let path = dir.join("termixion.toml");
+        let (_, config, warnings) = write_key_at(
+            &path,
+            "terminal.shell",
+            &JsonValue::String("/bin/zsh".into()),
+        )
+        .expect("writes");
+        assert_eq!(config.terminal.shell, "/bin/zsh");
+        assert_eq!(warnings, Vec::new()); // a clean write parses warning-free
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn shell_validity_warning_fires_only_for_nonempty_invalid_values() {
         // trmx-205: "" (System default) and probe-passing paths are silent; anything else warns
         // with the parser's own InvalidValue shape (same warnings surface, zero new frontend).
@@ -1178,7 +1252,7 @@ mod tests {
     fn write_key_at_lazily_creates_the_file_from_the_commented_template() {
         let dir = test_dir("lazy-create");
         let path = dir.join("nested").join(CONFIG_FILE_NAME);
-        let (hash, config) =
+        let (hash, config, _warnings) =
             write_key_at(&path, "terminal.fontSize", &json!(16)).expect("first write creates");
         let on_disk = std::fs::read_to_string(&path).expect("read back");
         assert!(
