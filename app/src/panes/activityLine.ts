@@ -87,7 +87,10 @@ export interface ActivityState {
    * Auto-clears on the next detector-transition event — every {@link onBusyChange} invocation is
    * one by upstream contract (the poller emits change-only; the OSC 133 path is busyChanged-
    * guarded) — including a fall that finds this state already idle (the missed-rise recovery).
-   * Non-detector inputs (deadline fires, output, input, classify) leave it alone.
+   * trmx-219: ALSO clears on a prompt submit (Enter while rawBusy) in an `interactive`/`unknown`
+   * epoch — inside an interactive program the detector is silent, so the submit is that epoch's
+   * "next command starts" signal. Everything else (deadline fires, output, non-submit input,
+   * classify, and a `plain`-epoch or idle-shell Enter) leaves it alone.
    */
   readonly override?: "on" | "off";
 }
@@ -329,6 +332,10 @@ export function onInput(state: ActivityState, data: string, now: number): Activi
   let next: ActivityState = { ...state, lastInputAt: now };
   const submitted = data.includes("\r") || data.includes("\n");
   if (submitted && isBusy(next)) {
+    // trmx-219: a submit inside a busy interactive/unknown epoch is that epoch's "next command
+    // starts" signal (the detector is silent for the whole program), so it also ends the trmx-191
+    // one-shot override — on the same event that opens/renews the window. A plain-epoch Enter
+    // does NOT (the stuck-bar escape hatch must survive idle Enters at a long-running command).
     if (next.klass === "interactive") {
       next = {
         ...next,
@@ -336,9 +343,10 @@ export function onInput(state: ActivityState, data: string, now: number): Activi
         windowActivityAt: now,
         lastCountedOutputAt: undefined,
         pendingSubmit: false,
+        override: undefined,
       };
     } else if (next.klass === "unknown") {
-      next = { ...next, pendingSubmit: true };
+      next = { ...next, pendingSubmit: true, override: undefined };
     }
   }
   return transition(next, null);
@@ -400,7 +408,8 @@ export function classDeadline(state: ActivityState, now: number): number | null 
  */
 export function lightActive(state: ActivityState, now: number): boolean {
   // trmx-191: the manual override outranks everything below — a forced light neither decays with
-  // the interactive window nor waits for the debounce; only a detector event (onBusyChange) ends it.
+  // the interactive window nor waits for the debounce; a detector event (onBusyChange) ends it,
+  // as does an interactive/unknown prompt submit (trmx-219 — see ActivityState.override).
   if (state.override !== undefined) return state.override === "on";
   if (!isVisible(state)) return false;
   switch (state.klass) {

@@ -188,9 +188,11 @@ describe("activityLine debounce (trmx-91)", () => {
 // force (the direction is App's call, from the RENDERED state incl. the trmx-99 flash); lightActive
 // consults the override first; the override auto-clears on the NEXT DETECTOR-TRANSITION EVENT —
 // every onBusyChange invocation is one by upstream contract (poller change-only, OSC busyChanged-
-// guarded), including a fall that finds local state already idle (the missed-rise recovery).
-// Non-detector inputs (deadline fires, output, input, classify) never clear it. isBusy (the
-// trmx-144 close guard) never consults it. Phase deadlines are PRESERVED through a toggle —
+// guarded), including a fall that finds local state already idle (the missed-rise recovery) —
+// and, since trmx-219, on a prompt SUBMIT (Enter while rawBusy) in an interactive/unknown epoch
+// (see the trmx-219 describe below). Other non-detector inputs (deadline fires, output, non-submit
+// input, classify, plain-epoch/idle-shell Enters) never clear it. isBusy (the trmx-144 close
+// guard) never consults it. Phase deadlines are PRESERVED through a toggle —
 // applyActivityTransition clears-then-rearms from the returned deadline, so a null mid-phase
 // would strand a pendingShow/pendingHide forever.
 describe("manual override (trmx-191)", () => {
@@ -227,13 +229,14 @@ describe("manual override (trmx-191)", () => {
     expect(lightActive(shown, 1000 + SHOW_DELAY_MS)).toBe(true); // no stale force-off
   });
 
-  it("is NOT cleared by non-detector inputs (deadline, output, input, classify)", () => {
+  it("is NOT cleared by non-submit inputs (deadline, output, keys, classify) or an idle-shell Enter", () => {
     let s = onManualToggle(initialActivity(), "on", 0).state;
     s = onDeadline(s, 5_000).state;
     s = onOutput(s, 4096, 5_100).state;
     s = onInput(s, "x", 5_200).state;
     s = onClassifyMetadata(s, { name: "claude" }, 5_300).state;
-    expect(lightActive(s, 5_400)).toBe(true); // still forced on
+    s = onInput(s, "\r", 5_400).state; // Enter at the IDLE shell (not rawBusy) — the launch keystroke
+    expect(lightActive(s, 5_500)).toBe(true); // still forced on
   });
 
   it("never leaks into isBusy — the close guard reads the detector truth only", () => {
@@ -268,6 +271,65 @@ describe("manual override (trmx-191)", () => {
     const fired = onDeadline(toggled.state, hideAt);
     expect(isVisible(fired.state)).toBe(false); // the phase completed its hide
     expect(lightActive(fired.state, hideAt)).toBe(true); // but the light stays forced on
+  });
+});
+
+// trmx-219: inside an interactive program the detector is SILENT (one long busy epoch — the
+// change-only poller says nothing between launch and exit, OSC 133 only fires at the shell
+// prompt), so the trmx-191 one-shot can never meet its detector-transition clear and degenerates
+// into a session-long pin. The fix: a prompt SUBMIT (Enter while rawBusy, interactive/unknown
+// epoch) is that epoch's "next command starts" signal — the override's life ends on the same
+// event that opens/renews the activity window. Plain epochs keep the trmx-191 escape hatch
+// (an Enter during a stuck long-running command never resurrects a force-hidden bar); output
+// never clears (a force-off mid-response must survive the response's own chunks).
+describe("override clears on prompt submit (trmx-219)", () => {
+  const AI: ActivityMeta = { name: "claude" };
+
+  /** A lit interactive epoch mid-response: rise@0 (claude), show@150, submit@200, output@600. */
+  function litInteractive(): ActivityState {
+    let s = onDeadline(onBusyChange(initialActivity(), true, 0, AI).state, 150).state;
+    s = onInput(s, "\r", 200).state;
+    s = onOutput(s, 4096, 600).state;
+    return s;
+  }
+
+  it("force-off in an interactive epoch: the next submit + output lights again", () => {
+    let s = litInteractive();
+    expect(lightActive(s, 610)).toBe(true);
+    s = onManualToggle(s, "off", 700).state; // silence the current response
+    expect(lightActive(s, 710)).toBe(false);
+    s = onInput(s, "\r", 1000).state; // the NEXT prompt submit ends the one-shot
+    s = onOutput(s, 4096, 1600).state; // response output (past the echo window)
+    expect(lightActive(s, 1610)).toBe(true); // lights automatically — no further keypresses
+  });
+
+  it("force-on in an interactive epoch: the next submit returns the light to normal decay", () => {
+    let s = litInteractive();
+    s = onManualToggle(s, "on", 700).state;
+    expect(lightActive(s, 60_000)).toBe(true); // pinned — no decay under the override
+    s = onInput(s, "\r", 1000).state; // submit hands control back to the heuristic
+    expect(lightActive(s, 1010)).toBe(false); // arming alone shows nothing
+    s = onOutput(s, 4096, 1600).state;
+    expect(lightActive(s, 1610)).toBe(true); // lit while responding
+    expect(lightActive(s, 1600 + HOLD_MS + 1)).toBe(false); // and decays after HOLD_MS again
+  });
+
+  it("force-off in a plain epoch survives Enter — the stuck-bar escape hatch holds", () => {
+    let s = onDeadline(onBusyChange(initialActivity(), true, 0, { name: "sleep" }).state, 150).state;
+    expect(lightActive(s, 160)).toBe(true); // plain lights while visible
+    s = onManualToggle(s, "off", 200).state;
+    s = onInput(s, "\r", 300).state; // an Enter at a stuck long-running command
+    expect(s.override).toBe("off"); // override intact
+    expect(lightActive(s, 310)).toBe(false);
+  });
+
+  it("unknown epoch: a submit clears the override alongside arming pendingSubmit", () => {
+    let s = onDeadline(onBusyChange(initialActivity(), true, 0).state, 150).state; // unknown, visible
+    s = onManualToggle(s, "on", 200).state;
+    s = onInput(s, "\r", 300).state;
+    expect(s.pendingSubmit).toBe(true); // the submit is buffered for classification
+    expect(s.override).toBeUndefined(); // and the one-shot is spent
+    expect(lightActive(s, 310)).toBe(false); // unknown fails dark again
   });
 });
 
