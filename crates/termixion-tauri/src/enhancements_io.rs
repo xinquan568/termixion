@@ -204,7 +204,7 @@ pub fn enhancement_env(
     effective_program: &std::ffi::OsStr,
     shell: &ShellConfig,
     inherited_zdotdir: Option<OsString>,
-    starship_bin: Option<PathBuf>,
+    resolve_starship: impl FnOnce() -> Option<PathBuf>,
     materialize: impl FnOnce() -> Result<Materialized, String>,
 ) -> Option<Vec<(OsString, OsString)>> {
     if special_launch || !shell.enhancements {
@@ -253,10 +253,11 @@ pub fn enhancement_env(
             OsString::from(shell.prompt.as_str()),
         ));
     }
-    // No starship binary resolved ⇒ the env var stays absent and the shim's -x guard degrades
-    // silently — the user keeps their existing prompt.
+    // trmx-207 round 2 (lazy, step-8 finding 2): the resolver runs ONLY here — after every
+    // bypass gate — so bypassed spawns never probe the filesystem. No binary resolved ⇒ the env
+    // var stays absent and the shim's -x guard degrades silently (existing prompt kept).
     if shell.prompt == PromptChoice::Starship
-        && let Some(bin) = starship_bin
+        && let Some(bin) = resolve_starship()
     {
         env.push((OsString::from(ENV_STARSHIP_BIN), bin.into_os_string()));
     }
@@ -351,16 +352,24 @@ mod tests {
         ];
         for (special, program, config) in cases {
             let called = Cell::new(false);
+            let resolver_called = Cell::new(false);
             let env = enhancement_env(
                 special,
                 &program,
                 &config,
                 Some(OsString::from("/orig")),
-                None,
+                || {
+                    resolver_called.set(true);
+                    None
+                },
                 spy(&called, fake_materialized()),
             );
             assert_eq!(env, None, "{program:?} special={special}");
             assert!(!called.get(), "materializer must not run for {program:?}");
+            assert!(
+                !resolver_called.get(),
+                "starship resolver must not run for {program:?} (lazy, round-2 F2)"
+            );
         }
     }
 
@@ -372,7 +381,7 @@ mod tests {
             &zsh(),
             &ShellConfig::default(),
             Some(OsString::from("/users/original/zdot")),
-            None,
+            || None,
             spy(&called, fake_materialized()),
         )
         .expect("enhances");
@@ -399,7 +408,7 @@ mod tests {
                 ..ShellConfig::default()
             },
             None,
-            None,
+            || None,
             spy(&called, fake_materialized()),
         )
         .expect("enhances");
@@ -422,7 +431,7 @@ mod tests {
                 ..ShellConfig::default()
             },
             None,
-            None,
+            || None,
             spy(&called, fake_materialized()),
         )
         .expect("a prompt alone is a reason to shim");
@@ -440,7 +449,7 @@ mod tests {
                 ..ShellConfig::default()
             },
             None,
-            None,
+            || None,
             spy(&called, fake_materialized()),
         );
         assert_eq!(env, None, "existing + no plugins = nothing to layer");
@@ -459,7 +468,7 @@ mod tests {
             &zsh(),
             &config,
             None,
-            Some(PathBuf::from("/bundle/starship")),
+            || Some(PathBuf::from("/bundle/starship")),
             spy(&called, fake_materialized()),
         )
         .expect("enhances");
@@ -475,7 +484,7 @@ mod tests {
             &zsh(),
             &config,
             None,
-            None,
+            || None,
             spy(&called, fake_materialized()),
         )
         .expect("still shims — the -x guard degrades in the shell");
@@ -508,9 +517,14 @@ mod tests {
 
     #[test]
     fn materializer_error_degrades_to_a_bare_spawn() {
-        let env = enhancement_env(false, &zsh(), &ShellConfig::default(), None, None, || {
-            Err("disk full".to_string())
-        });
+        let env = enhancement_env(
+            false,
+            &zsh(),
+            &ShellConfig::default(),
+            None,
+            || None,
+            || Err("disk full".to_string()),
+        );
         assert_eq!(env, None);
     }
 

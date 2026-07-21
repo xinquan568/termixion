@@ -433,3 +433,55 @@ fn starship_initializes_via_the_provided_binary_when_available() {
     );
     std::fs::remove_dir_all(&fx.root).ok();
 }
+
+#[test]
+fn starship_double_init_guard_never_executes_the_binary() {
+    // Round-2 F4: a session whose rc already initialized starship (STARSHIP_SHELL set) must
+    // skip the shim's init WITHOUT executing the provided binary — proven by a fake starship
+    // that would drop a marker file if invoked.
+    let fx = fixture("prompt-starship-guard");
+    let marker = fx.root.join("invoked-marker");
+    let fake = fx.root.join("fake-starship");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\ntouch {}\necho 'init zsh output'\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::fs::write(
+        fx.home.join(".zshrc"),
+        "export STARSHIP_SHELL=preexisting\n",
+    )
+    .unwrap();
+    let fake_str = fake.to_string_lossy().into_owned();
+    let probe = r##"print -r -- "G|ss=${STARSHIP_SHELL-none}""##;
+    let out = run_zsh(
+        &fx,
+        &[
+            (ENV_PROMPT, "starship"),
+            (ENV_STARSHIP_BIN, fake_str.as_str()),
+        ],
+        true,
+        probe,
+    );
+    let line = out
+        .lines()
+        .filter_map(|line| line.find("G|ss=").map(|i| line[i..].to_string()))
+        .next_back()
+        .expect("status");
+    assert!(
+        line.ends_with("ss=preexisting"),
+        "guard preserved the value: {line}"
+    );
+    assert!(
+        !marker.exists(),
+        "the binary must never run when STARSHIP_SHELL is set"
+    );
+    std::fs::remove_dir_all(&fx.root).ok();
+}

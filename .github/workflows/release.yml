@@ -110,7 +110,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: crates/termixion-tauri
-          args: --bundles app,dmg --config tauri.updater.conf.json
+          args: --bundles app,dmg --config tauri.updater.conf.json --config tauri.sidecar.conf.json
 
       - name: Build (tauri-action — unsigned personal-alpha mode, trmx-49)
         if: steps.mode.outputs.signed == 'false'
@@ -120,7 +120,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: crates/termixion-tauri
-          args: --bundles app,dmg --config tauri.updater.conf.json
+          args: --bundles app,dmg --config tauri.updater.conf.json --config tauri.sidecar.conf.json
 
       # Signed: prove notarized + stapled BEFORE publishing. Unsigned: assert existence + log the ad-hoc sig.
       - name: Verify artifact (stapler + Gatekeeper when signed; existence when unsigned)

@@ -93,8 +93,12 @@ jobs:
         run: pnpm --filter app test
 
       # --- build + end-to-end ---
+      # trmx-207: the sidecar ships only in BUNDLED builds (tauri.sidecar.conf.json overlay);
+      # plain cargo build/clippy/test stay sidecar-free. Fetch is pinned + sha256-verified.
+      - name: Fetch Starship sidecar (trmx-207)
+        run: bash scripts/fetch-starship.sh aarch64-apple-darwin
       - name: Build the packaged app (debug)
-        run: cargo tauri build --debug
+        run: cargo tauri build --debug --config tauri.sidecar.conf.json
         working-directory: crates/termixion-tauri
       - name: Packaged app --smoke (authoritative E2E)
         run: bash scripts/smoke.sh

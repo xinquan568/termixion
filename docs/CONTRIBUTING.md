@@ -25,8 +25,12 @@ Verify: `cd crates/termixion-tauri && cargo tauri --version` → `tauri-cli 2.11
 The Tauri project root is `crates/termixion-tauri/`. Build from there:
 
 ```sh
-cd crates/termixion-tauri && cargo tauri build --debug   # debug
-cd crates/termixion-tauri && cargo tauri build            # release
+cd crates/termixion-tauri && cargo tauri build --debug   # debug (sidecar-free)
+cd crates/termixion-tauri && cargo tauri build            # release (sidecar-free)
+# Bundling WITH the Starship sidecar (trmx-207): fetch once, then pass the overlay —
+#   bash scripts/fetch-starship.sh
+#   cd crates/termixion-tauri && cargo tauri build --debug --config tauri.sidecar.conf.json
+# `cargo tauri dev` and plain cargo build/test are deliberately sidecar-free (PATH fallback).
 ```
 
 Or use the helper **`scripts/rebuild.sh`** (`[--release] [--no-launch] [--dev]`) — it builds from the
