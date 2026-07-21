@@ -6,7 +6,9 @@
 // built-in: (1) add `./<name>.ts` exporting a `ThemeTokens` value, (2) append it to the `themes`
 // map below. `BuiltinThemeId` and `THEME_IDS` are derived from the map, so neither the built-in
 // union nor the list can drift from the registered set. Declaration order is the issue's display
-// order (trmx-53): White, Paper, Mint, Sepia, Night, Solarized.
+// order (trmx-53): White, Paper, Mint, Sepia, Night, Solarized; trmx-201 appends Catppuccin
+// Mocha, Catppuccin Latte, Dracula, Gruvbox, Nord, Tokyo Night after them (that issue's table
+// order — reordering is trmx-202's job, not this one's).
 //
 // trmx-89 (D): `ThemeId` is now the WIDENED, registry-backed `string` — a theme id may be a built-in
 // key OR a `user:<stem>` id contributed at runtime by the theme registry (registry.ts). This module
@@ -21,6 +23,12 @@ import { mint } from "./mint";
 import { sepia } from "./sepia";
 import { night } from "./night";
 import { solarized } from "./solarized";
+import { catppuccinMocha } from "./catppuccin-mocha";
+import { catppuccinLatte } from "./catppuccin-latte";
+import { dracula } from "./dracula";
+import { gruvbox } from "./gruvbox";
+import { nord } from "./nord";
+import { tokyoNight } from "./tokyo-night";
 
 export const themes = {
   white,
@@ -29,6 +37,12 @@ export const themes = {
   sepia,
   night,
   solarized,
+  "catppuccin-mocha": catppuccinMocha,
+  "catppuccin-latte": catppuccinLatte,
+  dracula,
+  gruvbox,
+  nord,
+  "tokyo-night": tokyoNight,
 } satisfies Record<string, ThemeTokens>;
 
 /** The BUILT-IN theme identifiers — derived from the catalog so the built-in union can never drift. */
@@ -58,10 +72,15 @@ export function isBuiltinThemeId(value: unknown): value is BuiltinThemeId {
 /**
  * Display label for a theme id (trmx-53 D6: derived, not a separate table). trmx-89 (D): a
  * `user:<stem>` id titleizes its stem (`user:solarizedish` → "Solarizedish"); a built-in capitalizes
- * as before. Pure — no registry lookup, so it is safe to call from index-level consumers.
+ * as before. trmx-201: multi-word ids titleize per hyphen-separated word (`catppuccin-mocha` →
+ * "Catppuccin Mocha"; `user:my-solarized` → "My Solarized") — still derived, still no label table.
+ * Pure — no registry lookup, so it is safe to call from index-level consumers.
  */
 export function themeLabel(id: string): string {
   const stem = id.startsWith("user:") ? id.slice("user:".length) : id;
   if (stem.length === 0) return id;
-  return stem.charAt(0).toUpperCase() + stem.slice(1);
+  return stem
+    .split("-")
+    .map((word) => (word.length === 0 ? word : word.charAt(0).toUpperCase() + word.slice(1)))
+    .join(" ");
 }

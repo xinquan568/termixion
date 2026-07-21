@@ -579,15 +579,19 @@
 }
 
 /*
- * trmx-53 — the Appearance page's Theme row: six labeled color swatches (vmark's Appearance
+ * trmx-53 — the Appearance page's Theme row: labeled color swatches (vmark's Appearance
  * page look, per issues/trmx-53/theme-*.png). Each swatch is a circle filled with that theme's
  * background; the selected one gets a ring (an offset box-shadow so it reads on any background)
  * and its label darkens. Buttons form a radiogroup for keyboard/AT access.
+ * trmx-201: the catalog grew from six to twelve built-ins (plus user themes), so the row wraps
+ * into as many lines as it needs instead of overflowing the settings window.
  */
 .tx-theme-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   gap: 20px;
+  row-gap: 14px;
   padding: 14px;
 }
 .tx-swatch {

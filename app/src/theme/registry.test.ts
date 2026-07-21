@@ -186,6 +186,19 @@ describe("themeLabel over the widened id space", () => {
     expect(themeLabel("user:solarizedish")).toBe("Solarizedish");
     expect(themeLabel("night")).toBe("Night");
   });
+
+  // trmx-201: multi-word ids titleize per hyphen-separated word (derived, still no label table).
+  it("titleizes each hyphen-separated word of a multi-word id", () => {
+    expect(themeLabel("catppuccin-mocha")).toBe("Catppuccin Mocha");
+    expect(themeLabel("catppuccin-latte")).toBe("Catppuccin Latte");
+    expect(themeLabel("tokyo-night")).toBe("Tokyo Night");
+    expect(themeLabel("user:my-solarized")).toBe("My Solarized");
+  });
+
+  it("keeps degenerate stems stable", () => {
+    expect(themeLabel("")).toBe("");
+    expect(themeLabel("user:")).toBe("user:");
+  });
 });
 
 // trmx-89 review-1: an invalidating edit of the ACTIVE user theme must keep serving the last-good

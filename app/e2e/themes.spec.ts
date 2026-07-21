@@ -17,10 +17,11 @@ test("Appearance picker: built-ins still render + the user-theme affordances are
   await page.goto("/?window=settings&section=appearance");
 
   // The widening (ThemeId -> string, listThemes()) must not regress the built-in row: still exactly
-  // the six built-ins, in order, all selectable radios (user themes need the backend, absent here).
+  // the twelve built-ins (trmx-53 six + trmx-201 six), in order, all selectable radios (user themes
+  // need the backend, absent here).
   const swatches = page.getByRole("radiogroup", { name: "Theme" }).getByRole("radio");
-  await expect(swatches).toHaveCount(6);
-  await expect(swatches).toHaveText(["White", "Paper", "Mint", "Sepia", "Night", "Solarized"]);
+  await expect(swatches).toHaveCount(12);
+  await expect(swatches).toHaveText(["White", "Paper", "Mint", "Sepia", "Night", "Solarized", "Catppuccin Mocha", "Catppuccin Latte", "Dracula", "Gruvbox", "Nord", "Tokyo Night"]);
 
   // The new user-theme affordances render even with no backend:
   // - "Open themes folder" button (clicking it is a no-op without a runtime — the opener rejects
@@ -31,7 +32,7 @@ test("Appearance picker: built-ins still render + the user-theme affordances are
   // - trmx-171: Duplicate is a right-click context menu now (no per-swatch button); right-clicking a
   //   built-in swatch opens the menu with a Duplicate item.
   await expect(page.getByRole("button", { name: /^Duplicate / })).toHaveCount(0);
-  await page.getByRole("radio", { name: "Night" }).click({ button: "right" });
+  await page.getByRole("radio", { name: "Night", exact: true }).click({ button: "right" });
   await expect(page.getByRole("menuitem", { name: /^Duplicate/ })).toBeVisible();
   await page.keyboard.press("Escape");
 
@@ -42,7 +43,7 @@ test("Appearance picker: built-ins still render + the user-theme affordances are
   // Graceful degradation: clicking Open-folder (opener rejects, no runtime) does not break the page —
   // the built-in row is still intact and interactive afterwards.
   await openFolder.click();
-  await expect(swatches).toHaveCount(6);
-  await page.getByRole("radio", { name: "Night" }).click();
+  await expect(swatches).toHaveCount(12);
+  await page.getByRole("radio", { name: "Night", exact: true }).click();
   await expect(page.locator(".tx-settings")).toHaveCSS("background-color", "rgb(0, 0, 0)");
 });

@@ -82,7 +82,7 @@ enough that the audited failures were real legibility defects:
 | Gate | Pair | Floor | Post-audit minimum |
 |---|---|---|---|
 | G1 | `text.primary` vs `bg.primary` | ≥ 4.5:1 (AA normal text) | Solarized 5.61 |
-| G2 | each ANSI color vs `bg.primary` (**`black` exempt**) | ≥ 2.5:1 | Solarized brightBlack 2.79 (Night's, the audit fix, is 4.57 on the trmx-183 pure-black bg — was 1.83 on the vmark bg) |
+| G2 | each ANSI color vs `bg.primary` (**`black` exempt**) | ≥ 2.5:1 | Nord brightBlack 2.63 post-trmx-201 (original-six minimum: Solarized brightBlack 2.79; Night's, the trmx-77 audit fix, is 4.57 on the trmx-183 pure-black bg — was 1.83 on the vmark bg) |
 | G3 | `text.primary` vs composited `selectionBackground` | ≥ 4.5:1 | Solarized 4.62 (was 4.17) |
 | G4 | `terminal.cursor` vs `bg.primary` | ≥ 3:1 (UI component) | Solarized 5.61 |
 | G5 | `--tx-on-*` text vs its accent/success/error surface | ≥ 3:1 (UI component) | light-theme on-success 3.30 (white on `#16a34a`) |
@@ -112,11 +112,29 @@ window) changed four more. The ratios in the trmx-77 rows were measured on the t
 | `night.color.bg.primary/secondary/tertiary` | `#23262b`/`#2a2e34`/`#32363d` | `#000000`/`#0a0a0a`/`#141414` (pure-black window; tiers re-derived via themeDerive's dark-theme `shade(+4)/(+8)`) | trmx-183 product ask |
 | `night.terminal.cursorAccent` | `#23262b` | `#000000` (tracks `bg.primary`) | trmx-183, follows the bg |
 
+**The trmx-201 additions:** six community palettes joined the catalog (Catppuccin Mocha & Latte,
+Dracula, Gruvbox dark-medium, Nord, Tokyo Night "night" — upstream repo@commit pinned in each
+module header). **Dracula and Gruvbox pass every gate canonically — zero deviations.** The audited
+deviations (measured with `contrast.ts` on each theme's own `bg.primary`; canonical ratio → new):
+
+| Token | Canonical | Termixion | Gate |
+|---|---|---|---|
+| `catppuccin-mocha.ansi.brightBlack` | Surface2 `#585b70` (2.46) | Overlay0 `#6c7086` (3.36) — one step up the flavor ladder | G2 |
+| `catppuccin-latte.ansi.brightBlack` | Surface2 `#acb0be` (1.91) | Overlay1 `#8c8fa1` (2.83) — minimal ladder step; Overlay0 still fails at 2.30 | G2 |
+| `catppuccin-latte.ansi.yellow`+`brightYellow` | `#df8e1d` (2.31) | `#c17d18` (2.99) — same hue, darkened | G2 |
+| `catppuccin-latte.ansi.magenta`+`brightMagenta` | Pink `#ea76cb` (2.34) | `#d64ca8` (3.40) — same hue, darkened | G2 |
+| `catppuccin-latte.terminal.cursor` | Rosewater `#dc8a78` (2.34) | flavor text `#4c4f69` (7.06) — the light-theme cursor convention (white/paper/mint/sepia) | G4 |
+| `nord.ansi.brightBlack` | nord3 `#4c566a` (1.69) | `#66738f` (2.63) — Nord's documented comment tone `#616e88` still fails at 2.44; minimal in-family brighten | G2 |
+| `tokyo-night.ansi.brightBlack` | terminal `#414868` (1.91) | the style's comment color `#565f89` (2.76) | G2 |
+
 Full post-audit matrix (fg / selected-text / cursor vs `bg.primary`): White 17.40 / 11.95 / 17.40 ·
 Paper 14.89 / 10.42 / 14.89 · Mint 8.93 / 6.41 / 8.93 · Sepia 7.36 / 5.13 / 7.36 ·
 Night 14.84 / 10.98 / 14.84 (re-measured on the trmx-183 pure-black bg) · Solarized 5.61 / 4.62 /
-5.61. All 6 themes × 15 gated ANSI colors pass G2 (catalog minimum: Solarized brightBlack 2.79;
-Night brightBlack, the audit fix, is 4.57).
+5.61 · (trmx-201) Catppuccin Mocha 11.34 / 7.19 / 12.95 · Catppuccin Latte 7.06 / 5.25 / 7.06 ·
+Dracula 13.36 / 8.91 / 13.36 · Gruvbox 10.75 / 7.65 / 10.75 · Nord 10.84 / 6.91 / 9.25 ·
+Tokyo Night 10.59 / 7.09 / 10.59. All 12 themes × 15 gated ANSI colors pass G2 (catalog minimum:
+Nord brightBlack 2.63; the original-six minimum was Solarized brightBlack 2.79; Night brightBlack,
+the trmx-77 audit fix, is 4.57).
 
 **G5 picks** (derived by `pickReadableOn(surface, [#fff, bg.primary])`, never hardcoded): light
 themes keep white text on all three surfaces — on-accent 5.57–7.10, on-success 3.30 (white on

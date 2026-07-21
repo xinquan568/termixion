@@ -30,6 +30,13 @@ const CORE: Record<BuiltinThemeId, { bg: string; bg2: string; text: string; acce
   sepia: { bg: "#F9F0DB", bg2: "#f0e5cc", text: "#5c4b37", accent: "#8b4513", border: "#e0d5bc", dark: false },
   night: { bg: "#000000", bg2: "#0a0a0a", text: "#d6d9de", accent: "#58a6ff", border: "#3a3f46", dark: true },
   solarized: { bg: "#002b36", bg2: "#073642", text: "#93a1a1", accent: "#268bd2", border: "#0e4753", dark: true },
+  // trmx-201: the six community themes (issue-table order; upstream citations in each module).
+  "catppuccin-mocha": { bg: "#1e1e2e", bg2: "#181825", text: "#cdd6f4", accent: "#89b4fa", border: "#45475a", dark: true },
+  "catppuccin-latte": { bg: "#eff1f5", bg2: "#e6e9ef", text: "#4c4f69", accent: "#1e66f5", border: "#ccd0da", dark: false },
+  dracula: { bg: "#282a36", bg2: "#21222c", text: "#f8f8f2", accent: "#bd93f9", border: "#44475a", dark: true },
+  gruvbox: { bg: "#282828", bg2: "#3c3836", text: "#ebdbb2", accent: "#fe8019", border: "#504945", dark: true },
+  nord: { bg: "#2e3440", bg2: "#3b4252", text: "#eceff4", accent: "#88c0d0", border: "#434c5e", dark: true },
+  "tokyo-night": { bg: "#1a1b26", bg2: "#16161e", text: "#c0caf5", accent: "#7aa2f7", border: "#3b4261", dark: true },
 };
 
 /** Full terminal slices — vmark origin/main @ d7e70e3f plus the two trmx-77 audited deviations
@@ -129,17 +136,115 @@ const TERMINAL: Record<BuiltinThemeId, ThemeTokens["terminal"]> = {
     scrollbar: { idle: "rgba(255, 255, 255, 0.12)", hover: "rgba(255, 255, 255, 0.20)", active: "rgba(255, 255, 255, 0.30)" },
     search: { match: "rgba(38, 139, 210, 0.09)", activeMatch: "rgba(38, 139, 210, 0.12)" },
   },
+  // trmx-201: the six community themes — palettes from the upstreams pinned in each module's
+  // header; audited G-gate deviations (if any) are documented there + visual-baseline §4.
+  "catppuccin-mocha": {
+    pane: { activeBorder: "#89b4fa", inactiveBorder: "#45475a" },
+    ansi: {
+      black: "#45475a", red: "#f38ba8", green: "#a6e3a1", yellow: "#f9e2af",
+      blue: "#89b4fa", magenta: "#f5c2e7", cyan: "#94e2d5", white: "#bac2de",
+      brightBlack: "#6c7086", brightRed: "#f38ba8", brightGreen: "#a6e3a1", brightYellow: "#f9e2af",
+      brightBlue: "#89b4fa", brightMagenta: "#f5c2e7", brightCyan: "#94e2d5", brightWhite: "#a6adc8",
+    },
+    cursor: "#f5e0dc",
+    cursorAccent: "#1e1e2e",
+    selectionBackground: "rgba(137, 180, 250, 0.22)",
+    badge: "#ff8da180",
+    scrollbar: { idle: "rgba(255, 255, 255, 0.12)", hover: "rgba(255, 255, 255, 0.20)", active: "rgba(255, 255, 255, 0.30)" },
+    search: { match: "rgba(137, 180, 250, 0.16)", activeMatch: "rgba(137, 180, 250, 0.24)" },
+  },
+  "catppuccin-latte": {
+    pane: { activeBorder: "#1e66f5", inactiveBorder: "#ccd0da" },
+    ansi: {
+      black: "#bcc0cc", red: "#d20f39", green: "#40a02b", yellow: "#c17d18",
+      blue: "#1e66f5", magenta: "#d64ca8", cyan: "#179299", white: "#5c5f77",
+      brightBlack: "#8c8fa1", brightRed: "#d20f39", brightGreen: "#40a02b", brightYellow: "#c17d18",
+      brightBlue: "#1e66f5", brightMagenta: "#d64ca8", brightCyan: "#179299", brightWhite: "#6c6f85",
+    },
+    cursor: "#4c4f69",
+    cursorAccent: "#eff1f5",
+    selectionBackground: "rgba(30, 102, 245, 0.22)",
+    badge: "#ff8da180",
+    scrollbar: { idle: "rgba(0,0,0,0.10)", hover: "rgba(0,0,0,0.18)", active: "rgba(0,0,0,0.25)" },
+    search: { match: "rgba(250, 204, 21, 0.30)", activeMatch: "rgba(255, 138, 0, 0.48)" },
+  },
+  dracula: {
+    pane: { activeBorder: "#bd93f9", inactiveBorder: "#44475a" },
+    ansi: {
+      black: "#21222c", red: "#ff5555", green: "#50fa7b", yellow: "#f1fa8c",
+      blue: "#bd93f9", magenta: "#ff79c6", cyan: "#8be9fd", white: "#f8f8f2",
+      brightBlack: "#6272a4", brightRed: "#ff6e6e", brightGreen: "#69ff94", brightYellow: "#ffffa5",
+      brightBlue: "#d6acff", brightMagenta: "#ff92df", brightCyan: "#a4ffff", brightWhite: "#ffffff",
+    },
+    cursor: "#f8f8f2",
+    cursorAccent: "#282a36",
+    selectionBackground: "rgba(189, 147, 249, 0.22)",
+    badge: "#ff8da180",
+    scrollbar: { idle: "rgba(255, 255, 255, 0.12)", hover: "rgba(255, 255, 255, 0.20)", active: "rgba(255, 255, 255, 0.30)" },
+    search: { match: "rgba(189, 147, 249, 0.16)", activeMatch: "rgba(189, 147, 249, 0.24)" },
+  },
+  gruvbox: {
+    pane: { activeBorder: "#fe8019", inactiveBorder: "#504945" },
+    ansi: {
+      black: "#282828", red: "#cc241d", green: "#98971a", yellow: "#d79921",
+      blue: "#458588", magenta: "#b16286", cyan: "#689d6a", white: "#a89984",
+      brightBlack: "#928374", brightRed: "#fb4934", brightGreen: "#b8bb26", brightYellow: "#fabd2f",
+      brightBlue: "#83a598", brightMagenta: "#d3869b", brightCyan: "#8ec07c", brightWhite: "#ebdbb2",
+    },
+    cursor: "#ebdbb2",
+    cursorAccent: "#282828",
+    selectionBackground: "rgba(254, 128, 25, 0.20)",
+    badge: "#ff8da180",
+    scrollbar: { idle: "rgba(255, 255, 255, 0.12)", hover: "rgba(255, 255, 255, 0.20)", active: "rgba(255, 255, 255, 0.30)" },
+    search: { match: "rgba(250, 189, 47, 0.15)", activeMatch: "rgba(254, 128, 25, 0.30)" },
+  },
+  nord: {
+    pane: { activeBorder: "#88c0d0", inactiveBorder: "#434c5e" },
+    ansi: {
+      black: "#3b4252", red: "#bf616a", green: "#a3be8c", yellow: "#ebcb8b",
+      blue: "#81a1c1", magenta: "#b48ead", cyan: "#88c0d0", white: "#e5e9f0",
+      brightBlack: "#66738f", brightRed: "#bf616a", brightGreen: "#a3be8c", brightYellow: "#ebcb8b",
+      brightBlue: "#81a1c1", brightMagenta: "#b48ead", brightCyan: "#8fbcbb", brightWhite: "#eceff4",
+    },
+    cursor: "#d8dee9",
+    cursorAccent: "#2e3440",
+    selectionBackground: "rgba(136, 192, 208, 0.22)",
+    badge: "#ff8da180",
+    scrollbar: { idle: "rgba(255, 255, 255, 0.12)", hover: "rgba(255, 255, 255, 0.20)", active: "rgba(255, 255, 255, 0.30)" },
+    search: { match: "rgba(136, 192, 208, 0.16)", activeMatch: "rgba(136, 192, 208, 0.24)" },
+  },
+  "tokyo-night": {
+    pane: { activeBorder: "#7aa2f7", inactiveBorder: "#3b4261" },
+    ansi: {
+      black: "#15161e", red: "#f7768e", green: "#9ece6a", yellow: "#e0af68",
+      blue: "#7aa2f7", magenta: "#bb9af7", cyan: "#7dcfff", white: "#a9b1d6",
+      brightBlack: "#565f89", brightRed: "#ff899d", brightGreen: "#9fe044", brightYellow: "#faba4a",
+      brightBlue: "#8db0ff", brightMagenta: "#c7a9ff", brightCyan: "#a4daff", brightWhite: "#c0caf5",
+    },
+    cursor: "#c0caf5",
+    cursorAccent: "#1a1b26",
+    selectionBackground: "rgba(122, 162, 247, 0.22)",
+    badge: "#ff8da180",
+    scrollbar: { idle: "rgba(255, 255, 255, 0.12)", hover: "rgba(255, 255, 255, 0.20)", active: "rgba(255, 255, 255, 0.30)" },
+    search: { match: "rgba(122, 162, 247, 0.16)", activeMatch: "rgba(122, 162, 247, 0.24)" },
+  },
 };
 
 describe("theme catalog", () => {
-  it("registers exactly the six themes, in the issue's order", () => {
-    expect(THEME_IDS).toEqual(["white", "paper", "mint", "sepia", "night", "solarized"]);
+  // trmx-201: the trmx-53 six plus the six community themes, appended in that issue's table order.
+  it("registers exactly the twelve themes, in the issues' order", () => {
+    expect(THEME_IDS).toEqual([
+      "white", "paper", "mint", "sepia", "night", "solarized",
+      "catppuccin-mocha", "catppuccin-latte", "dracula", "gruvbox", "nord", "tokyo-night",
+    ]);
     expect(Object.keys(themes)).toEqual(THEME_IDS);
   });
 
-  it("marks exactly night and solarized as dark", () => {
+  it("marks exactly the dark seven as dark (Latte is the light-side addition)", () => {
     const dark = THEME_IDS.filter((id) => themes[id].isDark);
-    expect(dark).toEqual(["night", "solarized"]);
+    expect(dark).toEqual([
+      "night", "solarized", "catppuccin-mocha", "dracula", "gruvbox", "nord", "tokyo-night",
+    ]);
   });
 
   it("derives display labels from the ids", () => {
@@ -150,6 +255,12 @@ describe("theme catalog", () => {
       "Sepia",
       "Night",
       "Solarized",
+      "Catppuccin Mocha",
+      "Catppuccin Latte",
+      "Dracula",
+      "Gruvbox",
+      "Nord",
+      "Tokyo Night",
     ]);
   });
 });
