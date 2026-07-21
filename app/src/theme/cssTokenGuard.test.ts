@@ -30,11 +30,19 @@ describe("CSS --tx-* token guard (trmx-195)", () => {
   const emitted = new Set(Object.keys(txCssVars(themes.night)));
 
   it("every fallback-less var(--tx-…) names an emitted or CSS-defined token", () => {
-    const offenders: string[] = [];
-    for (const file of CSS_FILES) {
-      const text = readFileSync(resolve(process.cwd(), file), "utf8");
-      const defined = new Set<string>();
+    // trmx-220: the CSS-defined set is the UNION across CSS_FILES, not per-file — both sheets
+    // ship in the one main.tsx bundle (index.css is imported unconditionally, settings window
+    // included), so an index.css :root definition (e.g. the --tx-ui-font/--tx-mono chokepoint)
+    // is always loaded wherever settings.css is. The guard's intent is unchanged: a reference to
+    // a token NOTHING defines is still an offender.
+    const texts = CSS_FILES.map((file) => readFileSync(resolve(process.cwd(), file), "utf8"));
+    const defined = new Set<string>();
+    for (const text of texts) {
       for (const match of text.matchAll(DECLARATION)) defined.add(match[1]);
+    }
+    const offenders: string[] = [];
+    CSS_FILES.forEach((file, i) => {
+      const text = texts[i];
       for (const match of text.matchAll(REFERENCE)) {
         const [, name, separator] = match;
         if (separator === ",") continue; // fallback-carrying — exempt (find-bar decision)
@@ -42,7 +50,7 @@ describe("CSS --tx-* token guard (trmx-195)", () => {
         const line = text.slice(0, match.index).split("\n").length;
         offenders.push(`${file}:${line} var(${name}) — not emitted by txCssVars, not CSS-defined`);
       }
-    }
+    });
     expect(offenders).toEqual([]);
   });
 

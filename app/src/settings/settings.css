@@ -41,7 +41,7 @@
   height: 100vh;
   overflow: hidden;
   background: var(--tx-bg);
-  font: 13px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  font: 13px/1.5 var(--tx-ui-font);
   color: var(--tx-text);
 }
 
@@ -122,7 +122,9 @@
   background: transparent;
   color: var(--tx-text-2);
   font: inherit;
-  font-weight: 500;
+  /* AFTER the shorthand — `font: inherit` resets the family (step-8 F2). */
+  font-family: var(--tx-mono);
+  font-weight: 400;
   text-align: left;
   cursor: pointer;
 }
@@ -191,6 +193,7 @@
 
 /* Centered "Settings" title over the content pane (the native title is hidden). */
 .tx-settings__title {
+  font-family: var(--tx-mono);
   position: absolute;
   top: 0;
   left: 208px;
@@ -201,7 +204,7 @@
   justify-content: center;
   pointer-events: none;
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .tx-icon {
@@ -216,9 +219,10 @@
   margin-top: 0;
 }
 .tx-settings-group__title {
+  font-family: var(--tx-mono);
   margin: 0 0 8px;
   font-size: 15px;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--tx-text);
 }
 .tx-settings-group__body {
@@ -238,7 +242,8 @@
   border-top: 1px solid var(--tx-border);
 }
 .tx-setting-row__label {
-  font-weight: 500;
+  font-family: var(--tx-mono);
+  font-weight: 400;
 }
 .tx-setting-row__desc {
   margin-top: 2px;
@@ -348,7 +353,9 @@
   color: var(--tx-text-2);
   font: inherit;
   font-size: 12px;
-  font-weight: 500;
+  /* AFTER the shorthand — `font: inherit` resets the family (step-8 F2). */
+  font-family: var(--tx-mono);
+  font-weight: 400;
   cursor: pointer;
 }
 .tx-segmented__segment:hover {
@@ -400,6 +407,9 @@
 .tx-number {
   width: 72px;
   text-align: right;
+  /* Mono for the NUMERIC field only — the shared .tx-text/.tx-number rule above stays sans, and
+     this later same-specificity rule out-cascades its `font: inherit` reset (step-8 F2). */
+  font-family: var(--tx-mono);
 }
 .tx-number-wrap {
   display: inline-flex;
@@ -502,10 +512,12 @@
   border-radius: 12px;
 }
 .tx-about__name {
+  font-family: var(--tx-mono);
   font-size: 18px;
   font-weight: 700;
 }
 .tx-about__version {
+  font-family: var(--tx-mono);
   color: var(--tx-text-2);
   font-size: 12px;
 }
@@ -537,14 +549,17 @@
   padding: 14px;
 }
 .tx-about__card-version {
-  font-weight: 600;
+  font-family: var(--tx-mono);
+  font-weight: 700;
 }
 .tx-about__card-current {
+  font-family: var(--tx-mono);
   margin-left: 8px;
   color: var(--tx-text-3);
   font-size: 12px;
 }
 .tx-about__card-date {
+  font-family: var(--tx-mono);
   margin-top: 2px;
   color: var(--tx-text-3);
   font-size: 12px;
@@ -624,6 +639,7 @@
     0 0 0 4px var(--tx-primary);
 }
 .tx-swatch__label {
+  font-family: var(--tx-mono);
   color: var(--tx-text-3);
   font-size: 12px;
 }
@@ -732,6 +748,7 @@
   line-height: 1.5;
 }
 .tx-scripts-hint code {
+  font-family: var(--tx-mono);
   padding: 1px 4px;
   font-size: 11px;
   background: var(--tx-bg-sunken);
