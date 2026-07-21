@@ -34,8 +34,13 @@ const WIDE_KEYWORDS = new Set(["inherit", "initial", "unset", "revert", "revert-
 
 /** A compliant family value: a fallback-LESS reference to one of the two chokepoint variables. */
 const CHOKEPOINT = /^var\(--tx-(ui-font|mono)\)$/;
-/** A compliant `font:` shorthand ENDS with the fallback-less chokepoint reference. */
-const CHOKEPOINT_SHORTHAND = /var\(--tx-(ui-font|mono)\)\s*$/;
+/**
+ * A compliant `font:` shorthand: optional size/line-height/style/weight tokens, then EXACTLY one
+ * fallback-less chokepoint reference as the entire family. Anchored token-by-token so a concrete
+ * family smuggled before the var (`font: 12px Helvetica, var(--tx-ui-font)`) is an offender.
+ */
+const CHOKEPOINT_SHORTHAND =
+  /^(?:(?:\d+(?:\.\d+)?(?:px|em|rem|%)(?:\s*\/\s*\d+(?:\.\d+)?)?|normal|italic|bold|[1-9]00)\s+)*var\(--tx-(ui-font|mono)\)$/;
 /** A fallback-carrying reference to either variable re-embeds a concrete stack — never allowed. */
 const CHOKEPOINT_WITH_FALLBACK = /var\(--tx-(ui-font|mono)\s*,/;
 
@@ -100,9 +105,13 @@ const MONO_ROLES: Record<string, 400 | 700> = {
   ".tx-scripts-hint code": 400,
 };
 
-/** Rules (both sheets) whose selector contains `key` as a whole token (no partial-class match). */
+/**
+ * Rules (both sheets, SOURCE ORDER) whose selector contains `key` as a whole token — including
+ * its BEM modifiers (`.tx-nav-item--active`): a modifier rule can override the base's weight or
+ * family, so it must be collected (step-8 F4). No partial-class match otherwise.
+ */
 function rulesFor(key: string): Array<{ file: string; selector: string; body: string }> {
-  const token = new RegExp(key.replace(/[.\\]/g, "\\$&") + "(?![\\w-])");
+  const token = new RegExp(key.replace(/[.\\]/g, "\\$&") + "(?:--[\\w-]+)?(?![\\w-])");
   const out: Array<{ file: string; selector: string; body: string }> = [];
   for (const file of CSS_FILES) {
     for (const rule of read(file).matchAll(RULE)) {
@@ -110,6 +119,30 @@ function rulesFor(key: string): Array<{ file: string; selector: string; body: st
     }
   }
   return out;
+}
+
+/**
+ * The cascade-approximate EFFECTIVE family across `rules` in source order: every family-affecting
+ * declaration — `font-family:` longhand AND the `font:` shorthand, which RESETS the family
+ * (step-8 F3: `font-family: var(--tx-mono)` followed by `font: inherit` renders sans) — is
+ * replayed in declaration order; the last one wins. Returns null when no rule touches family.
+ */
+function effectiveFamily(rules: Array<{ body: string }>): string | null {
+  let family: string | null = null;
+  for (const r of rules) {
+    for (const m of r.body.matchAll(/(?:^|[;\s])(font-family|font)\s*:\s*([^;]+)/g)) {
+      const value = m[2].trim();
+      if (m[1] === "font-family") {
+        family = value;
+      } else {
+        // Shorthand: the family is whatever follows the size tokens — for compliance checking we
+        // keep the raw value (a keyword like `inherit` is NOT a mono family and must be overridden
+        // by a LATER font-family longhand to satisfy a mono role).
+        family = value;
+      }
+    }
+  }
+  return family;
 }
 
 describe("font chokepoint guard (trmx-220)", () => {
@@ -163,8 +196,12 @@ describe("font chokepoint guard (trmx-220)", () => {
     const offenders: string[] = [];
     for (const [key, expected] of Object.entries(MONO_ROLES)) {
       const rules = rulesFor(key);
-      const hasMono = rules.some((r) => /font-family\s*:\s*var\(--tx-mono\)/.test(r.body));
-      if (!hasMono) offenders.push(`${key} — no font-family: var(--tx-mono) rule`);
+      // Effective, not first-found: a later `font: inherit` shorthand RESETS an earlier
+      // font-family (step-8 F3) — the last family-affecting declaration must be the mono var.
+      const family = effectiveFamily(rules);
+      if (family !== "var(--tx-mono)") {
+        offenders.push(`${key} — effective family is ${family ?? "unset"}, not var(--tx-mono)`);
+      }
       const weights = new Set<string>();
       for (const r of rules) {
         for (const m of r.body.matchAll(/font-weight\s*:\s*([^;]+)/g)) weights.add(m[1].trim());
@@ -180,5 +217,26 @@ describe("font chokepoint guard (trmx-220)", () => {
       if (bad.length > 0) offenders.push(`${key} — off-inventory weights: ${bad.join(", ")}`);
     }
     expect(offenders).toEqual([]);
+  });
+
+  it("computes the effective family through shorthand resets (step-8 F3 regression fixture)", () => {
+    // The exact defect class step-8 caught: family declared, then `font: inherit` resets it.
+    expect(
+      effectiveFamily([{ body: "font-family: var(--tx-mono); font: inherit;" }]),
+    ).toBe("inherit");
+    // The fix shape: the longhand AFTER the shorthand wins.
+    expect(
+      effectiveFamily([{ body: "font: inherit; font-family: var(--tx-mono);" }]),
+    ).toBe("var(--tx-mono)");
+    // A later rule (source order) overrides an earlier shared-rule reset (.tx-number's shape).
+    expect(
+      effectiveFamily([
+        { body: "font: inherit;" },
+        { body: "font-family: var(--tx-mono);" },
+      ]),
+    ).toBe("var(--tx-mono)");
+    // A concrete family smuggled before the var in a shorthand is NOT compliant (step-8 F5).
+    expect(CHOKEPOINT_SHORTHAND.test("12px Helvetica, var(--tx-ui-font)")).toBe(false);
+    expect(CHOKEPOINT_SHORTHAND.test("13px/1.5 var(--tx-ui-font)")).toBe(true);
   });
 });

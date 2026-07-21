@@ -112,7 +112,6 @@
   gap: 2px;
 }
 .tx-nav-item {
-  font-family: var(--tx-mono);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -123,6 +122,8 @@
   background: transparent;
   color: var(--tx-text-2);
   font: inherit;
+  /* AFTER the shorthand — `font: inherit` resets the family (step-8 F2). */
+  font-family: var(--tx-mono);
   font-weight: 400;
   text-align: left;
   cursor: pointer;
@@ -345,7 +346,6 @@
   background: var(--tx-bg-sunken);
 }
 .tx-segmented__segment {
-  font-family: var(--tx-mono);
   padding: 3px 10px;
   border: none;
   border-radius: 5px;
@@ -353,6 +353,8 @@
   color: var(--tx-text-2);
   font: inherit;
   font-size: 12px;
+  /* AFTER the shorthand — `font: inherit` resets the family (step-8 F2). */
+  font-family: var(--tx-mono);
   font-weight: 400;
   cursor: pointer;
 }
@@ -383,7 +385,6 @@
 /* trmx-80 (FR-13) — the commit-on-blur/Enter fields (Terminal page's scrollback/font rows). */
 .tx-text,
 .tx-number {
-  font-family: var(--tx-mono);
   padding: 4px 10px;
   border: 1px solid var(--tx-border);
   border-radius: 7px;
@@ -406,6 +407,9 @@
 .tx-number {
   width: 72px;
   text-align: right;
+  /* Mono for the NUMERIC field only — the shared .tx-text/.tx-number rule above stays sans, and
+     this later same-specificity rule out-cascades its `font: inherit` reset (step-8 F2). */
+  font-family: var(--tx-mono);
 }
 .tx-number-wrap {
   display: inline-flex;

@@ -735,10 +735,11 @@ body {
  * ring so the edit state reads across all six themes.
  */
 .tab-strip__rename {
-  font-family: var(--tx-mono);
   flex: 1 1 auto;
   min-width: 0;
   font: inherit;
+  /* AFTER the shorthand — `font: inherit` resets the family (step-8 F1). */
+  font-family: var(--tx-mono);
   color: var(--tx-text);
   background: var(--tx-bg);
   border: 1px solid var(--tx-primary);
