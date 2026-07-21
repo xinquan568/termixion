@@ -82,7 +82,7 @@ enough that the audited failures were real legibility defects:
 | Gate | Pair | Floor | Post-audit minimum |
 |---|---|---|---|
 | G1 | `text.primary` vs `bg.primary` | ≥ 4.5:1 (AA normal text) | Solarized 5.61 |
-| G2 | each ANSI color vs `bg.primary` (**`black` exempt**) | ≥ 2.5:1 | Solarized brightBlack 2.79 (Night's, the audit fix, is 4.57 on the trmx-183 pure-black bg — was 1.83 on the vmark bg) |
+| G2 | each ANSI color vs `bg.primary` (**`black` exempt**) | ≥ 2.5:1 | Nord brightBlack 2.63 post-trmx-201 (original-six minimum: Solarized brightBlack 2.79; Night's, the trmx-77 audit fix, is 4.57 on the trmx-183 pure-black bg — was 1.83 on the vmark bg) |
 | G3 | `text.primary` vs composited `selectionBackground` | ≥ 4.5:1 | Solarized 4.62 (was 4.17) |
 | G4 | `terminal.cursor` vs `bg.primary` | ≥ 3:1 (UI component) | Solarized 5.61 |
 | G5 | `--tx-on-*` text vs its accent/success/error surface | ≥ 3:1 (UI component) | light-theme on-success 3.30 (white on `#16a34a`) |
@@ -130,8 +130,11 @@ deviations (measured with `contrast.ts` on each theme's own `bg.primary`; canoni
 Full post-audit matrix (fg / selected-text / cursor vs `bg.primary`): White 17.40 / 11.95 / 17.40 ·
 Paper 14.89 / 10.42 / 14.89 · Mint 8.93 / 6.41 / 8.93 · Sepia 7.36 / 5.13 / 7.36 ·
 Night 14.84 / 10.98 / 14.84 (re-measured on the trmx-183 pure-black bg) · Solarized 5.61 / 4.62 /
-5.61. All 6 themes × 15 gated ANSI colors pass G2 (catalog minimum: Solarized brightBlack 2.79;
-Night brightBlack, the audit fix, is 4.57).
+5.61 · (trmx-201) Catppuccin Mocha 11.34 / 7.19 / 12.95 · Catppuccin Latte 7.06 / 5.25 / 7.06 ·
+Dracula 13.36 / 8.91 / 13.36 · Gruvbox 10.75 / 7.65 / 10.75 · Nord 10.84 / 6.91 / 9.25 ·
+Tokyo Night 10.59 / 7.09 / 10.59. All 12 themes × 15 gated ANSI colors pass G2 (catalog minimum:
+Nord brightBlack 2.63; the original-six minimum was Solarized brightBlack 2.79; Night brightBlack,
+the trmx-77 audit fix, is 4.57).
 
 **G5 picks** (derived by `pickReadableOn(surface, [#fff, bg.primary])`, never hardcoded): light
 themes keep white text on all three surfaces — on-accent 5.57–7.10, on-success 3.30 (white on
