@@ -63,4 +63,20 @@ describe("applyThemeSettingsChange", () => {
     expect(applyThemeSettingsChange(terminal, "appearance.theme")).toBeNull();
     expect(terminal.options.theme).toBeUndefined();
   });
+
+  // trmx-202: a REMOVED built-in (config-file edit, or the Rust watcher broadcasting its default
+  // "white") normalizes to the derived default so running terminals re-theme instead of ignoring
+  // it; jsdom (no matchMedia) derives night. Junk stays inert above.
+  it("normalizes a removed built-in id to the derived default and applies it", () => {
+    for (const id of ["white", "paper", "mint", "sepia"]) {
+      const terminal = sink();
+      const applied = applyThemeSettingsChange(terminal, {
+        key: "appearance.theme",
+        value: id,
+        source: "config-file",
+      });
+      expect(applied).toBe("night");
+      expect(terminal.options.theme).toEqual(buildXtermTheme("night"));
+    }
+  });
 });

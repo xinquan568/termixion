@@ -75,12 +75,12 @@ test("?window=settings&section=appearance shows the Theme row; a swatch click re
   await expect(page.locator(".tx-nav-item").first()).toHaveText("Appearance");
   await expect(page.locator(".tx-nav-item--active")).toHaveText("Appearance");
 
-  // The Theme row: twelve labeled swatches in the issues' order (trmx-53 six + trmx-201 six;
+  // The Theme row: eight labeled swatches, lightest to darkest (trmx-202 luminance order;
   // scoped to the Theme radiogroup —
   // trmx-81 adds the Tab bar Position radiogroup below it).
   const swatches = page.getByRole("radiogroup", { name: "Theme" }).getByRole("radio");
-  await expect(swatches).toHaveCount(12);
-  await expect(swatches).toHaveText(["White", "Paper", "Mint", "Sepia", "Night", "Solarized", "Catppuccin Mocha", "Catppuccin Latte", "Dracula", "Gruvbox", "Nord", "Tokyo Night"]);
+  await expect(swatches).toHaveCount(8);
+  await expect(swatches).toHaveText(["Catppuccin Latte", "Nord", "Dracula", "Gruvbox", "Solarized", "Catppuccin Mocha", "Tokyo Night", "Night"]);
 
   // trmx-81 (FR-2.2): the Tab bar group below Theme — the four-way Position segmented control,
   // Bottom (the registry default) selected. The live application is covered by
@@ -94,8 +94,10 @@ test("?window=settings&section=appearance shows the Theme row; a swatch click re
 
   // The COMPUTED background of an element inside .tx-settings follows the selection instantly —
   // the runtime documentElement vars must beat the :root fallback (plan D4).
-  await page.getByRole("radio", { name: "Sepia" }).click();
-  await expect(page.locator(".tx-settings")).toHaveCSS("background-color", "rgb(249, 240, 219)");
+  // trmx-202: leftmost (Catppuccin Latte) and rightmost (Night) of the luminance order both
+  // re-theme live — the issue's explicit acceptance pair.
+  await page.getByRole("radio", { name: "Catppuccin Latte" }).click();
+  await expect(page.locator(".tx-settings")).toHaveCSS("background-color", "rgb(239, 241, 245)");
   await page.getByRole("radio", { name: "Night", exact: true }).click();
   await expect(page.locator(".tx-settings")).toHaveCSS("background-color", "rgb(0, 0, 0)");
 
@@ -110,7 +112,7 @@ test("theme Duplicate is a right-click context menu, not a per-swatch button (tr
   page,
 }) => {
   await page.goto("/?window=settings&section=appearance");
-  await expect(page.getByRole("radiogroup", { name: "Theme" }).getByRole("radio")).toHaveCount(12);
+  await expect(page.getByRole("radiogroup", { name: "Theme" }).getByRole("radio")).toHaveCount(8);
 
   // No visible "Duplicate" button anywhere; the tip explains the right-click.
   await expect(page.getByRole("button", { name: /^Duplicate/ })).toHaveCount(0);

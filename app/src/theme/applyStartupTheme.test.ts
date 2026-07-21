@@ -70,7 +70,7 @@ describe("applyStartupTheme", () => {
           ? Promise.resolve({
               exists: true,
               path: "/tmp/config.toml",
-              values: { "appearance.theme": "sepia" },
+              values: { "appearance.theme": "solarized" },
               warnings: [],
             })
           : Promise.resolve(null),
@@ -78,12 +78,12 @@ describe("applyStartupTheme", () => {
       storage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
     });
     applyStartupTheme({ doc: document });
-    expect(document.body.style.background).toBe(probe(themes.sepia.color.bg.primary));
+    expect(document.body.style.background).toBe(probe(themes.solarized.color.bg.primary));
   });
 
   it("writes the --tx-* vars + body for any surface (trmx-173: no surface branch)", () => {
-    applyStartupTheme({ settings: stubSettings("paper"), doc: document });
-    expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#EEEDED");
-    expect(document.body.style.background).toBe(probe(themes.paper.color.bg.primary));
+    applyStartupTheme({ settings: stubSettings("catppuccin-latte"), doc: document });
+    expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#eff1f5");
+    expect(document.body.style.background).toBe(probe(themes["catppuccin-latte"].color.bg.primary));
   });
 });

@@ -27,7 +27,7 @@ const REFERENCE = /var\(\s*(--tx-[a-z0-9-]+)\s*([,)])/g;
 const DECLARATION = /(--tx-[a-z0-9-]+)\s*:/g;
 
 describe("CSS --tx-* token guard (trmx-195)", () => {
-  const emitted = new Set(Object.keys(txCssVars(themes.white)));
+  const emitted = new Set(Object.keys(txCssVars(themes.night)));
 
   it("every fallback-less var(--tx-…) names an emitted or CSS-defined token", () => {
     const offenders: string[] = [];

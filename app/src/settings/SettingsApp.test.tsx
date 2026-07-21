@@ -119,8 +119,8 @@ describe("SettingsApp shell", () => {
     // Open the Appearance page and pick Sepia: the window re-derives its vars immediately
     // (local onThemeChange path — no bus required in plain dev).
     fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
-    fireEvent.click(screen.getByRole("radio", { name: "Sepia" }));
-    expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#F9F0DB");
+    fireEvent.click(screen.getByRole("radio", { name: "Solarized" }));
+    expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#002b36");
   });
 
   it("re-applies the theme on a settings:changed broadcast (About-page reset / cross-window), ignoring junk", async () => {
@@ -130,9 +130,9 @@ describe("SettingsApp shell", () => {
       expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#000000"),
     );
 
-    bus.deliver("settings:changed", { key: "appearance.theme", value: "mint", source: "settings" });
+    bus.deliver("settings:changed", { key: "appearance.theme", value: "gruvbox", source: "settings" });
     await waitFor(() =>
-      expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#CCE6D0"),
+      expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#282828"),
     );
 
     // Junk payloads and other keys are inert (untrusted input).
@@ -140,7 +140,7 @@ describe("SettingsApp shell", () => {
     bus.deliver("settings:changed", "garbage");
     bus.deliver("settings:changed", { key: "terminal.cursorBlink", value: true });
     await waitFor(() =>
-      expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#CCE6D0"),
+      expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#282828"),
     );
   });
 
@@ -153,13 +153,33 @@ describe("SettingsApp shell", () => {
     );
 
     // An About-page reset / cross-window write re-selects the broadcast theme, ring included.
-    bus.deliver("settings:changed", { key: "appearance.theme", value: "paper", source: "main" });
+    bus.deliver("settings:changed", { key: "appearance.theme", value: "nord", source: "main" });
     // The radio ring AND the applied `--tx-bg` swatch move together — assert BOTH inside the waitFor so a
     // slow runner can't observe the radio after it flips but before the CSS var catches up (a test race).
     await waitFor(() => {
-      expect(screen.getByRole("radio", { name: "Paper" })).toHaveAttribute("aria-checked", "true");
+      expect(screen.getByRole("radio", { name: "Nord" })).toHaveAttribute("aria-checked", "true");
       expect(screen.getByRole("radio", { name: "Night" })).toHaveAttribute("aria-checked", "false");
-      expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#EEEDED");
+      expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#2e3440");
+    });
+  });
+
+  // trmx-202: a REMOVED built-in over the bus (live config edit / the Rust watcher's default
+  // "white") normalizes to the derived default (jsdom → night) instead of being ignored.
+  it("re-themes to the derived default when a removed built-in id is broadcast", async () => {
+    const bus = fakeListen();
+    renderApp({ listen: bus.listen, initialSection: "appearance" });
+    await waitFor(() =>
+      expect(screen.getByRole("radio", { name: "Night" })).toHaveAttribute("aria-checked", "true"),
+    );
+    // Move off the default first so the normalization visibly re-themes.
+    bus.deliver("settings:changed", { key: "appearance.theme", value: "nord", source: "main" });
+    await waitFor(() =>
+      expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#2e3440"),
+    );
+    bus.deliver("settings:changed", { key: "appearance.theme", value: "sepia", source: "main" });
+    await waitFor(() => {
+      expect(screen.getByRole("radio", { name: "Night" })).toHaveAttribute("aria-checked", "true");
+      expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe("#000000");
     });
   });
 
@@ -427,7 +447,7 @@ describe("SettingsApp config warnings banner (trmx-80)", () => {
 
     bus.deliver("settings:changed", {
       key: "appearance.theme",
-      value: "mint",
+      value: "gruvbox",
       source: "config-file",
     });
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());

@@ -1,6 +1,6 @@
 # Termixion themes — user theme files (trmx-89, FR-6)
 
-Termixion ships six built-in themes (White, Paper, Mint, Sepia, Night, Solarized). You can also add
+Termixion ships eight built-in themes, displayed lightest to darkest (Catppuccin Latte, Nord, Dracula, Gruvbox, Solarized, Catppuccin Mocha, Tokyo Night, Night — trmx-202's luminance order; a fresh install derives Night on a dark OS and Catppuccin Latte on a light one). You can also add
 **your own themes** as TOML files — validated tolerantly, listed in Settings → Appearance, applied
 live, and hot-reloaded while you edit them.
 

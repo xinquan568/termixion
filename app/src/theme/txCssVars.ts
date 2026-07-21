@@ -43,7 +43,7 @@ export function txCssVars(theme: ThemeTokens): Record<string, string> {
  * Apply a theme to the settings surface: every `--tx-*` var onto `documentElement` (inline, so
  * it wins over the `:root` fallback) plus the body background. Idempotent — safe to re-apply on
  * bus echoes. trmx-89 (D): resolves any id (built-in or `user:<stem>`) via the registry, with the
- * shared White fallback for junk ids (defense-in-depth behind the registry's parse).
+ * shared derived-default fallback for junk ids (defense-in-depth behind the registry's parse; trmx-202).
  */
 export function applyTxTheme(id: string, doc: Document = document): void {
   const theme = resolveTheme(id);

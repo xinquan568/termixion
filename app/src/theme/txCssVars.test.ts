@@ -17,20 +17,20 @@ import { THEME_IDS, themes } from "./themes";
 import { applyTxTheme, txCssVars } from "./txCssVars";
 
 describe("txCssVars — role mapping", () => {
-  it("maps a light theme's tokens onto the --tx-* roles, value-exactly (white)", () => {
-    expect(txCssVars(themes.white)).toEqual({
-      "--tx-bg": "#FFFFFF",
-      "--tx-bg-elev": "#f0f0f0",
-      "--tx-bg-sunken": "#f8f8f8",
-      "--tx-text": "#1a1a1a",
-      "--tx-text-2": "#666666",
-      "--tx-text-3": "#999999",
-      "--tx-border": "#eeeeee",
-      "--tx-pane-active-border": "#0066cc",
-      "--tx-pane-inactive-border": "#eeeeee",
-      "--tx-primary": "#0066cc",
-      "--tx-success": "#16a34a",
-      "--tx-error": "#cf222e",
+  it("maps a light theme's tokens onto the --tx-* roles, value-exactly (catppuccin-latte)", () => {
+    expect(txCssVars(themes["catppuccin-latte"])).toEqual({
+      "--tx-bg": "#eff1f5",
+      "--tx-bg-elev": "#dce0e8",
+      "--tx-bg-sunken": "#e6e9ef",
+      "--tx-text": "#4c4f69",
+      "--tx-text-2": "#6c6f85",
+      "--tx-text-3": "#8c8fa1",
+      "--tx-border": "#ccd0da",
+      "--tx-pane-active-border": "#1e66f5",
+      "--tx-pane-inactive-border": "#ccd0da",
+      "--tx-primary": "#1e66f5",
+      "--tx-success": "#40a02b",
+      "--tx-error": "#d20f39",
       "--tx-on-accent": "#fff",
       "--tx-on-success": "#fff",
       "--tx-on-error": "#fff",
@@ -64,9 +64,9 @@ describe("txCssVars — role mapping", () => {
 // rationale: docs/design/visual-baseline.md §4.
 describe("on-surface text derivation (G5, trmx-77)", () => {
   const SURFACES = [
-    ["--tx-on-accent", (t: (typeof themes)["white"]) => t.color.accent.primary],
-    ["--tx-on-success", (t: (typeof themes)["white"]) => t.color.semantic.success],
-    ["--tx-on-error", (t: (typeof themes)["white"]) => t.color.semantic.error],
+    ["--tx-on-accent", (t: (typeof themes)["night"]) => t.color.accent.primary],
+    ["--tx-on-success", (t: (typeof themes)["night"]) => t.color.semantic.success],
+    ["--tx-on-error", (t: (typeof themes)["night"]) => t.color.semantic.error],
   ] as const;
 
   it.each(THEME_IDS)("%s: each on-* var is the pickReadableOn derivation, ≥ 3:1 on its surface", (id) => {
@@ -88,8 +88,8 @@ describe("on-surface text derivation (G5, trmx-77)", () => {
 
 describe("applyTxTheme — runtime delivery (plan D4)", () => {
   it("writes every mapped var on documentElement and paints the body background", () => {
-    applyTxTheme("sepia", document);
-    for (const [name, value] of Object.entries(txCssVars(themes.sepia))) {
+    applyTxTheme("solarized", document);
+    for (const [name, value] of Object.entries(txCssVars(themes.solarized))) {
       expect(document.documentElement.style.getPropertyValue(name)).toBe(value);
     }
     expect(document.body.style.background).not.toBe("");
@@ -101,8 +101,9 @@ describe("applyTxTheme — runtime delivery (plan D4)", () => {
 
   it("falls back safely on a junk id", () => {
     applyTxTheme("__proto__" as never, document);
+    // trmx-202: the resolveTheme anchor is the derived default (jsdom -> night).
     expect(document.documentElement.style.getPropertyValue("--tx-bg")).toBe(
-      themes.white.color.bg.primary,
+      themes.night.color.bg.primary,
     );
   });
 

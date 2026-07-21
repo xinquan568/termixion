@@ -19,7 +19,7 @@ color catalog:
 | Cell spacing | 1.0 × 1.0 (`lineHeight: 1`, `letterSpacing: 0`) | iTerm2 DefaultBookmark | same |
 | Bold rendering | bright-bold on (`drawBoldTextInBrightColors: true`) | iTerm2 "Use Bright Bold" | same |
 | Effective cursor | **underline, non-blinking** (`terminal.cursorStyle`/`cursorBlink` settings defaults) | trmx-51 (style) + trmx-55 (blink) | `realDeps.test.ts` ("keeps … the trmx-51 cursor at the chokepoint") |
-| Colors | the six-theme catalog (`app/src/theme/themes/`), first-run default derived from OS appearance (dark → Night, light → White) | trmx-53 | `themes.acceptance.test.ts` (value-exact fixtures + legibility gates) |
+| Colors | the eight-theme catalog (`app/src/theme/themes/`, luminance-ordered — trmx-202), first-run default derived from OS appearance (dark → Night, light → Catppuccin Latte) | trmx-53/202 | `themes.acceptance.test.ts` (value-exact fixtures + legibility gates) |
 | Scrollback/emulation | NOT display facts — see `scrollbackSettings.ts` / `emulationOptions.ts` | trmx-64/65 | their own suites |
 
 ## 2. The token contract
@@ -45,7 +45,7 @@ literals outside the catalog (grep `#[0-9a-fA-F]{3,8}\b|rgba?\(` over `app/src`,
 1. **iTerm2 reference record** — `iterm2Theme.ts` (a pure record of the DefaultBookmark profile;
    not a runtime color source since trmx-53). Intentional.
 2. **Pre-theme static fallbacks** — `index.css` first-paint background (dark → Night `#000000`
-   since trmx-183, light → White `#ffffff`) and `settings.css`'s pre-JS `:root` fallback block.
+   since trmx-183, light → Catppuccin Latte `#eff1f5` since trmx-202) and `settings.css`'s pre-JS `:root` fallback block.
    Intentional —
    they prevent a flash before the persisted theme applies; values mirror the first-run defaults.
 3. **Physical affordances** — the toggle knob (`background: #fff` on the accent/border track)
@@ -127,14 +127,14 @@ deviations (measured with `contrast.ts` on each theme's own `bg.primary`; canoni
 | `nord.ansi.brightBlack` | nord3 `#4c566a` (1.69) | `#66738f` (2.63) — Nord's documented comment tone `#616e88` still fails at 2.44; minimal in-family brighten | G2 |
 | `tokyo-night.ansi.brightBlack` | terminal `#414868` (1.91) | the style's comment color `#565f89` (2.76) | G2 |
 
-Full post-audit matrix (fg / selected-text / cursor vs `bg.primary`): White 17.40 / 11.95 / 17.40 ·
-Paper 14.89 / 10.42 / 14.89 · Mint 8.93 / 6.41 / 8.93 · Sepia 7.36 / 5.13 / 7.36 ·
-Night 14.84 / 10.98 / 14.84 (re-measured on the trmx-183 pure-black bg) · Solarized 5.61 / 4.62 /
-5.61 · (trmx-201) Catppuccin Mocha 11.34 / 7.19 / 12.95 · Catppuccin Latte 7.06 / 5.25 / 7.06 ·
-Dracula 13.36 / 8.91 / 13.36 · Gruvbox 10.75 / 7.65 / 10.75 · Nord 10.84 / 6.91 / 9.25 ·
-Tokyo Night 10.59 / 7.09 / 10.59. All 12 themes × 15 gated ANSI colors pass G2 (catalog minimum:
-Nord brightBlack 2.63; the original-six minimum was Solarized brightBlack 2.79; Night brightBlack,
-the trmx-77 audit fix, is 4.57).
+Full post-audit matrix for the CURRENT catalog (fg / selected-text / cursor vs `bg.primary`;
+trmx-202 removed White/Paper/Mint/Sepia — their historical rows: White 17.40/11.95/17.40, Paper
+14.89/10.42/14.89, Mint 8.93/6.41/8.93, Sepia 7.36/5.13/7.36): Catppuccin Latte 7.06 / 5.25 /
+7.06 · Nord 10.84 / 6.91 / 9.25 · Dracula 13.36 / 8.91 / 13.36 · Gruvbox 10.75 / 7.65 / 10.75 ·
+Solarized 5.61 / 4.62 / 5.61 · Catppuccin Mocha 11.34 / 7.19 / 12.95 · Tokyo Night 10.59 / 7.09 /
+10.59 · Night 14.84 / 10.98 / 14.84 (re-measured on the trmx-183 pure-black bg). All 8 themes × 15
+gated ANSI colors pass G2 (catalog minimum: Nord brightBlack 2.63; Night brightBlack, the trmx-77
+audit fix, is 4.57).
 
 **G5 picks** (derived by `pickReadableOn(surface, [#fff, bg.primary])`, never hardcoded): light
 themes keep white text on all three surfaces — on-accent 5.57–7.10, on-success 3.30 (white on

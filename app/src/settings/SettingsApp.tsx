@@ -52,6 +52,7 @@ import {
   type SettingsStore,
   type TabBarPosition,
 } from "./settingsStore";
+import { normalizeLegacyThemeId } from "../theme/defaultTheme";
 import { isRegisteredThemeId } from "../theme/registry";
 import { hydrateUserThemes, onThemesChanged } from "../theme/themesBackend";
 import type { ThemeId } from "../theme/themes";
@@ -175,7 +176,9 @@ export function SettingsApp({
       if (typeof payload !== "object" || payload === null) return;
       const { key, value } = payload as { key?: unknown; value?: unknown };
       // trmx-89 (D): registry-aware guard — a built-in OR a registered user theme id re-styles.
-      if (key === "appearance.theme" && isRegisteredThemeId(value)) setTheme(value);
+      // trmx-202: a removed built-in normalizes to the derived default first.
+      const themeId = key === "appearance.theme" ? (normalizeLegacyThemeId(value) ?? value) : value;
+      if (key === "appearance.theme" && isRegisteredThemeId(themeId)) setTheme(themeId);
       else if (key === "tabs.barPosition" && isTabBarPosition(value)) setBarPosition(value);
     });
     return () => {

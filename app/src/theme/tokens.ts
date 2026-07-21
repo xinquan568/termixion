@@ -78,10 +78,3 @@ export interface ThemeTokens {
     search: { match: string; activeMatch: string };
   };
 }
-
-/** Light-theme `color.semantic` block — identical across white/paper/mint/sepia (vmark's `semanticLight`, pruned). */
-export const semanticLight: ThemeTokens["color"]["semantic"] = {
-  error: "#cf222e",
-  errorBg: "#ffebe9",
-  success: "#16a34a",
-};

@@ -8,7 +8,7 @@
 // terminal in the main window) apply changes immediately.
 //
 // trmx-53 adds appearance.theme — the registry's ONE dynamic default: with no persisted value it
-// derives from the OS appearance (defaultThemeId: dark → night, light → white) and materializes
+// derives from the OS appearance (defaultThemeId: dark → night, light → catppuccin-latte) and materializes
 // (writes back) so the OS is consulted only once; Reset all removes the key, so a post-reset read
 // re-derives like a fresh first run, and the reset broadcast carries the derived value.
 //
@@ -25,7 +25,7 @@
 // user configuration, so it never belongs in the user-facing config file (docs/config.md).
 import { defaultThemeId } from "../theme/defaultTheme";
 import { isRegisteredThemeId, isUserThemeIdShape } from "../theme/registry";
-import type { ThemeId } from "../theme/themes";
+import { isRemovedBuiltinThemeId, type ThemeId } from "../theme/themes";
 import { realInvoke, type InvokeFn } from "../ipc/backend";
 import { realEventBus } from "../ipc/eventBus";
 
@@ -312,7 +312,7 @@ function coerce<K extends SettingKey>(key: K, value: unknown): SettingsValues[K]
     // trmx-89 C1: accept a REGISTERED id (built-in or a resolved user theme) OR a shape-valid
     // `user:<stem>` id. The shape branch is load-bearing: themes_read() populates the registry
     // AFTER boot, so a persisted user id would otherwise be coerced back to a built-in default on
-    // the pre-scan read/seed. resolveTheme() serves White for it until the scan resolves; a truly
+    // the pre-scan read/seed. resolveTheme() serves the derived default for it until the scan resolves (trmx-202); a truly
     // junk value (wrong type, "neon", "__proto__") still fails both guards and is rejected.
     return isRegisteredThemeId(value) || isUserThemeIdShape(value)
       ? (value as SettingsValues[K])
@@ -759,6 +759,13 @@ export async function hydrateSettings(deps: HydrateSettingsDeps = {}): Promise<v
       if (!(key in read.values)) continue;
       const value = coerce(key, read.values[key]);
       if (value === undefined) {
+        // trmx-202: a REMOVED built-in theme id (white/paper/mint/sepia) is a recognized legacy
+        // value, not junk — seed the derived default SILENTLY (no client warning; the no-write
+        // presence rule below applies the same either way).
+        if (key === "appearance.theme" && isRemovedBuiltinThemeId(read.values[key])) {
+          snapshot.set(key, defaultThemeId());
+          continue;
+        }
         clientWarnings.set(key, {
           source: "client",
           message: `Invalid value for "${key}" in the config file; using the default.`,
@@ -903,6 +910,15 @@ function applySettingsChangedToSnapshot(payload: unknown): void {
   const coerced = coerce(key as SettingKey, value);
   if (coerced === undefined) {
     if (source === "config-file") {
+      // trmx-202: a REMOVED built-in id from a live config edit — or the watcher broadcasting the
+      // Rust Config::default() "white" after the key is deleted — normalizes SILENTLY: derived
+      // default into the snapshot, any prior theme client-warning cleared (the ledger otherwise
+      // clears only on the valid path), nothing written back.
+      if (key === "appearance.theme" && isRemovedBuiltinThemeId(value)) {
+        snapshot.set(key, defaultThemeId());
+        if (clientWarnings.delete(key)) publishConfigWarnings();
+        return;
+      }
       if (key === "appearance.theme") {
         snapshot.set(key, defaultThemeId());
         clientWarnings.set(key, {

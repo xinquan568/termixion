@@ -18,7 +18,7 @@ import {
   type UserThemeEntry,
 } from "./registry";
 import { deriveTheme, type ThemeSpec } from "./themeDerive";
-import { THEME_IDS, themeLabel, themes } from "./themes";
+import { THEME_IDS, isBuiltinThemeId, isRemovedBuiltinThemeId, themeLabel, themes } from "./themes";
 import type { AnsiPalette } from "./tokens";
 
 /** A neutral 16-color palette (mirrors themeDerive.test.ts's fixture). */
@@ -87,7 +87,7 @@ describe("registerUserThemes + resolution", () => {
 });
 
 describe("invalid user themes", () => {
-  it("lists an invalid entry with valid:false + an error diagnostic; getTheme is undefined; resolveTheme falls back to White", () => {
+  it("lists an invalid entry with valid:false + an error diagnostic; getTheme is undefined; resolveTheme falls back to the derived default", () => {
     registerUserThemes([
       {
         id: "user:broken",
@@ -106,7 +106,8 @@ describe("invalid user themes", () => {
     ]);
 
     expect(getTheme("user:broken")).toBeUndefined();
-    expect(resolveTheme("user:broken")).toBe(themes.white);
+    // trmx-202: the last-resort anchor is the derived first-run default (jsdom -> night).
+    expect(resolveTheme("user:broken")).toBe(themes.night);
     // It is still a "known" (registered) id so a persisted selection is not coerced away.
     expect(isRegisteredThemeId("user:broken")).toBe(true);
   });
@@ -155,9 +156,10 @@ describe("built-ins are never shadowable", () => {
 });
 
 describe("guards + fallback on unknown / junk ids", () => {
-  it("resolveTheme falls back to White and the guards reject an unknown id", () => {
-    expect(resolveTheme("hotdog-stand")).toBe(themes.white);
-    expect(resolveTheme("__proto__")).toBe(themes.white);
+  it("resolveTheme falls back to the derived default and the guards reject an unknown id", () => {
+    // trmx-202: White is gone; the anchor is the derived first-run default (jsdom -> night).
+    expect(resolveTheme("hotdog-stand")).toBe(themes.night);
+    expect(resolveTheme("__proto__")).toBe(themes.night);
     expect(isRegisteredThemeId("hotdog-stand")).toBe(false);
     expect(isRegisteredThemeId("__proto__")).toBe(false);
     expect(isRegisteredThemeId(7)).toBe(false);
@@ -169,6 +171,20 @@ describe("guards + fallback on unknown / junk ids", () => {
       expect(isRegisteredThemeId(id)).toBe(true);
       expect(resolveTheme(id)).toBe(themes[id]);
     }
+  });
+
+  // trmx-202: the four removed built-ins are neither registered nor built-in; the catalog's
+  // isRemovedBuiltinThemeId guard recognizes exactly them (the silent-fallback special case).
+  it("removed built-ins are unregistered but recognized by isRemovedBuiltinThemeId", () => {
+    for (const id of ["white", "paper", "mint", "sepia"]) {
+      expect(isRegisteredThemeId(id)).toBe(false);
+      expect(isBuiltinThemeId(id)).toBe(false);
+      expect(isRemovedBuiltinThemeId(id)).toBe(true);
+      expect(resolveTheme(id)).toBe(themes.night); // jsdom-derived default, silent
+    }
+    expect(isRemovedBuiltinThemeId("night")).toBe(false);
+    expect(isRemovedBuiltinThemeId("hotdog-stand")).toBe(false);
+    expect(isRemovedBuiltinThemeId(undefined)).toBe(false);
   });
 
   it("isUserThemeIdShape accepts a well-formed user id and rejects everything else", () => {
@@ -216,29 +232,29 @@ describe("last-good tokens across an invalidating re-register", () => {
       { id: "user:live", source: "user", valid: false, spec: null, warnings: [{ type: "SyntaxError" }] },
     ]);
 
-    // resolveTheme/getTheme still return the LAST-GOOD tokens (not White) — a new pane keeps the colors.
+    // resolveTheme/getTheme still return the LAST-GOOD tokens (not the fallback) — a new pane keeps the colors.
     expect(getTheme("user:live")).toEqual(good);
     expect(resolveTheme("user:live")).toEqual(good);
-    expect(resolveTheme("user:live")).not.toEqual(themes.white);
+    expect(resolveTheme("user:live")).not.toEqual(themes.night);
     // ...but the picker entry is flagged invalid + unselectable.
     const entry = listThemes().find((e) => e.id === "user:live");
     expect(entry?.valid).toBe(false);
     expect(entry?.diagnostics[0]?.severity).toBe("error");
   });
 
-  it("still falls back to White for an id that was NEVER valid this session", () => {
+  it("still falls back to the derived default for an id that was NEVER valid this session", () => {
     registerUserThemes([
       { id: "user:born-bad", source: "user", valid: false, spec: null, warnings: [{ type: "SyntaxError" }] },
     ]);
     expect(getTheme("user:born-bad")).toBeUndefined();
-    expect(resolveTheme("user:born-bad")).toEqual(themes.white);
+    expect(resolveTheme("user:born-bad")).toEqual(themes.night);
   });
 
   it("drops the last-good once the id disappears entirely from a re-register", () => {
     registerUserThemes([validEntry("user:gone", spec(true, "#101010", "#f0f0f0"))]);
     registerUserThemes([validEntry("user:other")]); // "user:gone" is absent now (file deleted)
     expect(getTheme("user:gone")).toBeUndefined();
-    expect(resolveTheme("user:gone")).toEqual(themes.white);
+    expect(resolveTheme("user:gone")).toEqual(themes.night);
   });
 });
 

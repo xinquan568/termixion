@@ -1990,14 +1990,28 @@ describe("App main-window theme vars (trmx-173)", () => {
     const { settingsChanged } = renderApp();
     expect(sunken()).toBe(""); // the main window had applied no vars yet (documentElement was clear)
     await act(async () =>
-      settingsChanged.fire({ key: "appearance.theme", value: "white", source: "settings-window" }),
+      settingsChanged.fire({ key: "appearance.theme", value: "catppuccin-latte", source: "settings-window" }),
     );
-    expect(sunken()).toBe("#f8f8f8"); // White's sunken bg → the tab bar recolors light
+    expect(sunken()).toBe("#e6e9ef"); // Latte's sunken bg (mantle) → the tab bar recolors light
     await act(async () =>
       settingsChanged.fire({ key: "appearance.theme", value: "night", source: "settings-window" }),
     );
     expect(sunken()).not.toBe(""); // Night's sunken bg (dark), non-empty
-    expect(sunken()).not.toBe("#f8f8f8"); // …and different from White's
+    expect(sunken()).not.toBe("#e6e9ef"); // …and different from Latte's
+  });
+
+  // trmx-202: a REMOVED built-in over the bus normalizes to the derived default (jsdom → night)
+  // so the chrome re-themes instead of ignoring the event.
+  it("re-themes the chrome to the derived default on a removed built-in id", async () => {
+    const { settingsChanged } = renderApp();
+    await act(async () =>
+      settingsChanged.fire({ key: "appearance.theme", value: "catppuccin-latte", source: "settings-window" }),
+    );
+    expect(sunken()).toBe("#e6e9ef"); // parked on Latte first
+    await act(async () =>
+      settingsChanged.fire({ key: "appearance.theme", value: "white", source: "config-file" }),
+    );
+    expect(sunken()).toBe("#0a0a0a"); // normalized to Night's sunken bg, not ignored
   });
 
   it("re-applies the --tx-* vars on a same-id user-theme hot reload (changed bg tokens)", async () => {
@@ -2301,9 +2315,9 @@ describe("App activity indicator (trmx-91)", () => {
     expect(line.className).toContain("tx-activity-line--dark");
     expect(line.style.backgroundColor).toBe("");
 
-    // Switching to a known LIGHT theme (white) re-keys the still-busy pane's bar to --light.
+    // Switching to a known LIGHT theme (catppuccin-latte) re-keys the still-busy pane's bar to --light.
     act(() =>
-      settingsChanged.fire({ key: "appearance.theme", value: "white", source: "settings-window" }),
+      settingsChanged.fire({ key: "appearance.theme", value: "catppuccin-latte", source: "settings-window" }),
     );
     line = within(screen.getByTestId("pane-host-1")).getByTestId("pane-activity");
     expect(line.className).toContain("tx-activity-line--light");

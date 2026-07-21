@@ -8,7 +8,7 @@ import type { InvokeFn } from "../ipc/backend";
 
 const ctx = { tabCount: () => 5, paneCount: () => 3 } as unknown as CommandContext;
 const KEYMAP = { "cmd+t": "tab.new", "cmd+shift+p": "app.command-palette", "cmd+d": "pane.split-right" };
-const THEMES = [{ id: "night", title: "Night" }, { id: "white", title: "White" }];
+const THEMES = [{ id: "night", title: "Night" }, { id: "catppuccin-latte", title: "Catppuccin Latte" }];
 
 describe("bindingFor (pure)", () => {
   it("reverse-looks-up a command's chord, or undefined", () => {

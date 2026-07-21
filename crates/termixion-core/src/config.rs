@@ -396,7 +396,7 @@ pub const DEFAULT_TEMPLATE: &str = r##"# Termixion configuration (TOML).
 # confirm_close = "when-busy"     # confirm before closing a busy pane/tab or quitting: "never" | "when-busy" | "always"
 
 # [appearance]
-# theme = "white"                 # a theme id from the theme catalog
+# theme = "night"                 # a theme id from the theme catalog
 
 # [tabs]
 # bar_position = "bottom"         # "top" | "bottom" | "left" | "right"
@@ -1283,6 +1283,12 @@ show_shortcut_hints = false
         assert!(
             DEFAULT_TEMPLATE.contains("# side_label_orientation = \"horizontal\""),
             "the template must document tabs.side_label_orientation (commented out)"
+        );
+        // trmx-202: the template's example theme id must be a SURVIVING catalog id — a generated
+        // config file must never recommend a removed built-in (white/paper/mint/sepia).
+        assert!(
+            DEFAULT_TEMPLATE.contains("# theme = \"night\""),
+            "the template's theme example must be a surviving catalog id (trmx-202)"
         );
         let (config, warnings) = parse_config(DEFAULT_TEMPLATE);
         assert_eq!(config, Config::default());

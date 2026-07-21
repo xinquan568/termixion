@@ -8,6 +8,7 @@
 // be inert. Supersedes trmx-44's OS-appearance-driven palette selection.
 import type { ITheme } from "@xterm/xterm";
 import { buildXtermTheme } from "../theme/buildXtermTheme";
+import { normalizeLegacyThemeId } from "../theme/defaultTheme";
 import { isRegisteredThemeId } from "../theme/registry";
 import type { ThemeId } from "../theme/themes";
 import type { SettingsStore } from "../settings/settingsStore";
@@ -33,8 +34,12 @@ export function applyThemeSettingsChange(
 ): ThemeId | null {
   if (typeof payload !== "object" || payload === null) return null;
   const { key, value } = payload as { key?: unknown; value?: unknown };
+  if (key !== "appearance.theme") return null;
+  // trmx-202: a REMOVED built-in (a live config edit, or the Rust watcher's default "white")
+  // normalizes to the derived default so running terminals re-theme instead of ignoring it.
+  const applied = normalizeLegacyThemeId(value) ?? value;
   // trmx-89 (D): registry-aware — accepts a built-in OR a registered user id; junk stays inert.
-  if (key !== "appearance.theme" || !isRegisteredThemeId(value)) return null;
-  terminal.options.theme = buildXtermTheme(value);
-  return value;
+  if (!isRegisteredThemeId(applied)) return null;
+  terminal.options.theme = buildXtermTheme(applied);
+  return applied;
 }

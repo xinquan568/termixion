@@ -28,7 +28,7 @@
 # this documented protocol plus the PR screenshot set.
 set -euo pipefail
 
-THEMES=(white paper mint sepia night solarized)
+THEMES=(catppuccin-latte nord dracula gruvbox solarized catppuccin-mocha tokyo-night night)
 # The reference window size (logical points) every shot must share — doc §5. Shots are compared
 # across themes and releases; a drifting size invalidates the set.
 REF_W=1280
