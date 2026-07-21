@@ -156,3 +156,8 @@ default, never silently loses a setting and never crashes the app.
 - **Concurrent writers.** Writes are atomic (same-directory temp file + rename), so the file never
   tears; simultaneous writers resolve as last-write-wins.
 - **Open the file from the app**: Settings → About → Configuration → "Open config file".
+
+> **Dotfile managers.** Termixion never edits your rc files (the `[shell]` enhancement layer
+> is a transparent ZDOTDIR shim), and deliberately ships no dotfile-manager integration — see
+> [ADR-0002](adr/0002-no-chezmoi-integration.md). `termixion.toml` itself is worth adding to
+> your dotfiles.
