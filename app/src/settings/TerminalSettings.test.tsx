@@ -65,9 +65,9 @@ describe("TerminalSettings", () => {
     expect(
       screen.getByText("Show live AI session counts in the title bar"),
     ).toBeInTheDocument();
-    // EXACTLY these nine rows (no Shell / Panel / Line Height).
+    // EXACTLY these ten rows (trmx-205 adds Shell above Scrollback).
     const rows = container.querySelectorAll(".tx-setting-row");
-    expect(rows).toHaveLength(9);
+    expect(rows).toHaveLength(10);
     const labels = [...rows].map((r) => r.querySelector(".tx-setting-row__label")?.textContent);
     expect(labels).toEqual([
       "Cursor Style",
@@ -76,6 +76,7 @@ describe("TerminalSettings", () => {
       "Activity Indicator",
       "AI Session Counter",
       "Confirm before closing",
+      "Shell",
       "Scrollback",
       "Font Family",
       "Font Size",
@@ -313,6 +314,59 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
     } finally {
       delete (document as { fonts?: unknown }).fonts;
     }
+  });
+
+  it("trmx-205: the Shell dropdown defaults to System default and offers installed shells + Custom", async () => {
+    const invoke = vi.fn((cmd: string) =>
+      cmd === "shells_list"
+        ? Promise.resolve([
+            { id: "zsh", label: "zsh", path: "/bin/zsh" },
+            { id: "bash", label: "bash (/opt/homebrew/bin/bash)", path: "/opt/homebrew/bin/bash" },
+          ])
+        : Promise.resolve(),
+    );
+    const store = makeSettingsStore(fakeStorage());
+    render(<TerminalSettings settings={store} invoke={invoke} />);
+    const select = screen.getByRole("combobox", { name: "Shell" }) as HTMLSelectElement;
+    expect(select.value).toBe("__system__");
+    await waitFor(() => {
+      const labels = [...select.options].map((o) => o.label);
+      expect(labels).toEqual([
+        "System default",
+        "zsh",
+        "bash (/opt/homebrew/bin/bash)",
+        "Custom path…",
+      ]);
+    });
+    fireEvent.change(select, { target: { value: "/opt/homebrew/bin/bash" } });
+    expect(store.get("terminal.shell")).toBe("/opt/homebrew/bin/bash");
+    fireEvent.change(select, { target: { value: "__system__" } });
+    expect(store.get("terminal.shell")).toBe("");
+  });
+
+  it("trmx-205: a rejected shells_list degrades to System default + Custom path…", async () => {
+    const invoke = vi.fn(() => Promise.reject(new Error("no backend")));
+    render(<TerminalSettings settings={makeSettingsStore(fakeStorage())} invoke={invoke} />);
+    const select = screen.getByRole("combobox", { name: "Shell" }) as HTMLSelectElement;
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("shells_list"));
+    const labels = [...select.options].map((o) => o.label);
+    expect(labels).toEqual(["System default", "Custom path…"]);
+  });
+
+  it("trmx-205: Custom path… reveals the field, commits verbatim, and unknown persisted paths land there", () => {
+    const store = makeSettingsStore(
+      fakeStorage({ "termixion.terminal.shell": "/opt/odd/bin/xonsh" }),
+    );
+    render(<TerminalSettings settings={store} invoke={vi.fn(() => Promise.resolve([]))} />);
+    const select = screen.getByRole("combobox", { name: "Shell" }) as HTMLSelectElement;
+    // Unknown persisted path (not in the — empty — installed list) lands on Custom with the value.
+    expect(select.value).toBe("__custom__");
+    const input = screen.getByRole("textbox", { name: "Shell" }) as HTMLInputElement;
+    expect(input.value).toBe("/opt/odd/bin/xonsh");
+    fireEvent.change(input, { target: { value: "/bin/dash" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(store.get("terminal.shell")).toBe("/bin/dash");
+    expect(screen.getByText(/Applies to new sessions/)).toBeInTheDocument();
   });
 
   it("notes the FiraCode ligature caveat in the row helper text when FiraCode is selected", async () => {

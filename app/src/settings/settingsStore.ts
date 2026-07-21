@@ -105,6 +105,10 @@ export interface SettingsValues {
   /** trmx-93 (FR-5): the startup script to source in the first tab on launch, as a scripts-root
    * relative path (e.g. "work/proj-x.sh"); "" = none. A free string, like terminal.fontFamily. */
   "scripts.startup": string;
+  /** trmx-205: the shell new sessions spawn — "" = System default ($SHELL chain); else an
+   * absolute path to an installed shell. A free string like terminal.fontFamily; validated
+   * impurely by the backend (spawn falls back + warns on an invalid path). */
+  "terminal.shell": string;
   /** trmx-101 (FR-9.4): the external control channel — OFF by default; a local socket that lets scripts
    * drive the terminal. `socketPath` "" = the default path. The socket itself lives in the Rust shell. */
   "remote_control.enabled": boolean;
@@ -167,6 +171,7 @@ export const SETTING_DEFAULTS: SettingsValues = {
   "titleBar.aiCounter": true,
   // trmx-93 (FR-5): no startup script by default (empty = none).
   "scripts.startup": "",
+  "terminal.shell": "",
   "remote_control.enabled": false,
   "remote_control.socketPath": "",
 };
@@ -205,6 +210,7 @@ const STORAGE_KEYS: Record<SettingKey, string> = {
   "titleBar.aiCounter": "termixion.titleBar.aiCounter",
   // trmx-93 (FR-5): never existed pre-config-file, so the migration finds nothing — harmless.
   "scripts.startup": "termixion.scripts.startup",
+  "terminal.shell": "termixion.terminal.shell",
   "remote_control.enabled": "termixion.remote_control.enabled",
   "remote_control.socketPath": "termixion.remote_control.socketPath",
 };
@@ -271,6 +277,11 @@ function parse<K extends SettingKey>(key: K, raw: string): SettingsValues[K] {
     // trmx-93: a free-form scripts-root relative path ("" = none); validated at launch, not here.
     return raw as SettingsValues[K];
   }
+  if (key === "terminal.shell") {
+    // trmx-205: a free-form shell path ("" = System default); validated by the backend at
+    // spawn/read time, never here.
+    return raw as SettingsValues[K];
+  }
   if (key === "tabs.barPosition") {
     // trmx-81: enum parse-with-fallback, exactly like terminal.cursorStyle below.
     return (isTabBarPosition(raw) ? raw : fallback) as SettingsValues[K];
@@ -321,6 +332,7 @@ function coerce<K extends SettingKey>(key: K, value: unknown): SettingsValues[K]
   }
   if (key === "terminal.fontFamily") return value as SettingsValues[K];
   if (key === "scripts.startup") return value as SettingsValues[K];
+  if (key === "terminal.shell") return value as SettingsValues[K]; // trmx-205
   if (key === "tabs.barPosition") {
     return isTabBarPosition(value) ? (value as SettingsValues[K]) : undefined;
   }

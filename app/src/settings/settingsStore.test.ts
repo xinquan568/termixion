@@ -131,6 +131,13 @@ describe("settingsStore defaults (legacy storage mode)", () => {
     expect(store.get("terminal.fontSize")).toBe(12);
   });
 
+  it("trmx-205: terminal.shell defaults to '' and round-trips a free-form path", () => {
+    const store = makeSettingsStore(fakeStorage());
+    expect(store.get("terminal.shell")).toBe("");
+    store.set("terminal.shell", "/opt/homebrew/bin/fish");
+    expect(store.get("terminal.shell")).toBe("/opt/homebrew/bin/fish");
+  });
+
   it("keeps an explicitly persisted '' fontFamily as '' (System default survives the trmx-204 default flip)", () => {
     const store = makeSettingsStore(fakeStorage({ "termixion.terminal.fontFamily": "" }));
     expect(store.get("terminal.fontFamily")).toBe("");
@@ -330,6 +337,7 @@ describe("registry shape", () => {
         "terminal.scrollbackLines",
         "terminal.fontFamily",
         "terminal.fontSize",
+        "terminal.shell",
         "appearance.theme",
         "tabs.barPosition",
         "tabs.sideLabelOrientation",

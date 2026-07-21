@@ -65,6 +65,10 @@ pub struct ConfigState(Mutex<ConfigInner>);
 struct ConfigInner {
     last: Config,
     last_write_hash: Option<u64>,
+    /// trmx-205: the parse warnings of the last applied read/watch — the base the spawn-time
+    /// shell-fallback re-emission layers the fresh shell warning onto (no file change happens
+    /// when a configured shell is uninstalled, so the cached set is the only honest base).
+    last_warnings: Vec<ConfigWarning>,
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +148,7 @@ fn value_kind_for(registry_key: &str) -> Option<ValueKind> {
         "update.checkFrequency"
         | "terminal.cursorStyle"
         | "terminal.fontFamily"
+        | "terminal.shell" // trmx-205
         | "terminal.confirmClose"
         | "appearance.theme"
         | "tabs.barPosition"
@@ -402,6 +407,54 @@ fn ensure_config_file_at(path: &Path) -> Result<bool, String> {
     }
 }
 
+/// trmx-205: the IMPURE validity warning for a configured shell. `None` for the empty (System
+/// default) value or a path that passes the probe; otherwise an `InvalidValue` shaped exactly
+/// like the parser's own warnings so it rides the existing `config:warnings` surface unchanged.
+fn shell_validity_warning(config: &Config, valid: impl Fn(&str) -> bool) -> Option<ConfigWarning> {
+    let shell = config.terminal.shell.as_str();
+    if shell.is_empty() || valid(shell) {
+        return None;
+    }
+    Some(ConfigWarning::InvalidValue {
+        key: "terminal.shell".to_string(),
+        got: format!("\"{shell}\""),
+        expected:
+            "an absolute path to an executable shell (new sessions fall back to the system default)"
+                .to_string(),
+    })
+}
+
+/// trmx-205: the configured shell for the spawn path — `None` for empty/unset (System default).
+/// Reads the cached `last` config; before the first `config_read`/watch apply this is the
+/// default (empty), which is benign: the frontend hydrates before any terminal mounts.
+pub fn configured_shell(state: &ConfigState) -> Option<String> {
+    state
+        .0
+        .lock()
+        .ok()
+        .map(|inner| inner.last.terminal.shell.clone())
+        .filter(|shell| !shell.is_empty())
+}
+
+/// trmx-205: best-effort re-emission of `config:warnings` when a spawn falls back because the
+/// configured shell turned invalid AFTER the last read/watch (uninstalled — no file change, so
+/// no watcher wake). Cached parse warnings + the fresh shell warning; emit failure never fails
+/// the spawn.
+pub fn emit_shell_fallback_warning(
+    app: &tauri::AppHandle,
+    state: &ConfigState,
+    valid: impl Fn(&str) -> bool,
+) {
+    let Ok(inner) = state.0.lock() else { return };
+    let mut warnings = inner.last_warnings.clone();
+    if let Some(warning) = shell_validity_warning(&inner.last, valid) {
+        warnings.push(warning);
+    }
+    drop(inner);
+    let payload = serde_json::to_value(&warnings).unwrap_or_else(|_| JsonValue::Array(Vec::new()));
+    let _ = app.emit("config:warnings", payload);
+}
+
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
@@ -412,10 +465,18 @@ fn ensure_config_file_at(path: &Path) -> Result<bool, String> {
 pub fn config_read(state: State<'_, ConfigState>) -> ConfigReadResponse {
     let path = config_path();
     let text = std::fs::read_to_string(&path).ok();
-    let response = read_response_from(text.as_deref(), &path);
+    let mut response = read_response_from(text.as_deref(), &path);
     let (config, _) = parse_config(text.as_deref().unwrap_or_default());
+    // trmx-205: the impure shell-validity warning joins the parse warnings (the cached base
+    // stays parse-only; spawn-time re-emission recomputes the shell check freshly).
+    if let Some(warning) = shell_validity_warning(&config, crate::shells_io::is_executable_file) {
+        response.warnings.push(warning);
+    }
     match state.0.lock() {
-        Ok(mut inner) => inner.last = config,
+        Ok(mut inner) => {
+            inner.last = config;
+            inner.last_warnings = response.warnings.clone();
+        }
         Err(_) => eprintln!("termixion: config state poisoned; skipping diff-base update"),
     }
     response
@@ -569,6 +630,15 @@ fn on_config_file_event(app: &tauri::AppHandle, path: &Path) {
     let Some(application) = apply_file_text(&text, &inner.last, inner.last_write_hash) else {
         return; // self-echo of our own write (D6)
     };
+    // trmx-205: the impure shell-validity warning joins this wake's warning set BEFORE the pure
+    // emission decision, so an external edit to an invalid shell path surfaces (and a later
+    // valid/empty edit clears it — warnings are recomputed wholesale per wake).
+    let mut application = application;
+    if let Some(warning) =
+        shell_validity_warning(&application.config, crate::shells_io::is_executable_file)
+    {
+        application.warnings.push(warning);
+    }
     // The pure decision, computed before `application.config` moves into the diff base.
     let mut emissions = emissions_for(&application);
     // trmx-94: the scalar diff/settings:changed path is blind to the [keys] map — emit a bare
@@ -579,6 +649,7 @@ fn on_config_file_event(app: &tauri::AppHandle, path: &Path) {
     // trmx-101: capture the new remote-control config before `application.config` moves into `last`, so
     // the socket listener is (re)started/stopped AFTER the config lock is released (never held across it).
     let new_remote_control = application.config.remote_control.clone();
+    inner.last_warnings = application.warnings.clone();
     inner.last = application.config;
     // An EXTERNAL edit was applied: clear the self-echo latch so a stale hash can never
     // suppress a later external edit that happens to restore our last-written bytes.
@@ -830,6 +901,65 @@ mod tests {
     }
 
     #[test]
+    fn edit_document_persists_terminal_shell() {
+        // trmx-205 write-path lockstep: the registry key routes through value_kind_for
+        // (ValueKind::Str) into a comment-preserving [terminal] shell = "…" edit.
+        let out = edit_document(
+            "# my config\n[terminal]\nfont_size = 14\n",
+            "terminal.shell",
+            &JsonValue::String("/opt/homebrew/bin/bash".to_string()),
+        )
+        .expect("writes");
+        assert!(out.contains("# my config"));
+        assert!(out.contains("shell = \"/opt/homebrew/bin/bash\""));
+        let (config, warnings) = parse_config(&out);
+        assert_eq!(config.terminal.shell, "/opt/homebrew/bin/bash");
+        assert_eq!(warnings, Vec::new());
+    }
+
+    #[test]
+    fn shell_validity_warning_fires_only_for_nonempty_invalid_values() {
+        // trmx-205: "" (System default) and probe-passing paths are silent; anything else warns
+        // with the parser's own InvalidValue shape (same warnings surface, zero new frontend).
+        let mut config = Config::default();
+        assert_eq!(shell_validity_warning(&config, |_| false), None);
+        config.terminal.shell = "/bin/zsh".to_string();
+        assert_eq!(shell_validity_warning(&config, |_| true), None);
+        config.terminal.shell = "/bin/gone".to_string();
+        let warning = shell_validity_warning(&config, |_| false).expect("warns");
+        assert!(matches!(
+            &warning,
+            ConfigWarning::InvalidValue { key, .. } if key == "terminal.shell"
+        ));
+    }
+
+    #[test]
+    fn watcher_wake_surfaces_and_clears_the_invalid_shell_warning() {
+        // trmx-205 lifecycle: an external edit to an invalid shell path joins that wake's
+        // config:warnings emission; a later valid/empty edit recomputes wholesale and clears it.
+        let mut application = apply_file_text(
+            "[terminal]\nshell = \"/bin/gone\"\n",
+            &Config::default(),
+            None,
+        )
+        .expect("applies");
+        if let Some(warning) = shell_validity_warning(&application.config, |_| false) {
+            application.warnings.push(warning);
+        }
+        let emissions = emissions_for(&application);
+        let warnings_payload = &emissions.last().expect("has warnings emission").1;
+        assert!(warnings_payload.to_string().contains("terminal.shell"));
+
+        let mut cleared = apply_file_text("[terminal]\nshell = \"\"\n", &application.config, None)
+            .expect("applies");
+        if let Some(warning) = shell_validity_warning(&cleared.config, |_| false) {
+            cleared.warnings.push(warning);
+        }
+        let emissions = emissions_for(&cleared);
+        assert_eq!(emissions.last().expect("emission").1, serde_json::json!([]));
+    }
+
+    #[test]
     fn edit_document_rejects_a_wrong_json_type_for_the_key() {
         // Wrong JSON type per class → Err, and the text is never produced (no write).
         for (key, value) in [
@@ -887,6 +1017,7 @@ mod tests {
             ("terminal.confirmClose", ValueKind::Str),
             ("terminal.scrollbackLines", ValueKind::Int),
             ("terminal.fontFamily", ValueKind::Str),
+            ("terminal.shell", ValueKind::Str), // trmx-205
             ("terminal.fontSize", ValueKind::Int),
             ("appearance.theme", ValueKind::Str),
             ("tabs.barPosition", ValueKind::Str),

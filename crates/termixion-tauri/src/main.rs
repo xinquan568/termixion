@@ -34,6 +34,7 @@ mod control_io;
 mod menu;
 mod scripts_io;
 mod shell_integration_io;
+mod shells_io;
 mod themes_io;
 mod window_manager;
 
@@ -456,7 +457,12 @@ fn smoke_shell(exists: impl Fn(&str) -> bool) -> (&'static str, &'static [&'stat
     }
 }
 
-fn session_spec_for(smoke: bool, perf: bool, cwd: Option<String>) -> SessionSpec {
+fn session_spec_for(
+    smoke: bool,
+    perf: bool,
+    cwd: Option<String>,
+    configured_shell: Option<String>,
+) -> SessionSpec {
     if smoke || perf {
         let (program, args) = smoke_shell(|p| std::path::Path::new(p).exists());
         let mut s = SessionSpec::shell(program);
@@ -465,7 +471,12 @@ fn session_spec_for(smoke: bool, perf: bool, cwd: Option<String>) -> SessionSpec
         }
         s
     } else {
-        let mut s = SessionSpec::login_shell();
+        // trmx-205: a valid configured shell wins; anything else (empty, missing, not
+        // executable) falls through to the unchanged System-default chain inside core.
+        let mut s = SessionSpec::login_shell_configured(
+            configured_shell.map(std::ffi::OsString::from),
+            shells_io::is_executable_file,
+        );
         if let Some(dir) = cwd {
             s.cwd = Some(PathBuf::from(dir));
         }
@@ -669,7 +680,26 @@ fn open_pty(
     state: State<'_, PtyState>,
     launch: State<'_, SpecialLaunch>,
 ) -> Result<SessionInfo, String> {
-    let spec = session_spec_for(launch.smoke.is_some(), launch.perf.is_some(), cwd);
+    // trmx-205: resolve the configured shell from the cached config; when it is present but no
+    // longer valid (uninstalled after hydration — no file change, no watcher wake), surface the
+    // condition on the existing warnings channel; the spec below independently falls back.
+    let configured_shell = config_io::configured_shell(&app.state::<config_io::ConfigState>());
+    if configured_shell
+        .as_deref()
+        .is_some_and(|shell| !shells_io::is_executable_file(shell))
+    {
+        config_io::emit_shell_fallback_warning(
+            &app,
+            &app.state::<config_io::ConfigState>(),
+            shells_io::is_executable_file,
+        );
+    }
+    let spec = session_spec_for(
+        launch.smoke.is_some(),
+        launch.perf.is_some(),
+        cwd,
+        configured_shell,
+    );
 
     let (id, reader) = state
         .registry
@@ -1286,6 +1316,7 @@ fn main() -> ExitCode {
             perf_config,
             perf_done,
             config_io::config_read,
+            shells_io::shells_list,
             config_io::config_write,
             config_io::config_reset_all,
             config_io::config_open_file,
@@ -2061,13 +2092,13 @@ mod tests {
     #[test]
     fn session_spec_for_selects_the_rc_free_shell_for_smoke_or_perf() {
         // Production: login shell, cwd honored.
-        let prod = session_spec_for(false, false, Some("/tmp/somewhere".to_string()));
+        let prod = session_spec_for(false, false, Some("/tmp/somewhere".to_string()), None);
         assert_eq!(prod.cwd, Some(PathBuf::from("/tmp/somewhere")));
         assert!(prod.args.is_empty(), "login shell spawns with no args");
 
         // trmx-185: with no explicit cwd the tauri layer adds no policy of its own — the spec
         // carries exactly the core login_shell() default ($HOME when valid, else None).
-        let defaulted = session_spec_for(false, false, None);
+        let defaulted = session_spec_for(false, false, None, None);
         assert_eq!(
             defaulted.cwd,
             SessionSpec::login_shell().cwd,
@@ -2077,7 +2108,7 @@ mod tests {
         // Smoke or perf (or both): deterministic rc-free `zsh -f`, cwd deliberately ignored so
         // rc/prompt noise and a surprising working dir can never pollute the driven sequence.
         for (smoke, perf) in [(true, false), (false, true), (true, true)] {
-            let spec = session_spec_for(smoke, perf, Some("/tmp/ignored".to_string()));
+            let spec = session_spec_for(smoke, perf, Some("/tmp/ignored".to_string()), None);
             // The CI/dev host has /bin/zsh, so the live pick is zsh -f.
             assert_eq!(spec.program, OsStr::new("/bin/zsh"));
             assert_eq!(spec.args, vec![std::ffi::OsString::from("-f")]);
