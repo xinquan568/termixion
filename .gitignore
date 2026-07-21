@@ -16,6 +16,10 @@ node_modules
 # Tauri build output
 /crates/termixion-tauri/target
 
+# Local-only reports (repo-stats and friends — never committed, trmx-213)
+/reports/
+__pycache__/
+
 # macOS
 .DS_Store
 
