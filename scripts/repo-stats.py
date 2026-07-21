@@ -51,9 +51,12 @@ CONFIG_BASENAMES = {
 LOCK_BASENAMES = {"Cargo.lock", "pnpm-lock.yaml", "package-lock.json", "yarn.lock"}
 TEST_DIR_SEGMENTS = {"tests", "__tests__", "e2e", "test"}
 
+# "(by file)": category rows classify whole files, so a production .rs file's
+# inline #[cfg(test)] lines land here under prod; the "Production vs test code"
+# section is the line-accurate split that reattributes those lines to test.
 CATEGORY_LABELS = {
-    "prod": "Production code",
-    "test": "Test code",
+    "prod": "Production code (by file)",
+    "test": "Test code (by file)",
     "docs": "Documentation",
     "config": "Configuration",
     "vendored": "Vendored (resources/)",

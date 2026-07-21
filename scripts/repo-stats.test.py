@@ -197,7 +197,13 @@ class TestEndToEnd(unittest.TestCase):
             html = rs.render_html(stats)
             self.assertIn("# Repository statistics", md)
             self.assertIn("Top 5", md)
+            # Category rows are whole-file classification; the "(by file)" suffix
+            # distinguishes them from the line-accurate prod-vs-test section.
+            self.assertIn("Production code (by file)", md)
+            self.assertIn("Test code (by file)", md)
             self.assertIn("<title>", html)
+            self.assertIn("Production code (by file)", html)
+            self.assertIn("Test code (by file)", html)
             rc = rs.main([str(root), "--out", str(out)])
             self.assertEqual(rc, 0)
             self.assertTrue((out / "repo-stats.md").is_file())
