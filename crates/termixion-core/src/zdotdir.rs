@@ -22,7 +22,7 @@
 //!      forward from `${ZDOTDIR:-$HOME}`, which IS the user target by then.
 
 /// Bump when any generated content changes — the tauri materializer keys its refresh on this.
-pub const SHIM_VERSION: &str = "1";
+pub const SHIM_VERSION: &str = "2";
 
 /// Spawn → shim: the user's original `ZDOTDIR` value; ABSENT means "originally unset" (the
 /// spawn sets it only when the app process actually inherited a value).
@@ -33,6 +33,12 @@ pub const ENV_AUTOSUGGEST: &str = "TERMIXION_ENH_AUTOSUGGEST";
 pub const ENV_HIGHLIGHT: &str = "TERMIXION_ENH_HIGHLIGHT";
 /// Spawn → shim: the materialized plugins root (`…/plugins`), version-pinned per spawn.
 pub const ENV_PLUGINS_DIR: &str = "TERMIXION_ENH_PLUGINS_DIR";
+/// Spawn → shim (trmx-207): the chosen prompt — `starship` | `powerlevel10k` | `pure`; ABSENT
+/// (or any other value) means "existing": the prompt block contributes nothing.
+pub const ENV_PROMPT: &str = "TERMIXION_PROMPT";
+/// Spawn → shim (trmx-207): the resolved starship binary (the bundled sidecar, authoritatively;
+/// a PATH hit only as dev/test convenience). The shim's `-x` guard degrades silently without it.
+pub const ENV_STARSHIP_BIN: &str = "TERMIXION_STARSHIP_BIN";
 
 fn header(file: &str) -> String {
     format!(
@@ -97,6 +103,41 @@ if [[ \"${{{auto}-}}\" == \"1\" ]] && (( ! $+functions[_zsh_autosuggest_start] )
     source \"${{{plugins}-}}/zsh-autosuggestions/zsh-autosuggestions.zsh\"\n\
   fi\n\
 fi\n\
+# trmx-207: the chosen prompt initializes AFTER the user rc and the autosuggestions layer,\n\
+# and BEFORE syntax-highlighting (which must stay the final source). Guards keep an\n\
+# already-initialized prompt inert; \"existing\"/absent contributes nothing.\n\
+case \"${{{prompt}-}}\" in\n\
+  starship)\n\
+    if [[ -z \"${{STARSHIP_SHELL-}}\" ]] && [[ -x \"${{{starship}-}}\" ]]; then\n\
+      eval \"$(\"${{{starship}}}\" init zsh)\"\n\
+    fi\n\
+    ;;\n\
+  powerlevel10k)\n\
+    if ! (( $+functions[p10k] )); then\n\
+      typeset -g POWERLEVEL9K_DISABLE_CONFIGURATION_WIZARD=true\n\
+      typeset -g POWERLEVEL9K_DISABLE_GITSTATUS=true\n\
+      typeset -g GITSTATUS_AUTO_INSTALL=0\n\
+      if [[ -r \"${{{plugins}-}}/powerlevel10k/powerlevel10k.zsh-theme\" ]]; then\n\
+        source \"${{{plugins}-}}/powerlevel10k/powerlevel10k.zsh-theme\"\n\
+        if [[ -r \"$HOME/.p10k.zsh\" ]]; then\n\
+          source \"$HOME/.p10k.zsh\"\n\
+        fi\n\
+        # Re-assert the no-network stance: a user .p10k.zsh must not reopen gitstatus.\n\
+        typeset -g POWERLEVEL9K_DISABLE_GITSTATUS=true\n\
+        typeset -g GITSTATUS_AUTO_INSTALL=0\n\
+      fi\n\
+    fi\n\
+    ;;\n\
+  pure)\n\
+    if ! (( $+functions[prompt_pure_setup] )); then\n\
+      if [[ -r \"${{{plugins}-}}/pure/prompt_pure_setup\" ]]; then\n\
+        fpath+=(\"${{{plugins}-}}/pure\")\n\
+        autoload -U promptinit && promptinit\n\
+        prompt pure\n\
+      fi\n\
+    fi\n\
+    ;;\n\
+esac\n\
 # zsh-syntax-highlighting MUST be sourced last (its documented requirement) — keep this the\n\
 # final layering block in this file.\n\
 if [[ \"${{{hl}-}}\" == \"1\" ]] && [[ -z \"${{ZSH_HIGHLIGHT_VERSION-}}\" ]]; then\n\
@@ -109,6 +150,8 @@ unset _termixion_shim_dir _termixion_user_zdotdir _termixion_orig_set\n",
         auto = ENV_AUTOSUGGEST,
         hl = ENV_HIGHLIGHT,
         plugins = ENV_PLUGINS_DIR,
+        prompt = ENV_PROMPT,
+        starship = ENV_STARSHIP_BIN,
     )
 }
 
@@ -250,6 +293,45 @@ mod tests {
     }
 
     #[test]
+    fn prompt_block_sits_between_autosuggestions_and_highlighting_with_guards() {
+        // trmx-207: user rc → autosuggestions → PROMPT → highlighting LAST; per-option guards;
+        // the p10k no-network switches asserted BEFORE AND re-asserted AFTER ~/.p10k.zsh.
+        let rc = file(".zshrc");
+        let auto = rc.find("zsh-autosuggestions.zsh").expect("autosuggestions");
+        let prompt_block = rc
+            .find("case \"${TERMIXION_PROMPT-}\"")
+            .expect("prompt block");
+        let hl = rc
+            .find("zsh-syntax-highlighting.zsh")
+            .expect("highlighting");
+        assert!(auto < prompt_block && prompt_block < hl);
+        let last_source = rc.rfind("source ").expect("sources");
+        assert!(
+            rc[last_source..].contains("zsh-syntax-highlighting"),
+            "highlighting stays LAST"
+        );
+        // starship: both guards + nounset-safe expansions.
+        assert!(rc.contains("-z \"${STARSHIP_SHELL-}\""));
+        assert!(rc.contains(&format!("-x \"${{{ENV_STARSHIP_BIN}-}}\"")));
+        // p10k: double-init guard + wizard/no-network switches, re-asserted after user config.
+        assert!(rc.contains("$+functions[p10k]"));
+        assert_eq!(rc.matches("POWERLEVEL9K_DISABLE_GITSTATUS=true").count(), 2);
+        assert_eq!(rc.matches("GITSTATUS_AUTO_INSTALL=0").count(), 2);
+        assert!(rc.contains("POWERLEVEL9K_DISABLE_CONFIGURATION_WIZARD=true"));
+        let p10k_user = rc.find("$HOME/.p10k.zsh").expect("honors user p10k config");
+        let reassert = rc
+            .rfind("POWERLEVEL9K_DISABLE_GITSTATUS=true")
+            .expect("re-assert");
+        assert!(
+            p10k_user < reassert,
+            "switches re-asserted AFTER ~/.p10k.zsh"
+        );
+        // pure: guard + promptinit.
+        assert!(rc.contains("$+functions[prompt_pure_setup]"));
+        assert!(rc.contains("prompt pure"));
+    }
+
+    #[test]
     fn forwarders_target_the_user_files_never_the_shim() {
         let profile = file(".zprofile");
         assert!(profile.contains("/.zprofile\""));
@@ -272,6 +354,8 @@ mod tests {
             ENV_AUTOSUGGEST,
             ENV_HIGHLIGHT,
             ENV_PLUGINS_DIR,
+            ENV_PROMPT,
+            ENV_STARSHIP_BIN,
         ];
         for (name, content) in shim_files() {
             for (index, _) in content.match_indices("TERMIXION_") {

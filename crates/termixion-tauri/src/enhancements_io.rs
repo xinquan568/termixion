@@ -19,9 +19,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use include_dir::{Dir, include_dir};
-use termixion_core::config::ShellConfig;
+use termixion_core::config::{PromptChoice, ShellConfig};
 use termixion_core::zdotdir::{
-    ENV_AUTOSUGGEST, ENV_HIGHLIGHT, ENV_ORIG_ZDOTDIR, ENV_PLUGINS_DIR, SHIM_VERSION, shim_files,
+    ENV_AUTOSUGGEST, ENV_HIGHLIGHT, ENV_ORIG_ZDOTDIR, ENV_PLUGINS_DIR, ENV_PROMPT,
+    ENV_STARSHIP_BIN, SHIM_VERSION, shim_files,
 };
 
 /// The vendored plugin trees (single source of truth: `resources/shell-enhancements/`).
@@ -203,12 +204,16 @@ pub fn enhancement_env(
     effective_program: &std::ffi::OsStr,
     shell: &ShellConfig,
     inherited_zdotdir: Option<OsString>,
+    resolve_starship: impl FnOnce() -> Option<PathBuf>,
     materialize: impl FnOnce() -> Result<Materialized, String>,
 ) -> Option<Vec<(OsString, OsString)>> {
     if special_launch || !shell.enhancements {
         return None;
     }
-    if !shell.autosuggestions && !shell.syntax_highlighting {
+    if !shell.autosuggestions
+        && !shell.syntax_highlighting
+        && shell.prompt == PromptChoice::Existing
+    {
         return None; // nothing to layer — don't shim at all
     }
     let basename = Path::new(effective_program).file_name()?.to_str()?;
@@ -241,7 +246,52 @@ pub fn enhancement_env(
     if let Some(orig) = inherited_zdotdir {
         env.push((OsString::from(ENV_ORIG_ZDOTDIR), orig));
     }
+    // trmx-207: the chosen prompt rides the contract env; "existing" contributes nothing.
+    if shell.prompt != PromptChoice::Existing {
+        env.push((
+            OsString::from(ENV_PROMPT),
+            OsString::from(shell.prompt.as_str()),
+        ));
+    }
+    // trmx-207 round 2 (lazy, step-8 finding 2): the resolver runs ONLY here — after every
+    // bypass gate — so bypassed spawns never probe the filesystem. No binary resolved ⇒ the env
+    // var stays absent and the shim's -x guard degrades silently (existing prompt kept).
+    if shell.prompt == PromptChoice::Starship
+        && let Some(bin) = resolve_starship()
+    {
+        env.push((OsString::from(ENV_STARSHIP_BIN), bin.into_os_string()));
+    }
     Some(env)
+}
+
+/// trmx-207: resolve the starship binary. The BUNDLED SIDECAR beside the app executable is
+/// authoritative (deterministic version — used even when a system starship exists); the injected
+/// `path_lookup` is a labeled dev/test-only convenience for unbundled builds, never the
+/// acceptance path. Pure over its closures for testability.
+pub fn resolve_starship_bin(
+    exe_dir: Option<&Path>,
+    path_lookup: impl Fn(&str) -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(dir) = exe_dir {
+        let sidecar = dir.join("starship");
+        if sidecar.is_file() {
+            return Some(sidecar);
+        }
+    }
+    path_lookup("starship")
+}
+
+/// The production inputs for [`resolve_starship_bin`]: the real exe dir + a real PATH probe.
+pub fn default_starship_bin() -> Option<PathBuf> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf));
+    resolve_starship_bin(exe_dir.as_deref(), |name| {
+        let path = std::env::var_os("PATH")?;
+        std::env::split_paths(&path)
+            .map(|dir| dir.join(name))
+            .find(|candidate| candidate.is_file())
+    })
 }
 
 #[cfg(test)]
@@ -302,15 +352,24 @@ mod tests {
         ];
         for (special, program, config) in cases {
             let called = Cell::new(false);
+            let resolver_called = Cell::new(false);
             let env = enhancement_env(
                 special,
                 &program,
                 &config,
                 Some(OsString::from("/orig")),
+                || {
+                    resolver_called.set(true);
+                    None
+                },
                 spy(&called, fake_materialized()),
             );
             assert_eq!(env, None, "{program:?} special={special}");
             assert!(!called.get(), "materializer must not run for {program:?}");
+            assert!(
+                !resolver_called.get(),
+                "starship resolver must not run for {program:?} (lazy, round-2 F2)"
+            );
         }
     }
 
@@ -322,6 +381,7 @@ mod tests {
             &zsh(),
             &ShellConfig::default(),
             Some(OsString::from("/users/original/zdot")),
+            || None,
             spy(&called, fake_materialized()),
         )
         .expect("enhances");
@@ -348,6 +408,7 @@ mod tests {
                 ..ShellConfig::default()
             },
             None,
+            || None,
             spy(&called, fake_materialized()),
         )
         .expect("enhances");
@@ -357,10 +418,113 @@ mod tests {
     }
 
     #[test]
+    fn prompt_choice_rides_the_contract_env_and_extends_the_bypass() {
+        // trmx-207: prompt-only config still shims; "existing" + no plugins bypasses entirely.
+        let called = Cell::new(false);
+        let env = enhancement_env(
+            false,
+            &zsh(),
+            &ShellConfig {
+                autosuggestions: false,
+                syntax_highlighting: false,
+                prompt: PromptChoice::Pure,
+                ..ShellConfig::default()
+            },
+            None,
+            || None,
+            spy(&called, fake_materialized()),
+        )
+        .expect("a prompt alone is a reason to shim");
+        assert!(env.iter().any(|(k, v)| k == ENV_PROMPT && v == "pure"));
+        assert!(env.iter().all(|(k, _)| k != ENV_STARSHIP_BIN));
+
+        let called = Cell::new(false);
+        let env = enhancement_env(
+            false,
+            &zsh(),
+            &ShellConfig {
+                autosuggestions: false,
+                syntax_highlighting: false,
+                prompt: PromptChoice::Existing,
+                ..ShellConfig::default()
+            },
+            None,
+            || None,
+            spy(&called, fake_materialized()),
+        );
+        assert_eq!(env, None, "existing + no plugins = nothing to layer");
+        assert!(!called.get());
+    }
+
+    #[test]
+    fn starship_env_carries_the_resolved_bin_or_stays_absent() {
+        let called = Cell::new(false);
+        let config = ShellConfig {
+            prompt: PromptChoice::Starship,
+            ..ShellConfig::default()
+        };
+        let env = enhancement_env(
+            false,
+            &zsh(),
+            &config,
+            None,
+            || Some(PathBuf::from("/bundle/starship")),
+            spy(&called, fake_materialized()),
+        )
+        .expect("enhances");
+        assert!(
+            env.iter()
+                .any(|(k, v)| k == ENV_STARSHIP_BIN && v == "/bundle/starship")
+        );
+        assert!(env.iter().any(|(k, v)| k == ENV_PROMPT && v == "starship"));
+
+        let called = Cell::new(false);
+        let env = enhancement_env(
+            false,
+            &zsh(),
+            &config,
+            None,
+            || None,
+            spy(&called, fake_materialized()),
+        )
+        .expect("still shims — the -x guard degrades in the shell");
+        assert!(env.iter().all(|(k, _)| k != ENV_STARSHIP_BIN));
+    }
+
+    #[test]
+    fn starship_resolution_prefers_the_sidecar_over_path() {
+        // finding 3 seam: a real sidecar file beside the exe beats any PATH hit.
+        let dir = std::env::temp_dir().join(format!("trmx207-sidecar-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sidecar = dir.join("starship");
+        std::fs::write(&sidecar, "#!/bin/sh\n").unwrap();
+        let path_hit = PathBuf::from("/usr/local/bin/starship");
+        assert_eq!(
+            resolve_starship_bin(Some(&dir), |_| Some(path_hit.clone())),
+            Some(sidecar.clone())
+        );
+        // No sidecar: the labeled dev/test fallback applies; nothing anywhere → None.
+        let empty = dir.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert_eq!(
+            resolve_starship_bin(Some(&empty), |_| Some(path_hit.clone())),
+            Some(path_hit)
+        );
+        assert_eq!(resolve_starship_bin(Some(&empty), |_| None), None);
+        assert_eq!(resolve_starship_bin(None, |_| None), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn materializer_error_degrades_to_a_bare_spawn() {
-        let env = enhancement_env(false, &zsh(), &ShellConfig::default(), None, || {
-            Err("disk full".to_string())
-        });
+        let env = enhancement_env(
+            false,
+            &zsh(),
+            &ShellConfig::default(),
+            None,
+            || None,
+            || Err("disk full".to_string()),
+        );
         assert_eq!(env, None);
     }
 

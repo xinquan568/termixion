@@ -65,10 +65,11 @@ describe("TerminalSettings", () => {
     expect(
       screen.getByText("Show live AI session counts in the title bar"),
     ).toBeInTheDocument();
-    // EXACTLY these thirteen rows (trmx-205 adds Shell; trmx-206 the enhancement trio — shown
-    // by default because the degraded/unknown effective shell renders visible).
+    // EXACTLY these fourteen rows (trmx-205 Shell; trmx-206 the enhancement trio; trmx-207 the
+    // Prompt dropdown — shown by default because the degraded/unknown effective shell renders
+    // visible).
     const rows = container.querySelectorAll(".tx-setting-row");
-    expect(rows).toHaveLength(13);
+    expect(rows).toHaveLength(14);
     const labels = [...rows].map((r) => r.querySelector(".tx-setting-row__label")?.textContent);
     expect(labels).toEqual([
       "Cursor Style",
@@ -81,6 +82,7 @@ describe("TerminalSettings", () => {
       "Shell Enhancements",
       "Autosuggestions",
       "Syntax Highlighting",
+      "Prompt",
       "Scrollback",
       "Font Family",
       "Font Size",
@@ -443,6 +445,26 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
     fireEvent.change(select, { target: { value: "__system__" } });
     await waitFor(() =>
       expect(screen.getByRole("switch", { name: "Shell Enhancements" })).toBeInTheDocument(),
+    );
+  });
+
+  it("trmx-207: the Prompt dropdown defaults to existing, persists choices, disables with the master", () => {
+    const store = makeSettingsStore(fakeStorage());
+    render(<TerminalSettings settings={store} invoke={vi.fn(() => Promise.resolve())} />);
+    const select = screen.getByRole("combobox", { name: "Prompt" }) as HTMLSelectElement;
+    expect(select.value).toBe("existing");
+    expect([...select.options].map((o) => o.label)).toEqual([
+      "My existing prompt",
+      "Starship",
+      "Powerlevel10k",
+      "Pure",
+    ]);
+    fireEvent.change(select, { target: { value: "powerlevel10k" } });
+    expect(store.get("shell.prompt")).toBe("powerlevel10k");
+    expect(screen.getByText(/renders best with the bundled MesloLGS NF/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("switch", { name: "Shell Enhancements" }));
+    expect((screen.getByRole("combobox", { name: "Prompt" }) as HTMLSelectElement).disabled).toBe(
+      true,
     );
   });
 

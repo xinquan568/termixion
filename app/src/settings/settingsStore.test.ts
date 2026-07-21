@@ -140,6 +140,20 @@ describe("settingsStore defaults (legacy storage mode)", () => {
     expect(store.get("shell.enhancements")).toBe(false);
   });
 
+  it("trmx-207: shell.prompt is a closed enum — junk re-derives 'existing'", () => {
+    const store = makeSettingsStore(fakeStorage());
+    expect(store.get("shell.prompt")).toBe("existing");
+    store.set("shell.prompt", "starship");
+    expect(store.get("shell.prompt")).toBe("starship");
+    // Legacy-storage mode re-derives at READ time (the snapshot store's strict write
+    // rejection is a separate path): a junk write lands in storage but never surfaces.
+    store.set("shell.prompt", "ohmyposh" as never);
+    expect(store.get("shell.prompt")).toBe("existing");
+    // Junk PERSISTED values likewise re-derive the default on read.
+    const junky = makeSettingsStore(fakeStorage({ "termixion.shell.prompt": "neon" }));
+    expect(junky.get("shell.prompt")).toBe("existing");
+  });
+
   it("trmx-205: terminal.shell defaults to '' and round-trips a free-form path", () => {
     const store = makeSettingsStore(fakeStorage());
     expect(store.get("terminal.shell")).toBe("");
@@ -350,6 +364,7 @@ describe("registry shape", () => {
         "shell.enhancements",
         "shell.autosuggestions",
         "shell.syntaxHighlighting",
+        "shell.prompt",
         "appearance.theme",
         "tabs.barPosition",
         "tabs.sideLabelOrientation",

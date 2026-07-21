@@ -704,11 +704,13 @@ fn open_pty(
     // trmx-206: the zsh enhancement layer — enhancement_env is the ONE gate (None = smoke/perf,
     // non-zsh, kill switch, nothing-to-layer, or materialization failure ⇒ byte-identical
     // baseline spawn; the materializer is provably untouched on every None path).
+    let shell_config = config_io::shell_config(&app.state::<config_io::ConfigState>());
     if let Some(enhancement_env) = enhancements_io::enhancement_env(
         launch.smoke.is_some() || launch.perf.is_some(),
         &spec.program,
-        &config_io::shell_config(&app.state::<config_io::ConfigState>()),
+        &shell_config,
         std::env::var_os("ZDOTDIR"),
+        enhancements_io::default_starship_bin,
         || {
             enhancements_io::default_base_dir()
                 .and_then(|base| enhancements_io::materialize_enhancements(&base))

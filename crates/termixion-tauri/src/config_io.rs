@@ -152,6 +152,7 @@ fn value_kind_for(registry_key: &str) -> Option<ValueKind> {
         | "terminal.cursorStyle"
         | "terminal.fontFamily"
         | "terminal.shell" // trmx-205
+        | "shell.prompt" // trmx-207
         | "terminal.confirmClose"
         | "appearance.theme"
         | "tabs.barPosition"
@@ -1109,6 +1110,7 @@ mod tests {
             ("shell.enhancements", ValueKind::Bool), // trmx-206
             ("shell.autosuggestions", ValueKind::Bool),
             ("shell.syntaxHighlighting", ValueKind::Bool),
+            ("shell.prompt", ValueKind::Str), // trmx-207
             ("terminal.fontSize", ValueKind::Int),
             ("appearance.theme", ValueKind::Str),
             ("tabs.barPosition", ValueKind::Str),
