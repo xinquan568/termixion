@@ -16,6 +16,7 @@ pub mod pump;
 pub mod registry;
 pub mod scripts;
 pub mod session;
+pub mod shells;
 pub mod theme;
 
 pub use config::{

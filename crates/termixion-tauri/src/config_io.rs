@@ -65,6 +65,10 @@ pub struct ConfigState(Mutex<ConfigInner>);
 struct ConfigInner {
     last: Config,
     last_write_hash: Option<u64>,
+    /// trmx-205: the parse warnings of the last applied read/watch — the base the spawn-time
+    /// shell-fallback re-emission layers the fresh shell warning onto (no file change happens
+    /// when a configured shell is uninstalled, so the cached set is the only honest base).
+    last_warnings: Vec<ConfigWarning>,
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +148,7 @@ fn value_kind_for(registry_key: &str) -> Option<ValueKind> {
         "update.checkFrequency"
         | "terminal.cursorStyle"
         | "terminal.fontFamily"
+        | "terminal.shell" // trmx-205
         | "terminal.confirmClose"
         | "appearance.theme"
         | "tabs.barPosition"
@@ -370,7 +375,11 @@ fn write_atomic(path: &Path, contents: &str) -> Result<u64, String> {
 /// Read the file (absent → template) and edit `key` into it — the lazy file creation: the first
 /// write materializes the fully-commented [`DEFAULT_TEMPLATE`] so the user's file always carries
 /// the reference header. Returns the written text's hash + its parsed config for the state.
-fn write_key_at(path: &Path, key: &str, value: &JsonValue) -> Result<(u64, Config), String> {
+fn write_key_at(
+    path: &Path,
+    key: &str,
+    value: &JsonValue,
+) -> Result<(u64, Config, Vec<ConfigWarning>), String> {
     let current = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => DEFAULT_TEMPLATE.to_string(),
@@ -378,8 +387,8 @@ fn write_key_at(path: &Path, key: &str, value: &JsonValue) -> Result<(u64, Confi
     };
     let edited = edit_document(&current, key, value)?;
     let hash = write_atomic(path, &edited)?;
-    let (config, _warnings) = parse_config(&edited);
-    Ok((hash, config))
+    let (config, warnings) = parse_config(&edited);
+    Ok((hash, config, warnings))
 }
 
 /// Reset the file to the pristine [`DEFAULT_TEMPLATE`], atomically. Returns the written hash.
@@ -402,6 +411,67 @@ fn ensure_config_file_at(path: &Path) -> Result<bool, String> {
     }
 }
 
+/// trmx-205: the warning set a surface (config_read response / watcher emission / spawn
+/// re-emission) publishes: the PARSE-ONLY base plus at most ONE fresh shell-validity warning.
+/// Every publisher derives from a parse-only base through this one function, so the shell
+/// warning can never stack no matter how many times a surface re-emits (pure, testable).
+fn warnings_for_surface(
+    parse: &[ConfigWarning],
+    config: &Config,
+    valid: impl Fn(&str) -> bool,
+) -> Vec<ConfigWarning> {
+    let mut out = parse.to_vec();
+    if let Some(warning) = shell_validity_warning(config, valid) {
+        out.push(warning);
+    }
+    out
+}
+
+/// trmx-205: the IMPURE validity warning for a configured shell. `None` for the empty (System
+/// default) value or a path that passes the probe; otherwise an `InvalidValue` shaped exactly
+/// like the parser's own warnings so it rides the existing `config:warnings` surface unchanged.
+fn shell_validity_warning(config: &Config, valid: impl Fn(&str) -> bool) -> Option<ConfigWarning> {
+    let shell = config.terminal.shell.as_str();
+    if shell.is_empty() || valid(shell) {
+        return None;
+    }
+    Some(ConfigWarning::InvalidValue {
+        key: "terminal.shell".to_string(),
+        got: format!("\"{shell}\""),
+        expected:
+            "an absolute path to an executable shell (new sessions fall back to the system default)"
+                .to_string(),
+    })
+}
+
+/// trmx-205: the configured shell for the spawn path — `None` for empty/unset (System default).
+/// Reads the cached `last` config; before the first `config_read`/watch apply this is the
+/// default (empty), which is benign: the frontend hydrates before any terminal mounts.
+pub fn configured_shell(state: &ConfigState) -> Option<String> {
+    state
+        .0
+        .lock()
+        .ok()
+        .map(|inner| inner.last.terminal.shell.clone())
+        .filter(|shell| !shell.is_empty())
+}
+
+/// trmx-205: best-effort re-emission of `config:warnings` when a spawn falls back because the
+/// configured shell turned invalid AFTER the last read/watch (uninstalled — no file change, so
+/// no watcher wake). Cached parse warnings + the fresh shell warning; emit failure never fails
+/// the spawn.
+pub fn emit_shell_fallback_warning(
+    app: &tauri::AppHandle,
+    state: &ConfigState,
+    valid: impl Fn(&str) -> bool,
+) {
+    let Ok(inner) = state.0.lock() else { return };
+    let warnings = warnings_for_surface(&inner.last_warnings, &inner.last, valid);
+    drop(inner);
+    let payload = serde_json::to_value(&warnings).unwrap_or_else(|_| JsonValue::Array(Vec::new()));
+    let _ = app.emit("config:warnings", payload);
+}
+
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
@@ -412,10 +482,22 @@ fn ensure_config_file_at(path: &Path) -> Result<bool, String> {
 pub fn config_read(state: State<'_, ConfigState>) -> ConfigReadResponse {
     let path = config_path();
     let text = std::fs::read_to_string(&path).ok();
-    let response = read_response_from(text.as_deref(), &path);
+    let mut response = read_response_from(text.as_deref(), &path);
     let (config, _) = parse_config(text.as_deref().unwrap_or_default());
+    // trmx-205: the cached base stays PARSE-ONLY (the spawn-time re-emission recomputes the
+    // shell check freshly over it — caching the synthesized warning would stack duplicates);
+    // the published response carries parse + at most one fresh shell warning.
+    let parse_warnings = response.warnings.clone();
+    response.warnings = warnings_for_surface(
+        &parse_warnings,
+        &config,
+        crate::shells_io::is_executable_file,
+    );
     match state.0.lock() {
-        Ok(mut inner) => inner.last = config,
+        Ok(mut inner) => {
+            inner.last = config;
+            inner.last_warnings = parse_warnings;
+        }
         Err(_) => eprintln!("termixion: config state poisoned; skipping diff-base update"),
     }
     response
@@ -439,7 +521,7 @@ pub fn config_write(
     key: String,
     value: JsonValue,
 ) -> Result<(), String> {
-    let (hash, config) = write_key_at(&config_path(), &key, &value)?;
+    let (hash, config, parse_warnings) = write_key_at(&config_path(), &key, &value)?;
     // trmx-101: an app-originated write suppresses the watcher's self-echo, so apply remote_control here.
     let new_remote_control = config.remote_control.clone();
     let mut inner = state
@@ -448,6 +530,9 @@ pub fn config_write(
         .map_err(|_| "config state poisoned".to_string())?;
     inner.last_write_hash = Some(hash);
     inner.last = config;
+    // trmx-205: keep the parse-only warnings cache fresh across local writes, so a later
+    // spawn-time re-emission reflects the just-written file, not a stale read.
+    inner.last_warnings = parse_warnings;
     drop(inner);
     crate::control::apply_remote_control(&app, &new_remote_control, &control_state);
     Ok(())
@@ -467,6 +552,7 @@ pub fn config_reset_all(
         .map_err(|_| "config state poisoned".to_string())?;
     inner.last_write_hash = Some(hash);
     inner.last = Config::default();
+    inner.last_warnings = Vec::new(); // trmx-205: pristine template ⇒ no stale warning base
     drop(inner);
     // A reset restores every default → remote control OFF.
     crate::control::apply_remote_control(&app, &Config::default().remote_control, &control_state);
@@ -569,6 +655,15 @@ fn on_config_file_event(app: &tauri::AppHandle, path: &Path) {
     let Some(application) = apply_file_text(&text, &inner.last, inner.last_write_hash) else {
         return; // self-echo of our own write (D6)
     };
+    // trmx-205: publish parse + at most one fresh shell warning; the cached base stays
+    // PARSE-ONLY so the spawn-time re-emission can never stack duplicates.
+    let mut application = application;
+    let parse_warnings = application.warnings.clone();
+    application.warnings = warnings_for_surface(
+        &parse_warnings,
+        &application.config,
+        crate::shells_io::is_executable_file,
+    );
     // The pure decision, computed before `application.config` moves into the diff base.
     let mut emissions = emissions_for(&application);
     // trmx-94: the scalar diff/settings:changed path is blind to the [keys] map — emit a bare
@@ -579,6 +674,7 @@ fn on_config_file_event(app: &tauri::AppHandle, path: &Path) {
     // trmx-101: capture the new remote-control config before `application.config` moves into `last`, so
     // the socket listener is (re)started/stopped AFTER the config lock is released (never held across it).
     let new_remote_control = application.config.remote_control.clone();
+    inner.last_warnings = parse_warnings;
     inner.last = application.config;
     // An EXTERNAL edit was applied: clear the self-echo latch so a stale hash can never
     // suppress a later external edit that happens to restore our last-written bytes.
@@ -830,6 +926,114 @@ mod tests {
     }
 
     #[test]
+    fn edit_document_persists_terminal_shell() {
+        // trmx-205 write-path lockstep: the registry key routes through value_kind_for
+        // (ValueKind::Str) into a comment-preserving [terminal] shell = "…" edit.
+        let out = edit_document(
+            "# my config\n[terminal]\nfont_size = 14\n",
+            "terminal.shell",
+            &JsonValue::String("/opt/homebrew/bin/bash".to_string()),
+        )
+        .expect("writes");
+        assert!(out.contains("# my config"));
+        assert!(out.contains("shell = \"/opt/homebrew/bin/bash\""));
+        let (config, warnings) = parse_config(&out);
+        assert_eq!(config.terminal.shell, "/opt/homebrew/bin/bash");
+        assert_eq!(warnings, Vec::new());
+    }
+
+    #[test]
+    fn spawn_reemission_never_stacks_the_shell_warning() {
+        // Step-8 finding: every publisher derives from a PARSE-ONLY base through
+        // warnings_for_surface, so re-deriving any number of times yields exactly one
+        // terminal.shell warning — never two.
+        let mut config = Config::default();
+        config.terminal.shell = "/bin/gone".to_string();
+        let parse_only = vec![ConfigWarning::InvalidValue {
+            key: "terminal.font_size".to_string(),
+            got: "\"big\"".to_string(),
+            expected: "an integer".to_string(),
+        }];
+        let first = warnings_for_surface(&parse_only, &config, |_| false);
+        assert_eq!(first.len(), 2); // the parse warning + ONE shell warning
+        // A second derivation from the same parse-only base (the spawn re-emission) is
+        // identical — deriving from `first` would be the stacking bug.
+        let second = warnings_for_surface(&parse_only, &config, |_| false);
+        assert_eq!(second, first);
+        let shell_count = second
+            .iter()
+            .filter(
+                |w| matches!(w, ConfigWarning::InvalidValue { key, .. } if key == "terminal.shell"),
+            )
+            .count();
+        assert_eq!(shell_count, 1);
+        // A fixed shell clears it wholesale.
+        config.terminal.shell = String::new();
+        assert_eq!(
+            warnings_for_surface(&parse_only, &config, |_| false),
+            parse_only
+        );
+    }
+
+    #[test]
+    fn write_key_at_returns_the_parse_warnings_of_the_written_file() {
+        // trmx-205: config_write refreshes the parse-only cache from the just-written text.
+        let dir = test_dir("shell-write-warnings");
+        let path = dir.join("termixion.toml");
+        let (_, config, warnings) = write_key_at(
+            &path,
+            "terminal.shell",
+            &JsonValue::String("/bin/zsh".into()),
+        )
+        .expect("writes");
+        assert_eq!(config.terminal.shell, "/bin/zsh");
+        assert_eq!(warnings, Vec::new()); // a clean write parses warning-free
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn shell_validity_warning_fires_only_for_nonempty_invalid_values() {
+        // trmx-205: "" (System default) and probe-passing paths are silent; anything else warns
+        // with the parser's own InvalidValue shape (same warnings surface, zero new frontend).
+        let mut config = Config::default();
+        assert_eq!(shell_validity_warning(&config, |_| false), None);
+        config.terminal.shell = "/bin/zsh".to_string();
+        assert_eq!(shell_validity_warning(&config, |_| true), None);
+        config.terminal.shell = "/bin/gone".to_string();
+        let warning = shell_validity_warning(&config, |_| false).expect("warns");
+        assert!(matches!(
+            &warning,
+            ConfigWarning::InvalidValue { key, .. } if key == "terminal.shell"
+        ));
+    }
+
+    #[test]
+    fn watcher_wake_surfaces_and_clears_the_invalid_shell_warning() {
+        // trmx-205 lifecycle: an external edit to an invalid shell path joins that wake's
+        // config:warnings emission; a later valid/empty edit recomputes wholesale and clears it.
+        let mut application = apply_file_text(
+            "[terminal]\nshell = \"/bin/gone\"\n",
+            &Config::default(),
+            None,
+        )
+        .expect("applies");
+        if let Some(warning) = shell_validity_warning(&application.config, |_| false) {
+            application.warnings.push(warning);
+        }
+        let emissions = emissions_for(&application);
+        let warnings_payload = &emissions.last().expect("has warnings emission").1;
+        assert!(warnings_payload.to_string().contains("terminal.shell"));
+
+        let mut cleared = apply_file_text("[terminal]\nshell = \"\"\n", &application.config, None)
+            .expect("applies");
+        if let Some(warning) = shell_validity_warning(&cleared.config, |_| false) {
+            cleared.warnings.push(warning);
+        }
+        let emissions = emissions_for(&cleared);
+        assert_eq!(emissions.last().expect("emission").1, serde_json::json!([]));
+    }
+
+    #[test]
     fn edit_document_rejects_a_wrong_json_type_for_the_key() {
         // Wrong JSON type per class → Err, and the text is never produced (no write).
         for (key, value) in [
@@ -887,6 +1091,7 @@ mod tests {
             ("terminal.confirmClose", ValueKind::Str),
             ("terminal.scrollbackLines", ValueKind::Int),
             ("terminal.fontFamily", ValueKind::Str),
+            ("terminal.shell", ValueKind::Str), // trmx-205
             ("terminal.fontSize", ValueKind::Int),
             ("appearance.theme", ValueKind::Str),
             ("tabs.barPosition", ValueKind::Str),
@@ -1047,7 +1252,7 @@ mod tests {
     fn write_key_at_lazily_creates_the_file_from_the_commented_template() {
         let dir = test_dir("lazy-create");
         let path = dir.join("nested").join(CONFIG_FILE_NAME);
-        let (hash, config) =
+        let (hash, config, _warnings) =
             write_key_at(&path, "terminal.fontSize", &json!(16)).expect("first write creates");
         let on_disk = std::fs::read_to_string(&path).expect("read back");
         assert!(

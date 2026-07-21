@@ -39,6 +39,7 @@ tables; internally each maps 1:1 to a camelCase registry key (the mapping is own
 | `terminal.copy_on_select` | `terminal.copyOnSelect` | bool | `true` | — | immediate (attaches/detaches per pane)⁶ |
 | `terminal.confirm_close` | `terminal.confirmClose` | string | `"when-busy"` | `never` · `when-busy` · `always` | immediate (read at the next close)⁸ |
 | `terminal.scrollback_lines` | `terminal.scrollbackLines` | integer | `10000` | `0`–`200000` (clamped) | immediate¹ |
+| `terminal.shell` | `terminal.shell` | string | `""` | `""` = System default (`$SHELL` → `/bin/zsh` → `/bin/bash`); or an absolute path to an executable shell — invalid values warn (config warnings) and new sessions fall back to System default | new sessions only |
 | `terminal.font_family` | `terminal.fontFamily` | string | `"SauceCodePro Nerd Font Mono"` | a bundled font name (SauceCodePro Nerd Font Mono · JetBrainsMono Nerd Font Mono · MesloLGS NF · Hack Nerd Font Mono · FiraCode Nerd Font Mono), or any font stack; `""` = platform default² | immediate (re-measure + refit) |
 | `terminal.font_size` | `terminal.fontSize` | integer | `12` | `6`–`72` (clamped) | immediate (re-measure + refit) |
 | `appearance.theme` | `appearance.theme` | string | derived³ | a theme id from the built-in catalog | immediate |

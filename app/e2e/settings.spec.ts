@@ -36,10 +36,11 @@ test("?window=settings renders the settings surface with the vmark chrome", asyn
   await expect(page.getByText("Activity Indicator", { exact: true })).toBeVisible();
   await expect(page.getByText("AI Session Counter", { exact: true })).toBeVisible();
   await expect(page.getByText("Confirm before closing", { exact: true })).toBeVisible();
+  await expect(page.getByText("Shell", { exact: true })).toBeVisible();
   await expect(page.getByText("Scrollback", { exact: true })).toBeVisible();
   await expect(page.getByText("Font Family", { exact: true })).toBeVisible();
   await expect(page.getByText("Font Size", { exact: true })).toBeVisible();
-  await expect(page.locator(".tx-setting-row")).toHaveCount(9);
+  await expect(page.locator(".tx-setting-row")).toHaveCount(10);
 });
 
 test("?window=settings&section=about lands on the vmark-parity About page", async ({ page }) => {

@@ -214,6 +214,10 @@ pub struct TerminalConfig {
     pub copy_on_select: bool,
     /// When to confirm before closing a busy pane/tab or quitting (trmx-144).
     pub confirm_close: ConfirmClose,
+    /// trmx-205: the shell new sessions spawn. `""` = System default (`$SHELL` → `/bin/zsh` →
+    /// `/bin/bash`); a non-empty value is an absolute path to an installed shell, validated
+    /// impurely at spawn/read time by the tauri layer (the pure parser accepts any string).
+    pub shell: String,
 }
 
 impl Default for TerminalConfig {
@@ -227,6 +231,7 @@ impl Default for TerminalConfig {
             activity_indicator: true,
             copy_on_select: true,
             confirm_close: ConfirmClose::WhenBusy,
+            shell: String::new(),
         }
     }
 }
@@ -391,6 +396,7 @@ pub const DEFAULT_TEMPLATE: &str = r##"# Termixion configuration (TOML).
 # cursor_blink = false            # blink the cursor
 # scrollback_lines = 10000        # 0..=200000
 # font_family = "SauceCodePro Nerd Font Mono"  # a bundled font (trmx-204); "" = the platform default font stack
+# shell = ""                      # "" = the system default shell ($SHELL); or an absolute path to an installed shell (trmx-205)
 # font_size = 12                  # 6..=72
 # activity_indicator = true       # animated line while a command runs
 # copy_on_select = true           # auto-copy the mouse selection to the clipboard (iTerm2-style)
@@ -459,6 +465,7 @@ pub fn toml_path_for(registry_key: &str) -> Option<(&'static str, &'static str)>
         "terminal.cursorBlink" => Some(("terminal", "cursor_blink")),
         "terminal.scrollbackLines" => Some(("terminal", "scrollback_lines")),
         "terminal.fontFamily" => Some(("terminal", "font_family")),
+        "terminal.shell" => Some(("terminal", "shell")),
         "terminal.fontSize" => Some(("terminal", "font_size")),
         "terminal.activityIndicator" => Some(("terminal", "activity_indicator")),
         "terminal.copyOnSelect" => Some(("terminal", "copy_on_select")),
@@ -533,6 +540,11 @@ pub fn diff_configs(old: &Config, new: &Config) -> Vec<(String, RegistryValue)> 
         old.terminal.copy_on_select != new.terminal.copy_on_select,
         "terminal.copyOnSelect",
         RegistryValue::Bool(new.terminal.copy_on_select),
+    );
+    push(
+        old.terminal.shell != new.terminal.shell,
+        "terminal.shell",
+        RegistryValue::Str(new.terminal.shell.clone()),
     );
     push(
         old.terminal.confirm_close != new.terminal.confirm_close,
@@ -740,6 +752,12 @@ fn walk_terminal(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
                 value,
                 ("terminal.font_family", "terminal.fontFamily"),
                 &mut config.terminal.font_family,
+                sink,
+            ),
+            "shell" => read_string(
+                value,
+                ("terminal.shell", "terminal.shell"),
+                &mut config.terminal.shell,
                 sink,
             ),
             "font_size" => read_clamped_int(
@@ -997,7 +1015,7 @@ mod tests {
     use super::*;
 
     /// All 15 registry keys.
-    const REGISTRY_KEYS: [&str; 15] = [
+    const REGISTRY_KEYS: [&str; 16] = [
         "update.autoCheck",
         "update.checkFrequency",
         "update.autoDownload",
@@ -1009,6 +1027,7 @@ mod tests {
         "terminal.activityIndicator",
         "terminal.copyOnSelect",
         "terminal.confirmClose",
+        "terminal.shell",
         "appearance.theme",
         "tabs.barPosition",
         "tabs.sideLabelOrientation",
@@ -1034,6 +1053,7 @@ font_size = 14
 activity_indicator = false
 copy_on_select = false
 confirm_close = "always"
+shell = "/opt/homebrew/bin/fish"
 
 [appearance]
 theme = "night"
@@ -1066,6 +1086,7 @@ show_shortcut_hints = false
                     activity_indicator: false,
                     copy_on_select: false,
                     confirm_close: ConfirmClose::Always,
+                    shell: "/opt/homebrew/bin/fish".to_string(),
                 },
                 appearance: AppearanceConfig {
                     theme: "night".to_string(),
@@ -1196,7 +1217,7 @@ show_shortcut_hints = false
     fn full_file_yields_all_twelve_registry_pairs() {
         let (pairs, warnings) = parse_registry_pairs(FULL_NON_DEFAULT);
         assert_eq!(warnings, Vec::new());
-        assert_eq!(pairs.len(), 15);
+        assert_eq!(pairs.len(), 16);
         for key in REGISTRY_KEYS {
             assert!(value_for(&pairs, key).is_some(), "missing pair for {key}");
         }
@@ -1813,6 +1834,39 @@ show_shortcut_hints = false
         assert_eq!(
             value_for(&pairs, "terminal.scrollbackLines"),
             Some(&RegistryValue::Int(200_000))
+        );
+    }
+
+    #[test]
+    fn shell_defaults_empty_and_round_trips_a_configured_path() {
+        // trmx-205: "" = System default; a persisted absolute path parses verbatim and emits the
+        // registry pair; junk types warn + keep the default (tolerant-parser contract).
+        assert_eq!(TerminalConfig::default().shell, "");
+        let (config, warnings) = parse_config("[terminal]\nshell = \"/opt/homebrew/bin/bash\"\n");
+        assert_eq!(config.terminal.shell, "/opt/homebrew/bin/bash");
+        assert_eq!(warnings, Vec::new());
+        let (pairs, _) = parse_registry_pairs("[terminal]\nshell = \"/bin/zsh\"\n");
+        assert_eq!(
+            value_for(&pairs, "terminal.shell"),
+            Some(&RegistryValue::Str("/bin/zsh".to_string()))
+        );
+        let (config, warnings) = parse_config("[terminal]\nshell = 3\n");
+        assert_eq!(config.terminal.shell, "");
+        assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn shell_changes_surface_in_the_watcher_diff() {
+        let old = Config::default();
+        let mut new = Config::default();
+        new.terminal.shell = "/opt/homebrew/bin/fish".to_string();
+        let changed = diff_configs(&old, &new);
+        assert_eq!(
+            changed,
+            vec![(
+                "terminal.shell".to_string(),
+                RegistryValue::Str("/opt/homebrew/bin/fish".to_string())
+            )]
         );
     }
 

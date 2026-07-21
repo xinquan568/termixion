@@ -152,7 +152,25 @@ impl SessionSpec {
     /// know better (the frontend's OSC-7 inheritance, an explicit `open_pty` cwd) overwrite
     /// this default after construction, exactly as before.
     pub fn login_shell() -> Self {
-        Self::login_shell_with_env(|key| std::env::var_os(key), |path| path.is_dir())
+        Self::login_shell_configured(None, |_| false)
+    }
+
+    /// trmx-205: [`login_shell`] with an optional **configured shell** taking precedence. A
+    /// non-empty `configured` value that passes the injected `valid` probe becomes the program;
+    /// anything else (absent, empty, probe-rejected, non-UTF-8) falls through to the unchanged
+    /// System-default chain (`$SHELL` → `/bin/zsh` → `/bin/bash`). The probe is a closure because
+    /// real validity (absolute + existing + executable) is an impure, platform-owned question —
+    /// the tauri layer supplies it; core stays pure and headless-testable (R1/R2).
+    pub fn login_shell_configured(
+        configured: Option<OsString>,
+        valid: impl Fn(&str) -> bool,
+    ) -> Self {
+        Self::login_shell_with_env(
+            configured,
+            valid,
+            |key| std::env::var_os(key),
+            |path| path.is_dir(),
+        )
     }
 
     /// [`login_shell`] over an injected environment lookup and `$HOME` directory probe (the
@@ -160,12 +178,15 @@ impl SessionSpec {
     /// determine the spec, so unit tests never read the process-global environment or the host
     /// filesystem. Production passes `std::env::var_os` and `Path::is_dir`.
     fn login_shell_with_env(
+        configured: Option<OsString>,
+        valid: impl Fn(&str) -> bool,
         env: impl Fn(&str) -> Option<OsString>,
         home_is_dir: impl Fn(&Path) -> bool,
     ) -> Self {
-        let mut spec = Self::shell(login_shell_program(env("SHELL"), |p| {
-            std::path::Path::new(p).exists()
-        }));
+        let program = configured_shell_program(configured, valid).unwrap_or_else(|| {
+            login_shell_program(env("SHELL"), |p| std::path::Path::new(p).exists())
+        });
+        let mut spec = Self::shell(program);
         spec.cwd = default_home_cwd(&env, home_is_dir);
         spec.env
             .push((OsString::from("TERM"), OsString::from(DEFAULT_TERM)));
@@ -202,6 +223,19 @@ fn locale_is_absent(env: &impl Fn(&str) -> Option<OsString>) -> bool {
     ["LANG", "LC_ALL", "LC_CTYPE"]
         .iter()
         .all(|key| env(key).is_none_or(|value| value.is_empty()))
+}
+
+/// trmx-205: the configured-shell half of the precedence chain. `Some(program)` exactly when the
+/// configured value is present, non-empty, UTF-8-representable, and passes the injected validity
+/// probe; every other shape yields `None` so the caller falls through to [`login_shell_program`].
+/// Pure — the probe is injected (the real absolute/exists/executable check is the tauri layer's).
+fn configured_shell_program(
+    configured: Option<OsString>,
+    valid: impl Fn(&str) -> bool,
+) -> Option<OsString> {
+    configured
+        .filter(|shell| !shell.is_empty())
+        .filter(|shell| shell.to_str().map(&valid).unwrap_or(false))
 }
 
 /// Pick the login-shell program: a non-empty `$SHELL`, else `/bin/zsh` if present (the macOS default),
@@ -323,6 +357,50 @@ mod tests {
     }
 
     #[test]
+    fn configured_shell_wins_only_when_valid_and_nonempty() {
+        // trmx-205 precedence: a VALID configured shell beats $SHELL…
+        let spec = SessionSpec::login_shell_with_env(
+            Some(OsString::from("/opt/homebrew/bin/fish")),
+            |p| p == "/opt/homebrew/bin/fish",
+            env_from(&[("SHELL", "/bin/zsh")]),
+            |_| false,
+        );
+        assert_eq!(spec.program, OsString::from("/opt/homebrew/bin/fish"));
+        // …an INVALID configured shell falls through to $SHELL…
+        let spec = SessionSpec::login_shell_with_env(
+            Some(OsString::from("/bin/gone")),
+            |_| false,
+            env_from(&[("SHELL", "/bin/zsh")]),
+            |_| false,
+        );
+        assert_eq!(spec.program, OsString::from("/bin/zsh"));
+        // …and an EMPTY configured value is System default, not a candidate.
+        let spec = SessionSpec::login_shell_with_env(
+            Some(OsString::new()),
+            |_| true,
+            env_from(&[("SHELL", "/bin/zsh")]),
+            |_| false,
+        );
+        assert_eq!(spec.program, OsString::from("/bin/zsh"));
+    }
+
+    #[test]
+    fn configured_shell_keeps_the_env_and_cwd_contract() {
+        // The configured path changes ONLY the program: TERM/COLORTERM/LANG and the $HOME cwd
+        // default apply identically (trmx-37/179/145/185 behaviors are shell-agnostic).
+        let spec = SessionSpec::login_shell_with_env(
+            Some(OsString::from("/opt/homebrew/bin/bash")),
+            |_| true,
+            env_from(&[("SHELL", "/bin/zsh"), ("HOME", "/Users/tester")]),
+            |_| true,
+        );
+        assert_eq!(spec.program, OsString::from("/opt/homebrew/bin/bash"));
+        assert_eq!(spec.cwd, Some(PathBuf::from("/Users/tester")));
+        let keys: Vec<_> = spec.env.iter().map(|(k, _)| k.to_str().unwrap()).collect();
+        assert!(keys.contains(&"TERM") && keys.contains(&"COLORTERM"));
+    }
+
+    #[test]
     fn login_shell_program_prefers_shell_env_then_falls_back() {
         // The resolver is pure (takes the env value + an `exists` probe) so it tests without a real
         // filesystem or mutating the process-global environment. Any exists → $SHELL always wins.
@@ -388,6 +466,8 @@ mod tests {
         // session with nothing to inherit must start in $HOME (Terminal.app/iTerm2 parity).
         // The directory probe is injected — the test never touches the host filesystem.
         let spec = SessionSpec::login_shell_with_env(
+            None,
+            |_| false,
             env_from(&[("SHELL", "/bin/zsh"), ("HOME", "/Users/tester")]),
             |path| path == std::path::Path::new("/Users/tester"),
         );
@@ -405,16 +485,25 @@ mod tests {
         // Unset, empty, and not-a-directory $HOME each keep the inherit-parent contract
         // (cwd None) — a homeless environment degrades to today's behavior instead of
         // becoming the platform layer's loud invalid-cwd spawn error.
-        let unset = SessionSpec::login_shell_with_env(env_from(&[("SHELL", "/bin/zsh")]), |_| true);
+        let unset = SessionSpec::login_shell_with_env(
+            None,
+            |_| false,
+            env_from(&[("SHELL", "/bin/zsh")]),
+            |_| true,
+        );
         assert_eq!(unset.cwd, None, "unset HOME inherits the parent cwd");
 
         let empty = SessionSpec::login_shell_with_env(
+            None,
+            |_| false,
             env_from(&[("SHELL", "/bin/zsh"), ("HOME", "")]),
             |_| true,
         );
         assert_eq!(empty.cwd, None, "empty HOME counts as unset");
 
         let bogus = SessionSpec::login_shell_with_env(
+            None,
+            |_| false,
             env_from(&[("SHELL", "/bin/zsh"), ("HOME", "/nonexistent-home")]),
             |_| false,
         );
@@ -430,7 +519,12 @@ mod tests {
         // leaving the child zsh in the C locale — ZLE then displays pasted/typed multi-byte
         // UTF-8 as `<00XX>` garbage, which re-copies faithfully and masquerades as clipboard
         // corruption. Same launch-context reasoning as the forced TERM (trmx-37).
-        let spec = SessionSpec::login_shell_with_env(env_from(&[("SHELL", "/bin/zsh")]), |_| false);
+        let spec = SessionSpec::login_shell_with_env(
+            None,
+            |_| false,
+            env_from(&[("SHELL", "/bin/zsh")]),
+            |_| false,
+        );
         assert_eq!(
             env_value(&spec, "TERM"),
             Some(OsString::from("xterm-256color")),
@@ -448,6 +542,8 @@ mod tests {
     fn login_shell_treats_empty_locale_vars_as_unset() {
         // The observed broken machine state was LANG='' (empty string, not absent).
         let spec = SessionSpec::login_shell_with_env(
+            None,
+            |_| false,
             env_from(&[
                 ("SHELL", "/bin/zsh"),
                 ("LANG", ""),
@@ -475,7 +571,8 @@ mod tests {
             ("LANG", "fr_FR.UTF-8"),
         ] {
             let pairs: &[(&str, &str)] = Box::leak(Box::new([("SHELL", "/bin/zsh"), pinned]));
-            let spec = SessionSpec::login_shell_with_env(env_from(pairs), |_| false);
+            let spec =
+                SessionSpec::login_shell_with_env(None, |_| false, env_from(pairs), |_| false);
             assert_eq!(
                 env_value(&spec, "LANG"),
                 None,
@@ -491,7 +588,12 @@ mod tests {
         // conformance harness), but TERM=xterm-256color's terminfo carries no RGB capability —
         // so without COLORTERM, color-depth auto-detection in child programs (nvim's
         // termguicolors, bat, delta, the supports-color family) downgrades to the 256 palette.
-        let spec = SessionSpec::login_shell_with_env(env_from(&[("SHELL", "/bin/zsh")]), |_| false);
+        let spec = SessionSpec::login_shell_with_env(
+            None,
+            |_| false,
+            env_from(&[("SHELL", "/bin/zsh")]),
+            |_| false,
+        );
         assert_eq!(
             env_value(&spec, "COLORTERM"),
             Some(OsString::from("truecolor")),
@@ -508,6 +610,8 @@ mod tests {
         // the inherited value describes the terminal Termixion runs *in*, never the xterm.js
         // surface it presents to its child.
         let spec = SessionSpec::login_shell_with_env(
+            None,
+            |_| false,
             env_from(&[("SHELL", "/bin/zsh"), ("COLORTERM", "24bit")]),
             |_| false,
         );

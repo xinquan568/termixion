@@ -17,7 +17,7 @@
 // trmx-80 free-text field; any unknown persisted value lands here so nobody's hand-typed font
 // regresses). Selecting a bundled entry awaits ensureFontLoaded first so the live terminal
 // re-measures with the face already available.
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   NumberField,
   SegmentedControl,
@@ -47,6 +47,17 @@ const FONT_FAMILY_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
   { value: FONT_SYSTEM, label: "System default" },
   { value: FONT_CUSTOM, label: "Custom…" },
 ];
+
+// trmx-205: shell dropdown sentinels (same pattern as the font sentinels above).
+const SHELL_SYSTEM = "__system__";
+const SHELL_CUSTOM = "__custom__";
+
+/** One installed shell offered by the backend's shells_list (trmx-205). */
+interface ShellEntry {
+  id: string;
+  label: string;
+  path: string;
+}
 
 const FIRA_CODE_FAMILY = "FiraCode Nerd Font Mono";
 const FONT_ROW_DESCRIPTION = "Bundled fonts work out of the box — no installation needed";
@@ -97,6 +108,44 @@ export function TerminalSettings({ settings, invoke = realInvoke }: TerminalSett
   const [confirmClose, setConfirmClose] = useState<ConfirmClose>(() =>
     settings.get("terminal.confirmClose"),
   );
+  // trmx-205: the shell selector — installed shells fetched once via the injected invoke seam;
+  // a rejected invoke (plain-browser dev server, no backend) degrades the options to
+  // System default + Custom path…, which stays fully functional.
+  const [shells, setShells] = useState<ReadonlyArray<ShellEntry>>([]);
+  const [shellValue, setShellValue] = useState<string>(() => settings.get("terminal.shell"));
+  const [shellCustomMode, setShellCustomMode] = useState<boolean>(false);
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.resolve(invoke("shells_list"))
+      .then((list) => {
+        if (!cancelled && Array.isArray(list)) setShells(list as ShellEntry[]);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [invoke]);
+
+  const isListedShell = (value: string) => shells.some((shell) => shell.path === value);
+  const shellSelection = shellCustomMode
+    ? SHELL_CUSTOM
+    : shellValue === ""
+      ? SHELL_SYSTEM
+      : isListedShell(shellValue)
+        ? shellValue
+        : SHELL_CUSTOM;
+
+  function onShellSelect(value: string) {
+    if (value === SHELL_CUSTOM) {
+      setShellCustomMode(true);
+      return; // nothing persists until a custom path is committed
+    }
+    setShellCustomMode(false);
+    const next = value === SHELL_SYSTEM ? "" : value;
+    setShellValue(next);
+    settings.set("terminal.shell", next);
+  }
+
   const [scrollback, setScrollback] = useState<number>(() =>
     settings.get("terminal.scrollbackLines"),
   );
@@ -220,6 +269,33 @@ export function TerminalSettings({ settings, invoke = realInvoke }: TerminalSett
               settings.set("terminal.confirmClose", value);
             }}
           />
+        </SettingRow>
+        <SettingRow
+          label="Shell"
+          description="Applies to new sessions; System default follows $SHELL"
+        >
+          <Select
+            value={shellSelection}
+            options={[
+              { value: SHELL_SYSTEM, label: "System default" },
+              ...shells.map((shell) => ({ value: shell.path, label: shell.label })),
+              { value: SHELL_CUSTOM, label: "Custom path…" },
+            ]}
+            label="Shell"
+            onChange={onShellSelect}
+          />
+          {shellSelection === SHELL_CUSTOM ? (
+            <TextField
+              value={isListedShell(shellValue) ? "" : shellValue}
+              placeholder="/bin/zsh"
+              label="Shell"
+              onCommit={(value) => {
+                setShellValue(value);
+                setShellCustomMode(value.trim() !== "" && !isListedShell(value));
+                settings.set("terminal.shell", value);
+              }}
+            />
+          ) : null}
         </SettingRow>
         <SettingRow label="Scrollback" description="Lines of history kept per terminal">
           <NumberField
