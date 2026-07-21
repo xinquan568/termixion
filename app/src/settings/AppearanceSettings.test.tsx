@@ -470,6 +470,30 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
 
   const themeGroup = () => screen.getByRole("radiogroup", { name: "Theme" });
 
+  // trmx-218: CSS clamps a long label to two lines, so the FULL name must be recoverable from the
+  // label span's `title` — on the SPAN, not the button (the button's title is the diagnostics
+  // channel). The span's textContent stays exactly the label (no JS truncation), so the radio's
+  // accessible name is untouched — the pins around this test prove it.
+  it("every swatch label exposes the full theme name via title on the label span (trmx-218)", () => {
+    registerUserThemes([
+      validUserEntry("user:aurora-borealis-midnight-express-overdrive"),
+      invalidUserEntry("user:bad", "invalid color at color.bg.primary"),
+    ]);
+    const { container } = render(
+      <AppearanceSettings
+        settings={makeSettingsStore(fakeStorage())}
+        selected="night"
+        barPosition="bottom"
+      />,
+    );
+    const labels = [...container.querySelectorAll(".tx-swatch__label")];
+    expect(labels.length).toBe(10); // the eight built-ins + the two seeded user themes
+    for (const label of labels) {
+      expect(label.textContent).not.toBe("");
+      expect(label).toHaveAttribute("title", label.textContent ?? "");
+    }
+  });
+
   it("lists user themes AFTER the built-ins, labeled", () => {
     registerUserThemes([validUserEntry("user:cool"), validUserEntry("user:zed")]);
     render(
