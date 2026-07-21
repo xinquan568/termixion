@@ -8,11 +8,16 @@
 // change immediately. Presentational + injected store: unit-tested headless (R8).
 //
 // trmx-80 (FR-13) adds the scrollback/font trio below them: Scrollback (a clamped commit-on-blur
-// numeric field — shrinking truncates the existing buffer, xterm behavior), Font Family (empty =
-// the platform default stack, which the placeholder names — ITERM2_FONT_FAMILY), and Font Size
-// (a ± stepper bounded by the registry range). The fields clamp with SETTING_RANGES so the value
-// shown is exactly the value persisted (the registry would clamp again anyway — same contract).
-import { useState } from "react";
+// numeric field — shrinking truncates the existing buffer, xterm behavior), Font Family, and Font
+// Size (a ± stepper bounded by the registry range). The fields clamp with SETTING_RANGES so the
+// value shown is exactly the value persisted (the registry would clamp again anyway — same contract).
+//
+// trmx-204: Font Family is a dropdown over the unchanged string setting — the five bundled
+// Nerd Font families (fontCatalog.ts) + "System default" ("" sentinel) + "Custom…" (reveals the
+// trmx-80 free-text field; any unknown persisted value lands here so nobody's hand-typed font
+// regresses). Selecting a bundled entry awaits ensureFontLoaded first so the live terminal
+// re-measures with the face already available.
+import { useRef, useState } from "react";
 import {
   NumberField,
   SegmentedControl,
@@ -23,6 +28,7 @@ import {
   Toggle,
 } from "./components";
 import { ITERM2_FONT_FAMILY } from "../terminal/iterm2Theme";
+import { BUNDLED_FONTS, ensureFontLoaded, isBundledFamily } from "../terminal/fontCatalog";
 import {
   SETTING_RANGES,
   type ConfirmClose,
@@ -30,6 +36,22 @@ import {
   type SettingsStore,
 } from "./settingsStore";
 import { realInvoke, type InvokeFn } from "../ipc/backend";
+
+// trmx-204: dropdown sentinels — never valid font names, so they can share the value space with
+// the persisted family string ("" is the real System-default sentinel in the registry).
+const FONT_SYSTEM = "__system__";
+const FONT_CUSTOM = "__custom__";
+
+const FONT_FAMILY_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+  ...BUNDLED_FONTS.map((font) => ({ value: font.family, label: font.label })),
+  { value: FONT_SYSTEM, label: "System default" },
+  { value: FONT_CUSTOM, label: "Custom…" },
+];
+
+const FIRA_CODE_FAMILY = "FiraCode Nerd Font Mono";
+const FONT_ROW_DESCRIPTION = "Bundled fonts work out of the box — no installation needed";
+const FIRA_CODE_DESCRIPTION =
+  "FiraCode's programming ligatures are not rendered by the terminal renderer";
 
 const CURSOR_STYLE_OPTIONS: ReadonlyArray<{ value: CursorStyle; label: string }> = [
   { value: "bar", label: "Bar │" },
@@ -81,7 +103,46 @@ export function TerminalSettings({ settings, invoke = realInvoke }: TerminalSett
   const [fontFamily, setFontFamily] = useState<string>(() =>
     settings.get("terminal.fontFamily"),
   );
+  // trmx-204: sticky Custom… mode — choosing Custom… keeps the text field visible while the
+  // persisted value still names a bundled family (until the user commits their own stack).
+  const [fontCustomMode, setFontCustomMode] = useState<boolean>(
+    () => fontFamily !== "" && !isBundledFamily(settings.get("terminal.fontFamily")),
+  );
   const [fontSize, setFontSize] = useState<number>(() => settings.get("terminal.fontSize"));
+
+  const fontSelection = fontCustomMode
+    ? FONT_CUSTOM
+    : fontFamily === ""
+      ? FONT_SYSTEM
+      : isBundledFamily(fontFamily)
+        ? fontFamily
+        : FONT_CUSTOM;
+
+  // Step-8 finding 1 (race guard): a bundled selection persists only after its (async) face load,
+  // so EVERY selection bumps the request id and a stale load's completion is ignored — the newest
+  // user choice always wins, regardless of load latency.
+  const fontRequestRef = useRef(0);
+
+  function onFontSelect(value: string) {
+    const request = ++fontRequestRef.current;
+    if (value === FONT_CUSTOM) {
+      setFontCustomMode(true);
+      return; // nothing persists until the user commits a custom value
+    }
+    setFontCustomMode(false);
+    if (value === FONT_SYSTEM) {
+      setFontFamily("");
+      settings.set("terminal.fontFamily", "");
+      return;
+    }
+    // A bundled family: make the face available BEFORE the live terminal re-measures on the
+    // broadcast (ensureFontLoaded never throws and never hangs — bounded timeout).
+    void ensureFontLoaded(value).then(() => {
+      if (fontRequestRef.current !== request) return; // a newer selection superseded this load
+      setFontFamily(value);
+      settings.set("terminal.fontFamily", value);
+    });
+  }
 
   return (
     <div className="tx-terminal-settings">
@@ -172,16 +233,31 @@ export function TerminalSettings({ settings, invoke = realInvoke }: TerminalSett
             }}
           />
         </SettingRow>
-        <SettingRow label="Font Family" description="Empty uses the platform default">
-          <TextField
-            value={fontFamily}
-            placeholder={ITERM2_FONT_FAMILY}
+        <SettingRow
+          label="Font Family"
+          description={
+            fontSelection === FIRA_CODE_FAMILY ? FIRA_CODE_DESCRIPTION : FONT_ROW_DESCRIPTION
+          }
+        >
+          <Select
+            value={fontSelection}
+            options={FONT_FAMILY_OPTIONS}
             label="Font Family"
-            onCommit={(value) => {
-              setFontFamily(value);
-              settings.set("terminal.fontFamily", value);
-            }}
+            onChange={onFontSelect}
           />
+          {fontSelection === FONT_CUSTOM ? (
+            <TextField
+              value={isBundledFamily(fontFamily) ? "" : fontFamily}
+              placeholder={ITERM2_FONT_FAMILY}
+              label="Font Family"
+              onCommit={(value) => {
+                fontRequestRef.current++; // a custom commit also supersedes any pending load
+                setFontFamily(value);
+                setFontCustomMode(value.trim() !== "" && !isBundledFamily(value));
+                settings.set("terminal.fontFamily", value);
+              }}
+            />
+          ) : null}
         </SettingRow>
         <SettingRow label="Font Size" description="Terminal font size in points">
           <NumberField

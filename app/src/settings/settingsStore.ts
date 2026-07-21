@@ -135,8 +135,9 @@ export function clampNumberSetting(key: NumberSettingKey, value: number): number
  * trmx-51 defaults: auto-check on, check on startup, auto-download on, underline cursor.
  * trmx-55: cursor blink defaults OFF (iTerm2-default parity — iTerm2 ships a solid, non-blinking
  * cursor; see iterm2Theme.ts). Users who want blinking keep the toggle.
- * trmx-80: scrollback 10k (the trmx-65 constant, now a setting), fontFamily "" (= the platform
- * default stack, ITERM2_FONT_FAMILY at the chokepoint), fontSize 12 (the iTerm2 default).
+ * trmx-80: scrollback 10k (the trmx-65 constant, now a setting), fontSize 12 (the iTerm2 default).
+ * trmx-204: fontFamily defaults to the bundled SauceCodePro Nerd Font Mono face (fontCatalog.ts);
+ * "" remains the explicit System-default sentinel (= the platform stack at the chokepoint).
  */
 export const SETTING_DEFAULTS: SettingsValues = {
   "update.autoCheck": true,
@@ -151,7 +152,7 @@ export const SETTING_DEFAULTS: SettingsValues = {
   // trmx-95: auto-copy selection ON by default (iTerm2 parity).
   "terminal.copyOnSelect": true,
   "terminal.scrollbackLines": 10_000,
-  "terminal.fontFamily": "",
+  "terminal.fontFamily": "SauceCodePro Nerd Font Mono",
   "terminal.fontSize": 12,
   // trmx-53: static placeholder only — appearance.theme is the registry's one DYNAMIC default;
   // every real read goes through defaultFor(), which derives from the OS appearance instead.

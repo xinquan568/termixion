@@ -8,10 +8,12 @@ import { resolveSurface } from "./surface";
 import { realInvoke } from "./ipc/backend";
 import { runPerf, runPerfMultipane, realPerfDeps, type PerfLaunchConfig } from "./perf/runPerf";
 import { runSmoke, realSmokeDeps } from "./smoke/runSmoke";
-import { hydrateSettings } from "./settings/settingsStore";
+import { hydrateSettings, makeSettingsStore } from "./settings/settingsStore";
 import { hydrateUserThemes } from "./theme/themesBackend";
 import { applyStartupTheme } from "./theme/applyStartupTheme";
+import { ensureStartupFontLoaded } from "./terminal/fontCatalog";
 import "./index.css";
+import "./fonts.css";
 
 // The pinned startup order (trmx-80, guarded by main.order.test.ts): hydrate → theme → gates →
 // mount — ONE code path for all launches. Settings are file-backed (FR-13), so exactly one
@@ -36,6 +38,11 @@ async function boot() {
   // rejects and nothing registers), so it stays safe on every launch surface.
   await hydrateUserThemes();
   applyStartupTheme();
+  // trmx-204: the bundled-font gate, AFTER the themed paint (first frame stays fast) and BEFORE
+  // anything can mount a terminal — mountTerminal measures the cell grid synchronously, so the
+  // effective bundled face must be ready (or timed out into the fallback stack) by first render.
+  // A no-op for the System default ("") and custom families. Guarded by main.order.test.ts.
+  await ensureStartupFontLoaded(makeSettingsStore());
 
   let smokeDir: string | null = null;
   try {

@@ -949,6 +949,74 @@ describe("TerminalView", () => {
     expect(attachOscAbsent.mock.calls[0][2]).toBeUndefined();
   });
 
+  it("re-fits + recomputes once when document.fonts.ready resolves (trmx-204 late-load backstop)", async () => {
+    let resolveReady!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      resolveReady = resolve;
+    });
+    Object.defineProperty(document, "fonts", { value: { ready }, configurable: true });
+    try {
+      const fit = vi.fn();
+      const handle: TerminalHandle = { terminal: {} as never, renderer: "webgl", search: {} as never, fit, dispose: vi.fn() };
+      const mount = vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(() => handle);
+      const recompute = vi.fn();
+      const attachScrollbar = vi.fn<AttachScrollbar>(() => ({ recompute, dispose: vi.fn() }));
+      render(
+        <TerminalView
+          mount={mount}
+          observeResize={noopObserve}
+          attachScrollbar={attachScrollbar}
+          attachOscIntegrations={noopAttachOsc}
+          attachClipboard={noopAttachClipboard}
+          attachCopyOnSelect={noopAttachCopyOnSelect}
+          resizeSchedule={immediateFrame}
+        />,
+      );
+      giveHostArea(mount.mock.calls[0][0]);
+      expect(fit).not.toHaveBeenCalled();
+      resolveReady();
+      await Promise.resolve();
+      await Promise.resolve();
+      // A late-arriving face corrects the grid metrics exactly once (coalesced).
+      expect(fit).toHaveBeenCalledTimes(1);
+      expect(recompute).toHaveBeenCalledTimes(1);
+    } finally {
+      delete (document as { fonts?: unknown }).fonts;
+    }
+  });
+
+  it("a fonts.ready that resolves AFTER unmount is inert (disposed terminal untouched)", async () => {
+    let resolveReady!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      resolveReady = resolve;
+    });
+    Object.defineProperty(document, "fonts", { value: { ready }, configurable: true });
+    try {
+      const fit = vi.fn();
+      const handle: TerminalHandle = { terminal: {} as never, renderer: "webgl", search: {} as never, fit, dispose: vi.fn() };
+      const mount = vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(() => handle);
+      const { unmount } = render(
+        <TerminalView
+          mount={mount}
+          observeResize={noopObserve}
+          attachScrollbar={noopAttachScrollbar}
+          attachOscIntegrations={noopAttachOsc}
+          attachClipboard={noopAttachClipboard}
+          attachCopyOnSelect={noopAttachCopyOnSelect}
+          resizeSchedule={immediateFrame}
+        />,
+      );
+      giveHostArea(mount.mock.calls[0][0]);
+      unmount();
+      resolveReady();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(fit).not.toHaveBeenCalled();
+    } finally {
+      delete (document as { fonts?: unknown }).fonts;
+    }
+  });
+
   it("applies scrollback + font broadcasts live; a FONT change re-fits and recomputes (trmx-80)", () => {
     // A terminal whose options can be reassigned at runtime (xterm applies on assignment).
     const terminal = {

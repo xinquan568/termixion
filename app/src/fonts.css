@@ -1,0 +1,76 @@
+/* trmx-204: the five bundled Nerd Font families (Regular + Bold), served from app/public/fonts/.
+ * The font-family names declared here are the canonical CSS-facing names — fontCatalog.ts
+ * (BUNDLED_FONTS) mirrors them and tests pin the pairing. font-display: swap keeps first paint
+ * unblocked; the boot gate (ensureStartupFontLoaded) awaits the effective face before the
+ * terminal measures its grid, and TerminalView re-fits on document.fonts.ready as backstop. */
+
+@font-face {
+  font-family: "SauceCodePro Nerd Font Mono";
+  src: url("/fonts/sauce-code-pro/SauceCodeProNerdFontMono-Regular.woff2") format("woff2");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "SauceCodePro Nerd Font Mono";
+  src: url("/fonts/sauce-code-pro/SauceCodeProNerdFontMono-Bold.woff2") format("woff2");
+  font-weight: bold;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrainsMono Nerd Font Mono";
+  src: url("/fonts/jetbrains-mono/JetBrainsMonoNerdFontMono-Regular.woff2") format("woff2");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrainsMono Nerd Font Mono";
+  src: url("/fonts/jetbrains-mono/JetBrainsMonoNerdFontMono-Bold.woff2") format("woff2");
+  font-weight: bold;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "MesloLGS NF";
+  src: url("/fonts/meslo-lgs/MesloLGS-NF-Regular.woff2") format("woff2");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "MesloLGS NF";
+  src: url("/fonts/meslo-lgs/MesloLGS-NF-Bold.woff2") format("woff2");
+  font-weight: bold;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Hack Nerd Font Mono";
+  src: url("/fonts/hack/HackNerdFontMono-Regular.woff2") format("woff2");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Hack Nerd Font Mono";
+  src: url("/fonts/hack/HackNerdFontMono-Bold.woff2") format("woff2");
+  font-weight: bold;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "FiraCode Nerd Font Mono";
+  src: url("/fonts/fira-code/FiraCodeNerdFontMono-Regular.woff2") format("woff2");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "FiraCode Nerd Font Mono";
+  src: url("/fonts/fira-code/FiraCodeNerdFontMono-Bold.woff2") format("woff2");
+  font-weight: bold;
+  font-style: normal;
+  font-display: swap;
+}

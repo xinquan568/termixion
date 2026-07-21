@@ -7,10 +7,11 @@
 // settings:changed broadcast the live terminal consumes. R8: written before the page exists.
 // trmx-80 (FR-13) adds the scrollback/font trio below them: Scrollback (clamped numeric field),
 // Font Family (empty = the platform default stack, named in the placeholder), Font Size (stepper).
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { TerminalSettings } from "./TerminalSettings";
 import { ITERM2_FONT_FAMILY } from "../terminal/iterm2Theme";
+import { BUNDLED_FONTS, DEFAULT_FONT_FAMILY } from "../terminal/fontCatalog";
 import {
   makeSettingsStore,
   SETTINGS_CHANGED_EVENT,
@@ -227,23 +228,100 @@ describe("TerminalSettings confirm-before-closing row (trmx-144)", () => {
 
 // trmx-80 (FR-13): the scrollback/font trio below the cursor rows.
 describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
-  it("shows the registry defaults: 10000 lines, empty family, 12 pt", () => {
+  it("shows the registry defaults: 10000 lines, the bundled SauceCodePro face (trmx-204), 12 pt", () => {
     render(<TerminalSettings settings={makeSettingsStore(fakeStorage())} />);
     expect((screen.getByRole("textbox", { name: "Scrollback" }) as HTMLInputElement).value).toBe(
       "10000",
     );
-    expect((screen.getByRole("textbox", { name: "Font Family" }) as HTMLInputElement).value).toBe(
-      "",
-    );
+    const select = screen.getByRole("combobox", { name: "Font Family" }) as HTMLSelectElement;
+    expect(select.value).toBe(DEFAULT_FONT_FAMILY);
+    // No custom text field while a bundled/system entry is selected.
+    expect(screen.queryByRole("textbox", { name: "Font Family" })).toBeNull();
     expect((screen.getByRole("textbox", { name: "Font Size" }) as HTMLInputElement).value).toBe(
       "12",
     );
   });
 
-  it("names the platform default stack in the Font Family placeholder", () => {
+  it("offers the five bundled families plus System default plus Custom… (trmx-204)", () => {
     render(<TerminalSettings settings={makeSettingsStore(fakeStorage())} />);
+    const select = screen.getByRole("combobox", { name: "Font Family" }) as HTMLSelectElement;
+    const labels = [...select.options].map((o) => o.label);
+    expect(labels).toEqual([
+      ...BUNDLED_FONTS.map((f) => f.label),
+      "System default",
+      "Custom…",
+    ]);
+  });
+
+  it("selecting a bundled family persists the exact family string and broadcasts", async () => {
+    const bus = fakeBus();
+    const store = makeSettingsStore(fakeStorage(), bus, "settings-window");
+    render(<TerminalSettings settings={store} />);
+    const select = screen.getByRole("combobox", { name: "Font Family" }) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "MesloLGS NF" } });
+    await waitFor(() => expect(store.get("terminal.fontFamily")).toBe("MesloLGS NF"));
+    expect(bus.events).toContainEqual({
+      event: SETTINGS_CHANGED_EVENT,
+      payload: { key: "terminal.fontFamily", value: "MesloLGS NF", source: "settings-window" },
+    });
+  });
+
+  it("selecting System default persists '' (the platform stack)", async () => {
+    const store = makeSettingsStore(
+      fakeStorage({ "termixion.terminal.fontFamily": "MesloLGS NF" }),
+    );
+    render(<TerminalSettings settings={store} />);
+    const select = screen.getByRole("combobox", { name: "Font Family" }) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "__system__" } });
+    await waitFor(() => expect(store.get("terminal.fontFamily")).toBe(""));
+    expect(select.value).toBe("__system__");
+  });
+
+  it("Custom… reveals the free-text field (platform stack as placeholder) and commits verbatim", () => {
+    const store = makeSettingsStore(fakeStorage());
+    render(<TerminalSettings settings={store} />);
+    const select = screen.getByRole("combobox", { name: "Font Family" }) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "__custom__" } });
     const input = screen.getByRole("textbox", { name: "Font Family" }) as HTMLInputElement;
     expect(input.placeholder).toBe(ITERM2_FONT_FAMILY);
+    fireEvent.change(input, { target: { value: "Menlo, monospace" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(store.get("terminal.fontFamily")).toBe("Menlo, monospace");
+  });
+
+  it("a stale bundled-font load never overwrites a newer selection (trmx-204 race guard)", async () => {
+    // A deferred FontFaceSet: the bundled selection's ensureFontLoaded stays PENDING until we
+    // resolve it — after the user has already moved on to System default.
+    let resolveLoad!: (value: unknown) => void;
+    const pending = new Promise((resolve) => {
+      resolveLoad = resolve;
+    });
+    const load = vi.fn(() => pending);
+    Object.defineProperty(document, "fonts", { value: { load }, configurable: true });
+    try {
+      const store = makeSettingsStore(fakeStorage());
+      render(<TerminalSettings settings={store} />);
+      const select = screen.getByRole("combobox", { name: "Font Family" }) as HTMLSelectElement;
+      fireEvent.change(select, { target: { value: "MesloLGS NF" } }); // load pending…
+      fireEvent.change(select, { target: { value: "__system__" } }); // …newer choice wins now
+      expect(store.get("terminal.fontFamily")).toBe("");
+      resolveLoad([]); // the STALE load settles late
+      await Promise.resolve();
+      await Promise.resolve();
+      await waitFor(() => expect(select.value).toBe("__system__"));
+      expect(store.get("terminal.fontFamily")).toBe(""); // never overwritten by the stale write
+    } finally {
+      delete (document as { fonts?: unknown }).fonts;
+    }
+  });
+
+  it("notes the FiraCode ligature caveat in the row helper text when FiraCode is selected", async () => {
+    const store = makeSettingsStore(fakeStorage());
+    render(<TerminalSettings settings={store} />);
+    const select = screen.getByRole("combobox", { name: "Font Family" }) as HTMLSelectElement;
+    expect(screen.queryByText(/ligatures are not rendered/i)).toBeNull();
+    fireEvent.change(select, { target: { value: "FiraCode Nerd Font Mono" } });
+    await waitFor(() => expect(screen.getByText(/ligatures are not rendered/i)).toBeInTheDocument());
   });
 
   it("commits a scrollback change on blur, CLAMPED into the registry range, and broadcasts", () => {
@@ -273,10 +351,12 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
     expect(bus.events).toHaveLength(0);
   });
 
-  it("commits a font family on Enter; clearing it commits '' (= the platform default)", () => {
+  it("commits a custom font family on Enter and broadcasts (Custom… mode, trmx-204)", () => {
     const bus = fakeBus();
     const store = makeSettingsStore(fakeStorage(), bus, "settings-window");
     render(<TerminalSettings settings={store} />);
+    const select = screen.getByRole("combobox", { name: "Font Family" }) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "__custom__" } });
     const input = screen.getByRole("textbox", { name: "Font Family" }) as HTMLInputElement;
     fireEvent.change(input, { target: { value: "JetBrains Mono" } });
     fireEvent.keyDown(input, { key: "Enter" });
@@ -285,9 +365,6 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
       event: SETTINGS_CHANGED_EVENT,
       payload: { key: "terminal.fontFamily", value: "JetBrains Mono", source: "settings-window" },
     });
-    fireEvent.change(input, { target: { value: "" } });
-    fireEvent.blur(input);
-    expect(store.get("terminal.fontFamily")).toBe("");
   });
 
   it("steps the font size with the ± stepper, persisting each step", () => {
@@ -313,7 +390,7 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
     expect(screen.getByRole("button", { name: "Decrease Font Size" })).not.toBeDisabled();
   });
 
-  it("reflects persisted values on mount", () => {
+  it("reflects persisted values on mount (an unknown family lands in Custom… with the value shown)", () => {
     const store = makeSettingsStore(
       fakeStorage({
         "termixion.terminal.scrollbackLines": "50000",
@@ -325,12 +402,27 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
     expect((screen.getByRole("textbox", { name: "Scrollback" }) as HTMLInputElement).value).toBe(
       "50000",
     );
+    // trmx-204: "Menlo" is not bundled → the dropdown sits on Custom… and the field shows it.
+    expect(
+      (screen.getByRole("combobox", { name: "Font Family" }) as HTMLSelectElement).value,
+    ).toBe("__custom__");
     expect((screen.getByRole("textbox", { name: "Font Family" }) as HTMLInputElement).value).toBe(
       "Menlo",
     );
     expect((screen.getByRole("textbox", { name: "Font Size" }) as HTMLInputElement).value).toBe(
       "16",
     );
+  });
+
+  it("a persisted bundled family lands on its dropdown entry with no custom field", () => {
+    const store = makeSettingsStore(
+      fakeStorage({ "termixion.terminal.fontFamily": "Hack Nerd Font Mono" }),
+    );
+    render(<TerminalSettings settings={store} />);
+    expect(
+      (screen.getByRole("combobox", { name: "Font Family" }) as HTMLSelectElement).value,
+    ).toBe("Hack Nerd Font Mono");
+    expect(screen.queryByRole("textbox", { name: "Font Family" })).toBeNull();
   });
 
   it("the Shell integration Reveal button invokes shell_integration_reveal (trmx-99)", () => {

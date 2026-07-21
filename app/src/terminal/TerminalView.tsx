@@ -415,6 +415,12 @@ export function TerminalView({
       scrollbar.recompute();
     }, resizeSchedule);
     const stopObserving = observeResize(host, () => coalescer.tick());
+    // trmx-204: bundled-face late-load backstop. The boot gate normally guarantees the effective
+    // face before mount, but if a face lands after first paint (slow disk, gate timeout), the
+    // grid was measured against the fallback stack — one re-fit on fonts.ready corrects the
+    // metrics. Routed through the coalescer so a post-teardown resolution is inert.
+    const fonts = (host.ownerDocument as { fonts?: { ready?: Promise<unknown> } }).fonts;
+    fonts?.ready?.then(() => coalescer.tick()).catch(() => {});
     // trmx-51/53: settings edited in the settings window (or reverted by Reset) apply to the live
     // terminal by option assignment — no remount. Cursor style/blink reassign their options;
     // a theme change (trmx-53, superseding trmx-44's live OS-following) reassigns options.theme

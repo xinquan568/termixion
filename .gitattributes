@@ -1,0 +1,3 @@
+# Vendored third-party font assets + licenses (trmx-204): keep byte-verbatim — no EOL
+# normalization, no whitespace policing (upstream license files ship CRLF/trailing spaces).
+app/public/fonts/** -text -whitespace

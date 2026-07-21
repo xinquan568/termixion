@@ -12,16 +12,19 @@
 // input, junk must be inert.
 import type { SettingsStore } from "../settings/settingsStore";
 import { clampNumberSetting } from "../settings/settingsStore";
-import { ITERM2_FONT_FAMILY } from "./iterm2Theme";
+import { fontStackFor } from "./fontCatalog";
 
 export interface FontTerminalOptions {
   fontFamily: string;
   fontSize: number;
 }
 
-/** Resolve the registry's fontFamily: ""/whitespace = the platform default stack. */
+/**
+ * Resolve the registry's fontFamily: ""/whitespace = the platform default stack; a trmx-204
+ * bundled family = family-first with the platform stack appended; anything else verbatim.
+ */
 function resolveFontFamily(family: string): string {
-  return family.trim() === "" ? ITERM2_FONT_FAMILY : family;
+  return fontStackFor(family);
 }
 
 /** The persisted (or default: platform stack at 12 pt) font options for construction. */
