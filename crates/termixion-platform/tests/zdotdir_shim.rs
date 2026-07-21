@@ -17,7 +17,8 @@ use std::process::Command;
 use std::time::Duration;
 
 use termixion_core::zdotdir::{
-    ENV_AUTOSUGGEST, ENV_HIGHLIGHT, ENV_ORIG_ZDOTDIR, ENV_PLUGINS_DIR, shim_files,
+    ENV_AUTOSUGGEST, ENV_HIGHLIGHT, ENV_ORIG_ZDOTDIR, ENV_PLUGINS_DIR, ENV_PROMPT,
+    ENV_STARSHIP_BIN, shim_files,
 };
 use termixion_core::{PtySize, Session, SessionSpec};
 use termixion_platform::UnixPtyFactory;
@@ -299,6 +300,136 @@ fn nested_zsh_sees_the_original_unset_state() {
     assert!(
         line.ends_with("inner=UNSET"),
         "nested shell sees unset: {line}"
+    );
+    std::fs::remove_dir_all(&fx.root).ok();
+}
+
+// ---------------------------------------------------------------------------------------------
+// trmx-207: the prompt selector matrix — the shim's prompt block in live zsh.
+// ---------------------------------------------------------------------------------------------
+
+const PROMPT_PROBE: &str = r##"print -r -- "P|prompt=${PROMPT-none}|rprompt=${RPROMPT-none}|pure=$+functions[prompt_pure_setup]|p10k=$+functions[p10k]|ss=${STARSHIP_SHELL-none}""##;
+
+fn parse_prompt_status(output: &str) -> Option<String> {
+    // ZLE redraw escapes can prefix the probe line (pure's multi-line prompt), so find the
+    // marker ANYWHERE in a line, not just at line start.
+    output
+        .lines()
+        .filter_map(|line| line.find("P|prompt=").map(|i| line[i..].to_string()))
+        .next_back()
+}
+
+#[test]
+fn existing_prompt_stays_byte_identical_with_no_prompt_env() {
+    let fx = fixture("prompt-existing");
+    std::fs::write(
+        fx.home.join(".zshrc"),
+        "PROMPT='MARKER> '\nRPROMPT='RMARK'\n",
+    )
+    .unwrap();
+    // No ENV_PROMPT / ENV_STARSHIP_BIN passed — the default "existing" path.
+    let out = run_zsh(&fx, &[], true, PROMPT_PROBE);
+    let status = parse_prompt_status(&out).expect("status");
+    assert!(
+        status.contains("|prompt=MARKER> |"),
+        "PROMPT untouched: {status}"
+    );
+    assert!(
+        status.contains("|rprompt=RMARK|"),
+        "RPROMPT untouched: {status}"
+    );
+    assert!(status.contains("|pure=0|") && status.contains("|p10k=0|"));
+    assert!(status.ends_with("|ss=none"), "no starship env: {status}");
+    std::fs::remove_dir_all(&fx.root).ok();
+}
+
+#[test]
+fn pure_prompt_activates_from_the_vendored_tree() {
+    let fx = fixture("prompt-pure");
+    std::fs::write(fx.home.join(".zshrc"), "TERMIXION_TEST_RC=ran\n").unwrap();
+    // Pure's PROMPT is multi-line — embedding it in a probe splits the output, so probe ONLY
+    // the setup-function marker.
+    let probe = r##"print -r -- "PU|pure=$+functions[prompt_pure_setup]""##;
+    let out = run_zsh(&fx, &[(ENV_PROMPT, "pure")], true, probe);
+    let line = out
+        .lines()
+        .filter_map(|line| line.find("PU|pure=").map(|i| line[i..].to_string()))
+        .next_back()
+        .expect("status");
+    assert!(line.contains("PU|pure=1"), "pure initialized: {line}");
+    std::fs::remove_dir_all(&fx.root).ok();
+}
+
+#[test]
+fn powerlevel10k_activates_without_wizard_or_network_cache() {
+    let fx = fixture("prompt-p10k");
+    std::fs::write(fx.home.join(".zshrc"), "TERMIXION_TEST_RC=ran\n").unwrap();
+    let out = run_zsh(&fx, &[(ENV_PROMPT, "powerlevel10k")], true, PROMPT_PROBE);
+    let status = parse_prompt_status(&out).expect("status");
+    assert!(status.contains("|p10k=1|"), "p10k initialized: {status}");
+    assert!(
+        !out.contains("configuration wizard"),
+        "wizard must never launch: {out:?}"
+    );
+    assert!(
+        !fx.home.join(".cache/gitstatus").exists(),
+        "no gitstatus download/cache"
+    );
+    std::fs::remove_dir_all(&fx.root).ok();
+}
+
+#[test]
+fn adversarial_p10k_user_config_cannot_reopen_gitstatus() {
+    let fx = fixture("prompt-p10k-adv");
+    std::fs::write(fx.home.join(".zshrc"), "TERMIXION_TEST_RC=ran\n").unwrap();
+    // A user ~/.p10k.zsh that tries to re-enable gitstatus/auto-install: the shim re-asserts
+    // the no-network switches AFTER sourcing it.
+    std::fs::write(
+        fx.home.join(".p10k.zsh"),
+        "typeset -g POWERLEVEL9K_DISABLE_GITSTATUS=false\ntypeset -g GITSTATUS_AUTO_INSTALL=1\n",
+    )
+    .unwrap();
+    let probe = r##"print -r -- "A|p10k=$+functions[p10k]|dg=${POWERLEVEL9K_DISABLE_GITSTATUS-unset}|ai=${GITSTATUS_AUTO_INSTALL-unset}""##;
+    let out = run_zsh(&fx, &[(ENV_PROMPT, "powerlevel10k")], true, probe);
+    let line = out
+        .lines()
+        .filter_map(|line| line.find("A|p10k=").map(|i| line[i..].to_string()))
+        .next_back()
+        .expect("status");
+    assert!(line.contains("|p10k=1|"), "{line}");
+    assert!(
+        line.contains("|dg=true|"),
+        "gitstatus stays disabled: {line}"
+    );
+    assert!(line.ends_with("|ai=0"), "auto-install stays off: {line}");
+    assert!(!fx.home.join(".cache/gitstatus").exists());
+    assert!(!out.contains("configuration wizard"));
+    std::fs::remove_dir_all(&fx.root).ok();
+}
+
+#[test]
+fn starship_initializes_via_the_provided_binary_when_available() {
+    // Uses the machine's starship (the resolver's dev/test fallback tier) — skipped
+    // gracefully where absent (CI variance); the sidecar path is the bundling story.
+    let Some(starship) = ["/opt/homebrew/bin/starship", "/usr/local/bin/starship"]
+        .iter()
+        .find(|p| std::path::Path::new(p).is_file())
+    else {
+        eprintln!("skipping: no starship binary on this machine");
+        return;
+    };
+    let fx = fixture("prompt-starship");
+    std::fs::write(fx.home.join(".zshrc"), "TERMIXION_TEST_RC=ran\n").unwrap();
+    let out = run_zsh(
+        &fx,
+        &[(ENV_PROMPT, "starship"), (ENV_STARSHIP_BIN, starship)],
+        true,
+        PROMPT_PROBE,
+    );
+    let status = parse_prompt_status(&out).expect("status");
+    assert!(
+        status.contains("|ss=zsh"),
+        "STARSHIP_SHELL set by init: {status}"
     );
     std::fs::remove_dir_all(&fx.root).ok();
 }

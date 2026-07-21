@@ -30,6 +30,7 @@ import {
 import { ITERM2_FONT_FAMILY } from "../terminal/iterm2Theme";
 import { BUNDLED_FONTS, ensureFontLoaded, isBundledFamily } from "../terminal/fontCatalog";
 import {
+  PROMPT_CHOICES,
   SETTING_RANGES,
   type ConfirmClose,
   type CursorStyle,
@@ -58,6 +59,16 @@ interface ShellEntry {
   label: string;
   path: string;
 }
+
+// trmx-207: the prompt dropdown options over the closed shell.prompt value set.
+const PROMPT_OPTIONS: ReadonlyArray<{ value: (typeof PROMPT_CHOICES)[number]; label: string }> = [
+  { value: "existing", label: "My existing prompt" },
+  { value: "starship", label: "Starship" },
+  { value: "powerlevel10k", label: "Powerlevel10k" },
+  { value: "pure", label: "Pure" },
+];
+const PROMPT_ROW_DESCRIPTION = "Applies to new zsh sessions; your own prompt is never replaced unless you choose one";
+const PROMPT_P10K_DESCRIPTION = "Powerlevel10k renders best with the bundled MesloLGS NF font (Font Family below)";
 
 const FIRA_CODE_FAMILY = "FiraCode Nerd Font Mono";
 const FONT_ROW_DESCRIPTION = "Bundled fonts work out of the box — no installation needed";
@@ -163,6 +174,7 @@ export function TerminalSettings({ settings, invoke = realInvoke }: TerminalSett
   const [highlight, setHighlight] = useState<boolean>(() =>
     settings.get("shell.syntaxHighlighting"),
   );
+  const [promptChoice, setPromptChoice] = useState<string>(() => settings.get("shell.prompt"));
   useEffect(() => {
     let cancelled = false;
     void Promise.resolve(invoke("effective_shell"))
@@ -369,6 +381,23 @@ export function TerminalSettings({ settings, invoke = realInvoke }: TerminalSett
                 onChange={(value) => {
                   setHighlight(value);
                   settings.set("shell.syntaxHighlighting", value);
+                }}
+              />
+            </SettingRow>
+            <SettingRow
+              label="Prompt"
+              description={
+                promptChoice === "powerlevel10k" ? PROMPT_P10K_DESCRIPTION : PROMPT_ROW_DESCRIPTION
+              }
+            >
+              <Select
+                value={promptChoice}
+                options={PROMPT_OPTIONS as ReadonlyArray<{ value: string; label: string }>}
+                label="Prompt"
+                disabled={!enhancements}
+                onChange={(value) => {
+                  setPromptChoice(value);
+                  settings.set("shell.prompt", value);
                 }}
               />
             </SettingRow>

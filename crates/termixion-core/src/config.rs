@@ -236,6 +236,38 @@ impl Default for TerminalConfig {
     }
 }
 
+/// trmx-207: which prompt the zsh enhancement layer initializes. `Existing` = touch nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PromptChoice {
+    Existing,
+    Starship,
+    Powerlevel10k,
+    Pure,
+}
+
+impl PromptChoice {
+    /// The TOML/registry spelling of this value (lowercase).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Existing => "existing",
+            Self::Starship => "starship",
+            Self::Powerlevel10k => "powerlevel10k",
+            Self::Pure => "pure",
+        }
+    }
+
+    fn from_toml(s: &str) -> Option<Self> {
+        match s {
+            "existing" => Some(Self::Existing),
+            "starship" => Some(Self::Starship),
+            "powerlevel10k" => Some(Self::Powerlevel10k),
+            "pure" => Some(Self::Pure),
+            _ => None,
+        }
+    }
+}
+
 /// The `[shell]` table (trmx-206): the zsh enhancement layer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -247,6 +279,8 @@ pub struct ShellConfig {
     pub autosuggestions: bool,
     /// Layer zsh-syntax-highlighting (skipped if already loaded; always sourced last).
     pub syntax_highlighting: bool,
+    /// trmx-207: the prompt to initialize after the user's rc (`existing` = touch nothing).
+    pub prompt: PromptChoice,
 }
 
 impl Default for ShellConfig {
@@ -255,6 +289,7 @@ impl Default for ShellConfig {
             enhancements: true,
             autosuggestions: true,
             syntax_highlighting: true,
+            prompt: PromptChoice::Existing,
         }
     }
 }
@@ -431,6 +466,7 @@ pub const DEFAULT_TEMPLATE: &str = r##"# Termixion configuration (TOML).
 # enhancements = true             # master switch for the zsh enhancement layer (trmx-206)
 # autosuggestions = true          # fish-style suggestions (zsh-autosuggestions, bundled)
 # syntax_highlighting = true      # command colorization (zsh-syntax-highlighting, bundled)
+# prompt = "existing"             # "existing" | "starship" | "powerlevel10k" | "pure" (trmx-207)
 
 # [appearance]
 # theme = "night"                 # a theme id from the theme catalog
@@ -499,6 +535,7 @@ pub fn toml_path_for(registry_key: &str) -> Option<(&'static str, &'static str)>
         "shell.enhancements" => Some(("shell", "enhancements")),
         "shell.autosuggestions" => Some(("shell", "autosuggestions")),
         "shell.syntaxHighlighting" => Some(("shell", "syntax_highlighting")),
+        "shell.prompt" => Some(("shell", "prompt")),
         "terminal.fontSize" => Some(("terminal", "font_size")),
         "terminal.activityIndicator" => Some(("terminal", "activity_indicator")),
         "terminal.copyOnSelect" => Some(("terminal", "copy_on_select")),
@@ -593,6 +630,11 @@ pub fn diff_configs(old: &Config, new: &Config) -> Vec<(String, RegistryValue)> 
         old.shell.syntax_highlighting != new.shell.syntax_highlighting,
         "shell.syntaxHighlighting",
         RegistryValue::Bool(new.shell.syntax_highlighting),
+    );
+    push(
+        old.shell.prompt != new.shell.prompt,
+        "shell.prompt",
+        RegistryValue::Str(new.shell.prompt.as_str().to_string()),
     );
     push(
         old.terminal.confirm_close != new.terminal.confirm_close,
@@ -899,6 +941,15 @@ fn walk_shell(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
                 &mut config.shell.syntax_highlighting,
                 sink,
             ),
+            "prompt" => read_enum(
+                value,
+                ("shell.prompt", "shell.prompt"),
+                PromptChoice::from_toml,
+                PromptChoice::as_str,
+                r#"one of "existing", "starship", "powerlevel10k", "pure""#,
+                &mut config.shell.prompt,
+                sink,
+            ),
             _ => sink.warnings.push(ConfigWarning::UnknownKey {
                 key: format!("shell.{key}"),
             }),
@@ -1092,7 +1143,7 @@ mod tests {
     use super::*;
 
     /// All 15 registry keys.
-    const REGISTRY_KEYS: [&str; 19] = [
+    const REGISTRY_KEYS: [&str; 20] = [
         "update.autoCheck",
         "update.checkFrequency",
         "update.autoDownload",
@@ -1108,6 +1159,7 @@ mod tests {
         "shell.enhancements",
         "shell.autosuggestions",
         "shell.syntaxHighlighting",
+        "shell.prompt",
         "appearance.theme",
         "tabs.barPosition",
         "tabs.sideLabelOrientation",
@@ -1139,6 +1191,7 @@ shell = "/opt/homebrew/bin/fish"
 enhancements = false
 autosuggestions = false
 syntax_highlighting = false
+prompt = "starship"
 
 [appearance]
 theme = "night"
@@ -1177,6 +1230,7 @@ show_shortcut_hints = false
                     enhancements: false,
                     autosuggestions: false,
                     syntax_highlighting: false,
+                    prompt: PromptChoice::Starship,
                 },
                 appearance: AppearanceConfig {
                     theme: "night".to_string(),
@@ -1307,7 +1361,7 @@ show_shortcut_hints = false
     fn full_file_yields_all_twelve_registry_pairs() {
         let (pairs, warnings) = parse_registry_pairs(FULL_NON_DEFAULT);
         assert_eq!(warnings, Vec::new());
-        assert_eq!(pairs.len(), 19);
+        assert_eq!(pairs.len(), 20);
         for key in REGISTRY_KEYS {
             assert!(value_for(&pairs, key).is_some(), "missing pair for {key}");
         }
@@ -1955,6 +2009,23 @@ show_shortcut_hints = false
             vec![ConfigWarning::UnknownKey {
                 key: "shell.typo_key".to_string()
             }]
+        );
+    }
+
+    #[test]
+    fn shell_prompt_parses_tolerantly_and_round_trips() {
+        // trmx-207: default existing; junk warns + keeps existing; valid values round-trip.
+        assert_eq!(ShellConfig::default().prompt, PromptChoice::Existing);
+        let (config, warnings) = parse_config("[shell]\nprompt = \"pure\"\n");
+        assert_eq!(config.shell.prompt, PromptChoice::Pure);
+        assert_eq!(warnings, Vec::new());
+        let (config, warnings) = parse_config("[shell]\nprompt = \"ohmyposh\"\n");
+        assert_eq!(config.shell.prompt, PromptChoice::Existing);
+        assert_eq!(warnings.len(), 1);
+        let (pairs, _) = parse_registry_pairs("[shell]\nprompt = \"starship\"\n");
+        assert_eq!(
+            value_for(&pairs, "shell.prompt"),
+            Some(&RegistryValue::Str("starship".to_string()))
         );
     }
 

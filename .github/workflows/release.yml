@@ -88,6 +88,11 @@ jobs:
           EXPECTED_TAG: ${{ github.ref_name }}
         run: bash scripts/check-release-metadata.sh
 
+      # trmx-207: the Starship sidecar (tauri.conf externalBin) — pinned + sha256-verified;
+      # bundling FAILS without it, so this precedes both tauri-action modes.
+      - name: Fetch Starship sidecar (trmx-207)
+        run: bash scripts/fetch-starship.sh aarch64-apple-darwin
+
       # --bundles app,dmg overrides tauri.conf's local-only ["app"]; the app target is EXPLICIT so the
       # updater artifacts (.app.tar.gz+.sig) are produced. Two mode-gated copies: the unsigned build must
       # NOT export APPLE_* at all (the bundler keys off variable presence).

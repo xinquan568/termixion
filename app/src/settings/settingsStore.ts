@@ -49,6 +49,9 @@ export interface SettingsListenBus {
 /** The event other windows subscribe to for live application of setting changes. */
 export const SETTINGS_CHANGED_EVENT = "settings:changed";
 
+/** trmx-207: the closed shell.prompt value set (matching core's PromptChoice). */
+export const PROMPT_CHOICES = ["existing", "starship", "powerlevel10k", "pure"] as const;
+
 /** The backend broadcast carrying a fresh config-file warning set (the file watcher re-parsed). */
 export const CONFIG_WARNINGS_EVENT = "config:warnings";
 
@@ -115,6 +118,8 @@ export interface SettingsValues {
   "shell.autosuggestions": boolean;
   /** trmx-206: command colorization (zsh-syntax-highlighting, bundled; sourced last). */
   "shell.syntaxHighlighting": boolean;
+  /** trmx-207: which prompt the zsh layer initializes — "existing" = touch nothing. */
+  "shell.prompt": string;
   /** trmx-101 (FR-9.4): the external control channel — OFF by default; a local socket that lets scripts
    * drive the terminal. `socketPath` "" = the default path. The socket itself lives in the Rust shell. */
   "remote_control.enabled": boolean;
@@ -181,6 +186,7 @@ export const SETTING_DEFAULTS: SettingsValues = {
   "shell.enhancements": true,
   "shell.autosuggestions": true,
   "shell.syntaxHighlighting": true,
+  "shell.prompt": "existing",
   "remote_control.enabled": false,
   "remote_control.socketPath": "",
 };
@@ -223,6 +229,7 @@ const STORAGE_KEYS: Record<SettingKey, string> = {
   "shell.enhancements": "termixion.shell.enhancements",
   "shell.autosuggestions": "termixion.shell.autosuggestions",
   "shell.syntaxHighlighting": "termixion.shell.syntaxHighlighting",
+  "shell.prompt": "termixion.shell.prompt",
   "remote_control.enabled": "termixion.remote_control.enabled",
   "remote_control.socketPath": "termixion.remote_control.socketPath",
 };
@@ -294,6 +301,12 @@ function parse<K extends SettingKey>(key: K, raw: string): SettingsValues[K] {
     // spawn/read time, never here.
     return raw as SettingsValues[K];
   }
+  if (key === "shell.prompt") {
+    // trmx-207: a closed enum — junk re-derives the default (mirror tabs.barPosition).
+    return (PROMPT_CHOICES as readonly string[]).includes(raw)
+      ? (raw as SettingsValues[K])
+      : defaultFor(key);
+  }
   if (key === "tabs.barPosition") {
     // trmx-81: enum parse-with-fallback, exactly like terminal.cursorStyle below.
     return (isTabBarPosition(raw) ? raw : fallback) as SettingsValues[K];
@@ -345,6 +358,11 @@ function coerce<K extends SettingKey>(key: K, value: unknown): SettingsValues[K]
   if (key === "terminal.fontFamily") return value as SettingsValues[K];
   if (key === "scripts.startup") return value as SettingsValues[K];
   if (key === "terminal.shell") return value as SettingsValues[K]; // trmx-205
+  if (key === "shell.prompt") {
+    return typeof value === "string" && (PROMPT_CHOICES as readonly string[]).includes(value)
+      ? (value as SettingsValues[K])
+      : undefined; // trmx-207
+  }
   if (key === "tabs.barPosition") {
     return isTabBarPosition(value) ? (value as SettingsValues[K]) : undefined;
   }
