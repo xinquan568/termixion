@@ -31,5 +31,9 @@ toml_edit = "0.25.12"
 include_dir = "0.7"
 notify = "8.2.0"
 
+[dev-dependencies]
+# trmx-224: parse the authored Info.plist in the NSServices shape test (lockfile-aligned 1.x).
+plist = "1"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

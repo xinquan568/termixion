@@ -12,6 +12,14 @@ termixion-core = { path = "../termixion-core" }
 
 # Platform deps live here (the seam), gated to unix so both macOS and Linux get the portable-pty backend
 # (trmx-102). portable-pty selects the platform PTY impl at runtime; no per-OS feature is needed.
+# trmx-224: the macOS Services provider (AppKit) — direct deps live HERE per R1 (the seam
+# crate is the only one allowed platform crates). Versions match the lockfile's transitive
+# pins (objc2 0.6.x, objc2-app-kit/-foundation 0.3.x via tao/wry), so no resolution churn.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSObject"] }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSPasteboard", "NSResponder"] }
+
 [target.'cfg(unix)'.dependencies]
 portable-pty = "0.9"
 # trmx-159 (T1): the macOS foreground-metadata helpers (KERN_PROCARGS2 argv + proc_pidfdinfo tty

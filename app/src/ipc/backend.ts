@@ -109,6 +109,28 @@ export async function openPty(
   return { sessionId: response.sessionId, title: response.title };
 }
 
+/** trmx-224: the backend's payload-less wake-up for pending service open-paths. */
+export const SERVICE_OPEN_PATHS_EVENT = "services:open-paths";
+
+/**
+ * trmx-224: atomically drain the backend's pending service open-paths queue (a Finder
+ * "New Termixion Tab Here" invocation enqueues directories there). FAIL-SOFT by contract:
+ * outside a Tauri runtime the invoke rejects, and a malformed payload (anything but an
+ * array of strings) is junk — both resolve to `[]` so boot/drain proceed exactly as if
+ * nothing were pending. A new backend command must never be able to break boot.
+ */
+export function takePendingOpenPaths(invoke: InvokeFn = realInvoke): Promise<string[]> {
+  return invoke("take_pending_open_paths")
+    .then((response) => {
+      // All-or-nothing: a malformed response (non-array, or ANY non-string element) is
+      // junk in its entirety — never deliver a salvaged subset of a corrupt payload.
+      if (!Array.isArray(response)) return [];
+      if (!response.every((entry): entry is string => typeof entry === "string")) return [];
+      return response;
+    })
+    .catch(() => []);
+}
+
 /** Send keystrokes (an xterm `onData` string) to one session's PTY (trmx-74). */
 export function sendPtyInput(
   sessionId: number,

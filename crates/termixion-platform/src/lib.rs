@@ -12,6 +12,9 @@
 
 #[cfg(unix)]
 pub mod foreground;
+// trmx-224: the macOS Services open-target policy (pure, any platform) + AppKit provider glue
+// (macos-gated inside the module).
+pub mod services;
 #[cfg(unix)]
 pub mod unix;
 

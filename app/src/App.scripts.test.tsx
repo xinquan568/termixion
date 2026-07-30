@@ -205,3 +205,28 @@ describe("App scripting orchestration (trmx-93)", () => {
     expect(sendInput).not.toHaveBeenCalled(); // a dead pane sources nothing
   });
 });
+
+// trmx-224: the frozen cold-launch contract — a service-triggered launch opens the requested
+// dirs as the initial tabs and MUST NOT source the configured startup script (the script
+// belongs to the plain-boot default tab, which a service launch never creates).
+describe("service cold launch × startup script (trmx-224)", () => {
+  it("never sources the startup script on a service launch", async () => {
+    makeSettingsStore().set("scripts.startup", "work/proj-x.sh");
+    const invoke = vi.fn(async (cmd: string) =>
+      cmd === "scripts_list" ? [ENTRY] : undefined,
+    ) as unknown as InvokeFn;
+    const sendInput = vi.fn(() => Promise.resolve());
+    const { calls } = renderScriptsApp({
+      invoke,
+      sendInput,
+      serviceBootPaths: ["/svc/dir"],
+    });
+    await waitFor(() => expect(calls.length).toBe(1)); // exactly ONE tab: the service tab
+    // (its /svc/dir cwd seeding is pinned by the App.test.tsx cold-launch contract test —
+    // this harness's attach stub does not record opts)
+    act(() => calls[0].resolve({ sessionId: 7, title: "zsh" }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(sendInput).not.toHaveBeenCalled(); // no `source '…'` ever sent
+    expect(invoke).not.toHaveBeenCalledWith("scripts_list"); // catalog never consulted
+  });
+});

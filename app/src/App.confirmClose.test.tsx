@@ -95,7 +95,7 @@ function makeVoidObservation() {
   return { observe, fire: () => handler?.() };
 }
 
-function renderApp() {
+function renderApp(over: Partial<AppProps> = {}) {
   const { attach, calls } = makeAttach();
   const closeWindow = vi.fn();
   const quitConfirmed = vi.fn();
@@ -123,6 +123,7 @@ function renderApp() {
     mirrorTitle: vi.fn(() => Promise.resolve()),
     installHotReload: vi.fn(() => vi.fn()),
     invoke,
+    ...over, // trmx-224: per-test seams (service nudge / take invoke)
   };
   render(<App {...props} />);
   return {
@@ -473,5 +474,42 @@ describe("confirm-before-close: the quit gate (trmx-144)", () => {
 
     expect(dialog()).toBeNull();
     expect(seams.quitConfirmed).toHaveBeenCalledTimes(1);
+  });
+});
+
+// trmx-224: the frozen v1 contract — a service delivery while a close-confirm dialog is
+// pending simply APPENDS behind the dialog; the dialog, its target, and its resolution
+// semantics are untouched (delivery is modal-agnostic by design; PTY exits already mutate
+// tab state during modals).
+describe("service delivery during a pending close-confirm (trmx-224)", () => {
+  it("appends the service tab behind the dialog; cancel still resolves against the original target", async () => {
+    const serviceNudge = makeObservation<void>();
+    const invoke = vi.fn((cmd: unknown) =>
+      cmd === "take_pending_open_paths"
+        ? Promise.resolve(["/svc"] as unknown)
+        : Promise.resolve({}),
+    );
+    const seams = renderApp({
+      observeServiceNudge: serviceNudge.observe as AppProps["observeServiceNudge"],
+      invoke: invoke as AppProps["invoke"],
+    });
+    await splitWithBusyPane2(seams);
+    cmdW(); // when-busy default + busy pane 2 → the dialog gates the close
+    expect(dialog()).toBeInTheDocument();
+
+    await act(async () => {
+      serviceNudge.fire(undefined);
+    });
+    // The batch appended as tab 2 (behind the dialog) and the dialog is still up.
+    expect(screen.getByTestId("tab-2")).toBeInTheDocument();
+    expect(dialog()).toBeInTheDocument();
+
+    // Cancel resolves against the ORIGINAL target: nothing closes, both panes of tab 1 live.
+    fireEvent.click(dialogButton("Cancel"));
+    expect(dialog()).not.toBeInTheDocument();
+    expect(screen.getByTestId("pane-host-1")).toBeInTheDocument();
+    expect(screen.getByTestId("pane-host-2")).toBeInTheDocument();
+    expect(seams.closeSession).not.toHaveBeenCalled();
+    expect(seams.closeWindow).not.toHaveBeenCalled();
   });
 });

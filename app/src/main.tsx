@@ -5,7 +5,7 @@ import ReactDOM from "react-dom/client";
 import { App } from "./App";
 import { SettingsWindowHost } from "./settings/SettingsWindowHost";
 import { resolveSurface } from "./surface";
-import { realInvoke } from "./ipc/backend";
+import { realInvoke, takePendingOpenPaths } from "./ipc/backend";
 import { runPerf, runPerfMultipane, realPerfDeps, type PerfLaunchConfig } from "./perf/runPerf";
 import { runSmoke, realSmokeDeps } from "./smoke/runSmoke";
 import { hydrateSettings, makeSettingsStore } from "./settings/settingsStore";
@@ -77,12 +77,17 @@ async function boot() {
   }
 
   const surface = resolveSurface(window.location.search);
+  // trmx-224: pre-fetch cold-launch service dirs BEFORE mounting App, so plain boot stays
+  // fully synchronous (the boot contract) while a service-triggered launch opens the
+  // requested dirs as the initial tabs. Fail-soft: no runtime / junk payload ⇒ []. Only the
+  // MAIN surface may drain the queue — the settings window must never steal queued paths.
+  const serviceBootPaths = surface.kind === "settings" ? [] : await takePendingOpenPaths();
   ReactDOM.createRoot(document.getElementById("root")!).render(
     <React.StrictMode>
       {surface.kind === "settings" ? (
         <SettingsWindowHost initialSection={surface.section} />
       ) : (
-        <App />
+        <App serviceBootPaths={serviceBootPaths} />
       )}
     </React.StrictMode>,
   );
