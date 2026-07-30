@@ -20,6 +20,7 @@ import {
   sendPtyResize,
   SESSION_ACTIVITY_EVENT,
   setSessionTitle,
+  takePendingOpenPaths,
   TITLE_HINT_EVENT,
   wirePtyChannel,
   type InvokeFn,
@@ -641,5 +642,24 @@ describe("onSessionActivity", () => {
     const teardown = onSessionActivity(() => {}, bus);
     await Promise.resolve();
     expect(() => teardown()).not.toThrow();
+  });
+});
+
+// trmx-224: the fail-soft take seam — a new backend command must never be able to break boot.
+describe("takePendingOpenPaths (trmx-224)", () => {
+  it("returns the paths and filters non-string junk out of the array", async () => {
+    const invoke = vi.fn(() => Promise.resolve(["/a", 7, "/b", null] as unknown));
+    await expect(takePendingOpenPaths(invoke as InvokeFn)).resolves.toEqual(["/a", "/b"]);
+    expect(invoke).toHaveBeenCalledWith("take_pending_open_paths");
+  });
+
+  it("maps a rejecting invoke (no Tauri runtime) to an empty batch", async () => {
+    const invoke = vi.fn(() => Promise.reject(new Error("no runtime")));
+    await expect(takePendingOpenPaths(invoke as InvokeFn)).resolves.toEqual([]);
+  });
+
+  it("maps a malformed (non-array) payload to an empty batch", async () => {
+    const invoke = vi.fn(() => Promise.resolve({ nope: true } as unknown));
+    await expect(takePendingOpenPaths(invoke as InvokeFn)).resolves.toEqual([]);
   });
 });

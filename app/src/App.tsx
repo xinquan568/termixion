@@ -114,9 +114,12 @@ import {
   realInvoke,
   sendPtyInput,
   setSessionTitle,
+  takePendingOpenPaths,
   type InvokeFn,
   type SessionInfo,
 } from "./ipc/backend";
+import { realObserveServiceNudge, type ServiceNudgeObservation } from "./ipc/serviceNudge";
+import { makeIdReservation, type IdReservation } from "./tabs/idReservation";
 import { ScriptPicker } from "./scripts/ScriptPicker";
 import { listScripts, type ScriptEntry } from "./scripts/scriptsBackend";
 import { buildCommands, type Command, type CommandContext } from "./commands/registry";
@@ -184,6 +187,7 @@ export type AttachFn = (
 
 /** Observe the menu's `tabs:action` broadcasts; returns a teardown. */
 export type TabsActionObservation = (onAction: (payload: unknown) => void) => () => void;
+
 
 /** Observe `pty:exited` sessionIds; returns a teardown. */
 export type PtyExitedObservation = (onExit: (sessionId: number) => void) => () => void;
@@ -394,6 +398,12 @@ export interface AppProps {
   sendInput?: (sessionId: number, data: string) => Promise<void>;
   /** Injection seam for tests; the backend `invoke` for the script picker + startup resolution (trmx-93). */
   invoke?: InvokeFn;
+  /** trmx-224: cold-launch service dirs, pre-fetched by main.tsx BEFORE mount (so plain boot
+   * stays synchronous). Non-empty ⇒ these become the initial tabs (first focused) and the
+   * default tab + startup script are skipped. */
+  serviceBootPaths?: string[];
+  /** Injection seam for tests; defaults to the real `services:open-paths` subscription (trmx-224). */
+  observeServiceNudge?: ServiceNudgeObservation;
 }
 
 export function App({
@@ -416,6 +426,8 @@ export function App({
   installHotReload = installThemeHotReload,
   sendInput = (sessionId, data) => sendPtyInput(sessionId, data),
   invoke = realInvoke,
+  serviceBootPaths = [],
+  observeServiceNudge = realObserveServiceNudge,
 }: AppProps = {}) {
   // trmx-159: the per-pane I/O observers route PTY output/input into the activity classifier. They are
   // set (below, once applyActivityTransition exists) into this ref, which the stable useBackend wiring
@@ -432,6 +444,18 @@ export function App({
   const attachFn = attach ?? attachTerminal;
 
   const [state, dispatch] = useReducer(reduceTabs, undefined, initialTabsState);
+  // trmx-224: the shared ID-reservation authority. Counters advance at RESERVATION time
+  // (stateRef advances only on commit, so a promise continuation can interleave with a
+  // dispatched-but-uncommitted creation — idReservation.ts). One reservation per
+  // counter-advancing dispatch, made by the dispatching code itself.
+  const reservationRef = useRef<IdReservation | null>(null);
+  if (reservationRef.current === null) {
+    reservationRef.current = makeIdReservation({
+      nextTabId: state.nextTabId,
+      nextPaneId: state.nextPaneId,
+    });
+  }
+  const reservation = reservationRef.current;
   // trmx-75/166: the tab whose label is an inline rename input (null = not renaming). Commit sets
   // that TAB's manual title pin. While non-null, focus-follows-activation is suppressed.
   const [renamingTabId, setRenamingTabId] = useState<number | null>(null);
@@ -530,6 +554,9 @@ export function App({
   const handlesRef = useRef(new Map<PaneId, TerminalHandle>()); // mounted terminals
   const sessionsRef = useRef(new Map<PaneId, number>()); // attached backend sessionIds
   const pendingCwdRef = useRef(new Map<PaneId, string | undefined>()); // cwd to seed the open with
+  // trmx-224: the service-delivery entry point, ref-indirected because the boot effect is
+  // defined above the creators it composes; assigned every render right after its definition.
+  const deliverServicePathsRef = useRef<(paths: string[]) => void>(() => {});
   // trmx-93 (FR-5): a script to source once its pane's session attaches, keyed by the pane's
   // (predictable) nextPaneId and set SYNCHRONOUSLY before the creating dispatch — so the async
   // startup resolution can never lose the race with attach (the send-step awaits the promise).
@@ -623,10 +650,18 @@ export function App({
     if (bootedRef.current) return;
     bootedRef.current = true;
     if (stateRef.current.tabs.length === 0) {
+      // trmx-224: a service-triggered cold launch (main.tsx pre-fetched the queued dirs
+      // BEFORE mount) opens the requested dirs as the initial tabs — no default $HOME tab,
+      // no startup script. Plain boot (the empty default) is byte-identical to before.
+      if (serviceBootPaths.length > 0) {
+        deliverServicePathsRef.current(serviceBootPaths);
+        return;
+      }
       const startupPath = makeSettingsStore().get("scripts.startup");
+      // The boot default tab: reserve exactly once for the openTab dispatch below (trmx-224).
+      const { paneId: upcoming } = reservation.reserveTab();
       if (startupPath && !startupFiredRef.current) {
         startupFiredRef.current = true;
-        const upcoming = stateRef.current.nextPaneId;
         pendingScriptRef.current.set(
           upcoming,
           listScripts(invoke).then((scripts) => {
@@ -1029,32 +1064,41 @@ export function App({
     }
   };
 
-  // Open a new tab inheriting the ACTIVE tab's FOCUSED pane cwd: capture it NOW, keyed by the pane
-  // id the reducer WILL allocate for the new tab's single pane (nextPaneId).
-  const requestNewTab = () => {
+  // Open a new tab inheriting the ACTIVE tab's FOCUSED pane cwd (or `cwdOverride` when given —
+  // trmx-224 service tabs open at the requested dir). The cwd is keyed by the pane id RESERVED
+  // for this dispatch (idReservation — never read from commit-lagged stateRef), and the
+  // allocated ids are returned so callers can key further metadata / activate the tab.
+  const createTab = (cwdOverride?: string): { tabId: number; paneId: number } => {
     const s = stateRef.current;
-    const upcomingPaneId = s.nextPaneId;
+    const { tabId, paneId } = reservation.reserveTab();
     const activeTab =
       s.activeTabId !== null ? s.tabs.find((t) => t.tabId === s.activeTabId) : undefined;
     const activeStore = activeTab ? storesRef.current.get(activeTab.focusedPaneId) : undefined;
-    pendingCwdRef.current.set(upcomingPaneId, activeStore?.get() ?? undefined);
+    pendingCwdRef.current.set(paneId, cwdOverride ?? activeStore?.get() ?? undefined);
     dispatch({ kind: "openTab" });
+    return { tabId, paneId };
   };
+  // The public creator stays PARAMETERLESS: it is wired as an event handler (the tab strip's
+  // "+" onClick), and a parameter would receive the click event (trmx-224 regression).
+  const requestNewTab = () => createTab();
 
   // trmx-84: split the active tab's focused pane. `right` → a row split (side by side), `below` → a
   // column split (stacked). Refused (soft no-op) when the result would go below the min pane size.
   // The new pane inherits the focused pane's cwd and takes focus (readyFor focuses it on mount).
-  const requestSplit = (dir: "right" | "below") => {
+  const requestSplit = (dir: "right" | "below"): { paneId: number } | null => {
     const s = stateRef.current;
-    if (s.activeTabId === null) return;
+    if (s.activeTabId === null) return null;
     const tab = s.tabs.find((t) => t.tabId === s.activeTabId);
-    if (!tab) return;
+    if (!tab) return null;
     const treeDir: SplitDir = dir === "right" ? "row" : "column";
-    if (!canSplitFocused(tab, treeDir, boundsRef.current, MIN_PANE_PX)) return; // won't fit — no-op
-    const upcomingPaneId = s.nextPaneId;
+    if (!canSplitFocused(tab, treeDir, boundsRef.current, MIN_PANE_PX)) return null; // won't fit — no-op
+    // trmx-224: reserve AFTER the refusal checks — a refused split reserves nothing (the
+    // 1:1 reservation-per-dispatch pairing; splitPane advances only the pane counter).
+    const { paneId } = reservation.reservePane();
     const focusedStore = storesRef.current.get(tab.focusedPaneId);
-    pendingCwdRef.current.set(upcomingPaneId, focusedStore?.get() ?? undefined);
+    pendingCwdRef.current.set(paneId, focusedStore?.get() ?? undefined);
     dispatch({ kind: "splitPane", tabId: tab.tabId, dir: treeDir });
+    return { paneId };
   };
 
   // trmx-93 (FR-5): run `entry` in a fresh surface. The chosen script is stored in pendingScriptRef
@@ -1063,20 +1107,28 @@ export function App({
   // and the new pane's attach sources the script. For a split that won't fit we bail WITHOUT setting
   // the pending script, so a no-op split can't leave a stale entry for the next pane to pick up.
   const runScriptInSurface = (entry: ScriptEntry, surface: "tab" | "right" | "below") => {
-    const s = stateRef.current;
-    const upcoming = s.nextPaneId;
+    // trmx-224: creators return their RESERVED ids — the wrapper never predicts (a delegating
+    // read would double-reserve). Keying happens right after the call, in the same synchronous
+    // section, well before any attach; a refused split returns null and nothing is keyed, so
+    // the old bail-before-set stale-entry dance is now structural.
     const pending = Promise.resolve<{ sourceLine: string } | null>({ sourceLine: entry.sourceLine });
-    if (surface === "tab") {
-      pendingScriptRef.current.set(upcoming, pending);
-      requestNewTab();
-      return;
-    }
-    const tab = s.activeTabId !== null ? s.tabs.find((t) => t.tabId === s.activeTabId) : undefined;
-    const treeDir: SplitDir = surface === "right" ? "row" : "column";
-    if (!tab || !canSplitFocused(tab, treeDir, boundsRef.current, MIN_PANE_PX)) return; // won't fit
-    pendingScriptRef.current.set(upcoming, pending);
-    requestSplit(surface);
+    const opened = surface === "tab" ? requestNewTab() : requestSplit(surface);
+    if (opened) pendingScriptRef.current.set(opened.paneId, pending);
   };
+
+  // trmx-224: deliver one service batch — ONE synchronous block (reserve→seed→dispatch per
+  // path via requestNewTab), then focus the FIRST delivered tab (each openTab activates the
+  // appended tab, so without this the LAST path would win). Any `await` inside this block
+  // would reopen the prediction-interleaving race class — keep it unbroken.
+  const deliverServicePaths = (paths: string[]) => {
+    let firstTabId: number | null = null;
+    for (const path of paths) {
+      const opened = createTab(path);
+      if (firstTabId === null) firstTabId = opened.tabId;
+    }
+    if (firstTabId !== null) dispatch({ kind: "activateTab", tabId: firstTabId });
+  };
+  deliverServicePathsRef.current = deliverServicePaths;
 
   // trmx-86 (FR-3.5): move focus between panes of the ACTIVE tab. `nav-dir` picks the geometrically
   // nearest pane via paneInDirection over the current solved rects; `nav-cycle` steps the leaves order.
@@ -1389,6 +1441,19 @@ export function App({
       stopTabsAction();
     };
   }, [observePtyExited, observeTitleHint, observeTabsAction]);
+
+  // trmx-224: running-app service delivery. Every nudge — and the registration-completion
+  // drain the observer fires itself — drains the backend queue. Concurrent drains are
+  // harmless (the take is atomic: one drain gets the batch, the rest see empty), and
+  // delivery during a pending close-confirm simply appends behind the dialog (the v1
+  // contract; PTY exits already mutate tab state during modals by design).
+  useEffect(() => {
+    return observeServiceNudge(() => {
+      void takePendingOpenPaths(invoke).then((paths) => {
+        if (paths.length > 0) deliverServicePathsRef.current(paths);
+      });
+    });
+  }, [observeServiceNudge, invoke]);
 
   // trmx-91: subscribe to session:activity — route each busy<->idle transition by sessionId into the
   // OWNING pane (the per-pane closure is the load-bearing scoping: a background pane's busy state

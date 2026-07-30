@@ -198,8 +198,16 @@ function makeFrameSchedule() {
   };
 }
 
-function renderApp(opts: { strict?: boolean; invoke?: AppProps["invoke"] } = {}) {
+function renderApp(
+  opts: {
+    strict?: boolean;
+    invoke?: AppProps["invoke"];
+    /** trmx-224: cold-launch service dirs (main.tsx pre-fetches these before mount). */
+    serviceBootPaths?: string[];
+  } = {},
+) {
   const { attach, calls } = makeAttach();
+  const serviceNudge = makeObservation<void>(); // trmx-224: services:open-paths wake-ups
   const frame = makeFrameSchedule();
   const closeWindow = vi.fn();
   const closeSession = vi.fn(() => Promise.resolve());
@@ -234,6 +242,9 @@ function renderApp(opts: { strict?: boolean; invoke?: AppProps["invoke"] } = {})
     // trmx-151: injectable backend invoke (keys_read drives the keymap rebuild); undefined keeps
     // App's realInvoke default (which rejects in jsdom → the shipped default keymap).
     invoke: opts.invoke,
+    // trmx-224: service delivery seams.
+    serviceBootPaths: opts.serviceBootPaths,
+    observeServiceNudge: serviceNudge.observe,
   };
   const ui = opts.strict ? (
     <StrictMode>
@@ -247,6 +258,7 @@ function renderApp(opts: { strict?: boolean; invoke?: AppProps["invoke"] } = {})
     view,
     attach,
     calls,
+    serviceNudge,
     closeWindow,
     closeSession,
     tabsAction,
@@ -2454,5 +2466,114 @@ describe("App tab shortcut hints (trmx-151)", () => {
     expect(hint).not.toBeNull();
     expect(hint!.textContent).toBe("⌘B"); // the rebound chord, not the unbound default
     expect(screen.getByTestId("tab-1")).toHaveAttribute("aria-keyshortcuts", "Meta+B");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// trmx-224: Finder Services delivery — the frozen v1 contract. Cold launch opens the
+// requested dirs as the initial tabs (first focused, no $HOME tab); a running-app nudge
+// drains the backend queue and appends (first-of-batch focused); racing drains deliver
+// exactly once (the take is atomic); and the ID-reservation authority keeps a delivery
+// that interleaves with an uncommitted creator from misrouting cwds (the round-5 race).
+describe("service open-paths delivery (trmx-224)", () => {
+  const takeInvoke = (batches: string[][]) => {
+    let call = 0;
+    return vi.fn((cmd: string) => {
+      if (cmd !== "take_pending_open_paths") return Promise.reject(new Error(`unexpected ${cmd}`));
+      const batch = batches[call] ?? [];
+      call += 1;
+      return Promise.resolve(batch as unknown);
+    }) as AppProps["invoke"];
+  };
+
+  it("cold launch: serviceBootPaths become the initial tabs — first focused, no $HOME tab", async () => {
+    const { calls } = renderApp({ serviceBootPaths: ["/svc/a", "/svc/b"] });
+    expect(screen.getByTestId("tab-1")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-2")).toBeInTheDocument();
+    expect(screen.queryByTestId("tab-3")).not.toBeInTheDocument();
+    expect(screen.getByTestId("tab-1").className).toContain(activeClass);
+    // Mount order = tab order: pane 1 ← /svc/a, pane 2 ← /svc/b.
+    expect(calls.map((c) => c.opts?.cwd)).toEqual(["/svc/a", "/svc/b"]);
+  });
+
+  it("cold launch is StrictMode-safe: still exactly the two service tabs", () => {
+    renderApp({ strict: true, serviceBootPaths: ["/svc/a", "/svc/b"] });
+    expect(screen.getByTestId("tab-1")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-2")).toBeInTheDocument();
+    expect(screen.queryByTestId("tab-3")).not.toBeInTheDocument();
+    expect(screen.getByTestId("tab-1").className).toContain(activeClass);
+  });
+
+  it("a nudge drains the queue and appends tabs, first-of-batch focused", async () => {
+    const { calls, serviceNudge } = renderApp({ invoke: takeInvoke([["/x", "/y"]]) });
+    await resolveAttach(calls[0], { sessionId: 1, title: "home" });
+    await act(async () => {
+      serviceNudge.fire(undefined);
+    });
+    expect(screen.getByTestId("tab-2")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-3")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-2").className).toContain(activeClass);
+    expect(calls.slice(1).map((c) => c.opts?.cwd)).toEqual(["/x", "/y"]);
+  });
+
+  it("racing drains deliver the batch exactly once (atomic take: the second sees empty)", async () => {
+    const invoke = takeInvoke([["/once"], []]);
+    const { serviceNudge } = renderApp({ invoke });
+    await act(async () => {
+      serviceNudge.fire(undefined);
+      serviceNudge.fire(undefined);
+    });
+    expect(screen.getByTestId("tab-2")).toBeInTheDocument();
+    expect(screen.queryByTestId("tab-3")).not.toBeInTheDocument();
+    // Count only the take command — App issues unrelated invokes (keys_read) at boot.
+    const takes = (invoke as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(
+      ([cmd]) => cmd === "take_pending_open_paths",
+    ).length;
+    expect(takes).toBe(2);
+  });
+
+  it("an empty queue leaves the tab set untouched", async () => {
+    const { serviceNudge } = renderApp({ invoke: takeInvoke([[]]) });
+    await act(async () => {
+      serviceNudge.fire(undefined);
+    });
+    expect(screen.getByTestId("tab-1")).toBeInTheDocument();
+    expect(screen.queryByTestId("tab-2")).not.toBeInTheDocument();
+  });
+
+  it("delivery interleaving an uncommitted NEW-TAB creator misroutes nothing (reservation authority)", async () => {
+    // The round-5 blocker regression: the creator's openTab is dispatched but uncommitted
+    // (stateRef still stale) when the service take resolves inside the same act. Without
+    // the reservation authority both would predict the same pane id and the service cwd
+    // would overwrite the creator's seed.
+    const { calls, serviceNudge, tabsAction } = renderApp({ invoke: takeInvoke([["/svc"]]) });
+    await resolveAttach(calls[0], { sessionId: 1, title: "home" });
+    await act(async () => {
+      tabsAction.fire("new");
+      serviceNudge.fire(undefined);
+    });
+    // Tab 2 = the user's ⌘T tab (inherited cwd — undefined here, no OSC-7 store), tab 3 =
+    // the service tab at /svc; the service tab (first of its batch) took focus.
+    expect(screen.getByTestId("tab-3")).toBeInTheDocument();
+    expect(calls[1].opts?.cwd).toBeUndefined();
+    expect(calls[2].opts?.cwd).toBe("/svc");
+    expect(screen.getByTestId("tab-3").className).toContain(activeClass);
+  });
+
+  it("delivery interleaving an uncommitted SPLIT creator misroutes nothing (pane-only reservation)", async () => {
+    // The round-7 blocker regression: splitPane advances only the pane counter. A split
+    // dispatched-but-uncommitted while the service batch lands must still yield disjoint
+    // pane ids with the service cwd on the service pane only.
+    const { calls, serviceNudge, tabsAction } = renderApp({ invoke: takeInvoke([["/svc"]]) });
+    await resolveAttach(calls[0], { sessionId: 1, title: "home" });
+    await act(async () => {
+      tabsAction.fire("split-right");
+      serviceNudge.fire(undefined);
+    });
+    // Mounts: the split pane (inherits tab-1's cwd — undefined), then the service tab pane.
+    expect(screen.getByTestId("tab-2")).toBeInTheDocument();
+    expect(calls[1].opts?.cwd).toBeUndefined();
+    expect(calls[2].opts?.cwd).toBe("/svc");
+    expect(screen.getByTestId("tab-2").className).toContain(activeClass);
   });
 });

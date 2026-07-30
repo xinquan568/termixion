@@ -34,6 +34,7 @@ mod control_io;
 mod enhancements_io;
 mod menu;
 mod scripts_io;
+mod services_io;
 mod shell_integration_io;
 mod shells_io;
 mod themes_io;
@@ -1246,6 +1247,9 @@ fn main() -> ExitCode {
         // (whose writes reach other apps UTF-8-bytes-decoded-as-MacRoman: "—" pasted as "‚Äî").
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(PtyState::default())
+        // trmx-224: directories from a Finder "New Termixion Tab Here" service invocation,
+        // awaiting frontend pickup (services_io module docs describe the delivery contract).
+        .manage(services_io::PendingOpenPaths::default())
         .manage(SpecialLaunch {
             smoke,
             perf,
@@ -1286,6 +1290,28 @@ fn main() -> ExitCode {
             // frontend to re-read the script catalog via `scripts:changed`.
             let scripts_app = app.handle().clone();
             std::thread::spawn(move || scripts_io::run_scripts_watcher(scripts_app));
+            // trmx-224: register the macOS Services provider ("New Termixion Tab Here").
+            // setup() runs on the main thread inside applicationDidFinishLaunching — Apple's
+            // recommended registration window. The callback enqueues BEFORE nudging (the
+            // services_io contract), and Apple warns requests may arrive immediately after
+            // registration, which the queue + frontend boot/registration drains absorb.
+            #[cfg(target_os = "macos")]
+            {
+                let services_app = app.handle().clone();
+                let registered = termixion_platform::services::register_open_paths_provider(
+                    move |dirs| {
+                        let paths: Vec<String> = dirs
+                            .iter()
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .collect();
+                        services_io::enqueue(&services_app.state(), paths);
+                        services_io::nudge(&services_app);
+                    },
+                );
+                if !registered {
+                    eprintln!("[termixion] services provider not registered (duplicate or off-main-thread)");
+                }
+            }
             // trmx-101 (FR-9.4): apply the remote-control state from the config at startup. A --smoke/--perf
             // launch NEVER opens the socket (the deterministic launches force it disabled).
             let special = app.state::<SpecialLaunch>();
@@ -1323,6 +1349,7 @@ fn main() -> ExitCode {
         })
         .invoke_handler(tauri::generate_handler![
             core_version,
+            services_io::take_pending_open_paths,
             open_pty,
             pty_write,
             pty_ack,
