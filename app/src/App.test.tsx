@@ -2577,3 +2577,41 @@ describe("service open-paths delivery (trmx-224)", () => {
     expect(screen.getByTestId("tab-2").className).toContain(activeClass);
   });
 });
+
+// trmx-224 (step-9 iter-2): the fail-soft composition pinned BEHAVIORALLY — an empty or
+// failed pre-mount take must yield exactly today's plain boot, and a rejecting take at
+// nudge time must leave the tab set untouched.
+describe("service delivery fail-soft composition (trmx-224)", () => {
+  it("an explicitly empty pre-mount batch boots plain: exactly one tab, no service artifacts", async () => {
+    const { calls } = renderApp({ serviceBootPaths: [] });
+    expect(screen.getByTestId("tab-1")).toBeInTheDocument();
+    expect(screen.queryByTestId("tab-2")).not.toBeInTheDocument();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].opts?.cwd).toBeUndefined(); // the unseeded default open, byte-identical
+  });
+
+  it("a REJECTING take invoke at nudge time changes nothing (the seam maps rejection to empty)", async () => {
+    const invoke = vi.fn((cmd: string) =>
+      Promise.reject(new Error(`no backend for ${cmd}`)),
+    ) as AppProps["invoke"];
+    const { serviceNudge } = renderApp({ invoke });
+    await act(async () => {
+      serviceNudge.fire(undefined);
+    });
+    expect(screen.getByTestId("tab-1")).toBeInTheDocument();
+    expect(screen.queryByTestId("tab-2")).not.toBeInTheDocument();
+  });
+
+  it("a MALFORMED take payload at nudge time changes nothing (all-or-nothing)", async () => {
+    const invoke = vi.fn((cmd: string) =>
+      cmd === "take_pending_open_paths"
+        ? Promise.resolve(["/ok", 42] as unknown)
+        : Promise.reject(new Error("unexpected")),
+    ) as AppProps["invoke"];
+    const { serviceNudge } = renderApp({ invoke });
+    await act(async () => {
+      serviceNudge.fire(undefined);
+    });
+    expect(screen.queryByTestId("tab-2")).not.toBeInTheDocument();
+  });
+});
