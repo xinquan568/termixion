@@ -212,6 +212,8 @@ pub struct TerminalConfig {
     pub activity_indicator: bool,
     /// Auto-copy the mouse selection to the clipboard, iTerm2-style (trmx-95).
     pub copy_on_select: bool,
+    /// Focus the pane under the pointer without a click (trmx-225; opt-in, default off).
+    pub focus_follows_mouse: bool,
     /// When to confirm before closing a busy pane/tab or quitting (trmx-144).
     pub confirm_close: ConfirmClose,
     /// trmx-205: the shell new sessions spawn. `""` = System default (`$SHELL` → `/bin/zsh` →
@@ -230,6 +232,7 @@ impl Default for TerminalConfig {
             font_size: 12,
             activity_indicator: true,
             copy_on_select: true,
+            focus_follows_mouse: false,
             confirm_close: ConfirmClose::WhenBusy,
             shell: String::new(),
         }
@@ -460,6 +463,7 @@ pub const DEFAULT_TEMPLATE: &str = r##"# Termixion configuration (TOML).
 # font_size = 12                  # 6..=72
 # activity_indicator = true       # animated line while a command runs
 # copy_on_select = true           # auto-copy the mouse selection to the clipboard (iTerm2-style)
+# focus_follows_mouse = false     # focus the pane under the pointer without a click (trmx-225)
 # confirm_close = "when-busy"     # confirm before closing a busy pane/tab or quitting: "never" | "when-busy" | "always"
 
 # [shell]
@@ -539,6 +543,7 @@ pub fn toml_path_for(registry_key: &str) -> Option<(&'static str, &'static str)>
         "terminal.fontSize" => Some(("terminal", "font_size")),
         "terminal.activityIndicator" => Some(("terminal", "activity_indicator")),
         "terminal.copyOnSelect" => Some(("terminal", "copy_on_select")),
+        "terminal.focusFollowsMouse" => Some(("terminal", "focus_follows_mouse")),
         "terminal.confirmClose" => Some(("terminal", "confirm_close")),
         "appearance.theme" => Some(("appearance", "theme")),
         "tabs.barPosition" => Some(("tabs", "bar_position")),
@@ -610,6 +615,11 @@ pub fn diff_configs(old: &Config, new: &Config) -> Vec<(String, RegistryValue)> 
         old.terminal.copy_on_select != new.terminal.copy_on_select,
         "terminal.copyOnSelect",
         RegistryValue::Bool(new.terminal.copy_on_select),
+    );
+    push(
+        old.terminal.focus_follows_mouse != new.terminal.focus_follows_mouse,
+        "terminal.focusFollowsMouse",
+        RegistryValue::Bool(new.terminal.focus_follows_mouse),
     );
     push(
         old.terminal.shell != new.terminal.shell,
@@ -868,6 +878,12 @@ fn walk_terminal(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
                 value,
                 ("terminal.copy_on_select", "terminal.copyOnSelect"),
                 &mut config.terminal.copy_on_select,
+                sink,
+            ),
+            "focus_follows_mouse" => read_bool(
+                value,
+                ("terminal.focus_follows_mouse", "terminal.focusFollowsMouse"),
+                &mut config.terminal.focus_follows_mouse,
                 sink,
             ),
             "confirm_close" => read_enum(
@@ -1143,7 +1159,7 @@ mod tests {
     use super::*;
 
     /// All 15 registry keys.
-    const REGISTRY_KEYS: [&str; 20] = [
+    const REGISTRY_KEYS: [&str; 21] = [
         "update.autoCheck",
         "update.checkFrequency",
         "update.autoDownload",
@@ -1154,6 +1170,7 @@ mod tests {
         "terminal.fontSize",
         "terminal.activityIndicator",
         "terminal.copyOnSelect",
+        "terminal.focusFollowsMouse",
         "terminal.confirmClose",
         "terminal.shell",
         "shell.enhancements",
@@ -1184,6 +1201,7 @@ font_family = "Menlo"
 font_size = 14
 activity_indicator = false
 copy_on_select = false
+focus_follows_mouse = true
 confirm_close = "always"
 shell = "/opt/homebrew/bin/fish"
 
@@ -1223,6 +1241,7 @@ show_shortcut_hints = false
                     font_size: 14,
                     activity_indicator: false,
                     copy_on_select: false,
+                    focus_follows_mouse: true,
                     confirm_close: ConfirmClose::Always,
                     shell: "/opt/homebrew/bin/fish".to_string(),
                 },
@@ -1361,7 +1380,7 @@ show_shortcut_hints = false
     fn full_file_yields_all_twelve_registry_pairs() {
         let (pairs, warnings) = parse_registry_pairs(FULL_NON_DEFAULT);
         assert_eq!(warnings, Vec::new());
-        assert_eq!(pairs.len(), 20);
+        assert_eq!(pairs.len(), 21);
         for key in REGISTRY_KEYS {
             assert!(value_for(&pairs, key).is_some(), "missing pair for {key}");
         }
@@ -1566,6 +1585,58 @@ show_shortcut_hints = false
             &warnings[0],
             ConfigWarning::InvalidValue { key, .. } if key == "terminal.copy_on_select"
         ));
+    }
+
+    // trmx-225: terminal.focusFollowsMouse — opt-in focus-follows-mouse. Defaults FALSE
+    // (peer-terminal parity: iTerm2/kitty/wezterm all default off); explicit true parses +
+    // surfaces the pair; a wrong-typed value keeps the default and warns; the mapping, diff,
+    // and default-template documentation are all pinned here.
+    #[test]
+    fn focus_follows_mouse_defaults_false_true_surfaces_and_wrong_type_warns() {
+        assert!(!Config::default().terminal.focus_follows_mouse);
+        let (config, warnings) = parse_config("[terminal]\n");
+        assert!(!config.terminal.focus_follows_mouse, "defaults to false");
+        assert_eq!(warnings, Vec::new());
+
+        let text = "[terminal]\nfocus_follows_mouse = true\n";
+        let (config, _) = parse_config(text);
+        assert!(config.terminal.focus_follows_mouse);
+        let (pairs, _) = parse_registry_pairs(text);
+        assert_eq!(
+            value_for(&pairs, "terminal.focusFollowsMouse"),
+            Some(&RegistryValue::Bool(true))
+        );
+
+        // A non-bool value keeps the default (false) and warns.
+        let (config, warnings) = parse_config("[terminal]\nfocus_follows_mouse = \"yes\"\n");
+        assert!(!config.terminal.focus_follows_mouse);
+        assert!(matches!(
+            &warnings[0],
+            ConfigWarning::InvalidValue { key, .. } if key == "terminal.focus_follows_mouse"
+        ));
+
+        assert_eq!(
+            toml_path_for("terminal.focusFollowsMouse"),
+            Some(("terminal", "focus_follows_mouse"))
+        );
+
+        let new = Config {
+            terminal: TerminalConfig {
+                focus_follows_mouse: true,
+                ..TerminalConfig::default()
+            },
+            ..Config::default()
+        };
+        let pairs = diff_configs(&Config::default(), &new);
+        assert_eq!(
+            value_for(&pairs, "terminal.focusFollowsMouse"),
+            Some(&RegistryValue::Bool(true))
+        );
+
+        assert!(
+            DEFAULT_TEMPLATE.contains("# focus_follows_mouse = false"),
+            "the default template documents the key"
+        );
     }
 
     // trmx-144: terminal.confirmClose — tri-state confirm-before-close ("never" | "when-busy" |

@@ -357,6 +357,7 @@ describe("registry shape", () => {
         "terminal.activityIndicator",
         "terminal.confirmClose",
         "terminal.copyOnSelect",
+        "terminal.focusFollowsMouse",
         "terminal.scrollbackLines",
         "terminal.fontFamily",
         "terminal.fontSize",
@@ -1635,5 +1636,15 @@ describe("removed built-in ids fall back silently (trmx-202)", () => {
         window.matchMedia = original;
       }
     });
+  });
+});
+
+// trmx-225: opt-in focus-follows-mouse — defaults OFF; boolean set/get round-trips.
+describe("terminal.focusFollowsMouse (trmx-225)", () => {
+  it("defaults to false and round-trips a boolean", () => {
+    const store = makeSettingsStore();
+    expect(store.get("terminal.focusFollowsMouse")).toBe(false);
+    store.set("terminal.focusFollowsMouse", true);
+    expect(store.get("terminal.focusFollowsMouse")).toBe(true);
   });
 });

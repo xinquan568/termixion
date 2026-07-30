@@ -109,6 +109,10 @@ export function TerminalSettings({ settings, invoke = realInvoke }: TerminalSett
   const [copyOnSelect, setCopyOnSelect] = useState<boolean>(() =>
     settings.get("terminal.copyOnSelect"),
   );
+  // trmx-225: opt-in focus-follows-mouse (default off — iTerm2/kitty/wezterm parity).
+  const [focusFollowsMouse, setFocusFollowsMouse] = useState<boolean>(() =>
+    settings.get("terminal.focusFollowsMouse"),
+  );
   const [activityIndicator, setActivityIndicator] = useState<boolean>(() =>
     settings.get("terminal.activityIndicator"),
   );
@@ -270,6 +274,19 @@ export function TerminalSettings({ settings, invoke = realInvoke }: TerminalSett
             onChange={(value) => {
               setCopyOnSelect(value);
               settings.set("terminal.copyOnSelect", value);
+            }}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Focus Follows Mouse"
+          description="Focus the pane under the pointer without a click (like iTerm2/kitty)"
+        >
+          <Toggle
+            checked={focusFollowsMouse}
+            label="Focus Follows Mouse"
+            onChange={(value) => {
+              setFocusFollowsMouse(value);
+              settings.set("terminal.focusFollowsMouse", value);
             }}
           />
         </SettingRow>

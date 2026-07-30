@@ -141,6 +141,7 @@ fn value_kind_for(registry_key: &str) -> Option<ValueKind> {
         | "terminal.cursorBlink"
         | "terminal.activityIndicator"
         | "terminal.copyOnSelect"
+        | "terminal.focusFollowsMouse" // trmx-225
         | "tabs.showShortcutHints" // trmx-151
         | "titleBar.aiCounter" // trmx-190
         | "shell.enhancements" // trmx-206
@@ -1103,6 +1104,7 @@ mod tests {
             ("terminal.cursorBlink", ValueKind::Bool),
             ("terminal.activityIndicator", ValueKind::Bool),
             ("terminal.copyOnSelect", ValueKind::Bool),
+            ("terminal.focusFollowsMouse", ValueKind::Bool),
             ("terminal.confirmClose", ValueKind::Str),
             ("terminal.scrollbackLines", ValueKind::Int),
             ("terminal.fontFamily", ValueKind::Str),

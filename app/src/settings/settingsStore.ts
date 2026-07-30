@@ -84,6 +84,8 @@ export interface SettingsValues {
   "terminal.activityIndicator": boolean;
   /** trmx-95: auto-copy the mouse selection to the clipboard, iTerm2-style (default on). */
   "terminal.copyOnSelect": boolean;
+  /** trmx-225: focus the pane under the pointer without a click (opt-in, default off). */
+  "terminal.focusFollowsMouse": boolean;
   /** trmx-80 (FR-13): scrollback capacity in lines (was the fixed SCROLLBACK_LINES constant). */
   "terminal.scrollbackLines": number;
   /** trmx-80 (FR-13): terminal font family; "" means "use the platform default stack". */
@@ -166,6 +168,8 @@ export const SETTING_DEFAULTS: SettingsValues = {
   "terminal.activityIndicator": true,
   // trmx-95: auto-copy selection ON by default (iTerm2 parity).
   "terminal.copyOnSelect": true,
+  // trmx-225: FFM is OFF by default (iTerm2/kitty/wezterm parity).
+  "terminal.focusFollowsMouse": false,
   "terminal.scrollbackLines": 10_000,
   "terminal.fontFamily": "SauceCodePro Nerd Font Mono",
   "terminal.fontSize": 12,
@@ -213,6 +217,8 @@ const STORAGE_KEYS: Record<SettingKey, string> = {
   "terminal.confirmClose": "termixion.terminal.confirmClose",
   "terminal.activityIndicator": "termixion.terminal.activityIndicator",
   "terminal.copyOnSelect": "termixion.terminal.copyOnSelect",
+  // trmx-225: never existed pre-config-file, so the T3b migration finds nothing — harmless.
+  "terminal.focusFollowsMouse": "termixion.terminal.focusFollowsMouse",
   "terminal.scrollbackLines": "termixion.terminal.scrollbackLines",
   "terminal.fontFamily": "termixion.terminal.fontFamily",
   "terminal.fontSize": "termixion.terminal.fontSize",

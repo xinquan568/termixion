@@ -69,12 +69,13 @@ describe("TerminalSettings", () => {
     // Prompt dropdown — shown by default because the degraded/unknown effective shell renders
     // visible).
     const rows = container.querySelectorAll(".tx-setting-row");
-    expect(rows).toHaveLength(14);
+    expect(rows).toHaveLength(15); // trmx-225 adds Focus Follows Mouse
     const labels = [...rows].map((r) => r.querySelector(".tx-setting-row__label")?.textContent);
     expect(labels).toEqual([
       "Cursor Style",
       "Cursor Blink",
       "Copy on Select",
+      "Focus Follows Mouse",
       "Activity Indicator",
       "AI Session Counter",
       "Confirm before closing",
@@ -132,6 +133,15 @@ describe("TerminalSettings", () => {
     expect(toggle).toHaveAttribute("aria-checked", "true"); // default on (iTerm2 parity)
     fireEvent.click(toggle);
     expect(store.get("terminal.copyOnSelect")).toBe(false); // toggled off, persisted
+  });
+
+  it("defaults Focus Follows Mouse to OFF and persists a toggle (trmx-225)", () => {
+    const store = makeSettingsStore(fakeStorage());
+    render(<TerminalSettings settings={store} />);
+    const toggle = screen.getByRole("switch", { name: "Focus Follows Mouse" });
+    expect(toggle).toHaveAttribute("aria-checked", "false"); // opt-in: default off
+    fireEvent.click(toggle);
+    expect(store.get("terminal.focusFollowsMouse")).toBe(true); // toggled on, persisted
   });
 
   it("persists a cursor style change and broadcasts it for the live terminal", () => {
