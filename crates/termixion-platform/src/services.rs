@@ -120,7 +120,15 @@ mod provider {
     }
 
     /// Extract the `NSFilenamesPboardType` property list (an `NSArray<NSString>` of POSIX
-    /// paths — the representation our `NSSendTypes` declaration asks Finder for).
+    /// paths).
+    ///
+    /// Documented deviation from the planned `readObjectsForClasses`/FileURLsOnly URL read:
+    /// our `Info.plist` `NSSendTypes` names `NSFilenamesPboardType` as the PRIMARY send
+    /// type, so the services pasteboard for this handler carries exactly this property
+    /// list (Apple, Services Implementation Guide — the send types define the pasteboard
+    /// representations); reading it directly avoids the URL-class round-trip and matches
+    /// what we declared. Verified against the real Finder invocation by the operator
+    /// steps in the PR (the packaged-bundle path is the only place this code can run).
     fn filenames_from(pboard: &NSPasteboard) -> Vec<PathBuf> {
         let ty = NSString::from_str("NSFilenamesPboardType");
         let Some(plist) = pboard.propertyListForType(&ty) else {
@@ -142,6 +150,12 @@ mod provider {
     }
 
     /// Idempotence guard: the provider registers once per process; later calls are no-ops.
+    ///
+    /// Documented deviation from the planned `OnceLock<Retained<ServicesProvider>>`: a
+    /// `MainThreadOnly` `Retained` is neither `Send` nor `Sync`, so it cannot live in a
+    /// static `OnceLock` (the static would need `T: Send + Sync`). The unit guard plus
+    /// `mem::forget` below pins the provider for the process lifetime with the same
+    /// once-only semantics — the canonical objc2 pattern for main-thread singletons.
     static REGISTERED: OnceLock<()> = OnceLock::new();
 
     /// Register the app's services provider. Returns `false` (without touching AppKit)

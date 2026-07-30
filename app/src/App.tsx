@@ -554,9 +554,13 @@ export function App({
   const handlesRef = useRef(new Map<PaneId, TerminalHandle>()); // mounted terminals
   const sessionsRef = useRef(new Map<PaneId, number>()); // attached backend sessionIds
   const pendingCwdRef = useRef(new Map<PaneId, string | undefined>()); // cwd to seed the open with
-  // trmx-224: the service-delivery entry point, ref-indirected because the boot effect is
-  // defined above the creators it composes; assigned every render right after its definition.
+  // trmx-224: the service-delivery entry point and the tab-creation primitive, ref-indirected
+  // because the boot effect is defined above the creators it composes; assigned every render
+  // right after their definitions.
   const deliverServicePathsRef = useRef<(paths: string[]) => void>(() => {});
+  const createTabRef = useRef<(cwdOverride?: string) => { tabId: number; paneId: number }>(
+    () => ({ tabId: 0, paneId: 0 }),
+  );
   // trmx-93 (FR-5): a script to source once its pane's session attaches, keyed by the pane's
   // (predictable) nextPaneId and set SYNCHRONOUSLY before the creating dispatch — so the async
   // startup resolution can never lose the race with attach (the send-step awaits the promise).
@@ -658,12 +662,15 @@ export function App({
         return;
       }
       const startupPath = makeSettingsStore().get("scripts.startup");
-      // The boot default tab: reserve exactly once for the openTab dispatch below (trmx-224).
-      const { paneId: upcoming } = reservation.reserveTab();
+      // The boot default tab goes through the shared creation primitive (one reservation
+      // per dispatch; at boot there is no active tab, so the inherited cwd is undefined —
+      // identical to the pre-trmx-224 unseeded open), and the startup script keys off the
+      // RETURNED pane id like every other wrapper.
+      const opened = createTabRef.current();
       if (startupPath && !startupFiredRef.current) {
         startupFiredRef.current = true;
         pendingScriptRef.current.set(
-          upcoming,
+          opened.paneId,
           listScripts(invoke).then((scripts) => {
             const match = scripts.find((entry) => entry.relPath === startupPath);
             if (!match) {
@@ -676,7 +683,6 @@ export function App({
           }),
         );
       }
-      dispatch({ kind: "openTab" });
     }
   }, [invoke]);
 
@@ -1078,6 +1084,7 @@ export function App({
     dispatch({ kind: "openTab" });
     return { tabId, paneId };
   };
+  createTabRef.current = createTab;
   // The public creator stays PARAMETERLESS: it is wired as an event handler (the tab strip's
   // "+" onClick), and a parameter would receive the click event (trmx-224 regression).
   const requestNewTab = () => createTab();

@@ -647,10 +647,15 @@ describe("onSessionActivity", () => {
 
 // trmx-224: the fail-soft take seam — a new backend command must never be able to break boot.
 describe("takePendingOpenPaths (trmx-224)", () => {
-  it("returns the paths and filters non-string junk out of the array", async () => {
-    const invoke = vi.fn(() => Promise.resolve(["/a", 7, "/b", null] as unknown));
+  it("returns a well-formed all-string batch verbatim", async () => {
+    const invoke = vi.fn(() => Promise.resolve(["/a", "/b"] as unknown));
     await expect(takePendingOpenPaths(invoke as InvokeFn)).resolves.toEqual(["/a", "/b"]);
     expect(invoke).toHaveBeenCalledWith("take_pending_open_paths");
+  });
+
+  it("rejects a corrupt batch wholesale — ANY non-string element empties it (all-or-nothing)", async () => {
+    const invoke = vi.fn(() => Promise.resolve(["/a", 7, "/b", null] as unknown));
+    await expect(takePendingOpenPaths(invoke as InvokeFn)).resolves.toEqual([]);
   });
 
   it("maps a rejecting invoke (no Tauri runtime) to an empty batch", async () => {

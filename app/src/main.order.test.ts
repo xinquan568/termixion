@@ -88,3 +88,32 @@ describe("main.tsx startup ordering (trmx-80/89: hydrate → hydrateUserThemes �
     expect(source.match(/applyStartupTheme\(/g)).toHaveLength(1);
   });
 });
+
+describe("main.tsx service cold-launch pre-fetch (trmx-224: take BEFORE mount, main surface only)", () => {
+  const bootStart = source.indexOf("async function boot");
+  const perfIndex = source.indexOf('realInvoke("perf_config")');
+  const mountIndex = source.indexOf("createRoot(");
+  const takeIndex = source.indexOf("takePendingOpenPaths(");
+
+  it("awaits the pending-paths take inside boot(), after the smoke/perf gates and BEFORE the mount", () => {
+    // The frozen contract: the service decision lands before ANY tab or startup script can
+    // exist, and plain boot stays fully synchronous inside App (the take happened pre-mount).
+    expect(takeIndex).toBeGreaterThan(bootStart);
+    expect(takeIndex).toBeGreaterThan(perfIndex);
+    expect(takeIndex).toBeLessThan(mountIndex);
+    expect(source.slice(takeIndex - 80, takeIndex)).toContain("await ");
+  });
+
+  it("only the MAIN surface drains — the settings window must never steal queued paths", () => {
+    const guard = source.indexOf(
+      'surface.kind === "settings" ? [] : await takePendingOpenPaths()',
+    );
+    expect(guard).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(mountIndex);
+  });
+
+  it("feeds App via the serviceBootPaths prop, from exactly one take call site", () => {
+    expect(source.match(/takePendingOpenPaths\(/g)).toHaveLength(1);
+    expect(source.indexOf("serviceBootPaths={serviceBootPaths}")).toBeGreaterThan(takeIndex);
+  });
+});

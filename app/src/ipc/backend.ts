@@ -122,8 +122,11 @@ export const SERVICE_OPEN_PATHS_EVENT = "services:open-paths";
 export function takePendingOpenPaths(invoke: InvokeFn = realInvoke): Promise<string[]> {
   return invoke("take_pending_open_paths")
     .then((response) => {
+      // All-or-nothing: a malformed response (non-array, or ANY non-string element) is
+      // junk in its entirety — never deliver a salvaged subset of a corrupt payload.
       if (!Array.isArray(response)) return [];
-      return response.filter((entry): entry is string => typeof entry === "string");
+      if (!response.every((entry): entry is string => typeof entry === "string")) return [];
+      return response;
     })
     .catch(() => []);
 }
