@@ -7,7 +7,7 @@
 // settings:changed broadcast the live terminal consumes. R8: written before the page exists.
 // trmx-80 (FR-13) adds the scrollback/font trio below them: Scrollback (clamped numeric field),
 // Font Family (empty = the platform default stack, named in the placeholder), Font Size (stepper).
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { TerminalSettings } from "./TerminalSettings";
 import { ITERM2_FONT_FAMILY } from "../terminal/iterm2Theme";
@@ -69,12 +69,13 @@ describe("TerminalSettings", () => {
     // Prompt dropdown — shown by default because the degraded/unknown effective shell renders
     // visible).
     const rows = container.querySelectorAll(".tx-setting-row");
-    expect(rows).toHaveLength(14);
+    expect(rows).toHaveLength(15); // trmx-225 adds Focus Follows Mouse
     const labels = [...rows].map((r) => r.querySelector(".tx-setting-row__label")?.textContent);
     expect(labels).toEqual([
       "Cursor Style",
       "Cursor Blink",
       "Copy on Select",
+      "Focus Follows Mouse",
       "Activity Indicator",
       "AI Session Counter",
       "Confirm before closing",
@@ -132,6 +133,15 @@ describe("TerminalSettings", () => {
     expect(toggle).toHaveAttribute("aria-checked", "true"); // default on (iTerm2 parity)
     fireEvent.click(toggle);
     expect(store.get("terminal.copyOnSelect")).toBe(false); // toggled off, persisted
+  });
+
+  it("defaults Focus Follows Mouse to OFF and persists a toggle (trmx-225)", () => {
+    const store = makeSettingsStore(fakeStorage());
+    render(<TerminalSettings settings={store} />);
+    const toggle = screen.getByRole("switch", { name: "Focus Follows Mouse" });
+    expect(toggle).toHaveAttribute("aria-checked", "false"); // opt-in: default off
+    fireEvent.click(toggle);
+    expect(store.get("terminal.focusFollowsMouse")).toBe(true); // toggled on, persisted
   });
 
   it("persists a cursor style change and broadcasts it for the live terminal", () => {
@@ -584,5 +594,24 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
     expect(screen.getByText("Shell integration")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Reveal snippets" }));
     expect(invoke).toHaveBeenCalledWith("shell_integration_reveal");
+  });
+});
+
+// trmx-225: the toggle reflects EXTERNAL changes live (config watcher / cross-window edits).
+describe("Focus Follows Mouse external liveness (trmx-225)", () => {
+  it("updates aria-checked when settings:changed delivers the key from outside", () => {
+    const store = makeSettingsStore(fakeStorage());
+    let handler: ((payload: unknown) => void) | undefined;
+    const observeChanges = vi.fn((h: (payload: unknown) => void) => {
+      handler = h;
+      return vi.fn();
+    });
+    render(<TerminalSettings settings={store} observeChanges={observeChanges} />);
+    const toggle = screen.getByRole("switch", { name: "Focus Follows Mouse" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    act(() => handler?.({ key: "terminal.focusFollowsMouse", value: true }));
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    act(() => handler?.({ key: "terminal.focusFollowsMouse", value: "junk" })); // untrusted → inert
+    expect(toggle).toHaveAttribute("aria-checked", "true");
   });
 });

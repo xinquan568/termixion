@@ -32,11 +32,13 @@ import { BUNDLED_FONTS, ensureFontLoaded, isBundledFamily } from "../terminal/fo
 import {
   PROMPT_CHOICES,
   SETTING_RANGES,
+  SETTINGS_CHANGED_EVENT,
   type ConfirmClose,
   type CursorStyle,
   type SettingsStore,
 } from "./settingsStore";
 import { realInvoke, type InvokeFn } from "../ipc/backend";
+import { realEventBus } from "../ipc/eventBus";
 
 // trmx-204: dropdown sentinels — never valid font names, so they can share the value space with
 // the persisted family string ("" is the real System-default sentinel in the registry).
@@ -95,9 +97,37 @@ export interface TerminalSettingsProps {
   settings: SettingsStore;
   /** Injected for tests; the real edge writes + reveals the shell-integration snippets (trmx-99). */
   invoke?: InvokeFn;
+  /** trmx-225: settings:changed observation (config-watcher / cross-window edits) so the
+   * Focus Follows Mouse toggle reflects external changes live. Injected for tests. */
+  observeChanges?: (onChange: (payload: unknown) => void) => () => void;
 }
 
-export function TerminalSettings({ settings, invoke = realInvoke }: TerminalSettingsProps) {
+// The teardown-before-resolve settings:changed subscription (the realObserveTabsAction shape).
+const realObserveSettingsChanges = (onChange: (payload: unknown) => void): (() => void) => {
+  let live = true;
+  let unlisten: (() => void) | undefined;
+  realEventBus
+    .listen(SETTINGS_CHANGED_EVENT, (payload) => {
+      if (live) onChange(payload);
+    })
+    .then((u) => {
+      if (live) unlisten = u;
+      else u();
+    })
+    .catch(() => {
+      // No runtime — external edits can't arrive.
+    });
+  return () => {
+    live = false;
+    unlisten?.();
+  };
+};
+
+export function TerminalSettings({
+  settings,
+  invoke = realInvoke,
+  observeChanges = realObserveSettingsChanges,
+}: TerminalSettingsProps) {
   const [cursorStyle, setCursorStyle] = useState<CursorStyle>(() =>
     settings.get("terminal.cursorStyle"),
   );
@@ -109,6 +139,21 @@ export function TerminalSettings({ settings, invoke = realInvoke }: TerminalSett
   const [copyOnSelect, setCopyOnSelect] = useState<boolean>(() =>
     settings.get("terminal.copyOnSelect"),
   );
+  // trmx-225: opt-in focus-follows-mouse (default off — iTerm2/kitty/wezterm parity).
+  const [focusFollowsMouse, setFocusFollowsMouse] = useState<boolean>(() =>
+    settings.get("terminal.focusFollowsMouse"),
+  );
+  // trmx-225: reflect EXTERNAL changes (the config watcher, another window) live. Payloads
+  // are untrusted — boolean-guarded; same-window echoes just re-apply identical values.
+  useEffect(() => {
+    return observeChanges((payload) => {
+      if (typeof payload !== "object" || payload === null) return;
+      const { key, value } = payload as { key?: unknown; value?: unknown };
+      if (key === "terminal.focusFollowsMouse" && typeof value === "boolean") {
+        setFocusFollowsMouse(value);
+      }
+    });
+  }, [observeChanges]);
   const [activityIndicator, setActivityIndicator] = useState<boolean>(() =>
     settings.get("terminal.activityIndicator"),
   );
@@ -270,6 +315,19 @@ export function TerminalSettings({ settings, invoke = realInvoke }: TerminalSett
             onChange={(value) => {
               setCopyOnSelect(value);
               settings.set("terminal.copyOnSelect", value);
+            }}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Focus Follows Mouse"
+          description="Focus the pane under the pointer without a click (like iTerm2/kitty)"
+        >
+          <Toggle
+            checked={focusFollowsMouse}
+            label="Focus Follows Mouse"
+            onChange={(value) => {
+              setFocusFollowsMouse(value);
+              settings.set("terminal.focusFollowsMouse", value);
             }}
           />
         </SettingRow>

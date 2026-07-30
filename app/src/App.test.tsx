@@ -2615,3 +2615,168 @@ describe("service delivery fail-soft composition (trmx-224)", () => {
     expect(screen.queryByTestId("tab-2")).not.toBeInTheDocument();
   });
 });
+
+// ---------------------------------------------------------------------------
+// trmx-225: focus-follows-mouse — the frozen contract. Opt-in (default off); hover over a
+// non-focused pane of the active tab focuses pane + terminal; a stationary pointer (layout
+// reflow under the cursor) never refocuses; every keyboard-owning overlay / drag suspends.
+describe("focus follows mouse (trmx-225)", () => {
+  beforeEach(() => {
+    __resetSettingsForTest();
+    makeSettingsStore().set("terminal.focusFollowsMouse", true);
+  });
+  afterEach(() => __resetSettingsForTest());
+
+  const hover = (paneId: number, x: number, y: number) =>
+    fireEvent.mouseMove(screen.getByTestId(`pane-host-${paneId}`), { clientX: x, clientY: y });
+  const focusedHost = (paneId: number) =>
+    screen.getByTestId(`pane-host-${paneId}`).className.includes("pane-host--focused");
+
+  /** Split the boot tab (pane 1 | pane 2, pane 2 focused), then keyboard-focus pane 1. */
+  async function splitAndFocusPane1(seams: ReturnType<typeof renderApp>) {
+    await resolveAttach(seams.calls[0], { sessionId: 11, title: "one" });
+    fireEvent.keyDown(document.body, { key: "d", metaKey: true });
+    await resolveAttach(seams.calls[1], { sessionId: 22, title: "two" });
+    await act(async () => {
+      seams.tabsAction.fire("pane-left");
+    });
+    expect(focusedHost(1)).toBe(true);
+  }
+
+  it("hover focuses the hovered pane AND its terminal handle", async () => {
+    const seams = renderApp();
+    await splitAndFocusPane1(seams);
+    const pane2Focus = recorder.mounts[1].handle.terminal.focus as ReturnType<typeof vi.fn>;
+    const before = pane2Focus.mock.calls.length;
+    await act(async () => {
+      hover(2, 40, 40);
+    });
+    expect(focusedHost(2)).toBe(true);
+    expect(pane2Focus.mock.calls.length).toBeGreaterThan(before);
+  });
+
+  it("stays inert with the setting OFF (the opt-in default)", async () => {
+    makeSettingsStore().set("terminal.focusFollowsMouse", false);
+    const seams = renderApp();
+    await splitAndFocusPane1(seams);
+    const pane2Focus = recorder.mounts[1].handle.terminal.focus as ReturnType<typeof vi.fn>;
+    const before = pane2Focus.mock.calls.length;
+    await act(async () => {
+      hover(2, 40, 40);
+    });
+    expect(focusedHost(1)).toBe(true);
+    expect(pane2Focus.mock.calls.length).toBe(before);
+  });
+
+  it("a stationary pointer never refocuses — same coordinates after focus moved away", async () => {
+    const seams = renderApp();
+    await splitAndFocusPane1(seams);
+    await act(async () => {
+      hover(2, 40, 40); // real movement → pane 2 focused
+    });
+    expect(focusedHost(2)).toBe(true);
+    await act(async () => {
+      seams.tabsAction.fire("pane-left"); // keyboard-nav back to pane 1
+    });
+    expect(focusedHost(1)).toBe(true);
+    const pane2Focus = recorder.mounts[1].handle.terminal.focus as ReturnType<typeof vi.fn>;
+    const before = pane2Focus.mock.calls.length;
+    await act(async () => {
+      hover(2, 40, 40); // SAME coordinates — reflow-under-cursor shape, not movement
+    });
+    expect(focusedHost(1)).toBe(true); // no yank
+    expect(pane2Focus.mock.calls.length).toBe(before);
+  });
+
+  it("live toggle: flipping the setting off over settings:changed makes hover inert immediately", async () => {
+    const seams = renderApp();
+    await splitAndFocusPane1(seams);
+    await act(async () => {
+      seams.settingsChanged.fire({ key: "terminal.focusFollowsMouse", value: false });
+    });
+    const pane2Focus = recorder.mounts[1].handle.terminal.focus as ReturnType<typeof vi.fn>;
+    const before = pane2Focus.mock.calls.length;
+    await act(async () => {
+      hover(2, 40, 40);
+    });
+    expect(focusedHost(1)).toBe(true);
+    expect(pane2Focus.mock.calls.length).toBe(before);
+  });
+
+  const expectHoverInert = async () => {
+    const pane2Focus = recorder.mounts[1].handle.terminal.focus as ReturnType<typeof vi.fn>;
+    const before = pane2Focus.mock.calls.length;
+    await act(async () => {
+      hover(2, 60, 60);
+    });
+    expect(focusedHost(1)).toBe(true);
+    expect(pane2Focus.mock.calls.length).toBe(before);
+  };
+
+  it("suspends during a tab rename", async () => {
+    const seams = renderApp();
+    await splitAndFocusPane1(seams);
+    await act(async () => {
+      seams.tabsAction.fire("rename");
+    });
+    expect(screen.getByTestId("tab-rename-input")).toBeInTheDocument();
+    await expectHoverInert();
+  });
+
+  it("suspends while the badge editor is open", async () => {
+    const seams = renderApp();
+    await splitAndFocusPane1(seams);
+    await act(async () => {
+      seams.tabsAction.fire("set-badge");
+    });
+    await expectHoverInert();
+  });
+
+  it("suspends while the script picker is open", async () => {
+    const seams = renderApp();
+    await splitAndFocusPane1(seams);
+    await act(async () => {
+      seams.tabsAction.fire("new-with-script");
+    });
+    await expectHoverInert();
+  });
+
+  it("suspends while a find bar is open", async () => {
+    const seams = renderApp();
+    await splitAndFocusPane1(seams);
+    fireEvent.keyDown(document.body, { key: "f", metaKey: true }); // search.open on pane 1
+    await expectHoverInert();
+  });
+
+  it("suspends while a close-confirm dialog is pending", async () => {
+    const seams = renderApp();
+    await splitAndFocusPane1(seams);
+    act(() => seams.activity.fire(11, true)); // pane 1 (focused) busy
+    fireEvent.keyDown(document.body, { key: "w", metaKey: true }); // when-busy default → dialog
+    expect(screen.getByTestId("confirm-close")).toBeInTheDocument();
+    await expectHoverInert();
+  });
+
+  it("suspends during a divider drag", async () => {
+    const seams = renderApp();
+    await splitAndFocusPane1(seams);
+    const divider = document.querySelector(".pane-divider") as HTMLElement;
+    expect(divider).not.toBeNull();
+    fireEvent.pointerDown(divider, { pointerId: 7, clientX: 100, clientY: 100 });
+    await expectHoverInert();
+    fireEvent.pointerUp(divider, { pointerId: 7 });
+  });
+
+  it("suspends during a ⌘-drag pane pickup (re-dock)", async () => {
+    const seams = renderApp();
+    await splitAndFocusPane1(seams);
+    fireEvent.pointerDown(screen.getByTestId("pane-host-2"), {
+      pointerId: 9,
+      metaKey: true,
+      clientX: 10,
+      clientY: 10,
+    });
+    await expectHoverInert();
+    fireEvent.pointerUp(screen.getByTestId("pane-host-2"), { pointerId: 9 });
+  });
+});

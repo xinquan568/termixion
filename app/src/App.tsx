@@ -120,6 +120,7 @@ import {
 } from "./ipc/backend";
 import { realObserveServiceNudge, type ServiceNudgeObservation } from "./ipc/serviceNudge";
 import { makeIdReservation, type IdReservation } from "./tabs/idReservation";
+import { shouldFocusOnHover } from "./panes/focusFollowsMouse";
 import { ScriptPicker } from "./scripts/ScriptPicker";
 import { listScripts, type ScriptEntry } from "./scripts/scriptsBackend";
 import { buildCommands, type Command, type CommandContext } from "./commands/registry";
@@ -558,6 +559,13 @@ export function App({
   // because the boot effect is defined above the creators it composes; assigned every render
   // right after their definitions.
   const deliverServicePathsRef = useRef<(paths: string[]) => void>(() => {});
+  // trmx-225: focus-follows-mouse — the live setting mirror (updated over settings:changed),
+  // the last observed pointer position (the real-movement guard: reflow under a stationary
+  // cursor re-targets elements without motion and must never refocus), and a ref mirror of
+  // the script-picker overlay for the synchronous suspension check.
+  const ffmRef = useRef<boolean>(makeSettingsStore().get("terminal.focusFollowsMouse"));
+  const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
+  const scriptPickerRef = useRef<"tab" | "right" | "below" | null>(null);
   const createTabRef = useRef<(cwdOverride?: string) => { tabId: number; paneId: number }>(
     () => ({ tabId: 0, paneId: 0 }),
   );
@@ -620,6 +628,7 @@ export function App({
   renamingRef.current = renamingTabId;
   badgingRef.current = badgingPaneId;
   openSearchRef.current = openSearchPanes;
+  scriptPickerRef.current = scriptPickerRequest; // trmx-225: FFM suspension reads it per event
 
   // Keep stateRef pointed at the latest COMMITTED state for the out-of-render callbacks (attach
   // resolutions, event subscriptions) — an effect, not a render assignment, so a discarded render
@@ -1608,7 +1617,11 @@ export function App({
       }
       // trmx-91: keep the activity-indicator toggle live (boolean-guarded, the untrusted-payload
       // discipline). Off hides the line without touching the backend poller (titles keep flowing).
-      else if (key === "terminal.activityIndicator" && typeof value === "boolean") {
+      // trmx-225: keep the FFM gate live — a ref (not state): the hover handler reads it per
+      // event and nothing needs a re-render on toggle.
+      else if (key === "terminal.focusFollowsMouse" && typeof value === "boolean") {
+        ffmRef.current = value;
+      } else if (key === "terminal.activityIndicator" && typeof value === "boolean") {
         setActivityIndicatorOn(value);
       }
       // trmx-151: keep the ⌘N hint toggle live (same boolean guard). Off strips the prefixes
@@ -2102,6 +2115,41 @@ export function App({
                       if (tab.focusedPaneId !== paneId) {
                         dispatch({ kind: "focusPane", tabId: tab.tabId, paneId });
                       }
+                    }}
+                    // trmx-225: focus-follows-mouse (opt-in). Bubble phase, passive (no
+                    // preventDefault), cheap early-outs via the pure decision; the last-position
+                    // ref updates unconditionally so the real-movement guard sees every event.
+                    onMouseMove={(e) => {
+                      const last = lastPointerRef.current;
+                      const moved =
+                        last === null || last.x !== e.clientX || last.y !== e.clientY;
+                      // Allocate only on actual movement (the stationary case leaves the
+                      // last position untouched by definition) — the event-cadence budget.
+                      if (moved) lastPointerRef.current = { x: e.clientX, y: e.clientY };
+                      if (
+                        !shouldFocusOnHover(
+                          ffmRef.current,
+                          moved,
+                          tab.focusedPaneId === paneId,
+                          renamingRef.current !== null ||
+                            badgingRef.current !== null ||
+                            openSearchRef.current.size > 0 ||
+                            pendingCloseRef.current !== null ||
+                            scriptPickerRef.current !== null ||
+                            paneDragging ||
+                            pickupRef.current !== null ||
+                            dragRef.current !== null,
+                        )
+                      ) {
+                        return;
+                      }
+                      dispatch({ kind: "focusPane", tabId: tab.tabId, paneId });
+                      // Mirror the click path: the hovered pane's terminal takes the keyboard
+                      // (the suspension set above already covers every onReady-guard condition).
+                      const handle = handlesRef.current.get(paneId);
+                      (
+                        handle?.terminal as unknown as { focus?: () => void } | undefined
+                      )?.focus?.();
                     }}
                     // trmx-100: ⌘-drag to re-dock (capture phase — intercept before xterm selects/links).
                     onPointerDownCapture={onPanePointerDownCapture(tab.tabId, paneId)}
