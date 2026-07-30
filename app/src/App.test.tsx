@@ -2659,10 +2659,13 @@ describe("focus follows mouse (trmx-225)", () => {
     makeSettingsStore().set("terminal.focusFollowsMouse", false);
     const seams = renderApp();
     await splitAndFocusPane1(seams);
+    const pane2Focus = recorder.mounts[1].handle.terminal.focus as ReturnType<typeof vi.fn>;
+    const before = pane2Focus.mock.calls.length;
     await act(async () => {
       hover(2, 40, 40);
     });
     expect(focusedHost(1)).toBe(true);
+    expect(pane2Focus.mock.calls.length).toBe(before);
   });
 
   it("a stationary pointer never refocuses — same coordinates after focus moved away", async () => {
@@ -2691,10 +2694,13 @@ describe("focus follows mouse (trmx-225)", () => {
     await act(async () => {
       seams.settingsChanged.fire({ key: "terminal.focusFollowsMouse", value: false });
     });
+    const pane2Focus = recorder.mounts[1].handle.terminal.focus as ReturnType<typeof vi.fn>;
+    const before = pane2Focus.mock.calls.length;
     await act(async () => {
       hover(2, 40, 40);
     });
     expect(focusedHost(1)).toBe(true);
+    expect(pane2Focus.mock.calls.length).toBe(before);
   });
 
   const expectHoverInert = async () => {
@@ -2732,6 +2738,13 @@ describe("focus follows mouse (trmx-225)", () => {
     await act(async () => {
       seams.tabsAction.fire("new-with-script");
     });
+    await expectHoverInert();
+  });
+
+  it("suspends while a find bar is open", async () => {
+    const seams = renderApp();
+    await splitAndFocusPane1(seams);
+    fireEvent.keyDown(document.body, { key: "f", metaKey: true }); // search.open on pane 1
     await expectHoverInert();
   });
 

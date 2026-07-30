@@ -1647,4 +1647,14 @@ describe("terminal.focusFollowsMouse (trmx-225)", () => {
     store.set("terminal.focusFollowsMouse", true);
     expect(store.get("terminal.focusFollowsMouse")).toBe(true);
   });
+
+  it("persists under EXACTLY termixion.terminal.focusFollowsMouse and parses a seeded value", () => {
+    const storage = fakeStorage();
+    const store = makeSettingsStore(storage);
+    store.set("terminal.focusFollowsMouse", true);
+    expect(storage.data.get("termixion.terminal.focusFollowsMouse")).toBe("true");
+
+    const seeded = makeSettingsStore(fakeStorage({ "termixion.terminal.focusFollowsMouse": "true" }));
+    expect(seeded.get("terminal.focusFollowsMouse")).toBe(true);
+  });
 });

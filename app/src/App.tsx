@@ -2123,14 +2123,15 @@ export function App({
                       const last = lastPointerRef.current;
                       const moved =
                         last === null || last.x !== e.clientX || last.y !== e.clientY;
-                      lastPointerRef.current = { x: e.clientX, y: e.clientY };
+                      // Allocate only on actual movement (the stationary case leaves the
+                      // last position untouched by definition) — the event-cadence budget.
+                      if (moved) lastPointerRef.current = { x: e.clientX, y: e.clientY };
                       if (
-                        !shouldFocusOnHover({
-                          enabled: ffmRef.current,
+                        !shouldFocusOnHover(
+                          ffmRef.current,
                           moved,
-                          targetIsFocused: tab.focusedPaneId === paneId,
-                          suspended:
-                            renamingRef.current !== null ||
+                          tab.focusedPaneId === paneId,
+                          renamingRef.current !== null ||
                             badgingRef.current !== null ||
                             openSearchRef.current.size > 0 ||
                             pendingCloseRef.current !== null ||
@@ -2138,7 +2139,7 @@ export function App({
                             paneDragging ||
                             pickupRef.current !== null ||
                             dragRef.current !== null,
-                        })
+                        )
                       ) {
                         return;
                       }

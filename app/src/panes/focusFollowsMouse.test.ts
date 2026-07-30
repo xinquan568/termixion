@@ -7,26 +7,24 @@ import { describe, expect, it } from "vitest";
 import { shouldFocusOnHover } from "./focusFollowsMouse";
 
 describe("shouldFocusOnHover (trmx-225)", () => {
-  const go = { enabled: true, moved: true, targetIsFocused: false, suspended: false };
-
   it("focuses only when enabled, actually moved, over a non-focused pane, unsuspended", () => {
-    expect(shouldFocusOnHover(go)).toBe(true);
+    expect(shouldFocusOnHover(true, true, false, false)).toBe(true);
   });
 
   it("the setting gates everything (opt-in, default off)", () => {
-    expect(shouldFocusOnHover({ ...go, enabled: false })).toBe(false);
+    expect(shouldFocusOnHover(false, true, false, false)).toBe(false);
   });
 
   it("a stationary pointer never refocuses (reflow-under-cursor)", () => {
-    expect(shouldFocusOnHover({ ...go, moved: false })).toBe(false);
+    expect(shouldFocusOnHover(true, false, false, false)).toBe(false);
   });
 
   it("the already-focused pane is a no-op", () => {
-    expect(shouldFocusOnHover({ ...go, targetIsFocused: true })).toBe(false);
+    expect(shouldFocusOnHover(true, true, true, false)).toBe(false);
   });
 
   it("suspension wins over everything", () => {
-    expect(shouldFocusOnHover({ ...go, suspended: true })).toBe(false);
+    expect(shouldFocusOnHover(true, true, false, true)).toBe(false);
   });
 
   it("full falsy matrix: any single blocker suppresses the focus", () => {
@@ -35,7 +33,7 @@ describe("shouldFocusOnHover (trmx-225)", () => {
         for (const targetIsFocused of [true, false])
           for (const suspended of [true, false]) {
             const want = enabled && moved && !targetIsFocused && !suspended;
-            expect(shouldFocusOnHover({ enabled, moved, targetIsFocused, suspended })).toBe(want);
+            expect(shouldFocusOnHover(enabled, moved, targetIsFocused, suspended)).toBe(want);
           }
   });
 });
