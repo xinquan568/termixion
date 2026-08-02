@@ -77,8 +77,24 @@ pub struct SessionSpec {
     pub args: Vec<OsString>,
     /// Working directory; `None` inherits the parent's.
     pub cwd: Option<PathBuf>,
-    /// Extra environment as `(key, value)` pairs, layered over the inherited environment.
+    /// Extra environment as `(key, value)` pairs, layered over the inherited environment —
+    /// applied *after* [`env_remove`](Self::env_remove), so an entry here always wins.
     pub env: Vec<(OsString, OsString)>,
+    /// Names scrubbed from the **inherited** environment before [`env`](Self::env) is layered on
+    /// (trmx-230).
+    ///
+    /// `env` alone can only add or overwrite, so a caller that needs a variable to be *absent* in
+    /// the child had no way to say so and silently inherited whatever the parent had. This is the
+    /// vocabulary for absence.
+    ///
+    /// Precedence is total and one-directional: a name listed here **and** present in `env` ends up
+    /// set to the `env` value. Removing a variable the caller also sets is therefore a no-op, which
+    /// makes it safe to name every variable a known-clean child must not inherit without auditing
+    /// what else the caller supplies.
+    ///
+    /// This is a declaration, not a mechanism — the platform layer decides how a child environment
+    /// is actually built (R1).
+    pub env_remove: Vec<OsString>,
 }
 
 /// The terminal type Termixion advertises to the child shell via `TERM`. Termixion renders through
@@ -114,6 +130,7 @@ impl SessionSpec {
             args: Vec::new(),
             cwd: None,
             env: Vec::new(),
+            env_remove: Vec::new(),
         }
     }
 

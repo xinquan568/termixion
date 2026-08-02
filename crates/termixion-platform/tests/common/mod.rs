@@ -17,7 +17,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use termixion_core::zdotdir::{ENV_AUTOSUGGEST, ENV_HIGHLIGHT, ENV_PLUGINS_DIR, shim_files};
+use termixion_core::zdotdir::{
+    ENV_AUTOSUGGEST, ENV_HIGHLIGHT, ENV_ORIG_ZDOTDIR, ENV_PLUGINS_DIR, ENV_PROMPT,
+    ENV_STARSHIP_BIN, shim_files,
+};
 use termixion_core::{PtySize, Session, SessionSpec};
 use termixion_platform::UnixPtyFactory;
 
@@ -75,6 +78,33 @@ pub fn fixture(name: &str) -> Fixture {
     Fixture { root, home, shim }
 }
 
+/// Every variable that can contaminate a fixture spawn, scrubbed from the inherited environment by
+/// [`run_zsh`] (trmx-230). Two sources, and the union is what matters — neither alone is the set:
+///
+/// * **the shim's own control contract** — the `termixion_core::zdotdir::ENV_*` constants. Named
+///   symbolically, so renaming one breaks the build here rather than silently un-scrubbing it.
+///   `ENV_PLUGINS_DIR` is included for completeness even though `run_zsh` always sets it.
+/// * **variables the probes read** — `TERMIXION_TEST_RC` and `ZSH_HIGHLIGHT_VERSION` are expanded by
+///   `STATUS_PROBE`, `STARSHIP_SHELL` by the prompt probe in `zdotdir_shim.rs`; an ambient value
+///   would forge a result without any shim involvement. `STARSHIP_SESSION_KEY` is not read by any
+///   probe but is exported by starship alongside `STARSHIP_SHELL`, so it is scrubbed as a pair.
+///
+/// Listing a name a caller also passes through `extra_env` is harmless: `spec.env` wins over
+/// `env_remove` by construction (pinned in `tests/spec_env_remove.rs`), so `ENV_ORIG_ZDOTDIR` is
+/// scrubbed for the tests that omit it and honored for the tests that supply it.
+const CONTAMINABLE: &[&str] = &[
+    ENV_ORIG_ZDOTDIR,
+    ENV_AUTOSUGGEST,
+    ENV_HIGHLIGHT,
+    ENV_PLUGINS_DIR,
+    ENV_PROMPT,
+    ENV_STARSHIP_BIN,
+    "STARSHIP_SHELL",
+    "STARSHIP_SESSION_KEY",
+    "TERMIXION_TEST_RC",
+    "ZSH_HIGHLIGHT_VERSION",
+];
+
 /// Spawn an interactive zsh through the shim, run `probe`, return the full output.
 pub fn run_zsh(
     fixture: &Fixture,
@@ -84,6 +114,9 @@ pub fn run_zsh(
 ) -> String {
     let mut spec = SessionSpec::shell("/bin/zsh");
     spec.cwd = Some(fixture.home.clone());
+    for key in CONTAMINABLE {
+        spec.env_remove.push((*key).into());
+    }
     spec.env
         .push(("HOME".into(), fixture.home.clone().into_os_string()));
     spec.env
