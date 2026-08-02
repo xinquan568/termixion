@@ -5,6 +5,34 @@ The user-facing changes to Termixion are documented here. The format follows
 [Semantic Versioning](https://semver.org). Auto-generated from Conventional Commits by git-cliff;
 internal changes (build / CI / tests / refactors / docs) live in the git history and the linked issues.
 
+## [0.1.1] - 2026-08-02
+
+### Added
+- Advertise 24-bit truecolor via COLORTERM=truecolor (trmx-179) (#181)
+- **(breaking)** Drop Linux support — macOS-only from v0.1.1 (trmx-187) (#189)
+- App-drawn macOS title bar — truncating title left, priority slot right (trmx-188) (#192)
+- Live AI-session counters in the title bar (trmx-190) (#193)
+- Manual activity-bar toggle (⌘⇧A) with auto-clearing override (trmx-191) (#194)
+- Add six community built-in themes (trmx-201) (#203)
+- **(breaking)** Remove light novelty themes, Latte light default, luminance-ordered catalog (trmx-202) (#209)
+- Bundled Nerd Font picker dropdown, SauceCodePro Nerd Font Mono default (trmx-204) (#210)
+- Shell selector — dropdown of installed shells, System default fallback (trmx-205) (#211)
+- Bundled zsh-autosuggestions + zsh-syntax-highlighting via ZDOTDIR shim, with kill switch (trmx-206) (#212)
+- Prompt selector — bundled Starship sidecar, Powerlevel10k, Pure; default "My existing prompt" (trmx-207) (#215)
+- Terminal-native UI typography — mono by role via a two-variable font chokepoint (trmx-220) (#222)
+- Add "New Termixion Tab Here" Finder service (trmx-224) (#226)
+- Opt-in focus-follows-mouse pane focus (trmx-225) (#227)
+
+### Fixed
+- Make auto-copy-on-select reliable across gestures, event orders, and reflow (trmx-180) (#182)
+- Make the Night theme background pure black (trmx-183) (#184)
+- Default the login shell working directory to $HOME when nothing is inherited (trmx-185) (#186)
+- Theme the title-bar and AI-counter text via --tx-text (trmx-195) (#196)
+- Unwrap interpreter-shim foreground names for the AI counter (trmx-197) (#198)
+- Center the traffic lights in a 28px title bar (trmx-199) (#200)
+- Clear the ⌘⇧A override on prompt submit inside a busy epoch (trmx-219) (#221)
+- Align theme swatches in a uniform grid, wrap long labels to two lines (trmx-218) (#223)
+
 ## [0.1.0] - 2026-07-10
 
 ### Added

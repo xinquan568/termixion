@@ -4231,7 +4231,7 @@ dependencies = [
 
 [[package]]
 name = "termixion-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -4240,7 +4240,7 @@ dependencies = [
 
 [[package]]
 name = "termixion-platform"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
  "objc2",
@@ -4252,7 +4252,7 @@ dependencies = [
 
 [[package]]
 name = "termixion-tauri"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "include_dir",
  "libc",
