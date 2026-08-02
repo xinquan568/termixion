@@ -78,16 +78,26 @@ pub fn fixture(name: &str) -> Fixture {
     Fixture { root, home, shim }
 }
 
-/// Every variable that can contaminate a fixture spawn, scrubbed from the inherited environment by
-/// [`run_zsh`] (trmx-230). Two sources, and the union is what matters — neither alone is the set:
+/// Ambient variables scrubbed from the inherited environment by [`run_zsh`] (trmx-230).
 ///
-/// * **the shim's own control contract** — the `termixion_core::zdotdir::ENV_*` constants. Named
-///   symbolically, so renaming one breaks the build here rather than silently un-scrubbing it.
-///   `ENV_PLUGINS_DIR` is included for completeness even though `run_zsh` always sets it.
-/// * **variables the probes read** — `TERMIXION_TEST_RC` and `ZSH_HIGHLIGHT_VERSION` are expanded by
-///   `STATUS_PROBE`, `STARSHIP_SHELL` by the prompt probe in `zdotdir_shim.rs`; an ambient value
-///   would forge a result without any shim involvement. `STARSHIP_SESSION_KEY` is not read by any
-///   probe but is exported by starship alongside `STARSHIP_SHELL`, so it is scrubbed as a pair.
+/// The criterion is **assertion-relevant and not already pinned by the fixture** — deliberately not
+/// "everything the shim or the probes touch". `PROMPT` and `RPROMPT` are read by [`PROMPT_PROBE`]
+/// but are absent here on purpose: the test that asserts on them sets both in its own `.zshrc`, so
+/// the fixture already determines them. Adding names that cannot change an assertion would grow the
+/// list without making any test more deterministic.
+///
+/// Two sources feed it:
+///
+/// * **the shim's control contract** — the `termixion_core::zdotdir::ENV_*` constants, named
+///   symbolically so renaming one breaks the build here rather than silently un-scrubbing it.
+/// * **variables a probe expands** — `TERMIXION_TEST_RC` and `ZSH_HIGHLIGHT_VERSION`
+///   ([`STATUS_PROBE`]) and `STARSHIP_SHELL` ([`PROMPT_PROBE`]); an ambient value forges a result
+///   with no shim involvement at all.
+///
+/// Two entries are deliberately redundant rather than load-bearing. `ENV_PLUGINS_DIR` is always
+/// overwritten by `run_zsh`, and `STARSHIP_SESSION_KEY` is read by nothing here — it is scrubbed
+/// because starship exports it alongside `STARSHIP_SHELL`, and leaving half a pair behind invites a
+/// confusing partial leak later.
 ///
 /// Listing a name a caller also passes through `extra_env` is harmless: `spec.env` wins over
 /// `env_remove` by construction (pinned in `tests/spec_env_remove.rs`), so `ENV_ORIG_ZDOTDIR` is
@@ -165,4 +175,15 @@ pub fn parse_status(output: &str) -> Option<String> {
         .lines()
         .rfind(|line| line.starts_with("S|rc="))
         .map(str::to_string)
+}
+
+pub const PROMPT_PROBE: &str = r##"print -r -- "P|prompt=${PROMPT-none}|rprompt=${RPROMPT-none}|pure=$+functions[prompt_pure_setup]|p10k=$+functions[p10k]|ss=${STARSHIP_SHELL-none}""##;
+
+pub fn parse_prompt_status(output: &str) -> Option<String> {
+    // ZLE redraw escapes can prefix the probe line (pure's multi-line prompt), so find the
+    // marker ANYWHERE in a line, not just at line start.
+    output
+        .lines()
+        .filter_map(|line| line.find("P|prompt=").map(|i| line[i..].to_string()))
+        .next_back()
 }

@@ -14,7 +14,7 @@
 
 mod common;
 
-use common::{STATUS_PROBE, fixture, parse_status, run_zsh};
+use common::{PROMPT_PROBE, STATUS_PROBE, fixture, parse_prompt_status, parse_status, run_zsh};
 use termixion_core::zdotdir::{ENV_ORIG_ZDOTDIR, ENV_PROMPT, ENV_STARSHIP_BIN};
 
 #[test]
@@ -188,17 +188,6 @@ fn nested_zsh_sees_the_original_unset_state() {
 // ---------------------------------------------------------------------------------------------
 // trmx-207: the prompt selector matrix — the shim's prompt block in live zsh.
 // ---------------------------------------------------------------------------------------------
-
-const PROMPT_PROBE: &str = r##"print -r -- "P|prompt=${PROMPT-none}|rprompt=${RPROMPT-none}|pure=$+functions[prompt_pure_setup]|p10k=$+functions[p10k]|ss=${STARSHIP_SHELL-none}""##;
-
-fn parse_prompt_status(output: &str) -> Option<String> {
-    // ZLE redraw escapes can prefix the probe line (pure's multi-line prompt), so find the
-    // marker ANYWHERE in a line, not just at line start.
-    output
-        .lines()
-        .filter_map(|line| line.find("P|prompt=").map(|i| line[i..].to_string()))
-        .next_back()
-}
 
 #[test]
 fn existing_prompt_stays_byte_identical_with_no_prompt_env() {

@@ -84,8 +84,12 @@ pub struct SessionSpec {
     /// (trmx-230).
     ///
     /// `env` alone can only add or overwrite, so a caller that needs a variable to be *absent* in
-    /// the child had no way to say so and silently inherited whatever the parent had. This is the
-    /// vocabulary for absence.
+    /// the child had no way to say so and silently inherited whatever the parent had.
+    ///
+    /// Scope is exactly that: it drops **inherited** entries. It is not a guarantee of absence in
+    /// the child, because a backend may synthesize variables of its own — the unix backend's PTY
+    /// layer always supplies `SHELL`, for instance, so naming it here does not unset it. Listing a
+    /// name the backend synthesizes is harmless, just ineffective.
     ///
     /// Precedence is total and one-directional: a name listed here **and** present in `env` ends up
     /// set to the `env` value. Removing a variable the caller also sets is therefore a no-op, which

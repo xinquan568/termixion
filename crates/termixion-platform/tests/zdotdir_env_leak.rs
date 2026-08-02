@@ -20,7 +20,7 @@ mod common;
 
 use std::process::Command;
 
-use common::{STATUS_PROBE, fixture, parse_status, run_zsh};
+use common::{PROMPT_PROBE, STATUS_PROBE, fixture, parse_prompt_status, parse_status, run_zsh};
 
 /// The variables an outer Termixion session leaks into a shell it launches, with the enhancement
 /// settings on — the exact set from the trmx-230 reproduction.
@@ -63,16 +63,50 @@ fn inner_flags_off_under_leaked_env() {
     std::fs::remove_dir_all(&fx.root).ok();
 }
 
+/// The second reported failure. Without this case, dropping `STARSHIP_SHELL` from the fixture's
+/// scrub list would leave `inner_flags_off_under_leaked_env` green while silently restoring the
+/// original `ss=zsh` failure — so both reported symptoms need their own deterministic reproduction,
+/// not just the first one.
 #[test]
-fn flags_off_is_flags_off_under_a_leaking_parent_env() {
+#[ignore = "runs only in the re-exec'd child of existing_prompt_survives_a_leaking_parent_env"]
+fn inner_existing_prompt_under_leaked_env() {
+    let fx = fixture("envleak-prompt");
+    std::fs::write(
+        fx.home.join(".zshrc"),
+        "PROMPT='MARKER> '\nRPROMPT='RMARK'\n",
+    )
+    .unwrap();
+    // No ENV_PROMPT / ENV_STARSHIP_BIN passed — the default "existing prompt" path, which must stay
+    // byte-identical even though the parent says TERMIXION_PROMPT=starship and starship itself
+    // exported STARSHIP_SHELL.
+    let out = run_zsh(&fx, &[], true, PROMPT_PROBE);
+    let status = parse_prompt_status(&out).expect("status");
+
+    assert!(
+        status.contains("|prompt=MARKER> |"),
+        "PROMPT untouched: {status}"
+    );
+    assert!(
+        status.contains("|rprompt=RMARK|"),
+        "RPROMPT untouched: {status}"
+    );
+    assert!(
+        status.contains("|pure=0|") && status.contains("|p10k=0|"),
+        "no prompt framework activated: {status}"
+    );
+    assert!(
+        status.ends_with("|ss=none"),
+        "no starship env may reach the child even though the parent exports \
+         TERMIXION_PROMPT=starship and STARSHIP_SHELL: {status}"
+    );
+    std::fs::remove_dir_all(&fx.root).ok();
+}
+
+/// Re-exec this test binary with [`LEAKED`] set on the child, running only `inner`.
+fn assert_inner_survives_the_leak(inner: &str, what: &str) {
     let exe = std::env::current_exe().expect("current test binary");
     let mut cmd = Command::new(&exe);
-    cmd.args([
-        "--exact",
-        "inner_flags_off_under_leaked_env",
-        "--ignored",
-        "--nocapture",
-    ]);
+    cmd.args([inner, "--exact", "--ignored", "--nocapture"]);
     for (key, value) in LEAKED {
         cmd.env(key, value);
     }
@@ -89,6 +123,19 @@ fn flags_off_is_flags_off_under_a_leaking_parent_env() {
     );
     assert!(
         out.status.success(),
-        "the flags-off spawn was contaminated by the parent environment\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        "{what} was contaminated by the parent environment\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn flags_off_is_flags_off_under_a_leaking_parent_env() {
+    assert_inner_survives_the_leak("inner_flags_off_under_leaked_env", "the flags-off spawn");
+}
+
+#[test]
+fn existing_prompt_survives_a_leaking_parent_env() {
+    assert_inner_survives_the_leak(
+        "inner_existing_prompt_under_leaked_env",
+        "the existing-prompt spawn",
     );
 }
