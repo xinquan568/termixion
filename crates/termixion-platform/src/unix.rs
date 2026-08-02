@@ -147,6 +147,13 @@ impl PtyFactory for UnixPtyFactory {
                 cmd.cwd(inherited.as_os_str());
             }
         }
+        // Scrub BEFORE layering (trmx-230). `CommandBuilder::new` seeds its map from the inherited
+        // environment, so `env_remove` deletes a genuinely inherited entry — and because both
+        // operate on that one map, doing this first is what makes `spec.env` win on a name that
+        // appears in both.
+        for key in &spec.env_remove {
+            cmd.env_remove(key);
+        }
         for (key, val) in &spec.env {
             cmd.env(key, val);
         }
