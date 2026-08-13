@@ -34,12 +34,12 @@
 
 /* --- results-view presentation ------------------------------------------------------------ */
 
-.tx-search-panel {
+[data-settings-searching] .tx-search-panel {
   margin-bottom: 8px;
 }
 
 /* The stacked page headings — the group-title look, one size up (settings.css:221). */
-.tx-search-panel__title {
+[data-settings-searching] .tx-search-panel__title {
   font-family: var(--tx-mono);
   margin: 0 0 10px;
   font-size: 17px;
@@ -47,7 +47,7 @@
   color: var(--tx-text);
 }
 
-.tx-search-empty {
+[data-settings-searching] .tx-search-empty {
   margin: 24px 0 0;
   font-family: var(--tx-mono);
   font-size: 13px;
