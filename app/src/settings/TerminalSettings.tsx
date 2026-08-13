@@ -308,6 +308,7 @@ export function TerminalSettings({
         <SettingRow
           label="Copy on Select"
           description="Automatically copy the mouse selection to the clipboard (iTerm2-style)"
+          keywords={["clipboard"]}
         >
           <Toggle
             checked={copyOnSelect}
@@ -360,6 +361,7 @@ export function TerminalSettings({
         <SettingRow
           label="Confirm before closing"
           description='Applies when closing a pane, a tab, or quitting; "When busy" prompts only when a program is still running'
+          keywords={["quit", "warning"]}
         >
           <SegmentedControl
             value={confirmClose}
@@ -461,7 +463,11 @@ export function TerminalSettings({
             </SettingRow>
           </>
         ) : null}
-        <SettingRow label="Scrollback" description="Lines of history kept per terminal">
+        <SettingRow
+          label="Scrollback"
+          description="Lines of history kept per terminal"
+          keywords={["history", "buffer"]}
+        >
           <NumberField
             value={scrollback}
             min={SCROLLBACK_RANGE.min}
@@ -478,6 +484,7 @@ export function TerminalSettings({
           description={
             fontSelection === FIRA_CODE_FAMILY ? FIRA_CODE_DESCRIPTION : FONT_ROW_DESCRIPTION
           }
+          keywords={["text", "size"]}
         >
           <Select
             value={fontSelection}
@@ -499,7 +506,11 @@ export function TerminalSettings({
             />
           ) : null}
         </SettingRow>
-        <SettingRow label="Font Size" description="Terminal font size in points">
+        <SettingRow
+          label="Font Size"
+          description="Terminal font size in points"
+          keywords={["text", "size"]}
+        >
           <NumberField
             value={fontSize}
             min={FONT_SIZE_RANGE.min}
@@ -514,8 +525,12 @@ export function TerminalSettings({
         </SettingRow>
       </SettingsGroup>
 
-      {/* trmx-99 (FR-7b): shell integration — a manual, documented install (we never edit rc files). */}
-      <SettingsGroup title="Shell integration">
+      {/* trmx-99 (FR-7b): shell integration — a manual, documented install (we never edit rc files).
+          trmx-232: the group has NO SettingRow, so its searchText mirrors the static content. */}
+      <SettingsGroup
+        title="Shell integration"
+        searchText="shell integration osc 133 snippet reveal snippets rc file source zsh bash activity indicator exit code"
+      >
         <div className="tx-shell-integration">
           <p className="tx-shell-integration__hint">
             Install the OSC 133 snippet for an accurate activity indicator (exact command windows +

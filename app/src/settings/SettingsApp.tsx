@@ -33,7 +33,13 @@
 // live via `onThemesChanged` — a dropped/edited/removed theme file re-hydrates the registry and
 // bumps a counter to re-render the picker. The `invoke` seam (default realInvoke) is threaded into
 // both the hydration and the Appearance page's themes-dir actions; tests inject a fake backend.
-import { useEffect, useReducer, useState, type ReactNode } from "react";
+// trmx-232: the sidebar search matches PAGE CONTENT, not the four nav labels. The shell normalizes
+// the query into SettingsSearchContext; rows/groups self-mark (components.tsx); while searching the
+// content pane stacks ALL FOUR pages as [data-settings-panel] sections and settings-search.css
+// hides the non-matches via :has(). The nav stays complete (active highlight suppressed); a nav
+// click clears the query. The empty-state count re-arms on DOM mutations so the async
+// effective-shell gate can't strand a stale "no results" verdict.
+import { useEffect, useLayoutEffect, useReducer, useRef, useState, type ReactNode } from "react";
 import { AboutSettings } from "./AboutSettings";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { ScriptsSettings } from "./ScriptsSettings";
@@ -59,7 +65,13 @@ import type { ThemeId } from "../theme/themes";
 import { applyTxTheme } from "../theme/txCssVars";
 import { realInvoke, type InvokeFn } from "../ipc/backend";
 import type { EventBus } from "../ipc/eventBus";
+import {
+  matchesSettingsQuery,
+  normalizeSettingsQuery,
+  SettingsSearchContext,
+} from "./settingsSearch";
 import "./settings.css";
+import "./settings-search.css";
 
 /** Emitted by the shell (window_manager.rs) to switch an already-open window's page. */
 export const SETTINGS_NAVIGATE_EVENT = "settings:navigate";
@@ -104,6 +116,11 @@ export function SettingsApp({
   // trmx-89 (4b): a bump counter re-renders the Appearance picker after the registry re-hydrates.
   const [, bumpThemes] = useReducer((n: number) => n + 1, 0);
   const [query, setQuery] = useState("");
+  // trmx-232: "" = not searching; anything else switches the content pane to the results view.
+  const normalizedQuery = normalizeSettingsQuery(query);
+  const searching = normalizedQuery !== "";
+  const resultsRef = useRef<HTMLDivElement | null>(null);
+  const [noMatches, setNoMatches] = useState(false);
   // trmx-53: the window's active theme; initial read materializes the first-run default.
   const [theme, setTheme] = useState<ThemeId>(() => settings.get("appearance.theme"));
   // trmx-82 (D5): the LIVE bar position for the Appearance page's Orientation gate.
@@ -187,11 +204,63 @@ export function SettingsApp({
     };
   }, [listen]);
 
-  const visibleNav = NAV.filter((item) =>
-    item.label.toLowerCase().includes(query.trim().toLowerCase()),
-  );
+  // trmx-232: the empty-state count. Rows/groups/panels self-mark via data attributes, so the
+  // shell just asks the DOM whether anything is visible — and RE-ASKS on every mutation inside
+  // the results container: the async effective-shell gate can unmount the only matching rows
+  // AFTER the initial count, so a one-shot count would go stale (the hardening beyond vmark).
+  useLayoutEffect(() => {
+    if (!searching) {
+      setNoMatches(false);
+      return;
+    }
+    const container = resultsRef.current;
+    if (!container) return;
+    const recount = () => {
+      const anyVisible = container.querySelector(
+        '[data-search-visible="true"], [data-group-visible="true"], [data-panel-visible="true"]',
+      );
+      setNoMatches(anyVisible === null);
+    };
+    recount();
+    const observer = new MutationObserver(recount);
+    observer.observe(container, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ["data-search-visible", "data-group-visible"],
+    });
+    return () => observer.disconnect();
+  }, [searching, normalizedQuery]);
+
+  // trmx-232: ONE render path per page, shared by the single-page view and the stacked results
+  // view. The invoke seam threads to Terminal/Scripts so their backend gates are test-drivable
+  // from the shell (the effective-shell recount above depends on it).
+  const renderSection = (id: SettingsSection): ReactNode =>
+    id === "appearance" ? (
+      <AppearanceSettings
+        settings={settings}
+        selected={theme}
+        onThemeChange={setTheme}
+        barPosition={barPosition}
+        onBarPositionChange={setBarPosition}
+        invoke={invoke}
+      />
+    ) : id === "terminal" ? (
+      <TerminalSettings settings={settings} invoke={invoke} />
+    ) : id === "scripts" ? (
+      <ScriptsSettings settings={settings} invoke={invoke} />
+    ) : (
+      <AboutSettings
+        update={update}
+        appInfo={appInfo}
+        opener={opener}
+        settings={settings}
+        openConfigFile={openConfigFile}
+      />
+    );
 
   return (
+    <SettingsSearchContext.Provider value={normalizedQuery}>
     <div className="tx-settings">
       <aside className="tx-settings__sidebar">
         {/* Top strip under the floating traffic lights; draggable chrome. */}
@@ -207,12 +276,17 @@ export function SettingsApp({
           />
         </div>
         <nav className="tx-settings__nav">
-          {visibleNav.map((item) => (
+          {/* trmx-232: the nav never filters (the results pane does); while searching the active
+              highlight is suppressed, and a click clears the query as it navigates. */}
+          {NAV.map((item) => (
             <button
               key={item.id}
               type="button"
-              className={`tx-nav-item${section === item.id ? " tx-nav-item--active" : ""}`}
-              onClick={() => setSection(item.id)}
+              className={`tx-nav-item${!searching && section === item.id ? " tx-nav-item--active" : ""}`}
+              onClick={() => {
+                setQuery("");
+                setSection(item.id);
+              }}
             >
               {item.icon}
               {item.label}
@@ -241,28 +315,26 @@ export function SettingsApp({
             </button>
           </div>
         ) : null}
-        <div className="tx-settings__page">
-          {section === "appearance" ? (
-            <AppearanceSettings
-              settings={settings}
-              selected={theme}
-              onThemeChange={setTheme}
-              barPosition={barPosition}
-              onBarPositionChange={setBarPosition}
-              invoke={invoke}
-            />
-          ) : section === "terminal" ? (
-            <TerminalSettings settings={settings} />
-          ) : section === "scripts" ? (
-            <ScriptsSettings settings={settings} invoke={invoke} />
+        <div className="tx-settings__page" data-settings-searching={searching ? "" : undefined}>
+          {searching ? (
+            <div className="tx-search-results" ref={resultsRef}>
+              {NAV.map((item) => (
+                <section
+                  key={item.id}
+                  className="tx-search-panel"
+                  data-settings-panel=""
+                  data-panel-visible={matchesSettingsQuery(normalizedQuery, item.label)}
+                >
+                  <h2 className="tx-search-panel__title">{item.label}</h2>
+                  {renderSection(item.id)}
+                </section>
+              ))}
+              {noMatches ? (
+                <p className="tx-search-empty">No settings match “{query.trim()}”.</p>
+              ) : null}
+            </div>
           ) : (
-            <AboutSettings
-              update={update}
-              appInfo={appInfo}
-              opener={opener}
-              settings={settings}
-              openConfigFile={openConfigFile}
-            />
+            renderSection(section)
           )}
         </div>
       </div>
@@ -272,5 +344,6 @@ export function SettingsApp({
         <span>Settings</span>
       </div>
     </div>
+    </SettingsSearchContext.Provider>
   );
 }

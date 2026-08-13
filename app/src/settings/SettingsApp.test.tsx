@@ -214,13 +214,18 @@ describe("SettingsApp shell", () => {
     expect(screen.getByText("Cursor Style")).toBeInTheDocument();
   });
 
-  it("filters the nav entries by the search query", () => {
+  // trmx-232: content search SUPERSEDES the trmx-51 nav filtering — while searching the nav stays
+  // complete (the results pane does the filtering) and no nav entry claims the active highlight.
+  it("keeps the full nav, with no active entry, while a search query is live", () => {
     renderApp();
     fireEvent.change(screen.getByPlaceholderText("Search settings…"), {
       target: { value: "ab" },
     });
-    expect(screen.queryByRole("button", { name: "Terminal" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "About" })).toBeInTheDocument();
+    for (const name of ["Appearance", "Terminal", "Scripts", "About"]) {
+      const button = screen.getByRole("button", { name });
+      expect(button).toBeInTheDocument();
+      expect(button.className).not.toContain("tx-nav-item--active");
+    }
   });
 
   it("navigates to Appearance on a settings:navigate event and rejects junk payloads (trmx-53)", async () => {
@@ -627,5 +632,132 @@ describe("SettingsApp — user themes hydration (trmx-89, 4b)", () => {
     const before = themesReadCount(invoke);
     bus.deliver("themes:changed", null);
     expect(themesReadCount(invoke)).toBe(before);
+  });
+});
+
+// trmx-232 (T3/T5, test-first): the content-search results view. While the query is non-empty the
+// shell stacks ALL FOUR pages as [data-settings-panel] sections (each with a .tx-search-panel__title
+// heading), marks a page-name match with data-panel-visible, suppresses the nav active highlight,
+// and a nav click clears the query. jsdom asserts the data-attribute marking only — the actual
+// hiding is CSS :has() in settings-search.css, covered by e2e/settings-search.spec.ts (Chromium).
+describe("SettingsApp — content search (trmx-232)", () => {
+  const searchInput = () => screen.getByPlaceholderText("Search settings…");
+
+  /** All backend queries the four stacked pages fire on mount, resolved inertly. */
+  function stackInvoke(effectiveShell?: { promise: Promise<unknown> }) {
+    return vi.fn<InvokeFn>().mockImplementation((cmd) => {
+      if (cmd === "effective_shell")
+        return (effectiveShell?.promise ?? Promise.resolve(null)) as Promise<unknown>;
+      if (cmd === "shells_list" || cmd === "themes_read") return Promise.resolve([]);
+      return Promise.resolve(null);
+    });
+  }
+
+  it("stacks all four pages as panels while searching, and restores the single page on clear", () => {
+    const { container } = renderApp({ invoke: stackInvoke() });
+    fireEvent.change(searchInput(), { target: { value: "cursor" } });
+
+    const panels = container.querySelectorAll("[data-settings-panel]");
+    expect(panels).toHaveLength(4);
+    const titles = [...container.querySelectorAll(".tx-search-panel__title")].map(
+      (el) => el.textContent,
+    );
+    expect(titles).toEqual(["Appearance", "Terminal", "Scripts", "About"]);
+    // All four pages are really mounted (one distinctive row each).
+    expect(screen.getByText("Position")).toBeInTheDocument();
+    expect(screen.getByText("Cursor Style")).toBeInTheDocument();
+    expect(screen.getByText("Run on launch")).toBeInTheDocument();
+    expect(screen.getByText("Automatic updates")).toBeInTheDocument();
+    // The matching row is marked visible, a missing one invisible.
+    const rows = [...container.querySelectorAll("[data-setting-row]")];
+    const rowLabel = (r: Element) => r.querySelector(".tx-setting-row__label")?.textContent;
+    expect(
+      rows.find((r) => rowLabel(r) === "Cursor Style"),
+    ).toHaveAttribute("data-search-visible", "true");
+    expect(
+      rows.find((r) => rowLabel(r) === "Scrollback"),
+    ).toHaveAttribute("data-search-visible", "false");
+
+    // Clearing the query restores the normal single-page view (default section: Terminal).
+    fireEvent.change(searchInput(), { target: { value: "" } });
+    expect(container.querySelectorAll("[data-settings-panel]")).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Terminal" }).className).toContain(
+      "tx-nav-item--active",
+    );
+  });
+
+  it("marks a page-name match with data-panel-visible", () => {
+    const { container } = renderApp({ invoke: stackInvoke() });
+    fireEvent.change(searchInput(), { target: { value: "appearance" } });
+    const panels = [...container.querySelectorAll("[data-settings-panel]")];
+    expect(panels[0]).toHaveAttribute("data-panel-visible", "true"); // Appearance
+    expect(panels[1]).toHaveAttribute("data-panel-visible", "false"); // Terminal
+  });
+
+  it("a nav click while searching clears the query and navigates (active highlight restored)", () => {
+    const { container } = renderApp({ invoke: stackInvoke() });
+    fireEvent.change(searchInput(), { target: { value: "cursor" } });
+    fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
+
+    expect((searchInput() as HTMLInputElement).value).toBe("");
+    expect(container.querySelectorAll("[data-settings-panel]")).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Appearance" }).className).toContain(
+      "tx-nav-item--active",
+    );
+    expect(screen.getByText("Position")).toBeInTheDocument();
+  });
+
+  it("shows the empty state when nothing matches, and clears it with the query", () => {
+    renderApp({ invoke: stackInvoke() });
+    fireEvent.change(searchInput(), { target: { value: "zzzqx" } });
+    expect(screen.getByText(/No settings match/)).toHaveTextContent(
+      "No settings match “zzzqx”.",
+    );
+    fireEvent.change(searchInput(), { target: { value: "" } });
+    expect(screen.queryByText(/No settings match/)).not.toBeInTheDocument();
+  });
+
+  it("RECOUNTS when the async effective-shell gate unmounts the only matching rows", async () => {
+    // Deferred effective_shell: the zsh-enhancement rows render while the query is pending
+    // (kind null → visible), then unmount when it resolves non-zsh — the empty-state count
+    // must follow (the trmx-232 hardening beyond vmark's one-shot count).
+    let resolveShell: (v: unknown) => void = () => {};
+    const gate = { promise: new Promise<unknown>((r) => (resolveShell = r)) };
+    renderApp({ invoke: stackInvoke(gate) });
+
+    fireEvent.change(searchInput(), { target: { value: "autosuggestions" } });
+    expect(screen.getByText("Autosuggestions")).toBeInTheDocument();
+    expect(screen.queryByText(/No settings match/)).not.toBeInTheDocument();
+
+    resolveShell({ kind: "fish" });
+    await waitFor(() =>
+      expect(screen.getByText(/No settings match/)).toBeInTheDocument(),
+    );
+  });
+
+  // T5 production wiring — distinctive terms that ONLY keywords / group searchText can hit
+  // ("clipboard"/"history"/"quit" already appear in row descriptions, so they don't discriminate).
+  it("finds Scrollback via the buffer keyword", () => {
+    const { container } = renderApp({ invoke: stackInvoke() });
+    fireEvent.change(searchInput(), { target: { value: "buffer" } });
+    const rows = [...container.querySelectorAll("[data-setting-row]")];
+    const scrollbackRow = rows.find(
+      (r) => r.querySelector(".tx-setting-row__label")?.textContent === "Scrollback",
+    );
+    expect(scrollbackRow).toHaveAttribute("data-search-visible", "true");
+  });
+
+  it.each([
+    ["duplicate", "Theme"],
+    ["reveal", "Shell integration"],
+    ["posix", "Startup script"],
+  ])("query %s reaches the %s group via searchText", (query, groupTitle) => {
+    const { container } = renderApp({ invoke: stackInvoke() });
+    fireEvent.change(searchInput(), { target: { value: query } });
+    const group = [...container.querySelectorAll("[data-settings-group]")].find(
+      (g) => g.querySelector(".tx-settings-group__title")?.textContent === groupTitle,
+    );
+    expect(group).toBeDefined();
+    expect(group).toHaveAttribute("data-group-visible", "true");
   });
 });

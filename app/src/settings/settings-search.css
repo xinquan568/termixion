@@ -1,0 +1,55 @@
+/* SPDX-License-Identifier: ISC */
+/* Copyright (c) 2026 Eric Y. Liu */
+/*
+ * trmx-232 — search-mode visibility. Every rule is scoped under [data-settings-searching] (set on
+ * .tx-settings__page only while the query is non-empty), so this file is inert outside search
+ * mode. Rows/groups/panels self-mark via data attributes (components.tsx / SettingsApp.tsx); the
+ * :has() cascade below is the ONLY thing that turns those marks into visibility — jsdom cannot
+ * evaluate it, so the authoritative coverage is e2e/settings-search.spec.ts (Chromium).
+ */
+
+/* --- visibility (the load-bearing rules) ------------------------------------------------- */
+
+/* A row that missed the query hides — except inside a page-name-matched panel, which shows in
+ * full (the row-hiding rule simply never applies there). */
+[data-settings-searching] [data-settings-panel]:not([data-panel-visible="true"])
+  [data-setting-row][data-search-visible="false"] {
+  display: none;
+}
+
+/* A group collapses (title included) unless a row inside matched or its own searchText did. */
+[data-settings-searching] [data-settings-panel]:not([data-panel-visible="true"])
+  [data-settings-group]:not([data-group-visible="true"]):not(:has([data-search-visible="true"])) {
+  display: none;
+}
+
+/* A panel collapses (heading included) unless the page name matched or something inside is
+ * visible. :has() cannot read the panel's OWN attribute, so the exemption is the :not() guard. */
+[data-settings-searching]
+  [data-settings-panel]:not([data-panel-visible="true"]):not(
+    :has([data-search-visible="true"])
+  ):not(:has([data-group-visible="true"])) {
+  display: none;
+}
+
+/* --- results-view presentation ------------------------------------------------------------ */
+
+.tx-search-panel {
+  margin-bottom: 8px;
+}
+
+/* The stacked page headings — the group-title look, one size up (settings.css:221). */
+.tx-search-panel__title {
+  font-family: var(--tx-mono);
+  margin: 0 0 10px;
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--tx-text);
+}
+
+.tx-search-empty {
+  margin: 24px 0 0;
+  font-family: var(--tx-mono);
+  font-size: 13px;
+  color: var(--tx-text-3);
+}
