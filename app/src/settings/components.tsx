@@ -10,12 +10,30 @@
 // use: NumberField (clamped into [min, max], junk reverts, optional ± stepper) and TextField.
 // trmx-81 (FR-2.2) adds SegmentedControl — the N-way single-choice control the Appearance page's
 // Tab bar Position row uses (radiogroup semantics, roving tabindex, arrow-key stepping).
+// trmx-232: rows and groups SELF-MARK against the live search query (SettingsSearchContext) —
+// data-search-visible / data-group-visible are always stamped (empty query → visible), and only
+// the [data-settings-searching]-scoped settings-search.css turns them into visibility, so the
+// attributes are inert outside search mode. The rendered rows ARE the search index (no parallel
+// index to drift); `keywords` and `searchText` carry the alias/non-row text a query can hit.
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { matchesSettingsQuery, useSettingsSearchQuery } from "./settingsSearch";
 
 /** A titled group of setting rows (title omitted when empty). */
-export function SettingsGroup({ title, children }: { title?: string; children: ReactNode }) {
+export function SettingsGroup({
+  title,
+  searchText,
+  children,
+}: {
+  title?: string;
+  /** trmx-232: static non-row content of the group (button labels, hint text, aliases) a search
+   * query can match — what keeps a row-less group (Shell integration, Theme) reachable. */
+  searchText?: string;
+  children: ReactNode;
+}) {
+  const query = useSettingsSearchQuery();
+  const groupVisible = searchText !== undefined && matchesSettingsQuery(query, searchText);
   return (
-    <section className="tx-settings-group">
+    <section className="tx-settings-group" data-settings-group="" data-group-visible={groupVisible}>
       {title ? <h2 className="tx-settings-group__title">{title}</h2> : null}
       <div className="tx-settings-group__body">{children}</div>
     </section>
@@ -26,14 +44,19 @@ export function SettingsGroup({ title, children }: { title?: string; children: R
 export function SettingRow({
   label,
   description,
+  keywords,
   children,
 }: {
   label: string;
   description?: string;
+  /** trmx-232: alias terms a user might search that the label/description don't contain. */
+  keywords?: readonly string[];
   children?: ReactNode;
 }) {
+  const query = useSettingsSearchQuery();
+  const visible = matchesSettingsQuery(query, label, description, keywords);
   return (
-    <div className="tx-setting-row">
+    <div className="tx-setting-row" data-setting-row="" data-search-visible={visible}>
       <div className="tx-setting-row__text">
         <div className="tx-setting-row__label">{label}</div>
         {description ? <div className="tx-setting-row__desc">{description}</div> : null}

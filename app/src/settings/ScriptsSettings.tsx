@@ -71,7 +71,12 @@ export function ScriptsSettings({ settings, invoke = realInvoke }: ScriptsSettin
 
   return (
     <div className="tx-scripts-settings">
-      <SettingsGroup title="Startup script">
+      {/* trmx-232: the folder button + source-semantics hint aren't rows — the searchText keeps
+          them reachable (the dynamic script list stays out of scope). */}
+      <SettingsGroup
+        title="Startup script"
+        searchText="scripts folder open scripts startup source posix zsh bash fish alias"
+      >
         <SettingRow
           label="Run on launch"
           description="A script sourced in the first tab when Termixion starts"

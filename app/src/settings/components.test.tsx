@@ -8,6 +8,7 @@
 // Tab bar Position row.
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { SettingsSearchContext } from "./settingsSearch";
 import {
   Button,
   NumberField,
@@ -17,6 +18,7 @@ import {
   SettingRow,
   TextField,
   Toggle,
+  SettingsGroup,
 } from "./components";
 
 describe("Toggle", () => {
@@ -395,5 +397,59 @@ describe("SettingRow", () => {
     expect(screen.getByText("Auto update")).toBeInTheDocument();
     expect(screen.getByText("check on launch")).toBeInTheDocument();
     expect(screen.getByTestId("ctl")).toBeInTheDocument();
+  });
+});
+
+// trmx-232 (T2, test-first): rows and groups self-mark against the search query from
+// SettingsSearchContext. The attributes are ALWAYS stamped — under the default provider (empty
+// query) a row is data-search-visible="true"; only the scoped settings-search.css turns the
+// attributes into visibility, so nothing changes visually outside search mode.
+describe("SettingRow / SettingsGroup search self-marking (trmx-232)", () => {
+  it("stamps data-setting-row and data-search-visible=true under the default (empty) query", () => {
+    const { container } = render(<SettingRow label="Cursor Style" description="Shape" />);
+    const row = container.querySelector("[data-setting-row]");
+    expect(row).not.toBeNull();
+    expect(row).toHaveAttribute("data-search-visible", "true");
+  });
+
+  it("marks a row false when the query misses label, description, and keywords", () => {
+    const { container } = render(
+      <SettingsSearchContext.Provider value="zebra">
+        <SettingRow label="Cursor Style" description="Shape of the cursor" keywords={["caret"]} />
+      </SettingsSearchContext.Provider>,
+    );
+    expect(container.querySelector("[data-setting-row]")).toHaveAttribute(
+      "data-search-visible",
+      "false",
+    );
+  });
+
+  it("keywords participate in the match", () => {
+    const { container } = render(
+      <SettingsSearchContext.Provider value="clipboard">
+        <SettingRow label="Copy on Select" description="Automatically copy" keywords={["clipboard"]} />
+      </SettingsSearchContext.Provider>,
+    );
+    expect(container.querySelector("[data-setting-row]")).toHaveAttribute(
+      "data-search-visible",
+      "true",
+    );
+  });
+
+  it("a group stamps data-group-visible from its searchText; absent searchText → false", () => {
+    const { container } = render(
+      <SettingsSearchContext.Provider value="reveal">
+        <SettingsGroup title="Shell integration" searchText="snippet reveal snippets zsh bash">
+          <span />
+        </SettingsGroup>
+        <SettingsGroup title="Updates">
+          <span />
+        </SettingsGroup>
+      </SettingsSearchContext.Provider>,
+    );
+    const groups = container.querySelectorAll("[data-settings-group]");
+    expect(groups).toHaveLength(2);
+    expect(groups[0]).toHaveAttribute("data-group-visible", "true");
+    expect(groups[1]).toHaveAttribute("data-group-visible", "false");
   });
 });

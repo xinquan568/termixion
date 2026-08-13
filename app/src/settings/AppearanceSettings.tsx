@@ -160,7 +160,12 @@ export function AppearanceSettings({
 
   return (
     <div className="tx-appearance-settings">
-      <SettingsGroup title="Theme">
+      {/* trmx-232: the swatch grid has no SettingRow — the group's searchText mirrors its static
+          content (swatches, Open themes folder, the duplicate hint) so search can reach it. */}
+      <SettingsGroup
+        title="Theme"
+        searchText="theme color scheme dark light swatch open themes folder duplicate right-click theme file format"
+      >
         <div className="tx-theme-row" role="radiogroup" aria-label="Theme">
           {listThemes().map((entry) => (
             <ThemeSwatch
