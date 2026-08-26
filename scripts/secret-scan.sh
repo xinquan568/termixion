@@ -9,15 +9,25 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$ROOT"
 
+usage() { echo "secret-scan: usage: secret-scan.sh [--range <a>..<b> | --range <a>...<b>]"; }
 mode="staged"; range=""
-case "${1:-}" in
-  --range)
-    range="${2:-}"
-    [ -n "$range" ] || { echo "secret-scan: usage: secret-scan.sh [--range <a>...<b>]"; exit 2; }
-    mode="range";;
-  "") ;;
-  *) echo "secret-scan: unknown option '$1' (usage: secret-scan.sh [--range <a>...<b>])"; exit 2;;
-esac
+if [ "$#" -eq 0 ]; then
+  mode="staged"
+elif [ "$#" -eq 2 ] && [ "$1" = "--range" ]; then
+  range="$2"
+  # Strict operand check — an option-shaped, dot-less, or one-sided operand would otherwise be handed to git
+  # and could pass vacuously ("no changed files"). Accept only <a>..<b> / <a>...<b> with both sides non-empty.
+  case "$range" in
+    -*) echo "secret-scan: malformed range '$range' (looks like an option)"; usage; exit 2;;
+  esac
+  left="${range%%..*}"; right="${range##*..}"
+  if [ "$left" = "$range" ] || [ -z "$left" ] || [ -z "$right" ] || [ "${right#.}" != "$right" ]; then
+    echo "secret-scan: malformed range '$range' (expected <a>..<b> or <a>...<b>)"; usage; exit 2
+  fi
+  mode="range"
+else
+  echo "secret-scan: unexpected arguments: $*"; usage; exit 2
+fi
 
 if [ "$mode" = "range" ]; then
   if ! files="$(git diff --name-only --diff-filter=ACM "$range" 2>/dev/null)"; then

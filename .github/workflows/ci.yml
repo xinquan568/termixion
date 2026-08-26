@@ -106,10 +106,11 @@ jobs:
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.6.0
+      # No `cache: pnpm` here: audit reads the lockfile only (no install), so there is no store to cache and
+      # setup-node's post-job cache step would fail the job on the missing path.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
-          cache: pnpm
       - name: pnpm audit (prod, high and above)
         run: pnpm audit --prod --audit-level=high
 

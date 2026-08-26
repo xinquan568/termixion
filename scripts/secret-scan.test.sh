@@ -49,5 +49,18 @@ check "unresolvable range fails loudly (never vacuous)" 2 "$rc"
 set +e; (cd "$tmp" && bash "$SCAN" >/dev/null 2>&1); rc=$?; set -e
 check "legacy staged mode with nothing staged passes" 0 "$rc"
 
+# Malformed invocations must fail LOUDLY (exit 2) — never fall through to a vacuous "no changed files" pass.
+expect_usage_error() { # expect_usage_error <argv...>
+  set +e; (cd "$tmp" && bash "$SCAN" "$@" >/dev/null 2>&1); rc=$?; set -e
+  check "malformed '$*' exits 2" 2 "$rc"
+}
+expect_usage_error --range --quiet          # option-shaped operand (git would have swallowed it)
+expect_usage_error --range HEAD             # no '..' / '...'
+expect_usage_error --range main...leak extra # trailing argument
+expect_usage_error --range                  # missing operand
+expect_usage_error --range main...          # empty right side
+expect_usage_error --range ...leak          # empty left side
+expect_usage_error --bogus                  # unknown option
+
 [ "$fails" -eq 0 ] && { echo "secret-scan.test: all passed"; exit 0; }
 echo "secret-scan.test: $fails failure(s)"; exit 1
