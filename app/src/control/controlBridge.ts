@@ -81,6 +81,8 @@ export interface ControlDeps {
   buildLs: () => LsSnapshot;
   /** Type text into a pane (`"focused"` or a pane id); false if no such pane. */
   sendText: (pane: string, text: string) => boolean;
+  /** trmx-235: the externally callable command ids (every registry id), for the `commands` query. */
+  listCommands: () => string[];
 }
 
 /** Route one parsed control request (`{cmd, args?}`) to its reply. Untrusted → validate, never throw. */
@@ -93,6 +95,10 @@ export function routeControlRequest(
   const args = (request?.args ?? {}) as Record<string, unknown>;
 
   if (cmd === "ls") return { ok: true, result: deps.buildLs() };
+  // trmx-235: `commands` — the protocol version + the callable id list, so scripts can gate on both.
+  if (cmd === "commands") {
+    return { ok: true, result: { protocol: CONTROL_PROTOCOL_VERSION, commands: deps.listCommands() } };
+  }
   if (cmd === "send-text") {
     const text = args.text;
     if (typeof text !== "string") return { ok: false, error: "send-text requires args.text" };
