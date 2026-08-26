@@ -35,7 +35,11 @@ export function formatDetail(detail: unknown): string {
   try {
     return JSON.stringify(detail);
   } catch {
-    return String(detail);
+    try {
+      return String(detail);
+    } catch {
+      return "<unprintable detail>"; // a hostile toJSON + Symbol.toPrimitive: logging still never throws
+    }
   }
 }
 

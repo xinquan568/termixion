@@ -1287,7 +1287,15 @@ fn main() -> ExitCode {
         .setup(|app| {
             // trmx-236: the logging sink FIRST — from a caught path with a stdout-only fallback, so an
             // unwritable ~/Library/Logs never aborts the launch (logging.rs).
-            let _ = logging::install(app.handle());
+            let installed = logging::install(app.handle());
+            if installed.sinks.is_empty() {
+                // stdio-contract: the sink itself could not start — stderr is the only channel left
+                // (this closure runs inside `main`, whose allowance covers it).
+                eprintln!(
+                    "termixion: logging unavailable ({}); continuing without a log sink",
+                    installed.file_disabled_reason.as_deref().unwrap_or("unknown")
+                );
+            }
             let menu = menu::build_menu(app.handle())?;
             app.set_menu(menu)?;
             let state = app.state::<PtyState>();
@@ -1451,7 +1459,7 @@ fn main() -> ExitCode {
                 logging::NO_FILE_ENV
             );
         } else {
-            log::error!("fatal error running the app: {err}");
+            log::error!("termixion: fatal error running the app: {err}");
         }
         return ExitCode::FAILURE;
     }

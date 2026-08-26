@@ -44,6 +44,14 @@ describe("logSink forwarding", () => {
     await Promise.resolve();
     expect(con.error).toHaveBeenCalledTimes(1);
   });
+  it("never throws even when the detail's JSON and string conversions both throw", () => {
+    const hostile = { toJSON: () => { throw new Error("no json"); }, [Symbol.toPrimitive]: () => { throw new Error("no string"); } };
+    const invoke = vi.fn(async () => undefined);
+    const { con, sink } = harness(invoke);
+    expect(() => sink.error("hostile detail", hostile)).not.toThrow();
+    expect(con.error).toHaveBeenCalledWith("[termixion] hostile detail: <unprintable detail>");
+    expect(invoke).toHaveBeenCalledWith("log_message", { level: "error", message: "[termixion] hostile detail: <unprintable detail>" });
+  });
   it("never throws when the invoke throws synchronously (no __TAURI_INTERNALS__)", () => {
     const { con, sink } = harness(() => { throw new TypeError("window.__TAURI_INTERNALS__ is undefined"); });
     expect(() => sink.warn("x")).not.toThrow();

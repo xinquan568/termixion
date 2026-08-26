@@ -38,9 +38,12 @@ use tauri_plugin_opener::OpenerExt;
 
 /// The log file stem: `termixion.log` (the plugin's default would be the package name, `Termixion`).
 pub const LOG_FILE_STEM: &str = "termixion";
-/// Rotate at 2 MiB; `KeepSome(2)` = the current file + one dated archive (≈ 4 MiB on disk).
+/// Rotate at 2 MiB; with [`ARCHIVES_TO_KEEP`] dated archives ⇒ current + one archive ≈ 4 MiB on disk.
 pub const MAX_LOG_FILE_BYTES: u128 = 2 * 1024 * 1024;
-const ARCHIVES_TO_KEEP: usize = 2;
+/// `RotationStrategy::KeepSome(n)` keeps `n` ARCHIVED files besides the active one (the plugin's
+/// `rotate()` removes old archives down to `n - 1`, then archives the active file — tauri-plugin-log
+/// 2.9.0 `lib.rs:222-242`), so 1 = the current file plus one archive.
+pub const ARCHIVES_TO_KEEP: usize = 1;
 /// A forwarded webview record larger than this is refused (never truncated silently, never logged).
 pub const MAX_WEBVIEW_LOG_BYTES: usize = 64 * 1024;
 /// Set (non-empty, not `0`) to run without the file target.
@@ -158,12 +161,6 @@ fn resolve_log_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| format!("could not resolve the log directory: {e}"))
 }
 
-// stdio-contract: the sink itself is unavailable — stderr is the only channel left.
-#[allow(clippy::print_stderr)]
-fn report_no_sink(reason: &str) {
-    eprintln!("termixion: logging unavailable ({reason}); continuing without a log sink");
-}
-
 /// Install the sink at the top of `setup` (the thin wrapper over [`install_with`]).
 pub fn install(app: &AppHandle) -> Installed {
     let no_file = no_file_requested(std::env::var(NO_FILE_ENV).ok().as_deref());
@@ -172,13 +169,10 @@ pub fn install(app: &AppHandle) -> Installed {
     let installed = install_with(probe, no_file, |sinks| {
         app.plugin(build_plugin(sinks)).map_err(|e| e.to_string())
     });
+    // An EMPTY sink set (both registrations failed) is reported by the caller on stderr — `main`'s
+    // stdio contract — since no logger exists to carry it.
     match (&installed.file_disabled_reason, installed.sinks.is_empty()) {
-        (_, true) => report_no_sink(
-            installed
-                .file_disabled_reason
-                .as_deref()
-                .unwrap_or("unknown"),
-        ),
+        (_, true) => {}
         (Some(why), false) => log::warn!(
             "log file disabled: {why} — records go to stdout only (set {NO_FILE_ENV}=1 to make this deliberate)"
         ),
@@ -270,6 +264,17 @@ mod tests {
         assert_eq!(select_sinks(false, false), vec![SinkKind::Stdout]);
         assert_eq!(select_sinks(true, true), vec![SinkKind::Stdout]);
         assert_eq!(select_sinks(false, true), vec![SinkKind::Stdout]);
+    }
+
+    /// The retention contract: 2 MiB per file, ONE archive besides the active file (≈ 4 MiB).
+    #[test]
+    fn retention_is_current_plus_one_archive() {
+        assert_eq!(ARCHIVES_TO_KEEP, 1);
+        assert_eq!(MAX_LOG_FILE_BYTES, 2 * 1024 * 1024);
+        assert!(matches!(
+            RotationStrategy::KeepSome(ARCHIVES_TO_KEEP),
+            RotationStrategy::KeepSome(1)
+        ));
     }
 
     #[test]
