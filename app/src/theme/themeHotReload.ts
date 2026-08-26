@@ -20,6 +20,7 @@ import { isUserThemeIdShape, listThemes, type ThemeListEntry } from "./registry"
 import { hydrateUserThemes, onThemesChanged } from "./themesBackend";
 import { realEventBus, type EventBus } from "../ipc/eventBus";
 import { SETTINGS_CHANGED_EVENT, type SettingsStore } from "../settings/settingsStore";
+import { log } from "../ipc/logSink";
 
 /**
  * What a `themes:changed` re-read implies for the ACTIVE theme (pure decision, no side effects):
@@ -104,14 +105,14 @@ export function installThemeHotReload(deps: ThemeHotReloadDeps): () => void {
         });
         break;
       case "fallback":
-        console.warn(
-          `[termixion] active user theme "${activeId}" was removed; falling back to "${action.to}"`,
+        log.warn(
+          `active user theme "${activeId}" was removed; falling back to "${action.to}"`,
         );
         settings.set("appearance.theme", action.to);
         break;
       case "invalidated":
-        console.warn(
-          `[termixion] active user theme "${action.id}" is now invalid; keeping the previous colors`,
+        log.warn(
+          `active user theme "${action.id}" is now invalid; keeping the previous colors`,
         );
         break;
       case "none":
@@ -121,7 +122,7 @@ export function installThemeHotReload(deps: ThemeHotReloadDeps): () => void {
 
   return subscribe(() => {
     onThemesChangedSignal().catch((err: unknown) => {
-      console.warn("[termixion] theme hot-reload failed", err);
+      log.warn("theme hot-reload failed", err);
     });
   }, bus);
 }

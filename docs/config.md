@@ -162,3 +162,12 @@ default, never silently loses a setting and never crashes the app.
 > is a transparent ZDOTDIR shim), and deliberately ships no dotfile-manager integration — see
 > [ADR-0002](adr/0002-no-chezmoi-integration.md). `termixion.toml` itself is worth adding to
 > your dotfiles.
+
+## Where is the log?
+
+Termixion writes its diagnostics (config-watcher, theme/script reloads, remote-control lifecycle, shell
+enhancement fallbacks, forwarded webview errors) to
+**`~/Library/Logs/dev.termixion.terminal/termixion.log`** (trmx-236) — it rotates at 2 MiB and keeps one
+dated archive. Open it from Settings → About → Logs → "Open log folder". Nothing you type or see in a
+terminal is ever logged. If that folder is not writable the app still starts (stdout only, with a
+warning); `TERMIXION_LOG_NO_FILE=1` makes that deliberate.

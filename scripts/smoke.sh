@@ -48,3 +48,12 @@ trap cleanup EXIT
 echo "smoke: DIR=$DIR — running $APP --smoke"
 DIR="$DIR" "$APP" --smoke
 echo "smoke: OK — the packaged app's --smoke exited 0"
+
+# trmx-236: the run must also have left the diagnostics sink — the packaged app's log file — with THIS
+# run's own smoke line in it (the success reason names $DIR, so an older file cannot satisfy this).
+LOG="$HOME/Library/Logs/dev.termixion.terminal/termixion.log"
+if [ ! -s "$LOG" ]; then echo "smoke: FAIL — expected a non-empty log file at $LOG" >&2; exit 1; fi
+if ! grep -F "termixion-smoke: OK" "$LOG" | grep -qF "$DIR"; then
+  echo "smoke: FAIL — $LOG has no 'termixion-smoke: OK' line for this run ($DIR)" >&2; exit 1
+fi
+echo "smoke: log file OK — $LOG"

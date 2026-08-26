@@ -50,6 +50,7 @@ import {
 import { hydrateUserThemes, openThemesDir, writeUserTheme } from "../theme/themesBackend";
 import { themeTokensToToml } from "../theme/themeTokensToToml";
 import { realInvoke, type InvokeFn } from "../ipc/backend";
+import { log } from "../ipc/logSink";
 
 const TAB_BAR_POSITION_OPTIONS: ReadonlyArray<{ value: TabBarPosition; label: string }> = [
   { value: "top", label: "Top" },
@@ -148,13 +149,13 @@ export function AppearanceSettings({
       await hydrateUserThemes(invoke);
       selectTheme(`user:${stem}`);
     } catch (err) {
-      console.warn(`[termixion] duplicating ${entry.id} failed`, err);
+      log.warn(`duplicating ${entry.id} failed`, err);
     }
   };
 
   const openFolder = () => {
     openThemesDir(invoke).catch((err: unknown) => {
-      console.warn("[termixion] opening the themes folder failed", err);
+      log.warn("opening the themes folder failed", err);
     });
   };
 

@@ -22,6 +22,9 @@ tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
 tauri-plugin-opener = "2.5.4"
 tauri-plugin-clipboard-manager = "2.3.2"
+# trmx-236: the logging sink — stdout + ~/Library/Logs/<bundle id>/termixion.log (2 MiB, one archive).
+tauri-plugin-log = "2.9.0"
+log = "0.4"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 libc = "0.2"

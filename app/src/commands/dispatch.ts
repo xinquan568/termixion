@@ -7,6 +7,7 @@
 // over the injected registry + ctx (unit-testable, no DOM). Unknown ids / failed guards are inert +
 // warned, never thrown.
 import type { Command, CommandContext } from "./registry";
+import { log } from "../ipc/logSink";
 
 export interface Dispatcher {
   /** Run a command by id. Returns true if it ran (found + guard passed), false (inert) otherwise.
@@ -33,7 +34,7 @@ export function createDispatcher(commands: Command[], ctx: CommandContext): Disp
     dispatch(id, arg, source = "user") {
       const cmd = byId.get(id);
       if (!cmd) {
-        console.warn(`[termixion] dispatch: unknown command "${id}"`);
+        log.warn(`dispatch: unknown command "${id}"`);
         return false;
       }
       // trmx-144: inject the per-dispatch origin. App's ctx is a forwarding Proxy over an EMPTY

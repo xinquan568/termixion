@@ -24,6 +24,7 @@ import {
   type SessionInfo,
 } from "./backend";
 import type { TerminalHandle } from "../terminal/mountTerminal";
+import { log } from "./logSink";
 
 export interface UseBackendOptions {
   invoke?: InvokeFn;
@@ -83,11 +84,11 @@ export function useBackend({
       .then((version) => {
         if (!active) return;
         setCoreVersion(version);
-        console.info(`[termixion] connected to core v${version}`);
+        log.info(`connected to core v${version}`);
       })
       .catch((err: unknown) => {
         // Browser dev (`pnpm dev`) has no backend, so this rejects — log, don't crash.
-        console.error("[termixion] core handshake failed", err);
+        log.error("core handshake failed", err);
       });
     return () => {
       active = false;
@@ -128,7 +129,7 @@ export function useBackend({
           invoke,
         );
       } catch (err: unknown) {
-        console.error("[termixion] open pty failed", err);
+        log.error("open pty failed", err);
         throw err;
       }
       ackSessionId = session.sessionId;
@@ -139,13 +140,13 @@ export function useBackend({
         // trmx-159: observe input (for the \r/\n submit signal) alongside routing the keystroke.
         observersRef.current.onInput?.(session.sessionId, data);
         sendPtyInput(session.sessionId, data, invoke).catch((err: unknown) =>
-          console.error("[termixion] pty write failed", err),
+          log.error("pty write failed", err),
         );
       });
       // Resizes → the PTY's grid.
       term.onResize(({ rows, cols }) => {
         sendPtyResize(session.sessionId, rows, cols, invoke).catch((err: unknown) =>
-          console.error("[termixion] pty resize failed", err),
+          log.error("pty resize failed", err),
         );
       });
       return session;

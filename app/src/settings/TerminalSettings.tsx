@@ -39,6 +39,7 @@ import {
 } from "./settingsStore";
 import { realInvoke, type InvokeFn } from "../ipc/backend";
 import { realEventBus } from "../ipc/eventBus";
+import { log } from "../ipc/logSink";
 
 // trmx-204: dropdown sentinels — never valid font names, so they can share the value space with
 // the persisted family string ("" is the real System-default sentinel in the registry).
@@ -547,7 +548,7 @@ export function TerminalSettings({
             className="tx-btn"
             onClick={() => {
               invoke("shell_integration_reveal").catch((err: unknown) =>
-                console.error("[termixion] reveal shell integration failed", err),
+                log.error("reveal shell integration failed", err),
               );
             }}
           >
