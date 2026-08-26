@@ -1,0 +1,55 @@
+# cargo-deny policy (trmx-234). Run: `cargo deny check` (CI: the `deps-audit` job in .github/workflows/ci.yml).
+# Posture: advisories gate; unmaintained crates gate only when they are DIRECT (workspace) dependencies —
+# every unmaintained notice in the tree today is transitive (gtk-rs GTK3 bindings on the Linux path,
+# proc-macro-error, unic-*); duplicate versions warn (transitive via the Tauri toolchain).
+
+[graph]
+# macOS is the shipped target (trmx-187); the Linux target keeps the headless core build path audited.
+targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+all-features = false
+
+[advisories]
+version = 2
+yanked = "deny"
+unmaintained = "workspace"
+ignore = [
+  # quick-xml 0.39.4 via tauri 2.11 → plist 1.9. Both advisories are PATCHED in quick-xml >= 0.41.0, but plist
+  # requires ^0.39.2, so no compatible upgrade exists (cargo update -p quick-xml locks 0 packages). Vulnerable
+  # paths: NsReader namespace-declaration allocation (0195) and start-tag duplicate-attribute checking (0194).
+  # plist in this app parses only bundle-time / the app's own Info.plist — never attacker-supplied XML — so
+  # neither path is reachable. Re-evaluate when Dependabot bumps tauri/plist.
+  { id = "RUSTSEC-2026-0194", reason = "quick-xml via tauri→plist; fixed in >=0.41.0, plist pins ^0.39; only trusted bundle XML is parsed" },
+  { id = "RUSTSEC-2026-0195", reason = "quick-xml via tauri→plist; fixed in >=0.41.0, plist pins ^0.39; only trusted bundle XML is parsed" },
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+
+[licenses]
+version = 2
+# Derived from the actual lockfile (cargo metadata, 2026-08-26). Add a license here only after reading it.
+allow = [
+  "MIT",
+  "MIT-0",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "ISC",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "Zlib",
+  "Unicode-3.0",
+  "MPL-2.0",
+  "Unlicense",
+  "CC0-1.0",
+  "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.8
+unused-allowed-license = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

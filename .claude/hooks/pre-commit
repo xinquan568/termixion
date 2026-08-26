@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: ISC
 # Termixion pre-commit hook (A-4). Fast staged-content guardrails (§2.2).
 # Install: scripts/install-hooks.sh  (sets core.hooksPath = .claude/hooks).
-# CI (E-1) mirrors these so a `--no-verify` bypass still fails the gate.
+# CI mirrors these so a `--no-verify` bypass still fails the gate: the secret scan runs there over the PR /
+# push diff (`secret-scan.sh --range`, trmx-234) and the seam guard runs as a required job.
 set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
