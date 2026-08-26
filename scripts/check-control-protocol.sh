@@ -13,7 +13,7 @@ TS="app/src/control/controlBridge.ts"
 RS="crates/termixion-tauri/src/control_io.rs"
 
 usage() { echo "check-control-protocol: usage: check-control-protocol.sh --range <a>..<b> | --range <a>...<b>"; }
-[ "$#" -eq 2 ] && [ "$1" = "--range" ] || { usage; exit 2; }
+if [ "$#" -ne 2 ] || [ "$1" != "--range" ]; then usage; exit 2; fi
 range="$2"
 case "$range" in -*) echo "check-control-protocol: malformed range '$range'"; usage; exit 2;; esac
 left="${range%%..*}"; right="${range##*..}"
@@ -52,6 +52,8 @@ added = sorted(set(h["commands"]) - set(b["commands"]))
 ts, rs = os.environ["TS_CONST"], os.environ["RS_CONST"]
 problems = []
 changed = removed or added
+if hp < bp:
+    problems.append(f"protocol went BACKWARDS {bp} -> {hp}; versions only ever increase")
 if changed and hp <= bp:
     what = "; ".join(x for x in [f"removed: {', '.join(removed)}" if removed else "", f"added: {', '.join(added)}" if added else ""] if x)
     problems.append(f"callable set changed ({what}) but protocol stayed {bp} -> bump `protocol` in the fixture")

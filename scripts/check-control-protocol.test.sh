@@ -24,6 +24,7 @@ branch remove-fixture-only; write_tree 2 '["tab.new"]'; printf 'export const CON
 branch add-no-bump;         write_tree 1 '["pane.close", "tab.new", "tab.rename"]'; git -C "$tmp" commit -qam x
 branch add-bump;            write_tree 2 '["pane.close", "tab.new", "tab.rename"]'; git -C "$tmp" commit -qam x
 branch unchanged;           echo doc > "$tmp/README"; git -C "$tmp" add README; git -C "$tmp" commit -qm x
+branch rollback;            write_tree 0 '["pane.close", "tab.new"]';         git -C "$tmp" commit -qam x
 echo "check-control-protocol.test:"
 check "removal without bump is refused"            1 "$(run main...remove-no-bump)"
 check "removal with a bump on all three sides passes" 0 "$(run main...remove-bump)"
@@ -31,6 +32,7 @@ check "bump in the fixture only (constant stale) is refused" 1 "$(run main...rem
 check "addition without a bump is refused"         1 "$(run main...add-no-bump)"
 check "addition with a bump passes"                0 "$(run main...add-bump)"
 check "unchanged fixture passes"                   0 "$(run main...unchanged)"
+check "protocol rollback with an unchanged set is refused" 1 "$(run main...rollback)"
 check "two-dot range works"                        1 "$(run main..remove-no-bump)"
 check "unresolvable range fails loudly"            2 "$(run main...no-such-ref)"
 set +e; (cd "$tmp" && bash "$GATE" --range --quiet >/dev/null 2>&1); rc=$?; set -e; check "malformed operand exits 2" 2 "$rc"

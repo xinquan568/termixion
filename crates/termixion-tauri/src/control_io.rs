@@ -291,6 +291,28 @@ mod tests {
         assert!(th.request_line.contains(r#""arg":"night""#));
     }
 
+    /// trmx-235 (D1): the callable command set is pinned per protocol version by the frontend fixture;
+    /// the Rust constant must agree with it (the TS side pins CONTROL_PROTOCOL_VERSION the same way, and
+    /// scripts/check-control-protocol.sh refuses a set change without a bump on all three).
+    #[test]
+    fn protocol_version_matches_the_control_commands_fixture() {
+        let fixture: JsonValue = serde_json::from_str(include_str!(
+            "../../../app/src/control/__fixtures__/control-commands.json"
+        ))
+        .expect("control-commands.json parses");
+        assert_eq!(
+            fixture.get("protocol").and_then(JsonValue::as_u64),
+            Some(u64::from(PROTOCOL_VERSION)),
+            "PROTOCOL_VERSION and control-commands.json `protocol` must move together"
+        );
+        let n = fixture
+            .get("commands")
+            .and_then(JsonValue::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+        assert!(n >= 40, "the fixture lists the callable command ids (got {n})");
+    }
+
     #[test]
     fn ctl_argv_handles_socket_override_and_errors() {
         let r = parse_ctl_argv(argv(&["ctl", "--socket", "/tmp/x.sock", "ls"])).unwrap();
