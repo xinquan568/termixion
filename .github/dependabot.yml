@@ -1,0 +1,31 @@
+# Dependabot (trmx-234): weekly, grouped — one PR per ecosystem. npm runs at the pnpm-WORKSPACE root (/) so an
+# app/package.json bump also updates the shared root pnpm-lock.yaml (a /app scope breaks --frozen-lockfile). SHA-pinned `uses:` lines in the workflows are
+# bumped together with their `# vX.Y.Z` comment. NOTE (R9): Dependabot PRs carry no trmx-N and will fail the
+# `r9-issue-link` required check by construction; merging them is an operator decision until R9 grants an
+# explicit dependabot[bot] allowance (tracked as a follow-up, not changed here).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    open-pull-requests-limit: 3
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        patterns: ["*"]
+    open-pull-requests-limit: 3
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      npm:
+        patterns: ["*"]
+    open-pull-requests-limit: 3
