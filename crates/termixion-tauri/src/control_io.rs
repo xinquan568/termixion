@@ -310,7 +310,10 @@ mod tests {
             .and_then(JsonValue::as_array)
             .map(Vec::len)
             .unwrap_or(0);
-        assert!(n >= 40, "the fixture lists the callable command ids (got {n})");
+        assert!(
+            n >= 40,
+            "the fixture lists the callable command ids (got {n})"
+        );
     }
 
     #[test]
