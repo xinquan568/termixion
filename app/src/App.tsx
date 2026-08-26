@@ -1536,6 +1536,8 @@ export function App({
         // trmx-144: forward the router's "remote" source so close commands skip the confirm gate.
         dispatch: (cmd, arg, source) => dispatcherRef.current?.dispatch(cmd, arg, source) ?? false,
         hasCommand: (cmd) => dispatcherRef.current?.get(cmd) !== undefined,
+        // trmx-235: the `commands` query lists every registry id (the documented callable set).
+        listCommands: () => commandsRef.current.map((c) => c.id),
         buildLs: () =>
           buildLsSnapshot(
             stateRef.current.tabs,

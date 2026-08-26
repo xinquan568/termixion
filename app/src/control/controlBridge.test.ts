@@ -12,6 +12,8 @@ import {
 } from "./controlBridge";
 import { leafNode, splitLeaf, type LayoutNode } from "../panes/layoutTree";
 import lsShapeGolden from "./__fixtures__/ls-shape.json";
+import controlCommands from "./__fixtures__/control-commands.json";
+import { COMMAND_IDS } from "../commands/registry";
 
 function deps(over: Partial<ControlDeps> = {}): ControlDeps {
   return {
@@ -19,6 +21,7 @@ function deps(over: Partial<ControlDeps> = {}): ControlDeps {
     hasCommand: vi.fn((id: string) => id.startsWith("pane.") || id === "theme.select"),
     buildLs: vi.fn(() => ({ protocol: CONTROL_PROTOCOL_VERSION, tabs: [] })),
     sendText: vi.fn(() => true),
+    listCommands: vi.fn(() => []),
     ...over,
   };
 }
@@ -70,6 +73,14 @@ describe("routeControlRequest", () => {
     routeControlRequest({ cmd: "pane.close" }, d);
     expect(d.dispatch).toHaveBeenCalledWith("pane.close", undefined, "remote");
   });
+  it("commands query returns the protocol + the callable id list via deps.listCommands (trmx-235)", () => {
+    const d = deps({ listCommands: () => ["tab.new", "pane.close"] });
+    expect(routeControlRequest({ cmd: "commands" }, d)).toEqual({
+      ok: true,
+      result: { protocol: CONTROL_PROTOCOL_VERSION, commands: ["tab.new", "pane.close"] },
+    });
+  });
+
   it("junk (missing cmd) → ok:false, never throws", () => {
     expect(routeControlRequest({}, deps())).toEqual({ ok: false, error: "missing-cmd" });
     expect(routeControlRequest(null, deps())).toEqual({ ok: false, error: "missing-cmd" });
@@ -104,5 +115,23 @@ describe("buildLsSnapshot", () => {
     // drift against), so this TS golden is the authoritative shape pin: a change to the snapshot must be a
     // conscious, reviewed protocol change.
     expect(snap).toEqual(lsShapeGolden);
+  });
+});
+
+describe("control protocol pin (trmx-235)", () => {
+  // The callable set is EVERY registry id (docs/remote-control.md). The fixture is the protocol-versioned pin:
+  // removing/renaming an id is a breaking change — bump `protocol` + CONTROL_PROTOCOL_VERSION + Rust
+  // PROTOCOL_VERSION together (scripts/check-control-protocol.sh enforces the bump in CI).
+  it("the fixture lists exactly the frozen registry ids, sorted", () => {
+    expect(controlCommands.commands).toEqual([...COMMAND_IDS].sort());
+  });
+  it("the fixture's protocol matches CONTROL_PROTOCOL_VERSION", () => {
+    expect(controlCommands.protocol).toBe(CONTROL_PROTOCOL_VERSION);
+  });
+  it("an unknown id still answers the documented `unknown-command` string", () => {
+    expect(routeControlRequest({ cmd: "nope.nothing" }, deps({ hasCommand: () => false }))).toEqual({
+      ok: false,
+      error: "unknown-command",
+    });
   });
 });
