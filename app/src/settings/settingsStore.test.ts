@@ -18,6 +18,8 @@ import {
   getConfigWarnings,
   onConfigWarningsChanged,
   openConfigFile,
+  getLogDir,
+  openLogDir,
   __resetSettingsForTest,
   SETTING_KEYS,
   SETTING_DEFAULTS,
@@ -1656,5 +1658,45 @@ describe("terminal.focusFollowsMouse (trmx-225)", () => {
 
     const seeded = makeSettingsStore(fakeStorage({ "termixion.terminal.focusFollowsMouse": "true" }));
     expect(seeded.get("terminal.focusFollowsMouse")).toBe(true);
+  });
+});
+
+// trmx-236: the About row's log-folder adapters — plain command invokes (log_dir / log_open_dir)
+// riding the hydration-injected channel, the openConfigFile shape: rejections PROPAGATE.
+describe("log folder adapters (trmx-236)", () => {
+  function fakeLogBackend(opts: { failOpen?: boolean } = {}) {
+    const calls: string[] = [];
+    const invoke = (cmd: string): Promise<unknown> => {
+      calls.push(cmd);
+      if (cmd === "config_read") {
+        return Promise.resolve({ exists: true, path: "/tmp/termixion/config.toml", values: {}, warnings: [] });
+      }
+      if (cmd === "log_dir") return Promise.resolve("/Users/t/Library/Logs/dev.termixion.terminal");
+      if (cmd === "log_open_dir") {
+        return opts.failOpen ? Promise.reject(new Error("opener denied")) : Promise.resolve(null);
+      }
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    };
+    return { invoke, calls };
+  }
+
+  it("getLogDir invokes log_dir and returns the backend-resolved path", async () => {
+    const backend = fakeLogBackend();
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    await expect(getLogDir()).resolves.toBe("/Users/t/Library/Logs/dev.termixion.terminal");
+    expect(backend.calls).toContain("log_dir");
+  });
+
+  it("openLogDir invokes log_open_dir and resolves void", async () => {
+    const backend = fakeLogBackend();
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    await expect(openLogDir()).resolves.toBeUndefined();
+    expect(backend.calls).toContain("log_open_dir");
+  });
+
+  it("openLogDir PROPAGATES a rejection so the About row can show it", async () => {
+    const backend = fakeLogBackend({ failOpen: true });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    await expect(openLogDir()).rejects.toThrow("opener denied");
   });
 });

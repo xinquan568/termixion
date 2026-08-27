@@ -48,6 +48,10 @@ export interface AboutSettingsProps {
   /** trmx-148: the backend-side config-file open (settingsStore.openConfigFile in production);
    * rejections propagate here so the row can surface them. */
   openConfigFile: () => Promise<void>;
+  /** trmx-236: the backend-resolved log directory (`log_dir`) and the backend-side folder open
+   * (`log_open_dir`) — the same shape as the config-file row. */
+  getLogDir: () => Promise<string>;
+  openLogDir: () => Promise<void>;
 }
 
 export function AboutSettings({
@@ -56,6 +60,8 @@ export function AboutSettings({
   opener,
   settings,
   openConfigFile,
+  getLogDir,
+  openLogDir,
 }: AboutSettingsProps) {
   const { state } = update;
   // Hydrated before any window renders (main.tsx boot order); null in a plain browser.
@@ -70,6 +76,22 @@ export function AboutSettings({
   const [confirmingReset, setConfirmingReset] = useState(false);
   // trmx-148: the last failed config-file open, surfaced as an inline error pill in the row.
   const [openError, setOpenError] = useState<string | null>(null);
+  // trmx-236: the log folder — resolved by the backend on mount; the last failed open as a pill.
+  const [logDir, setLogDir] = useState<string | null>(null);
+  const [logOpenError, setLogOpenError] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    getLogDir()
+      .then((dir) => {
+        if (live) setLogDir(dir);
+      })
+      .catch(() => {
+        if (live) setLogDir(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, [getLogDir]);
 
   useEffect(() => {
     let live = true;
@@ -241,6 +263,29 @@ export function AboutSettings({
           </SettingRow>
         </SettingsGroup>
       ) : null}
+      <SettingsGroup title="Logs">
+        <SettingRow
+          label="Open log folder"
+          description={logDir ?? "Resolving the log folder…"}
+        >
+          {/* trmx-236: the app's diagnostics land in termixion.log under this folder (stdout is lost for a
+              Finder-launched app). Opens BACKEND-side via log_open_dir, like the config-file row. */}
+          <div className="tx-about__check">
+            {logOpenError ? <StatusPill tone="error">{logOpenError}</StatusPill> : null}
+            <Button
+              variant="tertiary"
+              onClick={() => {
+                setLogOpenError(null);
+                openLogDir().catch((err: unknown) => {
+                  setLogOpenError(err instanceof Error ? err.message : String(err));
+                });
+              }}
+            >
+              Open folder
+            </Button>
+          </div>
+        </SettingRow>
+      </SettingsGroup>
 
       <SettingsGroup title="Reset">
         <SettingRow

@@ -285,10 +285,8 @@ describe("useBackend", () => {
     await expect(result.current.attachTerminal(t.handle)).rejects.toThrow(
       "spawn failed",
     );
-    expect(error).toHaveBeenCalledWith(
-      "[termixion] open pty failed",
-      expect.any(Error),
-    );
+    // trmx-236: diagnostics go through ipc/logSink — one formatted line (console + backend log).
+    expect(error).toHaveBeenCalledWith("[termixion] open pty failed: spawn failed");
     // No session → no subscriptions: a later keystroke must not reach the backend.
     expect(t.isWired()).toBe(false);
   });

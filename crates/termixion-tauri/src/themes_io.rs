@@ -164,7 +164,7 @@ fn read_entries_in(dir: &Path) -> Vec<ThemeEntry> {
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
             Err(error) => {
-                eprintln!(
+                log::warn!(
                     "termixion: could not read theme {}: {error}; skipping",
                     path.display()
                 );
@@ -228,7 +228,7 @@ pub fn run_themes_watcher(app: tauri::AppHandle) {
     // Ensure the directory exists so the watch can attach before the first theme is written
     // (create_dir_all is harmless — it creates no file).
     if let Err(err) = std::fs::create_dir_all(&dir) {
-        eprintln!(
+        log::warn!(
             "termixion: could not create {}: {err}; theme file watching disabled",
             dir.display()
         );
@@ -247,12 +247,12 @@ pub fn run_themes_watcher(app: tauri::AppHandle) {
         }) {
             Ok(watcher) => watcher,
             Err(err) => {
-                eprintln!("termixion: could not create the themes watcher: {err}");
+                log::warn!("termixion: could not create the themes watcher: {err}");
                 return;
             }
         };
     if let Err(err) = watcher.watch(&dir, RecursiveMode::NonRecursive) {
-        eprintln!(
+        log::warn!(
             "termixion: could not watch {}: {err}; theme file watching disabled",
             dir.display()
         );

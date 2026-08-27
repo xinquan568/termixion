@@ -223,7 +223,7 @@ pub fn enhancement_env(
     let materialized = match materialize() {
         Ok(m) => m,
         Err(error) => {
-            eprintln!("termixion: shell enhancements unavailable (spawning bare): {error}");
+            log::warn!("termixion: shell enhancements unavailable (spawning bare): {error}");
             return None;
         }
     };

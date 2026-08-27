@@ -169,7 +169,7 @@ pub fn run_scripts_watcher(app: tauri::AppHandle) {
 
     let dir = scripts_dir();
     if let Err(err) = std::fs::create_dir_all(&dir) {
-        eprintln!(
+        log::warn!(
             "termixion: could not create {}: {err}; script file watching disabled",
             dir.display()
         );
@@ -186,12 +186,12 @@ pub fn run_scripts_watcher(app: tauri::AppHandle) {
         }) {
             Ok(watcher) => watcher,
             Err(err) => {
-                eprintln!("termixion: could not create the scripts watcher: {err}");
+                log::warn!("termixion: could not create the scripts watcher: {err}");
                 return;
             }
         };
     if let Err(err) = watcher.watch(&dir, RecursiveMode::Recursive) {
-        eprintln!(
+        log::warn!(
             "termixion: could not watch {}: {err}; script file watching disabled",
             dir.display()
         );

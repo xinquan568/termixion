@@ -28,6 +28,7 @@ import { isRegisteredThemeId, isUserThemeIdShape } from "../theme/registry";
 import { isRemovedBuiltinThemeId, type ThemeId } from "../theme/themes";
 import { realInvoke, type InvokeFn } from "../ipc/backend";
 import { realEventBus } from "../ipc/eventBus";
+import { log } from "../ipc/logSink";
 
 /** The minimal Web-Storage slice we depend on (injectable; adds removeItem for reset). */
 export interface KeyValueStore {
@@ -481,6 +482,17 @@ export function openConfigFile(): Promise<void> {
   return invokeSafely("config_open_file").then(() => {});
 }
 
+/** trmx-236: the log directory (backend-resolved — `~/Library/Logs/<bundle id>` on macOS). */
+export function getLogDir(): Promise<string> {
+  return invokeSafely("log_dir").then((dir) => String(dir));
+}
+
+/** trmx-236: open the log folder — BACKEND-side like openConfigFile (the webview opener plugin
+ * command is capability-denied in the packaged app). */
+export function openLogDir(): Promise<void> {
+  return invokeSafely("log_open_dir").then(() => {});
+}
+
 /** The current config warnings for the settings UI (T3e): the MERGED ledgers, file-rendered
  * warnings first, then the client-authored per-key warnings. */
 export function getConfigWarnings(): ConfigWarningItem[] {
@@ -604,7 +616,7 @@ function makeSnapshotStore(bus: SettingsBus | undefined, source: string): Settin
       // UI/session can never diverge from the file over an invalid write.
       const effective = coerce(key, value);
       if (effective === undefined) {
-        console.warn(`[termixion] ignoring invalid value for ${key}:`, value);
+        log.warn(`ignoring invalid value for ${key}`, value);
         return;
       }
       snapshot.set(key, effective);
@@ -614,7 +626,7 @@ function makeSnapshotStore(bus: SettingsBus | undefined, source: string): Settin
       invokeSafely("config_write", { key, value: effective }).catch((err: unknown) => {
         // Fire-and-forget by contract: the optimistic snapshot value stands for this session;
         // an unwritable config file must never break the control that wrote it.
-        console.warn(`[termixion] config_write failed for ${key}`, err);
+        log.warn(`config_write failed for ${key}`, err);
       });
       broadcast(key, effective);
     },
@@ -638,7 +650,7 @@ function makeSnapshotStore(bus: SettingsBus | undefined, source: string): Settin
     resetAll() {
       for (const key of SETTING_KEYS) snapshot.delete(key);
       invokeSafely("config_reset_all").catch((err: unknown) => {
-        console.warn("[termixion] config_reset_all failed", err);
+        log.warn("config_reset_all failed", err);
       });
       try {
         safeLocalStorage()?.removeItem(LAST_CHECK_AT_KEY);
@@ -846,7 +858,7 @@ export async function hydrateSettings(deps: HydrateSettingsDeps = {}): Promise<v
       try {
         await invokeSafely("config_write", { key: "appearance.theme", value: derived });
       } catch (err) {
-        console.warn("[termixion] theme materialization write failed", err);
+        log.warn("theme materialization write failed", err);
       }
     }
 
@@ -915,7 +927,7 @@ async function migrateLegacySettings(storage: KeyValueStore): Promise<void> {
       await invokeSafely("config_write", { key, value });
       storage.removeItem(STORAGE_KEYS[key]);
     } catch (err) {
-      console.warn(`[termixion] settings migration write failed for ${key}`, err);
+      log.warn(`settings migration write failed for ${key}`, err);
     }
   }
 }

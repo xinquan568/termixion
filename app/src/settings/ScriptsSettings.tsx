@@ -13,6 +13,7 @@ import { Select } from "./components";
 import type { SettingsStore } from "./settingsStore";
 import { realInvoke, type InvokeFn } from "../ipc/backend";
 import { listScripts, onScriptsChanged, openScriptsDir, type ScriptEntry } from "../scripts/scriptsBackend";
+import { log } from "../ipc/logSink";
 
 /** The scripting docs (folder layout, source semantics, startup, fish caveat) — the hint links here. */
 const SCRIPTS_DOC_URL = "https://github.com/xinquan568/termixion/blob/main/docs/scripts.md";
@@ -60,7 +61,7 @@ export function ScriptsSettings({ settings, invoke = realInvoke }: ScriptsSettin
 
   const openFolder = () => {
     openScriptsDir(invoke).catch((err: unknown) => {
-      console.warn("[termixion] opening the scripts folder failed", err);
+      log.warn("opening the scripts folder failed", err);
     });
   };
 

@@ -8,7 +8,7 @@
 // link opener. It holds no logic of its own; like the other hosts it is exercised by the app while
 // the tested pieces live behind the seams.
 import { SettingsApp } from "./SettingsApp";
-import { makeSettingsStore, openConfigFile } from "./settingsStore";
+import { getLogDir, makeSettingsStore, openConfigFile, openLogDir } from "./settingsStore";
 import { realEventBus } from "../ipc/eventBus";
 import { autoCheckSourceFrom, useUpdate } from "../update/useUpdate";
 import { useUpdateMirror } from "../update/useUpdateMirror";
@@ -42,6 +42,8 @@ export function SettingsWindowHost({ initialSection }: SettingsWindowHostProps) 
       opener={realOpener}
       settings={settingsStore}
       openConfigFile={openConfigFile}
+      getLogDir={getLogDir}
+      openLogDir={openLogDir}
       listen={realEventBus.listen}
     />
   );

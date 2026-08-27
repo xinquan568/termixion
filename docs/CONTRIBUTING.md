@@ -89,6 +89,27 @@ This is why the `commit-msg` hook (R6) is load-bearing — well-formed commits p
   // Copyright (c) 2026 Eric Y. Liu
   ```
 
+## Logging (trmx-236)
+
+A Finder-launched `.app` has no stderr, so runtime diagnostics go through the `log` facade
+(`log::info!` / `warn!` / `error!`) into `tauri-plugin-log`: **stdout** (dev console / CI log) and the
+file **`~/Library/Logs/dev.termixion.terminal/termixion.log`** (rotates at 2 MiB; the current file plus
+one dated archive are kept). Settings → About → Logs → "Open log folder" opens it. The binary's own
+records log at `Info`+, third-party crates at `Warn`+. The sink is installed at the top of `setup` from a
+caught path: if the directory cannot be used, the app still launches with stdout only and says so at
+`warn`; `TERMIXION_LOG_NO_FILE=1` makes that deliberate.
+
+- **Never log** PTY input/output, environment values, clipboard contents, or `send-text` payloads.
+  Settings keys/values and error messages are fine.
+- The webview forwards `console.error/warn/info` through `app/src/ipc/logSink.ts` (`log.error(ctx, err)`)
+  → the app-owned, bounded (64 KiB) `log_message` command; `debug` stays local.
+- `println!`/`eprintln!` are for **stdio contracts only** (the `ctl` JSON reply, `--version`/`--help`,
+  the pre-builder usage errors, the fatal's stderr branch). The shell crate denies
+  `clippy::print_stdout` / `print_stderr`; only `run_ctl` and `main` carry an allowance, each with a
+  `stdio-contract` comment — use `log::*` anywhere else.
+- Unified logging (`os_log` / Console.app streaming) is a follow-up: the plugin has no such target and it
+  belongs behind a `termixion-platform` seam (R1).
+
 ## Test-driven development (R8 — fundamental)
 
 **Write tests first.** Every behavioral change follows **RED → GREEN → REFACTOR**:

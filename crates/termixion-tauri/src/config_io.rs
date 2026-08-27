@@ -514,7 +514,7 @@ pub fn config_read(state: State<'_, ConfigState>) -> ConfigReadResponse {
             inner.last = config;
             inner.last_warnings = parse_warnings;
         }
-        Err(_) => eprintln!("termixion: config state poisoned; skipping diff-base update"),
+        Err(_) => log::warn!("termixion: config state poisoned; skipping diff-base update"),
     }
     response
 }
@@ -609,13 +609,13 @@ pub fn run_config_watcher(app: tauri::AppHandle) {
 
     let path = config_path();
     let Some(parent) = path.parent().map(Path::to_path_buf) else {
-        eprintln!("termixion: config path has no parent; config file watching disabled");
+        log::warn!("termixion: config path has no parent; config file watching disabled");
         return;
     };
     // Ensure the directory exists so the watch can attach before the first lazy write
     // (create_dir_all is harmless — it creates no file).
     if let Err(err) = std::fs::create_dir_all(&parent) {
-        eprintln!(
+        log::warn!(
             "termixion: could not create {}: {err}; config file watching disabled",
             parent.display()
         );
@@ -637,12 +637,12 @@ pub fn run_config_watcher(app: tauri::AppHandle) {
         }) {
             Ok(watcher) => watcher,
             Err(err) => {
-                eprintln!("termixion: could not create the config watcher: {err}");
+                log::warn!("termixion: could not create the config watcher: {err}");
                 return;
             }
         };
     if let Err(err) = watcher.watch(&parent, RecursiveMode::NonRecursive) {
-        eprintln!(
+        log::warn!(
             "termixion: could not watch {}: {err}; config file watching disabled",
             parent.display()
         );
@@ -665,7 +665,7 @@ fn on_config_file_event(app: &tauri::AppHandle, path: &Path) {
     let text = std::fs::read_to_string(path).unwrap_or_default();
     let state = app.state::<ConfigState>();
     let Ok(mut inner) = state.0.lock() else {
-        eprintln!("termixion: config state poisoned; dropping a config file event");
+        log::warn!("termixion: config state poisoned; dropping a config file event");
         return;
     };
     let Some(application) = apply_file_text(&text, &inner.last, inner.last_write_hash) else {

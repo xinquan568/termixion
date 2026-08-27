@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: ISC
 // Copyright (c) 2026 Eric Y. Liu
+// trmx-236: stdout/stderr are for stdio CONTRACTS only (the `ctl` JSON reply, --version/--help, the
+// pre-builder usage errors, the fatal's stderr branch) — everything else goes through `log::*` into the
+// logging sink (`logging.rs`). The two functions that hold contracts carry an explicit allowance.
+#![deny(clippy::print_stdout, clippy::print_stderr)]
+#![cfg_attr(test, allow(clippy::print_stdout, clippy::print_stderr))]
 //! Termixion — the thin Tauri 2 desktop shell. Since trmx-74 it drives the multi-session
 //! [`SessionRegistry`] (one session per tab) and streams each session to the xterm.js webview over
 //! its own Tauri IPC `Channel` (ADR-0001): a dedicated thread per session runs the core reader
@@ -32,6 +37,7 @@ mod config_io;
 mod control;
 mod control_io;
 mod enhancements_io;
+mod logging;
 mod menu;
 mod scripts_io;
 mod services_io;
@@ -1093,19 +1099,19 @@ fn perf_done(report: String, success: bool, launch: State<'_, SpecialLaunch>) {
         let path = Path::new(dir).join("report.json");
         if let Err(err) = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&path, &report))
         {
-            eprintln!(
+            log::error!(
                 "termixion-perf: FAIL — could not write {}: {err}",
                 path.display()
             );
             std::process::exit(1);
         }
-        println!("termixion-perf: report written to {}", path.display());
+        log::info!("termixion-perf: report written to {}", path.display());
     }
     if success {
-        println!("termixion-perf: OK — budgets met");
+        log::info!("termixion-perf: OK — budgets met");
         std::process::exit(0);
     }
-    eprintln!("termixion-perf: FAIL — budgets missed or the run was invalid");
+    log::error!("termixion-perf: FAIL — budgets missed or the run was invalid");
     std::process::exit(1);
 }
 
@@ -1113,10 +1119,10 @@ fn perf_done(report: String, success: bool, launch: State<'_, SpecialLaunch>) {
 #[tauri::command]
 fn smoke_done(success: bool, reason: String) {
     if success {
-        println!("termixion-smoke: OK — {reason}");
+        log::info!("termixion-smoke: OK — {reason}");
         std::process::exit(0);
     }
-    eprintln!("termixion-smoke: FAIL — {reason}");
+    log::error!("termixion-smoke: FAIL — {reason}");
     std::process::exit(1);
 }
 
@@ -1169,6 +1175,10 @@ fn quit_confirmed(window: tauri::WebviewWindow) {
     let _ = window.close();
 }
 
+// stdio-contract: --version / --help / usage and the pre-builder launch-mode errors print to the
+// terminal BEFORE any logger can exist; the post-run fatal keeps a stderr branch for when the sink
+// never installed (see the end of this function).
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 fn main() -> ExitCode {
     // trmx-101 (FR-9.4): `termixion ctl <…>` is a non-GUI CLI — connect to the control socket, send one
     // request, print the response, exit. An EARLY fork, before the tauri app is ever built.
@@ -1180,16 +1190,19 @@ fn main() -> ExitCode {
     // second GUI instance (no window, no PTY, no updater, no watchdog threads).
     match cli_query(std::env::args().skip(1)) {
         CliQuery::Version => {
+            // stdio-contract: --version → stdout (CLI contract, before the Tauri builder)
             println!("{}", version_line());
             return ExitCode::SUCCESS;
         }
         CliQuery::Help => {
+            // stdio-contract: --help → stdout (CLI contract)
             println!("{}", usage());
             return ExitCode::SUCCESS;
         }
         CliQuery::UnknownFlag(flag) => {
             // Debug-format the flag: argv is attacker-adjacent input, and a raw echo could write
             // control bytes (ANSI/OSC) into the caller's terminal — {flag:?} escapes them.
+            // stdio-contract: unrecognized flag → usage on stderr (CLI contract)
             eprintln!("termixion: unrecognized flag {flag:?}\n\n{}", usage());
             return ExitCode::from(2);
         }
@@ -1210,6 +1223,7 @@ fn main() -> ExitCode {
     let (smoke, perf) = match resolved {
         Ok(modes) => modes,
         Err(msg) => {
+            // stdio-contract: launch-mode usage error before the builder (no logger yet)
             eprintln!("{msg}");
             return ExitCode::FAILURE;
         }
@@ -1222,7 +1236,7 @@ fn main() -> ExitCode {
         // extract on Linux CI) is not mistaken for a hang — the happy path exits in <5 s regardless.
         std::thread::spawn(|| {
             std::thread::sleep(Duration::from_secs(SMOKE_WATCHDOG_SECS));
-            eprintln!(
+            log::error!(
                 "termixion-smoke: FAIL — timed out waiting for the webview sentinel sequence"
             );
             std::process::exit(1);
@@ -1232,7 +1246,7 @@ fn main() -> ExitCode {
         // trmx-78: same discipline, sized to the harness's schedule (see PERF_WATCHDOG_SECS).
         std::thread::spawn(|| {
             std::thread::sleep(Duration::from_secs(PERF_WATCHDOG_SECS));
-            eprintln!("termixion-perf: FAIL — timed out waiting for the webview perf driver");
+            log::error!("termixion-perf: FAIL — timed out waiting for the webview perf driver");
             std::process::exit(1);
         });
     }
@@ -1271,6 +1285,17 @@ fn main() -> ExitCode {
         // submenu + Window tab-cycling items; trmx-75 adds Rename Tab… and spawns the
         // foreground-title poller (parked on its condvar gate until the first session opens).
         .setup(|app| {
+            // trmx-236: the logging sink FIRST — from a caught path with a stdout-only fallback, so an
+            // unwritable ~/Library/Logs never aborts the launch (logging.rs).
+            let installed = logging::install(app.handle());
+            if installed.sinks.is_empty() {
+                // stdio-contract: the sink itself could not start — stderr is the only channel left
+                // (this closure runs inside `main`, whose allowance covers it).
+                eprintln!(
+                    "termixion: logging unavailable ({}); continuing without a log sink",
+                    installed.file_disabled_reason.as_deref().unwrap_or("unknown")
+                );
+            }
             let menu = menu::build_menu(app.handle())?;
             app.set_menu(menu)?;
             let state = app.state::<PtyState>();
@@ -1309,7 +1334,7 @@ fn main() -> ExitCode {
                     },
                 );
                 if !registered {
-                    eprintln!("[termixion] services provider not registered (duplicate or off-main-thread)");
+                    log::warn!("[termixion] services provider not registered (duplicate or off-main-thread)");
                 }
             }
             // trmx-101 (FR-9.4): apply the remote-control state from the config at startup. A --smoke/--perf
@@ -1333,7 +1358,7 @@ fn main() -> ExitCode {
             match menu::menu_action(event.id().0.as_str()) {
                 Some(menu::MenuAction::ShowSettings { section }) => {
                     if let Err(err) = window_manager::show_settings_window(app, section) {
-                        eprintln!("termixion: failed to open the settings window: {err}");
+                        log::error!("termixion: failed to open the settings window: {err}");
                     }
                 }
                 // trmx-74/94: the frontend owns tab/pane/window/settings state, so the menu broadcasts
@@ -1341,7 +1366,7 @@ fn main() -> ExitCode {
                 // (incl. window-close → window.close and app-settings → app.settings, trmx-94 finding 7).
                 Some(menu::MenuAction::EmitTabsAction(action)) => {
                     if let Err(err) = app.emit("tabs:action", action) {
-                        eprintln!("termixion: failed to emit tabs:action ({action}): {err}");
+                        log::error!("termixion: failed to emit tabs:action ({action}): {err}");
                     }
                 }
                 None => {}
@@ -1375,6 +1400,9 @@ fn main() -> ExitCode {
             scripts_io::scripts_open_dir,
             shell_integration_io::shell_integration_reveal,
             control::control_response,
+            logging::log_message,
+            logging::log_dir,
+            logging::log_open_dir,
             quit_confirmed
         ])
         .on_window_event(|window, event| {
@@ -1421,8 +1449,18 @@ fn main() -> ExitCode {
         .run(tauri::generate_context!());
 
     if let Err(err) = result {
-        // No unwrap/expect: report and exit non-zero rather than panic.
-        eprintln!("termixion: fatal error running the app: {err}");
+        // No unwrap/expect: report and exit non-zero rather than panic. trmx-236: ONCE — through the
+        // logger when one installed (stdout + file), else to stderr (the sink is the likely culprit,
+        // hence the hint). `log::max_level()` stays `Off` until a logger attaches.
+        if log::max_level() == log::LevelFilter::Off {
+            // stdio-contract: no logger installed — stderr is the only channel left.
+            eprintln!(
+                "termixion: fatal error running the app: {err}\n  (if the log sink failed to open ~/Library/Logs, set {}=1 to launch without the log file)",
+                logging::NO_FILE_ENV
+            );
+        } else {
+            log::error!("termixion: fatal error running the app: {err}");
+        }
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS

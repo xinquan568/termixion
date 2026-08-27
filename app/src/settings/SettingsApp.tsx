@@ -87,6 +87,9 @@ export interface SettingsAppProps {
   /** trmx-148: the About row's backend-side config-file open (settingsStore.openConfigFile in
    * production); threaded through untouched so tests can inject a fake. */
   openConfigFile: () => Promise<void>;
+  /** trmx-236: the About row's log-folder seams (settingsStore.getLogDir / openLogDir in production). */
+  getLogDir?: () => Promise<string>;
+  openLogDir?: () => Promise<void>;
   /** Subscription seam for settings:navigate + settings:changed; absent in tests/dev browser is fine. */
   listen?: ListenFn;
   /** trmx-89 (4b): the backend edge for the theme registry (hydrate + the Appearance themes-dir
@@ -109,6 +112,8 @@ export function SettingsApp({
   opener,
   settings,
   openConfigFile,
+  getLogDir = async () => "",
+  openLogDir = async () => {},
   listen,
   invoke = realInvoke,
 }: SettingsAppProps) {
@@ -256,6 +261,8 @@ export function SettingsApp({
         opener={opener}
         settings={settings}
         openConfigFile={openConfigFile}
+        getLogDir={getLogDir}
+        openLogDir={openLogDir}
       />
     );
 

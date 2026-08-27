@@ -368,7 +368,7 @@ pub fn apply_with(
         && let Some(handle) = guard.take()
     {
         teardown(handle);
-        eprintln!(
+        log::info!(
             "termixion: remote control {}.",
             if action == Reconcile::Stop {
                 "stopped"
@@ -391,18 +391,18 @@ pub fn apply_with(
                             dead,
                             thread,
                         });
-                        eprintln!("termixion: remote control listening (opt-in).");
+                        log::info!("termixion: remote control listening (opt-in).");
                     }
                     Err(e) => {
                         // No acceptor → nobody owns the bound socket: unlink it, stay stopped (no abort).
                         let _ = std::fs::remove_file(&path);
-                        eprintln!(
+                        log::error!(
                             "termixion: remote control not started — could not spawn the acceptor thread: {e}"
                         );
                     }
                 }
             }
-            Err(e) => eprintln!("termixion: remote control not started — {e}"),
+            Err(e) => log::error!("termixion: remote control not started — {e}"),
         }
     }
     action
@@ -504,7 +504,9 @@ pub fn run_acceptor<A, S, Z>(
                     Box::new(move || handle_connection(stream, &process, &next_id, permit, &stop));
                 if let Err(e) = spawn(job) {
                     // The job — and the permit it owns — dropped with the Err: the slot is free again.
-                    eprintln!("termixion: remote control could not spawn a connection worker: {e}");
+                    log::error!(
+                        "termixion: remote control could not spawn a connection worker: {e}"
+                    );
                     if let Some(n) = notify {
                         write_client_error(&n, "spawn-failed");
                     }
@@ -513,11 +515,11 @@ pub fn run_acceptor<A, S, Z>(
             Err(e) => match accept_error_action(e.kind()) {
                 AcceptAction::Poll => sleep(ACCEPT_POLL),
                 AcceptAction::RetryAfterDelay => {
-                    eprintln!("termixion: remote control accept error (transient, retrying): {e}");
+                    log::warn!("termixion: remote control accept error (transient, retrying): {e}");
                     sleep(ACCEPT_POLL);
                 }
                 AcceptAction::Fatal => {
-                    eprintln!(
+                    log::error!(
                         "termixion: remote control acceptor stopped: {e} — the next config apply restarts it (toggle remote_control.enabled)"
                     );
                     dead.store(true, Ordering::SeqCst);
@@ -663,7 +665,7 @@ pub fn resolve_pending(pending: &Pending, id: u64, payload: JsonValue) -> bool {
 #[tauri::command]
 pub fn control_response(id: u64, payload: JsonValue, state: State<'_, ControlState>) {
     if !resolve_pending(&state.pending, id, payload) {
-        eprintln!(
+        log::warn!(
             "termixion: late control response for request {id} (already answered as timeout; the command may have run)"
         );
     }
@@ -681,10 +683,14 @@ pub fn decode_response_line(bytes: &[u8]) -> String {
 
 /// `termixion ctl <…>`: connect to the socket, send one request, print the response line, exit 0/1 on
 /// `ok`. Non-GUI — never builds the tauri app.
+// stdio-contract: `termixion ctl` is a CLI — the JSON reply goes to stdout (scripts parse it), client
+// errors to stderr; it forks before the Tauri builder, so no logger exists here by construction.
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub fn run_ctl<I: IntoIterator<Item = String>>(args: I) -> std::process::ExitCode {
     let req = match parse_ctl_argv(args) {
         Ok(r) => r,
         Err(e) => {
+            // stdio-contract: ctl client error → stderr (the CLI contract; no logger exists in the ctl fork)
             eprintln!("termixion ctl: {e}");
             return std::process::ExitCode::FAILURE;
         }
@@ -700,6 +706,7 @@ pub fn run_ctl<I: IntoIterator<Item = String>>(args: I) -> std::process::ExitCod
     let mut stream = match UnixStream::connect(&path) {
         Ok(s) => s,
         Err(e) => {
+            // stdio-contract: ctl client error → stderr
             eprintln!(
                 "termixion ctl: cannot connect to {} ({e}). Is remote control enabled?",
                 path.display()
@@ -713,6 +720,7 @@ pub fn run_ctl<I: IntoIterator<Item = String>>(args: I) -> std::process::ExitCod
         .write_all(format!("{}\n", req.request_line).as_bytes())
         .is_err()
     {
+        // stdio-contract: ctl client error → stderr
         eprintln!("termixion ctl: failed to write the request");
         return std::process::ExitCode::FAILURE;
     }
@@ -722,9 +730,11 @@ pub fn run_ctl<I: IntoIterator<Item = String>>(args: I) -> std::process::ExitCod
     let _ = reader.read_until(b'\n', &mut raw); // one response line (a read error → whatever arrived)
     let buf = decode_response_line(&raw);
     if buf.is_empty() {
+        // stdio-contract: ctl client error → stderr
         eprintln!("termixion ctl: no response");
         return std::process::ExitCode::FAILURE;
     }
+    // stdio-contract: ctl prints the JSON reply on stdout — parsed by scripts (docs/remote-control.md)
     println!("{buf}");
     let ok = serde_json::from_str::<JsonValue>(&buf)
         .ok()
@@ -857,6 +867,28 @@ mod tests {
     #[test]
     fn ctl_read_deadline_outlives_the_server_timeout() {
         assert!(CTL_READ_TIMEOUT > REQUEST_TIMEOUT);
+    }
+
+    /// trmx-236 (L2): the private `lock()` helper RECOVERS the stored value from a poisoned mutex (a
+    /// peer panicked while holding it) — the pending-sender map must stay usable. Deliberately different
+    /// from the poller / credit-cell / Services-queue degrade policies, which are not changed.
+    #[test]
+    fn lock_recovers_a_poisoned_mutex() {
+        let shared = Arc::new(Mutex::new(41u32));
+        let poisoner = Arc::clone(&shared);
+        let result = std::thread::spawn(move || {
+            let mut g = poisoner.lock().unwrap();
+            *g += 1;
+            panic!("poison while holding the lock");
+        })
+        .join();
+        assert!(result.is_err(), "the thread must have panicked");
+        assert!(shared.lock().is_err(), "the mutex is poisoned");
+        assert_eq!(
+            *lock(&shared),
+            42,
+            "lock() recovers the value written before the panic"
+        );
     }
 
     #[test]

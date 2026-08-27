@@ -141,6 +141,7 @@ import { makeCwdStore, type CwdStore } from "./terminal/osc7";
 import { realSetWindowTitle } from "./terminal/windowTitle";
 import type { TerminalHandle } from "./terminal/mountTerminal";
 import { UpdateAuthorityHost } from "./update/UpdateAuthorityHost";
+import { log } from "./ipc/logSink";
 
 /** The menu's tab-intent broadcast (main.rs emits "new"/"close"/"next"/"prev"/split verbs). */
 export const TABS_ACTION_EVENT = "tabs:action";
@@ -683,8 +684,8 @@ export function App({
           listScripts(invoke).then((scripts) => {
             const match = scripts.find((entry) => entry.relPath === startupPath);
             if (!match) {
-              console.warn(
-                `[termixion] startup script "${startupPath}" not found in ~/.config/termixion/scripts/; starting a plain shell`,
+              log.warn(
+                `startup script "${startupPath}" not found in ~/.config/termixion/scripts/; starting a plain shell`,
               );
               return null;
             }
@@ -769,7 +770,7 @@ export function App({
                   if (resolved && paneAlive(tabId, paneId)) {
                     seamsRef.current.sendInput(info.sessionId, `${resolved.sourceLine}\r`).catch(
                       (err: unknown) => {
-                        console.error("[termixion] sourcing the script failed", err);
+                        log.error("sourcing the script failed", err);
                       },
                     );
                   }
@@ -779,7 +780,7 @@ export function App({
               // ORPHAN GUARD: the pane/tab closed mid-attach, OR this is a superseded (StrictMode)
               // mount — kill the session it will never show.
               seamsRef.current.closeSession(info.sessionId).catch((err: unknown) => {
-                console.error("[termixion] orphan session close failed", err);
+                log.error("orphan session close failed", err);
               });
               // trmx-93: if the pane is truly DEAD (not merely a stale epoch on a still-live pane),
               // drop its pending script — no later attach will consume it. A stale-epoch-but-alive
@@ -790,7 +791,7 @@ export function App({
           .catch((err: unknown) => {
             // Open failed (no backend in `pnpm dev`, or a real spawn error): the pane keeps its
             // placeholder title with a dead session — do not crash the shell.
-            console.error("[termixion] pane attach failed", err);
+            log.error("pane attach failed", err);
             pendingScriptRef.current.delete(paneId); // trmx-93: no session → the script never sources
           });
       };
@@ -977,7 +978,7 @@ export function App({
     });
     if (sessionId !== undefined && !opts?.alreadyExited) {
       seamsRef.current.closeSession(sessionId).catch((err: unknown) => {
-        console.error("[termixion] close pty failed", err);
+        log.error("close pty failed", err);
       });
     }
   };
@@ -1293,12 +1294,12 @@ export function App({
     },
     openSettings: () => {
       invoke("open_settings_window", { section: null }).catch((err: unknown) =>
-        console.error("[termixion] open settings failed", err),
+        log.error("open settings failed", err),
       );
     },
     checkForUpdates: () => {
       invoke("open_settings_window", { section: "about" }).catch((err: unknown) =>
-        console.error("[termixion] open settings (updates) failed", err),
+        log.error("open settings (updates) failed", err),
       );
     },
     // trmx-144: a REMOTE window.close confirms the quit directly (never gates, never re-enters the
@@ -1315,7 +1316,7 @@ export function App({
       const sessionId = tab ? sessionsRef.current.get(tab.focusedPaneId) : undefined;
       if (sessionId !== undefined) {
         seamsRef.current.sendInput(sessionId, `${sourceLine}\r`).catch((err: unknown) =>
-          console.error("[termixion] run script failed", err),
+          log.error("run script failed", err),
         );
       }
     },
@@ -1739,7 +1740,7 @@ export function App({
         if (mirroredRef.current.get(paneId) === title) continue;
         mirroredRef.current.set(paneId, title);
         seamsRef.current.mirrorTitle(sessionId, title).catch((err: unknown) => {
-          console.error("[termixion] title mirror failed", err);
+          log.error("title mirror failed", err);
         });
       }
     }
