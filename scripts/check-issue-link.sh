@@ -7,6 +7,7 @@
 #   HEAD_REF  — PR head branch        (github.event.pull_request.head.ref)
 #   PR_TITLE  — PR title
 #   PR_BODY   — PR body (may be empty) (github.event.pull_request.body)
+#   PR_AUTHOR — PR author login (may be empty) (github.event.pull_request.user.login)
 #   REPO      — owner/name            (github.repository)
 #   GH_TOKEN  — token for `gh` (issue-existence check)
 set -euo pipefail
@@ -17,6 +18,20 @@ fail() { echo "r9-issue-link: FAIL — $*" >&2; exit 1; }
 : "${PR_TITLE:?PR_TITLE unset}"
 : "${REPO:?REPO unset}"
 PR_BODY="${PR_BODY:-}"
+PR_AUTHOR="${PR_AUTHOR:-}"
+
+# 0. Dependabot allowance (trmx-261). A dependency bump carries no trmx-<N> by construction, and it has no
+# design intent to recover from an issue — its provenance is the lockfile diff and the upstream release
+# notes. BOTH halves are required. The author login is the authoritative one: GitHub reserves the `[bot]`
+# suffix for Apps, so no human account can claim it, and the value comes from the event payload (trusted
+# metadata), not from PR-authored text. The branch shape is defence in depth, keeping the exemption narrow
+# if the login test is ever loosened — a human PR pushed to a `dependabot/…` branch still faces the full
+# gate. `dependabot` is a fixed branch prefix; only the separator is configurable, hence [/-]. R9 itself is
+# unchanged: every human PR still needs a consistent trmx-<N> and a real issue.
+if [ "$PR_AUTHOR" = "dependabot[bot]" ] && [[ "$HEAD_REF" =~ ^dependabot[/-] ]]; then
+  echo "r9-issue-link: OK — exempt: dependabot[bot] dependency PR on '$HEAD_REF' (R9 trmx-<N> is required of human PRs)."
+  exit 0
+fi
 
 # 1. Head branch must carry trmx-<N> (e.g. xinquan568/ai/trmx-<N>-<slug>).
 [[ "$HEAD_REF" =~ trmx-([0-9]+) ]] || fail "branch '$HEAD_REF' has no trmx-<N> (expected …/trmx-<N>-<slug>)"

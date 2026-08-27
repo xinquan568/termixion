@@ -85,6 +85,15 @@ branch protection for it to gate merges. The `commit-msg` hook runs the same bra
 feedback; like every R8/E-1 hook it can be `--no-verify`'d, which is exactly why the CI gate — not the
 hook — is the real enforcement.
 
+**The one allowance (trmx-261): Dependabot.** A dependency bump has no design intent to recover from an
+issue — its provenance is the lockfile diff and the upstream release notes — and it carries no `trmx-<N>`
+by construction, so the gate would fail every bump. `scripts/check-issue-link.sh` exempts a PR only when
+the author login is exactly `dependabot[bot]` **and** the head branch is a `dependabot/…` branch; the
+exemption is logged, never silent. The login is authoritative (GitHub reserves the `[bot]` suffix for
+Apps), the branch shape keeps it narrow, and a human PR on a `dependabot/…`-shaped branch still faces the
+full gate. `scripts/check-issue-link.test.sh` pins both the allowance and the refusals. **No other
+exemption exists** — every human change still traces to an issue.
+
 ## R10 — Changelog: curated, user-facing, auto-generated
 `CHANGELOG.md` records **user-facing** changes only — `feat` → **Added**, `fix` → **Fixed**, `perf` →
 **Changed**, and security fixes (a `fix(security):` / `feat(security):` scope) → **Security** — in
