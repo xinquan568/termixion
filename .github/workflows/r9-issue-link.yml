@@ -41,4 +41,7 @@ jobs:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
+          # trmx-261: the author login gates the dependabot[bot] allowance. Trusted event metadata (the
+          # `[bot]` suffix is reserved for GitHub Apps), still read as DATA via env like the rest.
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: bash scripts/check-issue-link.sh
