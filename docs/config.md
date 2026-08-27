@@ -80,8 +80,9 @@ wins**, matching iTerm2. Toggling it live attaches/detaches the listeners per pa
 
 ⁷ Remote control (trmx-101, FR-9.4): the opt-in external control channel — a local socket that lets scripts
 drive the terminal. **OFF by default; NO TCP, ever.** Enabling it starts the socket live (`0600` in a `0700`
-dir); `socket_path` overrides the default `~/.config/termixion/control.sock` (the parent must be a private,
-you-owned `0700` dir or the override is refused). See [remote-control.md](remote-control.md) for the
+dir); `socket_path` overrides the default `~/.config/termixion/control/control.sock` (it must be an absolute
+path whose parent already exists as a real, you-owned directory with mode exactly `0700`, or the override is
+refused — it is never created or chmod-ed for you). See [remote-control.md](remote-control.md) for the
 protocol, the `termixion ctl` CLI, and the threat model.
 
 ⁸ Confirm-before-close (trmx-144): a **user-initiated** close — a pane (`pane.close`), a tab (`tab.close`,

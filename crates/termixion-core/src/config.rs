@@ -193,8 +193,25 @@ impl Default for UpdateConfig {
 pub struct RemoteControlConfig {
     /// OFF by default (a `bool` defaults to `false`).
     pub enabled: bool,
-    /// Empty string (the `String` default) = the default socket path (`~/.config/termixion/control.sock`).
+    /// Empty string (the `String` default) = the default socket path (`~/.config/termixion/control/control.sock`,
+    /// see [`default_control_socket_path`]).
     pub socket_path: String,
+}
+
+/// The default control-socket path (trmx-101 / trmx-235): `<XDG_CONFIG_HOME | <home>/.config>/termixion/control/control.sock`.
+/// A DEDICATED `control/` subdir (not the shared `termixion/` config dir, which other subsystems create
+/// `0755`) so the shell can keep its parent `0700` without touching the rest of the config tree. Pure
+/// (env-free): the tauri shell resolves the env, `termixion ctl` shares the definition, and the template
+/// above is pinned against it by a test — the three can no longer disagree.
+pub fn default_control_socket_path(
+    xdg_config_home: Option<&str>,
+    home: &str,
+) -> std::path::PathBuf {
+    let base = match xdg_config_home.filter(|d| !d.is_empty()) {
+        Some(xdg) => std::path::PathBuf::from(xdg),
+        None => std::path::Path::new(home).join(".config"),
+    };
+    base.join("termixion").join("control").join("control.sock")
 }
 
 /// The `[terminal]` table.
@@ -489,7 +506,7 @@ pub const DEFAULT_TEMPLATE: &str = r##"# Termixion configuration (TOML).
 
 # [remote_control]                # trmx-101: the opt-in external control channel (see docs/remote-control.md).
 # enabled = false                 # OFF by default — a local socket that lets scripts drive the terminal.
-# socket_path = ""                # "" = ~/.config/termixion/control.sock (0600 in a 0700 dir; NO TCP, ever).
+# socket_path = ""                # "" = ~/.config/termixion/control/control.sock (0600 in a 0700 dir; NO TCP, ever).
 
 # [keys]                          # chord = "command.id" — rebind any shortcut; = "none" to unbind.
 # "cmd+t" = "tab.new"             # See docs/commands.md for every command id + its default binding.
@@ -2447,5 +2464,43 @@ show_shortcut_hints = false
             message: "unexpected end of input".to_string(),
         };
         assert!(warning.to_string().contains("unexpected end of input"));
+    }
+
+    // trmx-235 (M11): the shipped template and the field doc must name the REAL default socket path — the one
+    // the shell and `termixion ctl` compute — so a third-party client following the docs can connect.
+    #[test]
+    fn default_control_socket_path_joins_the_dedicated_control_subdir() {
+        assert_eq!(
+            default_control_socket_path(Some("/x/cfg"), "/home/u"),
+            std::path::PathBuf::from("/x/cfg/termixion/control/control.sock")
+        );
+        assert_eq!(
+            default_control_socket_path(None, "/home/u"),
+            std::path::PathBuf::from("/home/u/.config/termixion/control/control.sock")
+        );
+        assert_eq!(
+            default_control_socket_path(Some(""), "/home/u"),
+            std::path::PathBuf::from("/home/u/.config/termixion/control/control.sock")
+        );
+    }
+
+    #[test]
+    fn template_and_field_doc_name_the_real_default_socket_path() {
+        let rendered = default_control_socket_path(None, "~").display().to_string();
+        assert_eq!(rendered, "~/.config/termixion/control/control.sock");
+        assert!(
+            DEFAULT_TEMPLATE.contains(&rendered),
+            "DEFAULT_TEMPLATE must contain the full rendered default path {rendered}"
+        );
+        assert!(
+            !DEFAULT_TEMPLATE.contains("termixion/control.sock"),
+            "the stale pre-trmx-235 path must be gone from the template"
+        );
+        let source = include_str!("config.rs");
+        let doc_line = source
+            .lines()
+            .find(|l| l.contains("the default socket path (`"))
+            .expect("the socket_path field doc names the default path");
+        assert!(doc_line.contains(&rendered), "field doc: {doc_line}");
     }
 }

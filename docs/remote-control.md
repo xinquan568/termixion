@@ -15,8 +15,14 @@ into your shell, and any command that runs a script does so as you. Termixion tr
   uid can already run commands as you; the permissions defend against *other* local users and sandboxed
   apps, not against yourself.
 - **A live second instance is never clobbered.** On start Termixion probes an existing socket; a live one
-  (another instance) is left alone, only a stale socket is reclaimed. A user-supplied `socket_path` must
-  live in a private (`0700`, you-owned) directory or it is refused.
+  (another instance) is left alone, only a stale socket is reclaimed. A user-supplied `socket_path` must be
+  an **absolute** path whose parent **already exists** as a real directory you own with mode **exactly
+  `0700`** — otherwise it is refused; Termixion never creates or chmod-s that parent for you (trmx-235). The
+  default path's own `control/` subdir *is* created-or-tightened to `0700`.
+- **Bounded.** At most 16 concurrent connections (the rest get `too-many-connections`), at most 64 KiB per
+  request line (`line-too-long`), strict UTF-8 (`invalid-utf8` — a malformed line is never dispatched). A
+  listener whose acceptor hits a fatal error is restarted on the next config apply (toggle
+  `remote_control.enabled`, or any settings write).
 
 If you don't want any of this, do nothing — it stays off.
 
@@ -27,11 +33,12 @@ In `~/.config/termixion/termixion.toml`:
 ```toml
 [remote_control]
 enabled = true
-# socket_path = ""   # "" = ~/.config/termixion/control.sock (0600 in a 0700 dir)
+# socket_path = ""   # "" = ~/.config/termixion/control/control.sock (0600 in a 0700 dir)
 ```
 
 The toggle applies live (the config watcher starts/stops the listener). The default socket is
-`~/.config/termixion/control.sock` (or `$XDG_CONFIG_HOME/termixion/control.sock`).
+`~/.config/termixion/control/control.sock` (or `$XDG_CONFIG_HOME/termixion/control/control.sock`) — a
+dedicated `control/` subdir so its parent can be private without touching the rest of the config tree.
 
 ## The `termixion ctl` CLI
 
@@ -45,27 +52,47 @@ alias tmx="/Applications/Termixion.app/Contents/MacOS/termixion ctl"
 tmx pane.split-right          # run a registry command by id
 tmx ls                        # the tabs/panes tree (see the shape below)
 tmx version                   # the app + protocol version
+tmx commands                  # the protocol version + every callable command id (gate scripts on it)
 tmx send-text --pane focused "make test\n"   # type into the focused pane's shell
 tmx theme.select --arg night  # a command that takes a single string arg
 tmx --socket /tmp/tmx.sock ls # target a non-default socket
 ```
 
 Exit code `0` when the response is `{"ok":true,…}`, `1` otherwise (incl. "cannot connect" when remote
-control is disabled).
+control is disabled). Output is UTF-8 (a title such as `vim — main.rs` prints intact — trmx-235). The client
+waits up to 10 s for the response — longer than the server's own 8 s request timeout, so a `timeout` reply
+is always printed rather than "no response".
 
 ## The protocol (JSON-lines)
 
 One JSON object per line, request → response. Versioned via `{"cmd":"version"}` (gate your scripts on it).
 
-**Request**: `{ "cmd": "<id>", "args": { … } }`. `cmd` is a command id, `ls`, `version`, or `send-text`.
-Unknown top-level fields are ignored; a malformed line returns an error response and the connection stays up.
+**Request**: `{ "cmd": "<id>", "args": { … } }`. `cmd` is a command id, `ls`, `version`, `commands`, or
+`send-text`. Unknown top-level fields are ignored; malformed JSON returns an error response and the
+connection stays up. The transport itself is bounded (trmx-235): a request line over 64 KiB is answered
+`{ "id": 0, "ok": false, "error": "line-too-long" }` and the connection closes; a line that is not valid
+UTF-8 is answered `invalid-utf8` and closed (it is never dispatched); beyond 16 concurrent connections the
+server answers `too-many-connections` (or `spawn-failed` if the OS refuses a thread) and closes.
 
 **Response**: `{ "id": <n>, "ok": <bool>, "result"?: <any>, "error"?: "<reason>" }`.
 - A registry command → `{ ok: true }` if it ran, or `{ ok: false, error: "unknown-command" }` (no such id)
   / `{ ok: false, error: "not-applicable" }` (the command's `when` guard refused it, e.g. closing the only
   pane).
 - `send-text` → `{ ok: true }`, or `{ ok: false, error: "no-such-pane" }`.
-- A request the webview doesn't answer within 2 s → `{ ok: false, error: "timeout" }`.
+- `commands` → `{ ok: true, result: { protocol: 1, commands: ["app.check-updates", …] } }` — every id that is
+  callable over the socket (trmx-235). Older servers answer it with `unknown-command`.
+- A request the webview doesn't answer within **8 s** → `{ ok: false, error: "timeout" }`. **After a
+  `timeout` the command's fate is unknown**: it may already have run, may still run late, or may never be
+  handled. Retrying a mutating command (`pane.split-right`, `send-text`, …) can therefore execute it twice;
+  query with `ls` before retrying. A late reply is logged by the app.
+
+### The callable command set is part of the protocol
+
+Every id in the [command reference](commands.md) is callable. That set is pinned, per protocol version, by
+`app/src/control/__fixtures__/control-commands.json` — **any** change to it (adding, removing, or renaming an
+id) is a protocol change: `protocol` in that file, `CONTROL_PROTOCOL_VERSION` (`controlBridge.ts`), and
+`PROTOCOL_VERSION` (`control_io.rs`) bump together, and CI's `scripts/check-control-protocol.sh` refuses a
+change that doesn't. Gate scripts on `version` / `commands` and they will see the bump.
 
 **Close commands never prompt.** `pane.close`, `tab.close`, and `window.close` over the socket bypass the
 [`terminal.confirm_close`](config.md) confirmation entirely — no dialog in **any** mode, including
