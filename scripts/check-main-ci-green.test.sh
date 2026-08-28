@@ -23,20 +23,24 @@ mkdir -p "$tmp/bin"
 fails=0
 
 # Stub `gh`: finds the `--jq` program in its own argv and runs it against the fixture with real jq.
-# With `--paginate`, gh applies the filter per page and concatenates — PAGES_DIR holds one JSON file
-# per page, so multi-page selection is exercised rather than assumed.
+# It HONORS `--paginate` — without that flag it serves page 1 only, exactly as real gh does. A stub
+# that walked every page unconditionally would make the two page-2 cases below pass even if
+# `--paginate` were deleted from the gate, which is the difference between asserting pagination and
+# merely mentioning it.
 cat > "$tmp/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "${GH_FAIL:-0}" = "1" ]; then echo "gh: API is down" >&2; exit 1; fi
-prog=""; want=0
+prog=""; want=0; paginate=0
 for a in "$@"; do
   if [ "$want" = 1 ]; then prog="$a"; want=0; continue; fi
   [ "$a" = "--jq" ] && want=1
+  [ "$a" = "--paginate" ] && paginate=1
 done
 for page in "$PAGES_DIR"/page-*.json; do
   [ -e "$page" ] || continue
   jq -r "$prog" < "$page"
+  [ "$paginate" = 1 ] || break   # no --paginate: the first page is all real gh would return
 done
 STUB
 chmod +x "$tmp/bin/gh"
