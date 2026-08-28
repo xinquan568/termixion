@@ -1333,10 +1333,10 @@ body {
 
 /*
  * trmx-237 (grill H3) — the last-resort recovery surface. It is shown precisely when the app is
- * broken, so it must not depend on anything the app does at runtime: no theme variables (the theme
- * is applied by code that may be the thing that just failed) and no layout classes. Fixed, opaque,
- * above everything, with its own literal colors — a surface that renders correctly even if every
- * stylesheet variable is unset.
+ * broken, so it must not depend on anything the app does at RUNTIME: its colors are literal, not
+ * theme tokens (the theme is applied by code that may be the thing that just failed), and it needs
+ * no layout classes. Fixed, opaque, above everything. The two font vars ARE safe: they are static
+ * `:root` declarations in this same stylesheet (the trmx-220 chokepoint), not runtime values.
  */
 .error-boundary {
   position: fixed;
@@ -1350,7 +1350,7 @@ body {
   padding: 32px;
   background: #1a1416;
   color: #f2e9ec;
-  font-family: var(--tx-ui-font, system-ui, sans-serif);
+  font-family: var(--tx-ui-font);
   text-align: center;
 }
 
@@ -1376,7 +1376,7 @@ body {
   border-radius: 6px;
   background: #241c1f;
   color: #ff9f9f;
-  font-family: var(--tx-mono, ui-monospace, monospace);
+  font-family: var(--tx-mono);
   font-size: 12px;
   text-align: left;
   white-space: pre-wrap;
