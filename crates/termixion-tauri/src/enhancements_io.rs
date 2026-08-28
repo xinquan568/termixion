@@ -26,7 +26,11 @@ use termixion_core::zdotdir::{
 };
 
 /// The vendored plugin trees (single source of truth: `resources/shell-enhancements/`).
-static PLUGINS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../resources/shell-enhancements");
+// trmx-240 (L14): embed the BUILD-STAGED tree (build.rs `stage_enhancements`), not the source
+// directory. `include_dir!` bakes bytes in at COMPILE time, so a runtime filter cannot stop
+// wordcode from shipping inside the binary — only staging can. The runtime `is_embeddable` filter
+// below is defence in depth for the materialized tree.
+static PLUGINS: Dir<'_> = include_dir!("$TERMIXION_ENHANCEMENTS_DIR");
 
 /// The materialized, version-pinned paths one spawn points its env at.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +75,12 @@ fn version_key() -> String {
 fn hash_embedded(dir: &Dir<'_>, hasher: &mut impl std::hash::Hasher) {
     use std::hash::Hash;
     for file in dir.files() {
+        // trmx-240: skipped for the same reason write_embedded skips them — and additionally so a
+        // stray build-time `.zwc` cannot shift the version key and force every install to
+        // re-materialize an identical tree.
+        if !is_embeddable(file.path()) {
+            continue;
+        }
         file.path().to_string_lossy().hash(hasher);
         file.contents().hash(hasher);
     }
@@ -86,11 +96,28 @@ fn paths_for(version_dir: &Path) -> Materialized {
     }
 }
 
+/// trmx-240 (L14): compiled zsh wordcode NEVER reaches a materialized tree, whatever is sitting in
+/// `resources/` at build time.
+///
+/// This is the load-bearing half of the guard, and the git-side half cannot substitute for it:
+/// `include_dir!` is a FILESYSTEM macro, so it embeds whatever is on disk and neither `.gitignore`
+/// nor a `git ls-files` gate has any say. That matters concretely because the real-PTY tests point
+/// p10k at `resources/shell-enhancements` directly, so `cargo test` leaves freshly-compiled `.zwc`
+/// there — and CI's macOS job runs the tests BEFORE the packaged build. Without this filter a
+/// test-then-build sequence would embed and ship the very blobs trmx-240 removed, while every git
+/// guard reported clean.
+fn is_embeddable(path: &Path) -> bool {
+    path.extension().is_none_or(|ext| ext != "zwc")
+}
+
 fn write_embedded(dir: &Dir<'_>, under: &Path) -> Result<(), String> {
     for sub in dir.dirs() {
         write_embedded(sub, under)?;
     }
     for file in dir.files() {
+        if !is_embeddable(file.path()) {
+            continue;
+        }
         let target = under.join(file.path());
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {parent:?}: {e}"))?;
@@ -427,6 +454,76 @@ mod tests {
     use super::*;
 
     // --- trmx-238 (M18): the status the last real spawn recorded --------------------------------
+
+    // trmx-240 (L14): the embedding boundary is the guard that actually protects the SHIPPED app.
+    #[test]
+    fn wordcode_is_never_embeddable() {
+        assert!(!is_embeddable(Path::new(
+            "powerlevel10k/internal/p10k.zsh.zwc"
+        )));
+        assert!(!is_embeddable(Path::new("a.zwc")));
+        // Everything else still ships, including files with no extension and lookalike names.
+        assert!(is_embeddable(Path::new("powerlevel10k/internal/p10k.zsh")));
+        assert!(is_embeddable(Path::new("pure/async.zsh")));
+        assert!(is_embeddable(Path::new("gitstatus/install")));
+        assert!(is_embeddable(Path::new("not-a.zwcx")));
+        assert!(is_embeddable(Path::new("zwc")));
+    }
+
+    /// trmx-240: the assertion that actually covers the SHIPPED binary. `PLUGINS` is what
+    /// `include_dir!` baked in at compile time, so if this is empty of wordcode then none was
+    /// embedded — which a materialization-only test cannot establish (it inspects what was written
+    /// out, not what the executable carries).
+    #[test]
+    fn no_wordcode_is_embedded_in_the_binary() {
+        fn walk(dir: &Dir<'_>, found: &mut Vec<String>) {
+            for file in dir.files() {
+                if file.path().extension().is_some_and(|e| e == "zwc") {
+                    found.push(file.path().display().to_string());
+                }
+            }
+            for sub in dir.dirs() {
+                walk(sub, found);
+            }
+        }
+        let mut found = Vec::new();
+        walk(&PLUGINS, &mut found);
+        assert!(
+            found.is_empty(),
+            "wordcode was embedded into the binary: {found:?}"
+        );
+    }
+
+    #[test]
+    fn a_materialized_tree_contains_no_wordcode() {
+        // The end-to-end assertion the git guards cannot make: whatever `include_dir!` picked up
+        // from disk at build time, no `.zwc` reaches a materialized version directory. This fails
+        // if the filter is removed AND the build tree carried wordcode — the exact CI
+        // test-then-build sequence that would otherwise ship it.
+        let base = std::env::temp_dir().join(format!("trmx240-mat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let materialized = materialize_enhancements(&base).expect("materialize");
+        let mut found: Vec<PathBuf> = Vec::new();
+        let mut stack = vec![materialized.plugins_dir.clone()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "zwc") {
+                    found.push(path);
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(
+            found.is_empty(),
+            "wordcode reached the materialized tree: {found:?}"
+        );
+    }
 
     #[test]
     fn a_failed_materializer_reports_the_error_string_and_still_spawns_bare() {

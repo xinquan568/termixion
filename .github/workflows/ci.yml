@@ -40,6 +40,11 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: core seam guard (forbidden-dep + no platform cfg / std::os)
         run: bash scripts/check-core-seam.sh
+      # trmx-240: hosted in the REQUIRED job on purpose. In the advisory shell-integration job it
+      # would only report a violation, and the docs would then be claiming enforcement that does not
+      # exist — the ungated-claim failure trmx-239 closed.
+      - name: no committed zsh wordcode (trmx-240)
+        run: bash scripts/check-no-zwc.sh
 
   # R5 (trmx-234): the same secret scan the pre-commit hook runs, over the PR diff (or the pushed range)
   # so a `--no-verify` bypass or a hook-less clone still fails here. Full history so the base ref resolves —
@@ -96,7 +101,7 @@ jobs:
       - name: Install zsh (for the zsh half of the source-and-assert test)
         run: sudo apt-get update && sudo apt-get install -y zsh
       - name: shellcheck the bash snippet, the test, and the secret-scan / control-protocol / issue-link scripts
-        run: shellcheck -s bash resources/shell-integration/termixion.bash resources/shell-integration/integration_test.sh scripts/secret-scan.sh scripts/secret-scan.test.sh scripts/check-control-protocol.sh scripts/check-control-protocol.test.sh scripts/check-issue-link.sh scripts/check-issue-link.test.sh scripts/check-core-seam.sh scripts/check-core-seam.test.sh .claude/hooks/hooks.test.sh .claude/hooks/pre-commit .claude/hooks/pre-push
+        run: shellcheck -s bash resources/shell-integration/termixion.bash resources/shell-integration/integration_test.sh scripts/secret-scan.sh scripts/secret-scan.test.sh scripts/check-control-protocol.sh scripts/check-control-protocol.test.sh scripts/check-issue-link.sh scripts/check-issue-link.test.sh scripts/check-core-seam.sh scripts/check-core-seam.test.sh .claude/hooks/hooks.test.sh .claude/hooks/pre-commit .claude/hooks/pre-push scripts/check-no-zwc.sh scripts/check-no-zwc.test.sh
       - name: source-and-assert (idempotency, hook preservation, $?-capture)
         run: bash resources/shell-integration/integration_test.sh
       - name: secret-scan self-test (range mode detects a planted token; bad range fails loudly)
@@ -109,6 +114,8 @@ jobs:
         run: bash scripts/check-core-seam.test.sh
       - name: git-hook self-test (the hooks run what the docs claim, trmx-239)
         run: bash .claude/hooks/hooks.test.sh
+      - name: no-zwc gate self-test (trmx-240)
+        run: bash scripts/check-no-zwc.test.sh
       - name: repo-stats unit tests (trmx-213)
         run: python3 scripts/repo-stats.test.py
 

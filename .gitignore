@@ -41,3 +41,11 @@ __pycache__/
 
 # trmx-207: fetched Starship sidecar binaries (scripts/fetch-starship.sh) — never committed.
 crates/termixion-tauri/binaries/
+
+# trmx-240: zsh wordcode is never committed — zsh loads a .zwc in preference to the .zsh beside it,
+# so a committed blob, not the reviewable source, is what would execute. powerlevel10k compiles its
+# own on first load. This matters in the working tree because the real-PTY tests point p10k at
+# `resources/shell-enhancements` DIRECTLY (crates/termixion-platform/tests/common/mod.rs), so running
+# them leaves 8 freshly-compiled .zwc files here; without this, a `git add -A` would re-commit them.
+# `scripts/check-no-zwc.sh` is the backstop in CI.
+*.zwc
