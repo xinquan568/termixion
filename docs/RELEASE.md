@@ -186,6 +186,79 @@ detect *B*, download, verify the signature, and offer "Restart to update". A tam
 signature) must be **rejected**. This live check needs two real signed releases and is done at release
 time — it is out of scope for the PR's CI.
 
+## Rollback — what to do about a bad release (trmx-242)
+
+**Read this before reaching for anything.** The updater only ever moves FORWARD: it installs when
+`version > current`. So the thing you cannot do is **recall a bad version N from clients already
+running it** — there is no downgrade, no un-publish that reaches them. What you can do is contain
+and then supersede.
+
+1. **Contain.** Delete (or un-publish) release N on GitHub. This stops *further* downloads and stops
+   `latest.json` offering it to anyone who has not yet updated. It does nothing for installs that
+   already took N — that is what step 2 is for.
+2. **Supersede — through main, not from the old tag.** A higher version number carrying the older
+   code is the only shape the updater will deliver as a repair. Get there by *restoring the code*,
+   not by tagging the old commit:
+
+   - Branch from **current main** and restore the N-1 *application* code onto it (e.g.
+     `git checkout v<N-1> -- crates/ app/`), keeping the current release infrastructure —
+     workflows, scripts, gates — as it is on main.
+   - Apply the N+1 version bump (`[workspace.package]` version, `app/package.json`,
+     `tauri.conf.json` — `scripts/check-release-metadata.sh` requires all three to agree with the
+     tag) plus whatever compatibility changes step 3 turns up.
+   - Merge it to main and **let main CI go green on the merge commit**.
+   - Tag **that** commit `v<N+1>`.
+
+   Do not tag the N-1 commit itself, or a new commit based directly on it. The `ci-green` job
+   (trmx-242) requires the released SHA to be an ancestor of `origin/main` *and* to have a green
+   push-to-main `ci.yml` run of its own; an old tag has neither, so the release would be refused
+   before it built — during an incident, which is the worst moment to discover it.
+3. **Mind the state.** N+1 is *older code with a newer version*, so it must tolerate anything N wrote
+   — a migrated config, a new cache format, a settings key N introduced. Check that before shipping,
+   or the repair reproduces the outage in a different way.
+4. Then fix forward properly in N+2.
+
+Because `update.autoDownload` is on by default (`app/src/update/useUpdateAuthority.ts`), a bad
+`latest.json` reaches every installed copy on next launch without anyone choosing it. That is the
+reason step 1 is first.
+
+**This is a manual procedure.** Nothing in CI performs it.
+
+## Signing-key compromise (trmx-242)
+
+**minisign has no revocation.** If the updater signing key leaks, anyone holding it can sign an
+update this app will install and trust. There are two different situations and conflating them is
+dangerous.
+
+### Before any evidence the key has been used
+
+This is a race you may still win, and it is *migration*, not recovery.
+
+1. **Contain first.** Freeze releases. Rotate the credentials that can serve or alter the manifest
+   and the release assets (GitHub tokens, any hosting/CDN credentials). A leaked signing key is much
+   less useful to an attacker who cannot publish.
+2. **Ship the successor.** Publish an emergency release **signed by the OLD key** whose payload
+   carries the **NEW public key**, so existing clients accept it and thereafter trust only the new
+   key.
+3. **Rotate.** Retire the old key; store the new one only in GitHub Actions secrets (R5); publish the
+   new pubkey wherever the old one was documented.
+
+### After any evidence the key has been used
+
+**Stop treating this as a key-rotation problem.** A compromised key cannot authenticate its own
+successor: any client an attacker can reach, they can reach with an equally valid signature, and
+step 2 above buys nothing against someone already exercising it. Assume some installs have taken a
+malicious update.
+
+- The updater is **the compromised channel**, so it cannot be the recovery channel.
+- Recovery is **out-of-band**: an announcement through a channel the attacker does not control,
+  pointing at a fresh install from a source users can verify independently.
+- Treat it as an incident: work out what was served, to whom, and for how long; rotate every related
+  credential; and expect that "the updater will fix it" is exactly the assumption an attacker is
+  relying on.
+
+**This is a manual procedure.** Nothing in CI performs it.
+
 ## Release profile (E-3)
 
 `[profile.release]` in the workspace `Cargo.toml` is tuned for a small, fast desktop binary: `opt-level=3`,
