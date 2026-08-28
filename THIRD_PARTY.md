@@ -44,9 +44,10 @@ the durable identifier**: GitHub's auto-generated archives are not guaranteed by
 **No compiled wordcode is vendored** (trmx-240, grill L14). The tree previously carried eight `.zwc`
 files (996 KB) under `powerlevel10k/`. zsh loads a `.zwc` in preference to the `.zsh` beside it, so
 the opaque blob — not the reviewable source — was what executed. powerlevel10k compiles its own on
-first load. Kept out by `enhancements_io::is_embeddable` (nothing with a `.zwc` extension is embedded
-or materialized, whatever is on disk at build time) plus `scripts/check-no-zwc.sh` in the required
-`core seam guard` CI job and a `*.zwc` line in `.gitignore`. See
+first load. Kept out by a build-time staging step (`crates/termixion-tauri/build.rs` embeds a copy
+with every `.zwc` skipped, so none reaches the binary), a runtime `is_embeddable` filter for the
+materialized tree, `scripts/check-no-zwc.sh` in the required `core seam guard` CI job, and a `*.zwc`
+line in `.gitignore`. See
 [`resources/shell-enhancements/README.md`](resources/shell-enhancements/README.md) for why the
 filesystem-side guard is the load-bearing one.
 

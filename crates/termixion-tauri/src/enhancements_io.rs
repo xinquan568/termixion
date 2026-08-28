@@ -26,7 +26,11 @@ use termixion_core::zdotdir::{
 };
 
 /// The vendored plugin trees (single source of truth: `resources/shell-enhancements/`).
-static PLUGINS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../resources/shell-enhancements");
+// trmx-240 (L14): embed the BUILD-STAGED tree (build.rs `stage_enhancements`), not the source
+// directory. `include_dir!` bakes bytes in at COMPILE time, so a runtime filter cannot stop
+// wordcode from shipping inside the binary — only staging can. The runtime `is_embeddable` filter
+// below is defence in depth for the materialized tree.
+static PLUGINS: Dir<'_> = include_dir!("$TERMIXION_ENHANCEMENTS_DIR");
 
 /// The materialized, version-pinned paths one spawn points its env at.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -464,6 +468,30 @@ mod tests {
         assert!(is_embeddable(Path::new("gitstatus/install")));
         assert!(is_embeddable(Path::new("not-a.zwcx")));
         assert!(is_embeddable(Path::new("zwc")));
+    }
+
+    /// trmx-240: the assertion that actually covers the SHIPPED binary. `PLUGINS` is what
+    /// `include_dir!` baked in at compile time, so if this is empty of wordcode then none was
+    /// embedded — which a materialization-only test cannot establish (it inspects what was written
+    /// out, not what the executable carries).
+    #[test]
+    fn no_wordcode_is_embedded_in_the_binary() {
+        fn walk(dir: &Dir<'_>, found: &mut Vec<String>) {
+            for file in dir.files() {
+                if file.path().extension().is_some_and(|e| e == "zwc") {
+                    found.push(file.path().display().to_string());
+                }
+            }
+            for sub in dir.dirs() {
+                walk(sub, found);
+            }
+        }
+        let mut found = Vec::new();
+        walk(&PLUGINS, &mut found);
+        assert!(
+            found.is_empty(),
+            "wordcode was embedded into the binary: {found:?}"
+        );
     }
 
     #[test]
