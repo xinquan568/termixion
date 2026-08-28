@@ -613,22 +613,6 @@ const PTY_CREDIT_WAIT: Duration = Duration::from_millis(500);
 /// forever without acking.
 const PTY_CREDIT_FLOOR: i64 = -PTY_CREDIT_BYTES;
 
-/// Outcome of a floored consume: did the caller get permission to send?
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum ConsumeOutcome {
-    /// Credits available, or a timeout probe above the floor — send.
-    Proceed,
-    /// Parked at the floor and released by a refill — re-evaluate (credits deducted).
-    Refilled,
-}
-
-impl ConsumeOutcome {
-    #[cfg(test)]
-    fn proceeded(self) -> bool {
-        matches!(self, ConsumeOutcome::Proceed | ConsumeOutcome::Refilled)
-    }
-}
-
 /// Per-session unacked-byte accounting (trmx-78 round 2b). Consumers park at <= 0; `pty_ack`
 /// refills on parse completion. Negative overdraw is bounded by one batch (PTY_BATCH_MAX_BYTES).
 struct CreditCell {
@@ -648,24 +632,31 @@ impl CreditCell {
     /// A timeout with credits still ABOVE `floor` proceeds as a probe (overdraw bounded by the
     /// floor); at or below the floor the park repeats until a refill arrives. Always deducts on
     /// return, so the floor is a hard bound on unacked bytes.
-    fn consume_floored(&self, bytes: i64, slice: Duration, floor: i64) -> ConsumeOutcome {
+    ///
+    /// trmx-241 (L4): returns `()`. It used to return a `ConsumeOutcome` distinguishing "proceeded"
+    /// from "released by a refill", documented as something to re-evaluate on — but the sole
+    /// production caller discarded it, so the type asserted a contract nothing honoured. The
+    /// distinction is not observable to a caller anyway: every arm deducts and returns, and what
+    /// matters (parking, the slice wait, floor-bounded overdraw) is timing, which the unit tests
+    /// now assert directly.
+    fn consume_floored(&self, bytes: i64, slice: Duration, floor: i64) {
         loop {
             let Ok(guard) = self.credits.lock() else {
-                return ConsumeOutcome::Proceed; // poisoned peer: degrade to unthrottled
+                return; // poisoned peer: degrade to unthrottled
             };
             let Ok((mut guard, timeout)) =
                 self.refilled
                     .wait_timeout_while(guard, slice, |credits| *credits <= 0)
             else {
-                return ConsumeOutcome::Proceed;
+                return;
             };
             if !timeout.timed_out() {
                 *guard -= bytes;
-                return ConsumeOutcome::Refilled;
+                return;
             }
             if *guard > floor {
                 *guard -= bytes;
-                return ConsumeOutcome::Proceed; // probe: overdraw stays floor-bounded
+                return; // probe: overdraw stays floor-bounded
             }
             // At the floor with no refill: stay parked (drop the lock, take another slice).
         }
@@ -766,7 +757,7 @@ fn run_batch_sender(
 #[tauri::command]
 fn open_pty(
     app: tauri::AppHandle,
-    channel: Channel<Vec<u8>>,
+    channel: Channel<tauri::ipc::Response>,
     rows: u16,
     cols: u16,
     cwd: Option<String>,
@@ -876,8 +867,8 @@ fn open_pty(
                 // Flow control: park until the webview has parsed enough of what is in flight
                 // (ack via pty_ack). Timeout probes proceed only above the overdraw floor, so
                 // unacked bytes are hard-bounded; a dead channel fails the send and ends us.
-                let _ = cell.consume_floored(batch.len() as i64, PTY_CREDIT_WAIT, PTY_CREDIT_FLOOR);
-                channel.send(batch).is_ok()
+                cell.consume_floored(batch.len() as i64, PTY_CREDIT_WAIT, PTY_CREDIT_FLOOR);
+                channel.send(tauri::ipc::Response::new(batch)).is_ok()
             },
             move || {
                 if let Ok(mut credits) = credits_map.lock() {
@@ -2650,41 +2641,31 @@ mod tests {
         // cap), which is what makes the accounting simple: park only at <= 0.
         let cell = CreditCell::new(8);
         let started = std::time::Instant::now();
-        assert!(
-            cell.consume_floored(6, Duration::from_millis(500), -100)
-                .proceeded()
-        );
-        assert!(
-            cell.consume_floored(6, Duration::from_millis(500), -100)
-                .proceeded(),
-            "2 left: still positive, overdraws"
-        );
+        cell.consume_floored(6, Duration::from_millis(500), -100);
+        cell.consume_floored(6, Duration::from_millis(500), -100); // 2 left: positive, overdraws
         assert!(
             started.elapsed() < Duration::from_millis(100),
             "no parking while positive"
         );
         cell.refill(100);
+        let after_refill = std::time::Instant::now();
+        cell.consume_floored(50, Duration::from_millis(50), -100);
         assert!(
-            cell.consume_floored(50, Duration::from_millis(50), -100)
-                .proceeded()
+            after_refill.elapsed() < Duration::from_millis(40),
+            "a refilled cell consumes without parking"
         );
     }
 
     #[test]
     fn credit_cell_zero_or_negative_parks_and_refill_unparks() {
         let cell = Arc::new(CreditCell::new(4));
-        assert!(
-            cell.consume_floored(4, Duration::from_millis(50), 0)
-                .proceeded()
-        ); // now 0 — parks
+        cell.consume_floored(4, Duration::from_millis(50), 0); // now 0 — the next one parks
         let parked = Arc::clone(&cell);
         let (tx, rx) = mpsc::channel::<bool>();
         let waiter = std::thread::spawn(move || {
             // floor 0: at zero credits there is no probe headroom — a pure park-until-refill.
-            let got = parked
-                .consume_floored(2, Duration::from_millis(200), 0)
-                .proceeded();
-            tx.send(got).expect("send");
+            parked.consume_floored(2, Duration::from_millis(200), 0);
+            tx.send(true).expect("send");
         });
         std::thread::sleep(Duration::from_millis(80));
         assert!(
@@ -2702,17 +2683,20 @@ mod tests {
         // A webview that stops acking: the bounded wait expires and the consumer PROBES (send
         // failure of a dead channel ends the loop) — but only above the overdraw floor.
         let cell = CreditCell::new(1);
-        assert!(
-            cell.consume_floored(1, Duration::from_millis(10), -100)
-                .proceeded()
-        );
+        cell.consume_floored(1, Duration::from_millis(10), -100);
         let started = std::time::Instant::now();
-        assert_eq!(
-            cell.consume_floored(1, Duration::from_millis(60), -100),
-            ConsumeOutcome::Proceed,
-            "timeout above the floor is a probe"
+        // Above the floor, an unacked wait EXPIRES and the consumer proceeds — observable as the
+        // call returning after roughly the slice rather than parking indefinitely.
+        cell.consume_floored(1, Duration::from_millis(60), -100);
+        let waited = started.elapsed();
+        assert!(
+            waited >= Duration::from_millis(55),
+            "waited the slice: {waited:?}"
         );
-        assert!(started.elapsed() >= Duration::from_millis(55));
+        assert!(
+            waited < Duration::from_millis(500),
+            "but did not park: {waited:?}"
+        );
     }
 
     #[test]
@@ -2722,20 +2706,14 @@ mod tests {
         // at the floor the consumer parks (sliced, indefinitely) until a refill.
         let cell = Arc::new(CreditCell::new(4));
         // Drain into overdraw with timeout-probes: 4 -> 0 -> -4 (floor for this test = -4).
-        assert!(
-            cell.consume_floored(4, Duration::from_millis(10), -4)
-                .proceeded()
-        );
-        assert!(
-            cell.consume_floored(4, Duration::from_millis(10), -4)
-                .proceeded()
-        ); // probe: 0 > floor
+        cell.consume_floored(4, Duration::from_millis(10), -4);
+        cell.consume_floored(4, Duration::from_millis(10), -4); // probe: 0 > floor
         // credits now -4 == floor: further consumes must PARK, not proceed.
         let parked = Arc::clone(&cell);
         let (tx, rx) = mpsc::channel::<bool>();
         let waiter = std::thread::spawn(move || {
-            let outcome = parked.consume_floored(4, Duration::from_millis(30), -4);
-            tx.send(outcome.proceeded()).expect("send");
+            parked.consume_floored(4, Duration::from_millis(30), -4);
+            tx.send(true).expect("send");
         });
         std::thread::sleep(Duration::from_millis(120));
         assert!(

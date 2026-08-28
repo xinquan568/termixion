@@ -55,26 +55,38 @@ describe("getCoreVersion", () => {
   });
 });
 
-describe("decodePtyFrame", () => {
-  it("turns a byte-number array into a Uint8Array", () => {
-    expect(decodePtyFrame([104, 105])).toEqual(new Uint8Array([104, 105]));
-    expect(new TextDecoder().decode(decodePtyFrame([104, 105]))).toBe("hi");
+describe("decodePtyFrame (trmx-241: raw ArrayBuffer frames)", () => {
+  it("views an ArrayBuffer as bytes without copying", () => {
+    const buf = new Uint8Array([104, 105]).buffer;
+    expect(decodePtyFrame(buf)).toEqual(new Uint8Array([104, 105]));
+    expect(new TextDecoder().decode(decodePtyFrame(buf))).toBe("hi");
+    // A VIEW, not a copy: the decoded array must be backed by the frame itself.
+    expect(decodePtyFrame(buf).buffer).toBe(buf);
   });
 
   it("handles an empty frame", () => {
-    expect(decodePtyFrame([])).toEqual(new Uint8Array([]));
+    expect(decodePtyFrame(new ArrayBuffer(0))).toEqual(new Uint8Array([]));
+  });
+
+  it("REJECTS a number[] frame instead of silently decoding it", () => {
+    // trmx-241 D2. This is the test the whole raw-bytes change leans on, and it needs a RUNTIME
+    // guard to pass: TypeScript types are erased, and `new Uint8Array([104, 105])` is perfectly
+    // legal at runtime — it yields the right bytes. So without an explicit check, a regression to
+    // the JSON `number[]` transport would decode correctly and ship as a silent performance loss
+    // rather than a broken build. Loud is the point.
+    expect(() => decodePtyFrame([104, 105] as unknown as ArrayBuffer)).toThrow(TypeError);
   });
 });
 
 describe("wirePtyChannel", () => {
   it("routes decoded frames from the channel to the byte handler", () => {
-    let onmessage: ((frame: number[]) => void) | undefined;
-    const channel: MessageChannel<number[]> = {
+    let onmessage: ((frame: ArrayBuffer) => void) | undefined;
+    const channel: MessageChannel<ArrayBuffer> = {
       set onmessage(fn) {
         onmessage = fn;
       },
       get onmessage() {
-        return onmessage as (frame: number[]) => void;
+        return onmessage as (frame: ArrayBuffer) => void;
       },
     };
     const received: Uint8Array[] = [];
@@ -82,7 +94,7 @@ describe("wirePtyChannel", () => {
     wirePtyChannel(channel, (bytes) => received.push(bytes));
 
     // The backend's readiness frame ("channel-ready") must reach the handler as decoded bytes.
-    const frame = Array.from(new TextEncoder().encode("channel-ready"));
+    const frame = new TextEncoder().encode("channel-ready").buffer as ArrayBuffer;
     onmessage?.(frame);
 
     expect(received).toHaveLength(1);
@@ -137,14 +149,14 @@ describe("openPty", () => {
   });
 
   it("wires the channel's frames into onBytes (PTY output round-trip)", async () => {
-    let channelArg: MessageChannel<number[]> | undefined;
+    let channelArg: MessageChannel<ArrayBuffer> | undefined;
     const invoke = vi.fn<InvokeFn>((_cmd, args) => {
-      channelArg = (args as { channel: MessageChannel<number[]> }).channel;
+      channelArg = (args as { channel: MessageChannel<ArrayBuffer> }).channel;
       return Promise.resolve(session);
     });
     const received: Uint8Array[] = [];
     await openPty((bytes) => received.push(bytes), 24, 80, undefined, invoke);
-    channelArg?.onmessage(Array.from(new TextEncoder().encode("hi")));
+    channelArg?.onmessage(new TextEncoder().encode("hi").buffer as ArrayBuffer);
     expect(received).toHaveLength(1);
     expect(new TextDecoder().decode(received[0])).toBe("hi");
   });
