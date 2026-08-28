@@ -52,8 +52,8 @@ updates:
       # premise `app/src/terminal/scrollbar.ts` depends on (trmx-41: it listens to the viewport's
       # native `scroll` because xterm suppresses `onScroll` for user scrolls), and it breaks
       # `e2e/scrollbar.spec.ts`. A terminal's rendering engine deserves its own PR with manual
-      # verification in the packaged app, not a slot in a grouped bump. LIFT WHEN: that migration
-      # issue lands — bump `@xterm/xterm`, `@xterm/headless`, `@xterm/addon-webgl` and the remaining
-      # addons together.
+      # verification in the packaged app, not a slot in a grouped bump. LIFT WHEN: trmx-279 lands —
+      # bump `@xterm/xterm`, `@xterm/headless`, `@xterm/addon-webgl` and the remaining addons
+      # together, and delete this entry in that same PR.
       - dependency-name: "@xterm/*"
         update-types: ["version-update:semver-major"]
