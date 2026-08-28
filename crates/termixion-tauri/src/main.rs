@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use tauri::ipc::Channel;
 use tauri::{Emitter, Manager, State, WindowEvent};
-use termixion_core::{PtySize, SessionRegistry, SessionSpec};
+use termixion_core::{PtyFactory, PtyReader, PtySize, SessionId, SessionRegistry, SessionSpec};
 use termixion_platform::{
     ForegroundProcess, PlatformPtyFactory, foreground_args, foreground_process,
     foreground_stdin_is_tty, is_busy, is_interpreter, unwrap_interpreter_shim,
@@ -465,19 +465,45 @@ fn smoke_shell(exists: impl Fn(&str) -> bool) -> (&'static str, &'static [&'stat
     }
 }
 
+/// trmx-237 (grill H4): what happened to a requested working directory. `Some` only when the request
+/// could not be honored, so the caller can tell the user where the shell actually started.
+#[derive(Debug, PartialEq, Eq, Clone)]
+struct CwdFallback {
+    /// The directory the caller asked for (a stale OSC-7 inheritance, a deleted project dir, …).
+    requested: PathBuf,
+    /// Where the session starts instead: core's validated `$HOME`, or `None` = inherit the parent.
+    used: Option<PathBuf>,
+}
+
+/// The one-line notice written into the new session when a requested cwd could not be used.
+fn cwd_fallback_notice(fallback: &CwdFallback) -> String {
+    match &fallback.used {
+        Some(used) => format!(
+            "[termixion] {} is not a directory — starting in {} instead",
+            fallback.requested.display(),
+            used.display()
+        ),
+        None => format!(
+            "[termixion] {} is not a directory — starting in the inherited working directory",
+            fallback.requested.display()
+        ),
+    }
+}
+
 fn session_spec_for(
     smoke: bool,
     perf: bool,
     cwd: Option<String>,
     configured_shell: Option<String>,
-) -> SessionSpec {
+    is_dir: impl Fn(&std::path::Path) -> bool,
+) -> (SessionSpec, Option<CwdFallback>) {
     if smoke || perf {
         let (program, args) = smoke_shell(|p| std::path::Path::new(p).exists());
         let mut s = SessionSpec::shell(program);
         for a in args {
             s.args.push((*a).into());
         }
-        s
+        (s, None)
     } else {
         // trmx-205: a valid configured shell wins; anything else (empty, missing, not
         // executable) falls through to the unchanged System-default chain inside core.
@@ -485,11 +511,69 @@ fn session_spec_for(
             configured_shell.map(std::ffi::OsString::from),
             shells_io::is_executable_file,
         );
-        if let Some(dir) = cwd {
-            s.cwd = Some(PathBuf::from(dir));
+        // trmx-237 (grill H4): only a REAL directory may overwrite the core default. Before this the
+        // overwrite was unconditional, so a stale OSC-7 cwd (a `rm -rf`'d project dir inherited by a new
+        // tab) reached the platform layer and became a hard `PtyError::Spawn` — a silent dead pane. The
+        // fallback is core's already-validated `$HOME` (trmx-185, `pty.rs:226`), NOT `None`: `None` means
+        // *inherit the parent's cwd*, which for a Finder/launchd launch is `/`.
+        match cwd.map(PathBuf::from) {
+            Some(dir) if is_dir(&dir) => {
+                s.cwd = Some(dir);
+                (s, None)
+            }
+            Some(requested) => {
+                let used = s.cwd.clone();
+                (s, Some(CwdFallback { requested, used }))
+            }
+            None => (s, None),
         }
-        s
     }
+}
+
+/// Payload of the `session:notice` event (trmx-237): a one-line message the frontend writes into the
+/// pane owning `session_id`. Backend-authored text only — never user or PTY data (R5).
+#[derive(Clone, serde::Serialize)]
+struct SessionNotice {
+    session_id: SessionId,
+    text: String,
+}
+
+/// Emit a pane notice. Best-effort like every other emit: a webview that is gone cannot be told.
+fn notify_session(app: &tauri::AppHandle, session_id: SessionId, text: &str) {
+    let _ = app.emit(
+        "session:notice",
+        SessionNotice {
+            session_id,
+            text: text.to_string(),
+        },
+    );
+}
+
+/// trmx-237 (grill H4): spawn a session and, when the requested working directory could not be honored,
+/// tell the user in the pane itself. Extracted from `open_pty` so the behaviour is testable over a fake
+/// factory (R8) — the handler body past this point is adapter wiring (poller gate, credit cell, hand-off
+/// channel, pump + batch sender) whose coverage is trmx-245's scope.
+///
+/// The notice is emitted only after a SUCCESSFUL spawn: a failed spawn has no session to write into, and
+/// its error is already surfaced to the caller.
+fn open_session_with<N>(
+    registry: &mut SessionRegistry,
+    factory: &dyn PtyFactory,
+    spec: &SessionSpec,
+    size: PtySize,
+    fallback: Option<&CwdFallback>,
+    notify: N,
+) -> Result<(SessionId, Box<dyn PtyReader>), String>
+where
+    N: FnOnce(SessionId, &str),
+{
+    let (id, reader) = registry
+        .spawn(factory, spec, size)
+        .map_err(|e| e.to_string())?;
+    if let Some(fallback) = fallback {
+        notify(id, &cwd_fallback_notice(fallback));
+    }
+    Ok((id, reader))
 }
 
 /// trmx-78 round 2: the natural-batching hand-off between the core pump and the IPC channel.
@@ -702,11 +786,12 @@ fn open_pty(
             shells_io::is_executable_file,
         );
     }
-    let mut spec = session_spec_for(
+    let (mut spec, cwd_fallback) = session_spec_for(
         launch.smoke.is_some(),
         launch.perf.is_some(),
         cwd,
         configured_shell,
+        |p| p.is_dir(),
     );
     // trmx-206: the zsh enhancement layer — enhancement_env is the ONE gate (None = smoke/perf,
     // non-zsh, kill switch, nothing-to-layer, or materialization failure ⇒ byte-identical
@@ -726,12 +811,17 @@ fn open_pty(
         spec.env.extend(enhancement_env);
     }
 
-    let (id, reader) = state
-        .registry
-        .lock()
-        .map_err(|_| "pty state poisoned".to_string())?
-        .spawn(&PlatformPtyFactory, &spec, PtySize::new(rows, cols))
-        .map_err(|e| e.to_string())?;
+    let (id, reader) = open_session_with(
+        &mut *state
+            .registry
+            .lock()
+            .map_err(|_| "pty state poisoned".to_string())?,
+        &PlatformPtyFactory,
+        &spec,
+        PtySize::new(rows, cols),
+        cwd_fallback.as_ref(),
+        |session_id, notice| notify_session(&app, session_id, notice),
+    )?;
 
     // trmx-75: a session now exists to watch — wake the title poller out of its zero-session
     // park. After a successful spawn only, and after the registry lock above is released.
@@ -2173,26 +2263,182 @@ mod tests {
         );
     }
 
+    /// trmx-237 (grill H4): a factory that RECORDS the spec it was handed and can be made to FAIL.
+    /// Neither core fake suffices: `FakePtyFactory`/`SeparableFakePtyFactory` both take `_spec` and
+    /// ignore it (`core/src/fake.rs:81,254`), and neither can return an error — so the spec that
+    /// actually reaches the PTY layer would go unasserted. Delegates to the separable fake because
+    /// `SessionRegistry::spawn` requires a detachable reader.
+    struct RecordingFactory {
+        seen: std::cell::RefCell<Vec<SessionSpec>>,
+        fail: bool,
+    }
+
+    impl RecordingFactory {
+        fn new() -> Self {
+            Self {
+                seen: std::cell::RefCell::new(Vec::new()),
+                fail: false,
+            }
+        }
+        fn failing() -> Self {
+            Self {
+                seen: std::cell::RefCell::new(Vec::new()),
+                fail: true,
+            }
+        }
+        fn last_cwd(&self) -> Option<PathBuf> {
+            self.seen.borrow().last().and_then(|s| s.cwd.clone())
+        }
+    }
+
+    impl termixion_core::PtyFactory for RecordingFactory {
+        fn spawn(
+            &self,
+            spec: &SessionSpec,
+            size: PtySize,
+        ) -> Result<Box<dyn termixion_core::PtyBackend>, termixion_core::PtyError> {
+            self.seen.borrow_mut().push(spec.clone());
+            if self.fail {
+                return Err(termixion_core::PtyError::Spawn("nope".into()));
+            }
+            termixion_core::fake::FakePtyFactory::with_separable_reader().spawn(spec, size)
+        }
+    }
+
+    /// Drive the REAL `session_spec_for` → `open_session_with` path: the decision and the glue together,
+    /// which is what the user actually experiences. `$HOME` comes from core's validated default on this
+    /// host (`SessionSpec::login_shell().cwd`), so the assertions never hardcode a machine-specific path.
+    fn open_with(
+        cwd: Option<&str>,
+        is_dir: impl Fn(&Path) -> bool,
+        factory: &RecordingFactory,
+    ) -> (Result<SessionId, String>, Option<PathBuf>, Vec<String>) {
+        let (spec, fallback) =
+            session_spec_for(false, false, cwd.map(str::to_string), None, is_dir);
+        let mut registry = SessionRegistry::new();
+        let notices = std::cell::RefCell::new(Vec::new());
+        let result = open_session_with(
+            &mut registry,
+            factory,
+            &spec,
+            PtySize::new(24, 80),
+            fallback.as_ref(),
+            |_id, text| notices.borrow_mut().push(text.to_string()),
+        );
+        (
+            result.map(|(id, _reader)| id),
+            factory.last_cwd(),
+            notices.into_inner(),
+        )
+    }
+
+    /// The headline H4 case: a stale/deleted cwd must NOT reach the platform layer (where it becomes a
+    /// hard spawn error and a silent dead pane) and must NOT become `None` (which means inherit-parent,
+    /// i.e. `/` under launchd) — it falls back to core's validated `$HOME`, and the user is told.
+    ///
+    /// RED against the pre-trmx-237 code: the overwrite was unconditional, so the factory received
+    /// `/gone/project` and no notice was ever produced.
+    #[test]
+    fn a_dead_cwd_falls_back_to_the_core_default_and_notifies() {
+        let home = SessionSpec::login_shell().cwd;
+        let factory = RecordingFactory::new();
+        let (result, spawned_cwd, notices) = open_with(Some("/gone/project"), |_| false, &factory);
+        assert!(result.is_ok());
+        assert_eq!(
+            spawned_cwd, home,
+            "the factory must receive core's validated default — not the dead path"
+        );
+        assert_ne!(
+            spawned_cwd,
+            Some(PathBuf::from("/gone/project")),
+            "the dead path must never reach the PTY layer"
+        );
+        assert_eq!(notices.len(), 1, "exactly one notice");
+        assert!(
+            notices[0].contains("/gone/project"),
+            "names what was asked for: {}",
+            notices[0]
+        );
+    }
+
+    #[test]
+    fn a_live_cwd_is_honored_and_says_nothing() {
+        let factory = RecordingFactory::new();
+        let (result, spawned_cwd, notices) = open_with(Some("/work/repo"), |_| true, &factory);
+        assert!(result.is_ok());
+        assert_eq!(spawned_cwd, Some(PathBuf::from("/work/repo")));
+        assert!(
+            notices.is_empty(),
+            "an honored cwd is not worth a line of the user's scrollback"
+        );
+    }
+
+    /// The notice text distinguishes the two fallbacks, so the message is never a lie about where the
+    /// shell started. (`used: None` = the inherit-parent contract of a homeless environment.)
+    #[test]
+    fn the_notice_names_home_or_says_inherited() {
+        let to_home = CwdFallback {
+            requested: PathBuf::from("/gone"),
+            used: Some(PathBuf::from("/Users/t")),
+        };
+        let notice = cwd_fallback_notice(&to_home);
+        assert!(
+            notice.contains("/gone") && notice.contains("/Users/t"),
+            "got: {notice}"
+        );
+
+        let inherited = CwdFallback {
+            requested: PathBuf::from("/gone"),
+            used: None,
+        };
+        let notice = cwd_fallback_notice(&inherited);
+        assert!(
+            notice.contains("/gone") && notice.contains("inherited"),
+            "got: {notice}"
+        );
+    }
+
+    /// A spawn failure propagates unchanged: no notice (there is no session to write into) and nothing
+    /// partially created.
+    #[test]
+    fn a_spawn_failure_propagates_without_a_notice() {
+        let factory = RecordingFactory::failing();
+        let (result, _, notices) = open_with(Some("/gone"), |_| false, &factory);
+        assert!(result.is_err(), "the caller must see the spawn error");
+        assert!(notices.is_empty(), "no session exists to notify");
+    }
+
     #[test]
     fn session_spec_for_selects_the_rc_free_shell_for_smoke_or_perf() {
-        // Production: login shell, cwd honored.
-        let prod = session_spec_for(false, false, Some("/tmp/somewhere".to_string()), None);
+        // Production: login shell, an EXISTING cwd honored (trmx-237: the probe says it is a dir).
+        let (prod, fallback) = session_spec_for(
+            false,
+            false,
+            Some("/tmp/somewhere".to_string()),
+            None,
+            |_| true,
+        );
         assert_eq!(prod.cwd, Some(PathBuf::from("/tmp/somewhere")));
         assert!(prod.args.is_empty(), "login shell spawns with no args");
+        assert_eq!(fallback, None, "an honored cwd reports no fallback");
 
         // trmx-185: with no explicit cwd the tauri layer adds no policy of its own — the spec
         // carries exactly the core login_shell() default ($HOME when valid, else None).
-        let defaulted = session_spec_for(false, false, None, None);
+        let (defaulted, fallback) = session_spec_for(false, false, None, None, |_| true);
         assert_eq!(
             defaulted.cwd,
             SessionSpec::login_shell().cwd,
             "session_spec_for must pass the core cwd default through untouched"
         );
+        assert_eq!(fallback, None);
 
         // Smoke or perf (or both): deterministic rc-free `zsh -f`, cwd deliberately ignored so
         // rc/prompt noise and a surprising working dir can never pollute the driven sequence.
         for (smoke, perf) in [(true, false), (false, true), (true, true)] {
-            let spec = session_spec_for(smoke, perf, Some("/tmp/ignored".to_string()), None);
+            let (spec, _) =
+                session_spec_for(smoke, perf, Some("/tmp/ignored".to_string()), None, |_| {
+                    true
+                });
             // The CI/dev host has /bin/zsh, so the live pick is zsh -f.
             assert_eq!(spec.program, OsStr::new("/bin/zsh"));
             assert_eq!(spec.args, vec![std::ffi::OsString::from("-f")]);

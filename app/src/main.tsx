@@ -3,9 +3,11 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./App";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { SettingsWindowHost } from "./settings/SettingsWindowHost";
 import { resolveSurface } from "./surface";
 import { realInvoke, takePendingOpenPaths } from "./ipc/backend";
+import { log } from "./ipc/logSink";
 import { runPerf, runPerfMultipane, realPerfDeps, type PerfLaunchConfig } from "./perf/runPerf";
 import { runSmoke, realSmokeDeps } from "./smoke/runSmoke";
 import { hydrateSettings, makeSettingsStore } from "./settings/settingsStore";
@@ -85,12 +87,84 @@ async function boot() {
   ReactDOM.createRoot(document.getElementById("root")!).render(
     <React.StrictMode>
       {surface.kind === "settings" ? (
-        <SettingsWindowHost initialSection={surface.section} />
+        // trmx-237 (H3): the settings boundary offers "Close window", never Quit — `quit_confirmed`
+        // refuses non-PTY-owner callers, so a Quit button here would be inert while the main window's
+        // shells stayed alive.
+        <ErrorBoundary surface="settings" onReload={reloadWebview} onCloseWindow={closeThisWindow} onError={reportFatal}>
+          <SettingsWindowHost initialSection={surface.section} />
+        </ErrorBoundary>
       ) : (
-        <App serviceBootPaths={serviceBootPaths} />
+        <ErrorBoundary surface="main" onReload={reloadWebview} onQuit={quitApp} onError={reportFatal}>
+          <App serviceBootPaths={serviceBootPaths} />
+        </ErrorBoundary>
       )}
     </React.StrictMode>,
   );
 }
 
-void boot();
+// trmx-237 (H3): the recovery actions, and the surface of last resort for failures a React boundary
+// cannot see — a rejected boot() (which runs BEFORE any component exists) and the asynchronous errors
+// that never pass through render: `error` and `unhandledrejection`. Without these the window is blank
+// with no explanation while the PTY children keep running in Rust.
+function reloadWebview(): void {
+  window.location.reload();
+}
+
+function quitApp(): void {
+  realInvoke("quit_confirmed").catch(() => {
+    /* no runtime — a plain browser tab owns its own lifecycle */
+  });
+}
+
+function closeThisWindow(): void {
+  void import("@tauri-apps/api/window")
+    .then(({ getCurrentWindow }) => getCurrentWindow().close())
+    .catch(() => {
+      /* no runtime */
+    });
+}
+
+function reportFatal(error: unknown, componentStack?: string): void {
+  log.error("webview fatal", componentStack ? `${formatError(error)} ${componentStack}` : error);
+}
+
+function formatError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** Render the recovery surface for a failure that never reached a component (boot / global handlers). */
+function renderFatalSurface(error: unknown): void {
+  const root = document.getElementById("root");
+  if (!root) return;
+  const surface = resolveSurface(window.location.search);
+  const Throw = (): never => {
+    throw error instanceof Error ? error : new Error(String(error));
+  };
+  ReactDOM.createRoot(root).render(
+    surface.kind === "settings" ? (
+      <ErrorBoundary surface="settings" onReload={reloadWebview} onCloseWindow={closeThisWindow} onError={reportFatal}>
+        <Throw />
+      </ErrorBoundary>
+    ) : (
+      <ErrorBoundary surface="main" onReload={reloadWebview} onQuit={quitApp} onError={reportFatal}>
+        <Throw />
+      </ErrorBoundary>
+    ),
+  );
+}
+
+// Registered before boot() so a failure during startup is caught too. Separate registrations, separately
+// tested: `error` covers a synchronous throw outside React, `unhandledrejection` an un-caught promise.
+window.addEventListener("error", (event) => {
+  log.error("webview uncaught error", event.error ?? event.message);
+});
+window.addEventListener("unhandledrejection", (event) => {
+  log.error("webview unhandled rejection", event.reason);
+});
+
+boot().catch((err: unknown) => {
+  // The pinned startup chain rejected: no component ever mounted, so no boundary can be holding the
+  // screen. Report, then render the same surface directly.
+  log.error("boot failed", err);
+  renderFatalSurface(err);
+});

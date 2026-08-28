@@ -136,6 +136,7 @@ import { growTarget } from "./commands/growPane";
 import { listThemes } from "./theme/registry";
 import { realEventBus } from "./ipc/eventBus";
 import { routeControlRequest, buildLsSnapshot, type ControlDeps } from "./control/controlBridge";
+import { isControlRequest } from "./control/controlRequestGuard";
 import { installThemeHotReload } from "./theme/themeHotReload";
 import { makeCwdStore, type CwdStore } from "./terminal/osc7";
 import { realSetWindowTitle } from "./terminal/windowTitle";
@@ -293,14 +294,23 @@ const realObserveAppSettings: SettingsObservation = (onChange) => {
 // trmx-101 (FR-9.4): observe the Rust control socket's requests over `control:request` — same
 // teardown-before-resolve pattern. Each payload is `{ id, request }`; App routes it through the command
 // dispatcher / builds the snapshot / sends text, then replies via `invoke("control_response")`.
-export type ControlRequest = { id: number; request: { cmd?: unknown; args?: unknown } };
-export type ControlRequestObservation = (onRequest: (req: ControlRequest) => void) => () => void;
+export type { ControlRequest } from "./control/controlRequestGuard";
+export type ControlRequestObservation = (
+  onRequest: (req: import("./control/controlRequestGuard").ControlRequest) => void,
+) => () => void;
 const realObserveControlRequest: ControlRequestObservation = (onRequest) => {
   let live = true;
   let unlisten: (() => void) | undefined;
   realEventBus
     .listen("control:request", (payload) => {
-      if (live) onRequest(payload as ControlRequest);
+      // trmx-237 (H3): validate before destructuring. A malformed payload from a local `ctl` caller
+      // used to throw inside this listener and escape into React; now it is dropped with a record.
+      if (!live) return;
+      if (!isControlRequest(payload)) {
+        log.warn("control: malformed request payload dropped", payload);
+        return;
+      }
+      onRequest(payload);
     })
     .then((u) => {
       if (live) unlisten = u;
@@ -308,6 +318,48 @@ const realObserveControlRequest: ControlRequestObservation = (onRequest) => {
     })
     .catch(() => {
       // No Tauri runtime — there is no control socket in a plain browser tab.
+    });
+  return () => {
+    live = false;
+    unlisten?.();
+  };
+};
+
+// trmx-237 (grill H4): the pane's own error channel. A backend notice (a cwd that could not be honored)
+// and a failed attach both end up as one dim-red line in the terminal the user is already looking at —
+// the only surface that is guaranteed to be visible for the thing that just went wrong.
+export function writePaneNotice(handle: TerminalHandle, text: string): void {
+  // The terminal seam takes BYTES (the PTY contract), so encode rather than passing a string.
+  // \x1b[31m … \x1b[0m: red, then reset. On its own lines so it never mangles shell output.
+  const line = `\r\n\x1b[31m[termixion] ${text}\x1b[0m\r\n`;
+  handle.terminal.write(new TextEncoder().encode(line));
+}
+
+/** A rejection reason rendered for a terminal line: an Error's message, else a compact string. */
+export function formatAttachError(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return typeof err === "string" ? err : "unknown error";
+}
+
+/** Payload of the backend's `session:notice` event (trmx-237): a line for one session's pane. */
+export type SessionNotice = { session_id: number; text: string };
+export type SessionNoticeObservation = (onNotice: (notice: SessionNotice) => void) => () => void;
+const realObserveSessionNotice: SessionNoticeObservation = (onNotice) => {
+  let live = true;
+  let unlisten: (() => void) | undefined;
+  realEventBus
+    .listen("session:notice", (payload) => {
+      if (!live) return;
+      const n = payload as Partial<SessionNotice> | null;
+      if (!n || typeof n.session_id !== "number" || typeof n.text !== "string") return;
+      onNotice({ session_id: n.session_id, text: n.text });
+    })
+    .then((u) => {
+      if (live) unlisten = u;
+      else u();
+    })
+    .catch(() => {
+      // No Tauri runtime — nothing emits pane notices in a plain browser.
     });
   return () => {
     live = false;
@@ -386,6 +438,8 @@ export interface AppProps {
   observeSettings?: SettingsObservation;
   /** Injection seam for tests; the control socket's request stream (trmx-101). */
   observeControlRequest?: ControlRequestObservation;
+  /** Injection seam for tests; the backend's per-session notice stream (trmx-237 H4). */
+  observeSessionNotice?: SessionNoticeObservation;
   /** Injection seam for tests; the backend's `close:requested` stream (trmx-144). */
   observeCloseRequested?: CloseRequestedObservation;
   /** Injection seam for tests; defaults to retitling the native window (trmx-75). */
@@ -421,6 +475,7 @@ export function App({
   observeInput,
   observeSettings = realObserveAppSettings,
   observeControlRequest = realObserveControlRequest,
+  observeSessionNotice = realObserveSessionNotice,
   observeCloseRequested = realObserveCloseRequested,
   setWindowTitle = realSetWindowTitle,
   mirrorTitle = setSessionTitle,
@@ -789,10 +844,17 @@ export function App({
             }
           })
           .catch((err: unknown) => {
-            // Open failed (no backend in `pnpm dev`, or a real spawn error): the pane keeps its
-            // placeholder title with a dead session — do not crash the shell.
+            // Open failed (no backend in `pnpm dev`, or a real spawn error).
             log.error("pane attach failed", err);
             pendingScriptRef.current.delete(paneId); // trmx-93: no session → the script never sources
+            // trmx-237 (grill H4): the pane used to keep its placeholder title with a dead session and
+            // say NOTHING — keystrokes went nowhere and nothing explained why. Write the reason into the
+            // terminal the user is looking at. The SAME epoch + liveness guard as the success path above:
+            // without it a superseded StrictMode rejection could scribble an error into a pane whose
+            // later attach succeeded.
+            const epochCurrent = attachEpochRef.current.get(paneId) === epoch;
+            if (!paneAlive(tabId, paneId) || !epochCurrent) return;
+            writePaneNotice(handle, `could not start a shell: ${formatAttachError(err)}`);
           });
       };
       readyCbsRef.current.set(paneId, cb);
@@ -1524,6 +1586,18 @@ export function App({
   // trmx-101 (FR-9.4): the control-channel bridge. A request from the Rust socket routes through the SAME
   // command dispatcher as a keypress, builds the ls snapshot, or types into a pane; the reply goes back
   // via control_response. All App-owned state read from refs (out-of-render).
+  // trmx-237 (grill H4): the backend's per-session notices — today, a working directory it could not
+  // honor. Routed to the owning pane's terminal, which is the surface the user is already looking at
+  // when the thing goes wrong. A notice for an unknown session (closed in the meantime) is dropped.
+  useEffect(() => {
+    return observeSessionNotice(({ session_id, text }) => {
+      const hit = paneBySessionId(stateRef.current, session_id);
+      if (!hit) return;
+      const handle = handlesRef.current.get(hit.paneId);
+      if (handle) writePaneNotice(handle, text);
+    });
+  }, [observeSessionNotice]);
+
   useEffect(() => {
     const paneBusy = (paneId: PaneId): boolean => {
       for (const tab of stateRef.current.tabs) {

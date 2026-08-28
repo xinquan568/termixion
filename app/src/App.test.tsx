@@ -22,7 +22,7 @@ import type { TerminalHandle } from "./terminal/mountTerminal";
 // a program's OSC 0/2 title); `unmounts` counts stub cleanups (must stay 0 across tab switches).
 const recorder = vi.hoisted(() => ({
   mounts: [] as Array<{
-    handle: { terminal: { focus: () => void; clearSelection: () => void } };
+    handle: { terminal: { focus: () => void; clearSelection: () => void; write: (d: Uint8Array) => void } };
     cwdStore: { get(): string | null; set(cwd: string): void } | undefined;
     onOscTitle: ((title: string) => void) | undefined;
     onBadge: ((badge: string | null) => void) | undefined;
@@ -53,7 +53,8 @@ vi.mock("./terminal/TerminalView", async () => {
     }) => {
       useEffect(() => {
         const handle = {
-          terminal: { focus: vi.fn(), clearSelection: vi.fn() },
+          // trmx-237: the pane-notice surface writes BYTES into the terminal seam.
+          terminal: { focus: vi.fn(), clearSelection: vi.fn(), write: vi.fn() },
           renderer: "dom",
           fit: () => {},
           dispose: () => {},
@@ -397,6 +398,46 @@ describe("App (the tab manager, trmx-74)", () => {
     expect(closeSession).toHaveBeenCalledExactlyOnceWith(11);
     expect(screen.queryByTestId("tab-1")).not.toBeInTheDocument();
     expect(screen.getByTestId("tab-2").className).toContain(activeClass);
+  });
+
+  // trmx-237 (grill H4): a failed spawn used to be invisible — the pane kept its placeholder title with
+  // no session, so nothing arrived and keystrokes went nowhere, with no explanation on screen.
+  it("a failed attach writes the reason into the pane it happened in", async () => {
+    const { calls } = renderApp();
+    const handle = recorder.mounts[0]!.handle;
+    await act(async () => {
+      calls[0]!.reject(new Error("cwd is not a directory: /gone"));
+    });
+    expect(handle.terminal.write).toHaveBeenCalled();
+    const written = (handle.terminal.write as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => new TextDecoder().decode(c[0] as Uint8Array))
+      .join("");
+    expect(written).toContain("could not start a shell");
+    expect(written).toContain("cwd is not a directory: /gone");
+  });
+
+  // The epoch guard: StrictMode double-mounts, so two attaches race for one pane. A SUPERSEDED attach's
+  // rejection must not scribble an error into a pane whose later attach succeeded — that would put a
+  // failure message on a working shell.
+  it("a SUPERSEDED attach rejection writes nothing (the pane's live session is untouched)", async () => {
+    const { calls } = renderApp({ strict: true });
+    // StrictMode produced more than one attach for the same pane; the LAST is the live one.
+    expect(calls.length).toBeGreaterThan(1);
+    const live = calls[calls.length - 1]!;
+    const superseded = calls[0]!;
+    await resolveAttach(live, { sessionId: 41, title: "alive" });
+
+    // The rejection's closure carries the handle of the attach that was superseded, so THAT is the
+    // handle an unguarded write would land on. Assert on both it and the live one.
+    await act(async () => {
+      superseded.reject(new Error("stale attach failed"));
+    });
+    const staleWrite = (superseded.handle as { terminal: { write: ReturnType<typeof vi.fn> } })
+      .terminal.write;
+    const liveWrite = (live.handle as { terminal: { write: ReturnType<typeof vi.fn> } }).terminal
+      .write;
+    expect(staleWrite).not.toHaveBeenCalled();
+    expect(liveWrite).not.toHaveBeenCalled();
   });
 
   it("a pty:exited for a background tab closes THAT tab only — without a redundant close_pty", async () => {
