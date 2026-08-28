@@ -524,26 +524,41 @@ export function openLogDir(): Promise<void> {
  * the newest write for that key, and a resolution clears only a WRITE-failure warning (never a
  * validation warning, which describes the file's content rather than our write).
  */
-function writeThrough(key: SettingKey, value: SettingsValues[SettingKey]): void {
+function persist(key: SettingKey, value: SettingsValues[SettingKey]): Promise<boolean> {
   const ticket = (writeSeq.get(key) ?? 0) + 1;
   writeSeq.set(key, ticket);
-  invokeSafely("config_write", { key, value })
+  return invokeSafely("config_write", { key, value })
     .then(() => {
-      if (writeSeq.get(key) !== ticket) return; // superseded — the newer write owns the verdict
-      if (writeFailedKeys.delete(key) && clientWarnings.delete(key)) publishConfigWarnings();
+      // Superseded ⇒ the newer write owns the verdict; still report success to OUR caller, whose
+      // own write did land (the migration removes its legacy key on this).
+      if (
+        writeSeq.get(key) === ticket &&
+        writeFailedKeys.delete(key) &&
+        clientWarnings.delete(key)
+      ) {
+        publishConfigWarnings();
+      }
+      return true;
     })
     .catch((err: unknown) => {
       // Never throws: the optimistic snapshot value stands for this session; an unwritable config
       // file must not break the control that wrote it. It IS surfaced, though.
       log.warn(`config_write failed for ${key}`, err);
-      if (writeSeq.get(key) !== ticket) return; // a newer write already settled — stay quiet
-      writeFailedKeys.add(key);
-      clientWarnings.set(key, {
-        source: "client",
-        message: `Could not save "${key}": ${errorText(err)}`,
-      });
-      publishConfigWarnings();
+      if (writeSeq.get(key) === ticket) {
+        writeFailedKeys.add(key);
+        clientWarnings.set(key, {
+          source: "client",
+          message: `Could not save "${key}": ${errorText(err)}`,
+        });
+        publishConfigWarnings();
+      }
+      return false;
     });
+}
+
+/** Fire-and-forget over [`persist`] — the `set()` / materialization shape, which never awaits. */
+function writeThrough(key: SettingKey, value: SettingsValues[SettingKey]): void {
+  void persist(key, value);
 }
 
 /** A human-readable one-liner for an unknown rejection value. */
@@ -981,21 +996,12 @@ async function migrateLegacySettings(storage: KeyValueStore): Promise<void> {
     if (raw === null) continue;
     const value = parse(key, raw);
     snapshot.set(key, value);
-    // trmx-238 (M14): surface a failed migration write. The legacy key is removed ONLY after the
-    // write lands, so a failure still leaves it for a retry on the next launch.
-    try {
-      await invokeSafely("config_write", { key, value });
-      storage.removeItem(STORAGE_KEYS[key]);
-      if (writeFailedKeys.delete(key) && clientWarnings.delete(key)) publishConfigWarnings();
-    } catch (err) {
-      log.warn(`settings migration write failed for ${key}`, err);
-      writeFailedKeys.add(key);
-      clientWarnings.set(key, {
-        source: "client",
-        message: `Could not save "${key}": ${errorText(err)}`,
-      });
-      publishConfigWarnings();
-    }
+    // trmx-238 (M14): the SAME ticketed helper as the other two write sites — an inline copy here
+    // would author or clear warnings without a ticket, so a migration write and a concurrent set()
+    // for one key could settle out of order (a stale rejection warning, or a stale success
+    // clearing a newer failure). The legacy key is still removed ONLY after the write lands, so a
+    // failure leaves it for a retry on the next launch.
+    if (await persist(key, value)) storage.removeItem(STORAGE_KEYS[key]);
   }
 }
 

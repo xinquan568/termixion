@@ -1108,6 +1108,46 @@ describe("shared snapshot backend (trmx-80)", () => {
       expect(warned[0].source).toBe("client");
     });
 
+    it("legacy migration: goes through the SAME ticket, so a concurrent set() is not clobbered", async () => {
+      // Step-9 finding 2: the migration used to keep an inline copy of the rejection handling and
+      // never touched writeSeq, so its verdict could overwrite a newer set()'s. Here the
+      // migration write FAILS while a later set() SUCCEEDS — the newer write must own the verdict.
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const gates: Array<() => void> = [];
+      let call = 0;
+      const invoke = (cmd: string): Promise<unknown> => {
+        if (cmd === "config_read")
+          return Promise.resolve({ exists: false, path: "/c.toml", values: {}, warnings: [] });
+        if (cmd === "config_write") {
+          const mine = call++;
+          return new Promise((resolve, reject) => {
+            gates.push(() => (mine === 0 ? reject(new Error("migration boom")) : resolve(null)));
+          });
+        }
+        return Promise.reject(new Error(`unexpected ${cmd}`));
+      };
+      const storage = fakeStorage({ "termixion.terminal.fontSize": "17" });
+      const hydrating = hydrateSettings({ invoke, bus: fakeListenBus(), storage });
+      await flushMicrotasks();
+
+      // A normal write for the SAME key supersedes the in-flight migration write.
+      const store = makeSettingsStore(undefined, fakeBus(), "settings");
+      store.set("terminal.fontSize", 20);
+      await flushMicrotasks();
+
+      gates[1]?.(); // the newer set() lands
+      await flushMicrotasks();
+      gates[0]?.(); // the older migration write fails afterwards
+      await flushMicrotasks();
+      gates.slice(2).forEach((g) => g());
+      await hydrating.catch(() => {});
+      await flushMicrotasks();
+
+      expect(
+        getConfigWarnings().filter((w) => w.message.includes("terminal.fontSize")),
+      ).toHaveLength(0);
+    });
+
     it("legacy migration: a rejected write authors the keyed warning and keeps the legacy key", async () => {
       vi.spyOn(console, "warn").mockImplementation(() => {});
       const storage = fakeStorage({ "termixion.terminal.fontSize": "17" });

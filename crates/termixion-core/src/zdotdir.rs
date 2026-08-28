@@ -392,10 +392,34 @@ mod tests {
             // (c) ...and the warning is on the FAILING branch of it: either the test itself is
             // negated (`! -r`), or we are past the `else` of the positive test.
             let on_negated_branch = neg_at == Some(test_at);
-            let after_else = rc[test_at..idx].contains("else");
+            let between = &rc[test_at..idx];
+            let after_else = between.contains("else");
             assert!(
                 on_negated_branch || after_else,
                 "{plugin}: the warning must be on the NOT-readable branch, not the readable one"
+            );
+
+            // (d) Step-9 finding 6: (b)+(c) only look BACKWARD, so a warning moved past the
+            // closing `fi` of the readability branch — or of the enabled gate — would still pass.
+            // Pin that no `fi` closes either block between its opening and the warning. Counting
+            // is enough because these blocks contain no nested `if` after the point we anchor on:
+            // for the negated shape the branch body IS the warning; for the else shape the `else`
+            // is the anchor.
+            let branch_body = if on_negated_branch {
+                between
+            } else {
+                &between[between.find("else").expect("checked above")..]
+            };
+            assert!(
+                !branch_body.contains("fi"),
+                "{plugin}: the warning must sit INSIDE the not-readable branch — a `fi` closes it first:\n{branch_body}"
+            );
+            let gate_body = &rc[gate_at..idx];
+            let opens = gate_body.matches("; then").count();
+            let closes = gate_body.matches("fi").count();
+            assert!(
+                closes < opens,
+                "{plugin}: the warning must sit INSIDE the enabled gate ({closes} `fi` vs {opens} `then` before it)"
             );
         }
     }
