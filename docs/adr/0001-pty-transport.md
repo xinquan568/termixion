@@ -72,19 +72,41 @@ types are erased and `new Uint8Array([104,105])` is legal at runtime, so a permi
 keep working if Tauri ever fell back to the JSON path — turning a transport regression into an
 unexplained slowdown instead of a failure.
 
-**Throughput: NOT YET MEASURED — outstanding.** `scripts/perf.sh` needs the packaged app frontmost
-with the display awake, and the automated environment this change was made in could not hold that:
-one baseline run completed (release, webgl, `scrollYes` 9.26% dropped — itself over the <5% budget
-for the same reason), and every subsequent run — candidate *and* baseline, with and without
-`caffeinate` — timed out at "waiting for the webview perf driver". No decode error appeared in any
-log, so the timeouts are the harness's environment requirement, not this change.
+**Throughput: measured, and the honest answer is "no measurable difference in the single-pane
+scenario".** Both bundles were built `release` and run consecutively on the same machine with the
+window activated (the earlier "waiting for the webview perf driver" timeouts were a FOCUS problem —
+an unattended run leaves the window behind, and `osascript … to activate` fixes it; that is worth
+knowing for anyone else automating this harness).
 
-**So the encoding win is argued and structurally verified, but not yet quantified.** Before treating
-NFR-1 as re-answered, run on the reference machine, attended:
+Single-pane (`scripts/perf.sh`, `hasFocus: true`, both **pass** every budget):
+
+| metric | baseline `ccb7916` | candidate (raw bytes) |
+| ------ | ------------------ | --------------------- |
+| verdict | pass | pass |
+| `scrollYes` dropped | 4.72% (18/381) | 4.38% (17/388) |
+| typing p50 / p95 / p99 / max | 1 / 2 / 2 / 3 ms | 1 / 2 / 2 / 6 ms |
+
+That difference is **within noise**. The encoding win is real and structural — a 256 KiB batch no
+longer becomes ~900 KB of JSON text, is no longer `JSON.parse`d into boxed numbers, and is no longer
+copied a second time — but it is evidently **not the binding constraint** in this scenario. NFR-1's
+single-pane budgets were already met before the change and are still met after it.
+
+Multipane was also run on both, and is **not a usable signal on this machine**: every scenario
+degraded far past its budget (baseline 72–88% dropped frames, candidate 63–87%), which measures the
+contention of the machine rather than the transport. Directionally the candidate was better on
+typing p50 (58 ms vs 72 ms) and on two of three scroll scenarios, but at those drop rates that is
+not evidence of anything.
+
+**So: this change removes a genuine inefficiency and does not regress anything measurable, but it
+should not be described as a throughput win on the strength of these numbers.** If PTY throughput
+does become the constraint, the ADR's original "move the output stream to a local WebSocket" option
+is still the open one — and these numbers say the bottleneck to look for first is elsewhere
+(webview dispatch, xterm.js's write path, or rendering), not the wire encoding.
+
+Reproduce with:
 
 ```
 (cd crates/termixion-tauri && cargo tauri build)
-bash scripts/perf.sh          # baseline: rebuild from ccb7916 for the before-number
+bash scripts/perf.sh                    # add: osascript -e 'tell application "Termixion" to activate'
+                                        # in a loop alongside it, or the run is invalid (hasFocus=false)
 ```
-
-and record the delta here.
