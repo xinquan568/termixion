@@ -50,42 +50,16 @@ jobs:
         with:
           fetch-depth: 0 # ancestry check needs history
       - name: Require a green push-to-main ci.yml run for this commit
+        # The gate logic lives in a SCRIPT with a self-test (scripts/check-main-ci-green.test.sh,
+        # run by ci.yml) rather than inline here. Inline YAML cannot be unit-tested: a dry run on a
+        # branch only ever reaches the no-matching-run path, so newest-run precedence and the
+        # non-success conclusions — the parts that make this gate correct rather than merely
+        # present — would never be exercised until the day they had to be right.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SHA: ${{ github.sha }}
           R: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          # Filter on PROVENANCE FIRST (workflow identity + push + main), then take the NEWEST run,
-          # and only THEN judge success. Filtering on success first would let an older green run
-          # outrank a newer failure for the same SHA — falsifying the very claim this gate enforces.
-          # ci.yml also runs on pull_request, so matching a job name or a bare status proves nothing.
-          runs="$(gh api --paginate "repos/$R/actions/runs?head_sha=$SHA&per_page=100" \
-                    --jq '.workflow_runs[]
-                          | select(.path == ".github/workflows/ci.yml")
-                          | select(.event == "push")
-                          | select(.head_branch == "main")
-                          | "\(.created_at)\t\(.id)\t\(.status)\t\(.conclusion // "none")"')"
-          if [ -z "$runs" ]; then
-            echo "::error::no push-to-main ci.yml run found for $SHA — tag a commit whose main CI has run."
-            exit 1
-          fi
-          # Newest by (created_at, id); `sort` is lexicographic and ISO-8601 sorts correctly.
-          latest="$(printf '%s\n' "$runs" | sort | tail -1)"
-          echo "latest push-to-main ci.yml run: $latest"
-          status="$(printf '%s' "$latest" | cut -f3)"
-          concl="$(printf '%s' "$latest" | cut -f4)"
-          if [ "$status" != "completed" ] || [ "$concl" != "success" ]; then
-            echo "::error::the LATEST push-to-main ci.yml run for $SHA is status=$status conclusion=$concl — not green."
-            exit 1
-          fi
-          # Provenance is necessary but not sufficient: confirm the commit is actually on main.
-          git fetch --quiet origin main
-          if ! git merge-base --is-ancestor "$SHA" origin/main; then
-            echo "::error::$SHA is not an ancestor of origin/main — refusing to release off-main."
-            exit 1
-          fi
-          echo "ci-green: OK — latest push-to-main ci.yml run is green and $SHA is on main."
+        run: bash scripts/check-main-ci-green.sh
 
   build-macos:
     name: build macos (signs + notarizes when configured)
@@ -155,7 +129,12 @@ jobs:
 
       - name: Release metadata + tag gate
         env:
-          EXPECTED_TAG: ${{ github.ref_name }}
+          # trmx-242: only a TAG PUSH carries a tag to check. On workflow_dispatch `github.ref_name`
+          # is the branch ("main"), and check-release-metadata.sh would compare it against
+          # "v<workspace_version>" and fail — the dry-run trigger would abort before ever reaching
+          # the build it exists to exercise. Empty means "no tag to verify", which that script
+          # already treats as skip; the version-alignment checks still run.
+          EXPECTED_TAG: ${{ github.event_name == 'push' && github.ref_name || '' }}
         run: bash scripts/check-release-metadata.sh
 
       # trmx-207: the Starship sidecar (tauri.conf externalBin) — pinned + sha256-verified;
@@ -197,25 +176,15 @@ jobs:
       # profile (panic="abort", lto="thin", strip=true) — a materially different artifact that no
       # gate had ever launched.
       - name: Smoke the RELEASE bundle (launches the app + drives a real PTY)
+        # Resolution lives in scripts/resolve-release-app.sh, exercised by
+        # scripts/check-release-app-resolution.test.sh in ci.yml. It prints exactly one verified
+        # release .app path or fails: `smoke.sh` defaults to the DEBUG bundle via `${1:-…}`, and
+        # `${1:-…}` substitutes on an EMPTY argument as well as a missing one, so an unmatched
+        # `find` piped straight in would silently smoke a cached debug build and let this gate pass
+        # while testing the wrong artifact.
         run: |
           set -euo pipefail
-          # Resolve EXACTLY ONE release .app and assert its canonical path. `smoke.sh` defaults to
-          # the DEBUG bundle via `${1:-…}`, and `${1:-…}` substitutes on an EMPTY argument as well
-          # as a missing one — so piping an unmatched `find` straight in would silently smoke a
-          # cached debug build and let this gate pass while testing the wrong artifact.
-          expected="target/release/bundle/macos/Termixion.app"
-          matches="$(find target -type d -path '*release/bundle/macos/Termixion.app' -prune -print)"
-          count="$(printf '%s' "$matches" | grep -c . || true)"
-          if [ "$count" -ne 1 ]; then
-            echo "::error::expected exactly 1 release .app, found $count:"
-            printf '%s\n' "$matches" | sed 's/^/    /'
-            exit 1
-          fi
-          app="$matches"
-          if [ "$app" != "$expected" ]; then
-            echo "::error::resolved '$app' but expected exactly '$expected'"
-            exit 1
-          fi
+          app="$(bash scripts/resolve-release-app.sh)"
           echo "smoking release bundle: $app"
           bash scripts/smoke.sh "$app" 2>&1 | tee smoke-release.log
 

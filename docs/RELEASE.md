@@ -196,8 +196,23 @@ and then supersede.
 1. **Contain.** Delete (or un-publish) release N on GitHub. This stops *further* downloads and stops
    `latest.json` offering it to anyone who has not yet updated. It does nothing for installs that
    already took N — that is what step 2 is for.
-2. **Supersede.** Build and publish **N+1 from the N-1 tag**. A higher version number carrying the
-   older code is the only shape the updater will deliver as a repair.
+2. **Supersede — through main, not from the old tag.** A higher version number carrying the older
+   code is the only shape the updater will deliver as a repair. Get there by *restoring the code*,
+   not by tagging the old commit:
+
+   - Branch from **current main** and restore the N-1 *application* code onto it (e.g.
+     `git checkout v<N-1> -- crates/ app/`), keeping the current release infrastructure —
+     workflows, scripts, gates — as it is on main.
+   - Apply the N+1 version bump (`[workspace.package]` version, `app/package.json`,
+     `tauri.conf.json` — `scripts/check-release-metadata.sh` requires all three to agree with the
+     tag) plus whatever compatibility changes step 3 turns up.
+   - Merge it to main and **let main CI go green on the merge commit**.
+   - Tag **that** commit `v<N+1>`.
+
+   Do not tag the N-1 commit itself, or a new commit based directly on it. The `ci-green` job
+   (trmx-242) requires the released SHA to be an ancestor of `origin/main` *and* to have a green
+   push-to-main `ci.yml` run of its own; an old tag has neither, so the release would be refused
+   before it built — during an incident, which is the worst moment to discover it.
 3. **Mind the state.** N+1 is *older code with a newer version*, so it must tolerate anything N wrote
    — a migrated config, a new cache format, a settings key N introduced. Check that before shipping,
    or the repair reproduces the outage in a different way.

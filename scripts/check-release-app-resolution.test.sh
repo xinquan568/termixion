@@ -18,23 +18,14 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 fails=0
 
-# The resolution logic, character-for-character as the workflow runs it (kept in sync by review;
-# a divergence here is exactly what this test is for).
+# Invoke the PRODUCTION resolver — the same script release.yml runs. An earlier version of this
+# test re-implemented the logic inline, which meant the test could stay green while the workflow's
+# copy drifted or was removed. Testing a copy tests the copy.
+RESOLVER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/resolve-release-app.sh"
+[ -f "$RESOLVER" ] || { echo "check-release-app-resolution.test: resolver not found at $RESOLVER" >&2; exit 1; }
+
 resolve() { # resolve <root>  → echoes the app path, or fails
-  ( cd "$1"
-    expected="target/release/bundle/macos/Termixion.app"
-    matches="$(find target -type d -path '*release/bundle/macos/Termixion.app' -prune -print 2>/dev/null || true)"
-    count="$(printf '%s' "$matches" | grep -c . || true)"
-    if [ "$count" -ne 1 ]; then
-      echo "expected exactly 1 release .app, found $count" >&2
-      exit 1
-    fi
-    app="$matches"
-    if [ "$app" != "$expected" ]; then
-      echo "resolved '$app' but expected exactly '$expected'" >&2
-      exit 1
-    fi
-    printf '%s' "$app" )
+  bash "$RESOLVER" "$1"
 }
 
 check() { # check <label> <root> <expect: pass|fail> [expected-path]
@@ -75,4 +66,4 @@ if [ "$fails" -ne 0 ]; then
   echo "check-release-app-resolution.test: $fails case(s) failed." >&2
   exit 1
 fi
-echo "check-release-app-resolution.test: OK (4 cases)."
+echo "check-release-app-resolution.test: OK (4 cases, via the production resolver)."
