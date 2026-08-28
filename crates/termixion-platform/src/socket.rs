@@ -215,8 +215,24 @@ mod tests {
             "a live socket is never clobbered"
         );
 
-        // Dropped ⇒ stale ⇒ reclaimable.
+        // Dropped ⇒ stale ⇒ reclaimable. Closing the listener fd does not make `connect` fail
+        // instantly on macOS — a connect can still succeed for a moment afterwards — so wait for
+        // the socket to actually go dead rather than racing it. (The pre-move `control.rs` test had
+        // this same drop-then-immediately-reclaim shape and the same latent race; it surfaced once
+        // the code moved into a crate whose tests run alongside more parallel work.)
         drop(listener);
+        let mut dead = false;
+        for _ in 0..200 {
+            if UnixStream::connect(&path).is_err() {
+                dead = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            dead,
+            "the dropped listener never stopped accepting connections"
+        );
         let again = create_socket_at(&path).expect("a stale socket is reclaimed");
         drop(again);
         std::fs::remove_file(&path).ok();
