@@ -429,6 +429,15 @@ pub enum ConfigWarning {
         got: i64,
         clamped_to: u32,
     },
+    /// trmx-238 (M15): the file EXISTS but could not be read (permissions, a directory in the
+    /// way, an I/O error). Distinct from absent: an absent file legitimately means "defaults",
+    /// while an unreadable one means the user's settings are silently NOT in effect. Core owns
+    /// only the vocabulary — the shell detects the condition and passes the reason in.
+    Unreadable { message: String },
+    /// trmx-238 (M18): the zsh enhancement layer could not be applied, so sessions spawn bare
+    /// while the Settings toggles still read "on". Rides the same `config:warnings` surface as
+    /// the parse warnings rather than inventing a transport.
+    EnhancementsUnavailable { reason: String },
 }
 
 impl fmt::Display for ConfigWarning {
@@ -453,6 +462,12 @@ impl fmt::Display for ConfigWarning {
                     f,
                     "`{key}` = {got} is out of range; clamped to {clamped_to}"
                 )
+            }
+            Self::Unreadable { message } => {
+                write!(f, "config file could not be read: {message}")
+            }
+            Self::EnhancementsUnavailable { reason } => {
+                write!(f, "shell enhancements unavailable: {reason}")
             }
         }
     }
@@ -2464,6 +2479,46 @@ show_shortcut_hints = false
             message: "unexpected end of input".to_string(),
         };
         assert!(warning.to_string().contains("unexpected end of input"));
+    }
+
+    // trmx-238 (M15): a file that EXISTS but cannot be read is a distinct degraded mode from an
+    // absent one — the shell detects it (core never touches the filesystem) and reports it through
+    // this variant, so the UI can say "your settings are not being read" instead of silently
+    // serving defaults.
+    #[test]
+    fn unreadable_warning_displays_the_reason_and_tags_itself_for_the_wire() {
+        let warning = ConfigWarning::Unreadable {
+            message: "Permission denied (os error 13)".to_string(),
+        };
+        let text = warning.to_string();
+        assert!(text.contains("Permission denied"), "{text}");
+        assert!(
+            text.contains("could not be read"),
+            "the line must say what happened, not just the errno: {text}"
+        );
+        // The frontend switches on the serde tag; a missing/renamed tag renders as raw JSON.
+        let json = serde_json::to_value(&warning).expect("serializes");
+        assert_eq!(json["type"], "Unreadable");
+        assert_eq!(json["message"], "Permission denied (os error 13)");
+    }
+
+    // trmx-238 (M18): a shell-enhancement layer that failed to materialize rides the SAME
+    // config:warnings surface as the parse warnings (the issue's fix sketch item 3), so the
+    // settings banner and the main-window badge surface it with no new transport.
+    #[test]
+    fn enhancements_unavailable_warning_displays_the_reason_and_tags_itself_for_the_wire() {
+        let warning = ConfigWarning::EnhancementsUnavailable {
+            reason: "no starship binary found".to_string(),
+        };
+        let text = warning.to_string();
+        assert!(text.contains("no starship binary found"), "{text}");
+        assert!(
+            text.contains("enhancements"),
+            "the line must name what degraded: {text}"
+        );
+        let json = serde_json::to_value(&warning).expect("serializes");
+        assert_eq!(json["type"], "EnhancementsUnavailable");
+        assert_eq!(json["reason"], "no starship binary found");
     }
 
     // trmx-235 (M11): the shipped template and the field doc must name the REAL default socket path — the one

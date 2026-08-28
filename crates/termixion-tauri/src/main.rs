@@ -37,6 +37,7 @@ mod config_io;
 mod control;
 mod control_io;
 mod enhancements_io;
+mod fs_watch;
 mod logging;
 mod menu;
 mod scripts_io;

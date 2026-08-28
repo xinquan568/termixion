@@ -327,19 +327,114 @@ pub struct ConfigReadResponse {
     warnings: Vec<ConfigWarning>,
 }
 
-/// Build the `config_read` response from the file's text (pure; `None` = the file is absent):
-/// registry-keyed PRESENT-ONLY values plus the parse warnings.
-fn read_response_from(text: Option<&str>, path: &Path) -> ConfigReadResponse {
+/// trmx-238 (M15): the three outcomes of reading the config file. `Option<String>` could not
+/// express the middle one, which is exactly the bug: an unreadable file was indistinguishable
+/// from an absent one, so the user's settings silently became "defaults" (and, on hydration,
+/// re-triggered the one-time legacy-storage migration).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileRead {
+    /// No such file — the legitimate first-launch case; defaults apply.
+    Absent,
+    /// The file is there but could not be read (EACCES, a directory in the way, an I/O error).
+    /// The payload is the human-readable reason, already stringified on this (shell) side so
+    /// `std::io` never enters `termixion-core`.
+    Unreadable(String),
+    /// The file was read.
+    Text(String),
+}
+
+/// trmx-238 (M15): what a watcher wake should do with one classified read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadOutcome {
+    /// Apply this text.
+    Text(String),
+    /// The file was absent — re-read once before believing it, because an editor saving by
+    /// rename-then-create leaves a sub-millisecond window where it legitimately is not there.
+    RetryAbsent,
+    /// Unreadable: do nothing at all. Applying defaults would revert the user's live UI over a
+    /// permissions accident, and re-reading cannot fix EACCES.
+    Skip,
+}
+
+/// The PURE half of the transient-read guard (trmx-238 M15): no sleeping, no filesystem.
+pub fn read_outcome(read: &FileRead) -> ReadOutcome {
+    match read {
+        FileRead::Text(text) => ReadOutcome::Text(text.clone()),
+        FileRead::Absent => ReadOutcome::RetryAbsent,
+        FileRead::Unreadable(_) => ReadOutcome::Skip,
+    }
+}
+
+/// How long to wait before believing a file vanished (trmx-238 M15). Long enough to outlast an
+/// editor's rename-then-create window, short enough to be invisible on a real delete.
+const CONFIG_ABSENT_RETRY: Duration = Duration::from_millis(100);
+
+/// The IMPURE half: drive [`read_outcome`], re-reading ONCE on absence. `None` = skip this wake
+/// entirely; `Some(text)` = apply it (an empty string is a real delete ⇒ defaults). The single
+/// `sleep` lives here so every decision above stays testable without wall-clock dependence —
+/// tests drive [`wake_text_with`] with a scripted reader instead.
+fn wake_text_with(mut read: impl FnMut() -> FileRead) -> Option<String> {
+    match read_outcome(&read()) {
+        ReadOutcome::Text(text) => Some(text),
+        ReadOutcome::Skip => None,
+        ReadOutcome::RetryAbsent => match read_outcome(&read()) {
+            ReadOutcome::Text(text) => Some(text),
+            // Still absent after the retry: a REAL delete — empty text applies defaults.
+            ReadOutcome::RetryAbsent => Some(String::new()),
+            ReadOutcome::Skip => None,
+        },
+    }
+}
+
+/// The production reader for [`wake_text_with`]: the real file, with the real 100 ms pause
+/// between the two attempts.
+fn wake_text(path: &Path) -> Option<String> {
+    let mut attempt = 0u8;
+    wake_text_with(|| {
+        if attempt > 0 {
+            std::thread::sleep(CONFIG_ABSENT_RETRY);
+        }
+        attempt += 1;
+        classify_read(std::fs::read_to_string(path))
+    })
+}
+
+/// trmx-238 (M15): classify one filesystem read. A named seam rather than an inline `.ok()` so
+/// the absent/unreadable split is unit-testable without a filesystem.
+pub fn classify_read(result: Result<String, std::io::Error>) -> FileRead {
+    match result {
+        Ok(text) => FileRead::Text(text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => FileRead::Absent,
+        Err(err) => FileRead::Unreadable(err.to_string()),
+    }
+}
+
+/// Build the `config_read` response from one classified read (pure): registry-keyed PRESENT-ONLY
+/// values plus the parse warnings. An UNREADABLE file reports `exists: true` with no values and an
+/// `Unreadable` warning — the file is really there, so the frontend must NOT treat this as a
+/// first launch (that would re-run the legacy-storage migration, trmx-238 M15).
+fn read_response_from(read: FileRead, path: &Path) -> ConfigReadResponse {
     let path = path.display().to_string();
-    let Some(text) = text else {
-        return ConfigReadResponse {
-            exists: false,
-            path,
-            values: Map::new(),
-            warnings: Vec::new(),
-        };
+    let text = match read {
+        FileRead::Absent => {
+            return ConfigReadResponse {
+                exists: false,
+                path,
+                values: Map::new(),
+                warnings: Vec::new(),
+            };
+        }
+        FileRead::Unreadable(message) => {
+            return ConfigReadResponse {
+                exists: true,
+                path,
+                values: Map::new(),
+                warnings: vec![ConfigWarning::Unreadable { message }],
+            };
+        }
+        FileRead::Text(text) => text,
     };
-    let (pairs, warnings) = parse_registry_pairs(text);
+    let (pairs, warnings) = parse_registry_pairs(&text);
     let mut values = Map::new();
     for (key, value) in &pairs {
         values.insert(key.clone(), json_value(value));
@@ -497,18 +592,38 @@ pub fn emit_shell_fallback_warning(
 #[tauri::command]
 pub fn config_read(state: State<'_, ConfigState>) -> ConfigReadResponse {
     let path = config_path();
-    let text = std::fs::read_to_string(&path).ok();
-    let mut response = read_response_from(text.as_deref(), &path);
-    let (config, _) = parse_config(text.as_deref().unwrap_or_default());
+    // trmx-238 (M15): classify, never `.ok()` — an unreadable file must not masquerade as absent.
+    let read = classify_read(std::fs::read_to_string(&path));
+    let text = match &read {
+        FileRead::Text(text) => text.clone(),
+        FileRead::Absent | FileRead::Unreadable(_) => String::new(),
+    };
+    let mut response = read_response_from(read, &path);
+    // trmx-238 (M15/D4): the Unreadable warning is SYNTHESIZED, never cached — it describes this
+    // read, not a parse, so it must not enter `last_warnings` (a later re-emission over a
+    // now-readable file would otherwise keep reporting it). Split it out before caching.
+    let unreadable: Vec<ConfigWarning> = response
+        .warnings
+        .iter()
+        .filter(|w| matches!(w, ConfigWarning::Unreadable { .. }))
+        .cloned()
+        .collect();
+    let (config, _) = parse_config(&text);
     // trmx-205: the cached base stays PARSE-ONLY (the spawn-time re-emission recomputes the
     // shell check freshly over it — caching the synthesized warning would stack duplicates);
     // the published response carries parse + at most one fresh shell warning.
-    let parse_warnings = response.warnings.clone();
+    let parse_warnings: Vec<ConfigWarning> = response
+        .warnings
+        .iter()
+        .filter(|w| !matches!(w, ConfigWarning::Unreadable { .. }))
+        .cloned()
+        .collect();
     response.warnings = warnings_for_surface(
         &parse_warnings,
         &config,
         crate::shells_io::is_executable_file,
     );
+    response.warnings.extend(unreadable);
     match state.0.lock() {
         Ok(mut inner) => {
             inner.last = config;
@@ -605,64 +720,51 @@ const CONFIG_DEBOUNCE: Duration = Duration::from_millis(250);
 /// Best-effort decoration like the title poller: any setup failure logs and disables watching
 /// rather than failing the app.
 pub fn run_config_watcher(app: tauri::AppHandle) {
-    use notify::{RecursiveMode, Watcher};
-
-    let path = config_path();
-    let Some(parent) = path.parent().map(Path::to_path_buf) else {
+    let Some(spec) = config_watch_spec() else {
         log::warn!("termixion: config path has no parent; config file watching disabled");
         return;
     };
     // Ensure the directory exists so the watch can attach before the first lazy write
     // (create_dir_all is harmless — it creates no file).
-    if let Err(err) = std::fs::create_dir_all(&parent) {
+    if let Err(err) = std::fs::create_dir_all(&spec.dir) {
         log::warn!(
             "termixion: could not create {}: {err}; config file watching disabled",
-            parent.display()
+            spec.dir.display()
         );
         return;
     }
-    let (tx, rx) = std::sync::mpsc::channel::<()>();
-    let mut watcher =
-        match notify::recommended_watcher(move |event: Result<notify::Event, notify::Error>| {
-            // Only events touching termixion.toml count; the temp-file traffic of atomic
-            // writes (ours and editors') filters out here.
-            if let Ok(event) = event
-                && event
-                    .paths
-                    .iter()
-                    .any(|p| p.file_name().is_some_and(|name| name == CONFIG_FILE_NAME))
-            {
-                let _ = tx.send(());
-            }
-        }) {
-            Ok(watcher) => watcher,
-            Err(err) => {
-                log::warn!("termixion: could not create the config watcher: {err}");
-                return;
-            }
-        };
-    if let Err(err) = watcher.watch(&parent, RecursiveMode::NonRecursive) {
-        log::warn!(
-            "termixion: could not watch {}: {err}; config file watching disabled",
-            parent.display()
-        );
-        return;
-    }
-    // Debounce: block for the first event, then drain until CONFIG_DEBOUNCE of quiet before
-    // acting — the same std-thread + mpsc recv_timeout style as the rest of this shell.
-    loop {
-        if rx.recv().is_err() {
-            return; // channel closed — the watcher is gone, nothing left to do
-        }
-        while rx.recv_timeout(CONFIG_DEBOUNCE).is_ok() {}
-        on_config_file_event(&app, &path);
-    }
+    let path = config_path();
+    crate::fs_watch::run_debounced(&spec, || on_config_file_event(&app, &path));
+}
+
+/// trmx-238 (L7): this watcher's parameters, named so a unit test can pin them without starting a
+/// watcher. We watch the config file's PARENT (`NonRecursive`) because editors replace the file by
+/// rename; the filter keeps the temp-file traffic of atomic writes (ours and editors') out.
+pub fn config_watch_spec() -> Option<crate::fs_watch::WatchSpec> {
+    let parent = config_path().parent().map(Path::to_path_buf)?;
+    Some(crate::fs_watch::WatchSpec {
+        dir: parent,
+        mode: notify::RecursiveMode::NonRecursive,
+        debounce: CONFIG_DEBOUNCE,
+        filter: std::sync::Arc::new(is_config_file),
+    })
+}
+
+/// The config watcher's path filter: only `termixion.toml` itself counts.
+fn is_config_file(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name == CONFIG_FILE_NAME)
 }
 
 /// One debounced watcher wake: read the file (unreadable/absent → empty text → pure defaults),
 /// run the pure [`apply_file_text`] decision, and broadcast the outcome.
 fn on_config_file_event(app: &tauri::AppHandle, path: &Path) {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
+    // trmx-238 (M15): an unreadable file skips the wake outright, and a briefly-absent one is
+    // re-read once before we believe it — `unwrap_or_default()` used to turn both into "" and
+    // broadcast a full revert-to-defaults over the user's live UI.
+    let Some(text) = wake_text(path) else {
+        return;
+    };
     let state = app.state::<ConfigState>();
     let Ok(mut inner) = state.0.lock() else {
         log::warn!("termixion: config state poisoned; dropping a config file event");
@@ -1138,7 +1240,7 @@ mod tests {
 
     #[test]
     fn read_response_for_a_missing_file_is_exists_false_with_no_values() {
-        let response = read_response_from(None, Path::new("/tmp/x/termixion.toml"));
+        let response = read_response_from(FileRead::Absent, Path::new("/tmp/x/termixion.toml"));
         let value = serde_json::to_value(&response).expect("serializes");
         assert_eq!(
             value,
@@ -1154,7 +1256,7 @@ mod tests {
     #[test]
     fn read_response_values_are_registry_keyed_and_present_only() {
         let response = read_response_from(
-            Some("[terminal]\nfont_size = 14\ncursor_blink = true\n"),
+            FileRead::Text("[terminal]\nfont_size = 14\ncursor_blink = true\n".to_string()),
             Path::new("/tmp/x/termixion.toml"),
         );
         let value = serde_json::to_value(&response).expect("serializes");
@@ -1172,7 +1274,7 @@ mod tests {
     #[test]
     fn read_response_carries_typed_warnings() {
         let response = read_response_from(
-            Some("[terminal]\nfont_sise = 13\n"),
+            FileRead::Text("[terminal]\nfont_sise = 13\n".to_string()),
             Path::new("/tmp/x/termixion.toml"),
         );
         let value = serde_json::to_value(&response).expect("serializes");
@@ -1185,6 +1287,115 @@ mod tests {
                 "warnings": [ { "type": "UnknownKey", "key": "terminal.font_sise" } ],
             })
         );
+    }
+
+    // --- trmx-238 (M15): absent vs unreadable ------------------------------------------------
+
+    #[test]
+    fn classify_read_separates_absent_from_unreadable() {
+        use std::io::{Error, ErrorKind};
+        assert_eq!(
+            classify_read(Ok("x = 1\n".to_string())),
+            FileRead::Text("x = 1\n".to_string())
+        );
+        // An absent file legitimately means "defaults" — the pre-FR-13 first-launch case.
+        assert_eq!(
+            classify_read(Err(Error::from(ErrorKind::NotFound))),
+            FileRead::Absent
+        );
+        // EACCES / a directory in the way / any other I/O error means the user's settings exist
+        // and are NOT in effect. Collapsing this into Absent is the M15 bug.
+        match classify_read(Err(Error::new(ErrorKind::PermissionDenied, "boom"))) {
+            FileRead::Unreadable(message) => assert!(message.contains("boom"), "{message}"),
+            other => panic!("EACCES must classify as Unreadable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_response_for_an_unreadable_file_reports_exists_true_and_warns() {
+        // exists:true is load-bearing beyond the warning: hydrateSettings runs the legacy
+        // localStorage migration ONLY when the file does not exist, so reporting false here
+        // would silently re-run a one-time migration over a merely unreadable file.
+        let response = read_response_from(
+            FileRead::Unreadable("Permission denied (os error 13)".to_string()),
+            Path::new("/tmp/x/termixion.toml"),
+        );
+        let value = serde_json::to_value(&response).expect("serializes");
+        assert_eq!(
+            value,
+            json!({
+                "exists": true,
+                "path": "/tmp/x/termixion.toml",
+                "values": {},
+                "warnings": [
+                    { "type": "Unreadable", "message": "Permission denied (os error 13)" }
+                ],
+            })
+        );
+    }
+
+    // trmx-238 (L7): pin this watcher's parameters across the dedupe. Its wake ACTION is
+    // `on_config_file_event`, already covered by the transient-read-guard tests below.
+    #[test]
+    fn config_watch_spec_watches_the_parent_dir_for_termixion_toml_only() {
+        let spec = config_watch_spec().expect("the config path has a parent");
+        assert_eq!(spec.dir, config_path().parent().expect("parent"));
+        assert_eq!(spec.mode, notify::RecursiveMode::NonRecursive);
+        assert_eq!(spec.debounce, CONFIG_DEBOUNCE);
+        assert!((spec.filter)(&spec.dir.join(CONFIG_FILE_NAME)));
+        // The temp file of an atomic write must not wake us.
+        assert!(!(spec.filter)(&spec.dir.join("termixion.toml.tmp")));
+    }
+
+    // --- trmx-238 (M15): the transient-read guard on a watcher wake --------------------------
+
+    #[test]
+    fn read_outcome_retries_a_missing_file_and_skips_other_errors() {
+        // An editor that saves by rename-then-create (vim `backupcopy=no`, "safe write" modes)
+        // unlinks the file for a sub-millisecond window. Reading "" there is indistinguishable
+        // from a real delete, and "" parses to Config::default() — which is why the live UI
+        // reverted every customized key on a routine :w (M15).
+        assert_eq!(read_outcome(&FileRead::Absent), ReadOutcome::RetryAbsent);
+        assert_eq!(
+            read_outcome(&FileRead::Text("x = 1\n".to_string())),
+            ReadOutcome::Text("x = 1\n".to_string())
+        );
+        // EACCES is not a transient rename window; re-reading cannot help and applying defaults
+        // would be a lie. Skip the wake entirely.
+        assert_eq!(
+            read_outcome(&FileRead::Unreadable("EACCES".to_string())),
+            ReadOutcome::Skip
+        );
+    }
+
+    #[test]
+    fn wake_text_reretries_once_when_the_file_is_briefly_absent() {
+        // absent → present: the rename window. The SECOND read wins; no defaults burst.
+        let reads = std::cell::RefCell::new(vec![
+            FileRead::Absent,
+            FileRead::Text("[terminal]\nfont_size = 14\n".to_string()),
+        ]);
+        let got = wake_text_with(|| reads.borrow_mut().remove(0));
+        assert_eq!(got, Some("[terminal]\nfont_size = 14\n".to_string()));
+        assert!(reads.borrow().is_empty(), "both reads were consumed");
+    }
+
+    #[test]
+    fn wake_text_applies_defaults_when_the_file_is_really_gone() {
+        // absent → still absent: a REAL delete must still take effect (empty text ⇒ defaults).
+        let reads = std::cell::RefCell::new(vec![FileRead::Absent, FileRead::Absent]);
+        let got = wake_text_with(|| reads.borrow_mut().remove(0));
+        assert_eq!(got, Some(String::new()));
+    }
+
+    #[test]
+    fn wake_text_skips_the_wake_entirely_on_an_unreadable_file() {
+        // No re-read, no application: None means on_config_file_event returns before emitting,
+        // so an EACCES file produces no settings:changed burst at all.
+        let reads = std::cell::RefCell::new(vec![FileRead::Unreadable("EACCES".to_string())]);
+        let got = wake_text_with(|| reads.borrow_mut().remove(0));
+        assert_eq!(got, None);
+        assert!(reads.borrow().is_empty(), "exactly one read, no retry");
     }
 
     // --- the emit decision for one applied wake (trmx-80 review R2) ---------------------------
