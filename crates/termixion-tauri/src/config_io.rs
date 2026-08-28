@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use crate::enhancements_io::EnhancementsStatus;
 use serde_json::{Map, Value as JsonValue};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
@@ -69,6 +70,13 @@ struct ConfigInner {
     /// shell-fallback re-emission layers the fresh shell warning onto (no file change happens
     /// when a configured shell is uninstalled, so the cached set is the only honest base).
     last_warnings: Vec<ConfigWarning>,
+    /// trmx-238 (M15): the READ HEALTH of the last read — `Some(reason)` while the file is present
+    /// but unreadable. Tracked separately from `last_warnings` (which stays parse-only) because
+    /// the warning surface is rebuilt wholesale on every read, wake and re-emission: without this,
+    /// the first unrelated re-emission (an enhancement-status transition, a shell fallback) would
+    /// publish a set with no `Unreadable` in it and silently clear the banner while the file was
+    /// still unreadable.
+    last_unreadable: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -327,19 +335,114 @@ pub struct ConfigReadResponse {
     warnings: Vec<ConfigWarning>,
 }
 
-/// Build the `config_read` response from the file's text (pure; `None` = the file is absent):
-/// registry-keyed PRESENT-ONLY values plus the parse warnings.
-fn read_response_from(text: Option<&str>, path: &Path) -> ConfigReadResponse {
+/// trmx-238 (M15): the three outcomes of reading the config file. `Option<String>` could not
+/// express the middle one, which is exactly the bug: an unreadable file was indistinguishable
+/// from an absent one, so the user's settings silently became "defaults" (and, on hydration,
+/// re-triggered the one-time legacy-storage migration).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileRead {
+    /// No such file — the legitimate first-launch case; defaults apply.
+    Absent,
+    /// The file is there but could not be read (EACCES, a directory in the way, an I/O error).
+    /// The payload is the human-readable reason, already stringified on this (shell) side so
+    /// `std::io` never enters `termixion-core`.
+    Unreadable(String),
+    /// The file was read.
+    Text(String),
+}
+
+/// trmx-238 (M15): what a watcher wake should do with one classified read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadOutcome {
+    /// Apply this text.
+    Text(String),
+    /// The file was absent — re-read once before believing it, because an editor saving by
+    /// rename-then-create leaves a sub-millisecond window where it legitimately is not there.
+    RetryAbsent,
+    /// Unreadable: do nothing at all. Applying defaults would revert the user's live UI over a
+    /// permissions accident, and re-reading cannot fix EACCES.
+    Skip,
+}
+
+/// The PURE half of the transient-read guard (trmx-238 M15): no sleeping, no filesystem.
+pub fn read_outcome(read: &FileRead) -> ReadOutcome {
+    match read {
+        FileRead::Text(text) => ReadOutcome::Text(text.clone()),
+        FileRead::Absent => ReadOutcome::RetryAbsent,
+        FileRead::Unreadable(_) => ReadOutcome::Skip,
+    }
+}
+
+/// How long to wait before believing a file vanished (trmx-238 M15). Long enough to outlast an
+/// editor's rename-then-create window, short enough to be invisible on a real delete.
+const CONFIG_ABSENT_RETRY: Duration = Duration::from_millis(100);
+
+/// The IMPURE half: drive [`read_outcome`], re-reading ONCE on absence. `None` = skip this wake
+/// entirely; `Some(text)` = apply it (an empty string is a real delete ⇒ defaults). The single
+/// `sleep` lives here so every decision above stays testable without wall-clock dependence —
+/// tests drive [`wake_text_with`] with a scripted reader instead.
+fn wake_text_with(mut read: impl FnMut() -> FileRead) -> Option<String> {
+    match read_outcome(&read()) {
+        ReadOutcome::Text(text) => Some(text),
+        ReadOutcome::Skip => None,
+        ReadOutcome::RetryAbsent => match read_outcome(&read()) {
+            ReadOutcome::Text(text) => Some(text),
+            // Still absent after the retry: a REAL delete — empty text applies defaults.
+            ReadOutcome::RetryAbsent => Some(String::new()),
+            ReadOutcome::Skip => None,
+        },
+    }
+}
+
+/// The production reader for [`wake_text_with`]: the real file, with the real 100 ms pause
+/// between the two attempts.
+fn wake_text(path: &Path) -> Option<String> {
+    let mut attempt = 0u8;
+    wake_text_with(|| {
+        if attempt > 0 {
+            std::thread::sleep(CONFIG_ABSENT_RETRY);
+        }
+        attempt += 1;
+        classify_read(std::fs::read_to_string(path))
+    })
+}
+
+/// trmx-238 (M15): classify one filesystem read. A named seam rather than an inline `.ok()` so
+/// the absent/unreadable split is unit-testable without a filesystem.
+pub fn classify_read(result: Result<String, std::io::Error>) -> FileRead {
+    match result {
+        Ok(text) => FileRead::Text(text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => FileRead::Absent,
+        Err(err) => FileRead::Unreadable(err.to_string()),
+    }
+}
+
+/// Build the `config_read` response from one classified read (pure): registry-keyed PRESENT-ONLY
+/// values plus the parse warnings. An UNREADABLE file reports `exists: true` with no values and an
+/// `Unreadable` warning — the file is really there, so the frontend must NOT treat this as a
+/// first launch (that would re-run the legacy-storage migration, trmx-238 M15).
+fn read_response_from(read: FileRead, path: &Path) -> ConfigReadResponse {
     let path = path.display().to_string();
-    let Some(text) = text else {
-        return ConfigReadResponse {
-            exists: false,
-            path,
-            values: Map::new(),
-            warnings: Vec::new(),
-        };
+    let text = match read {
+        FileRead::Absent => {
+            return ConfigReadResponse {
+                exists: false,
+                path,
+                values: Map::new(),
+                warnings: Vec::new(),
+            };
+        }
+        FileRead::Unreadable(message) => {
+            return ConfigReadResponse {
+                exists: true,
+                path,
+                values: Map::new(),
+                warnings: vec![ConfigWarning::Unreadable { message }],
+            };
+        }
+        FileRead::Text(text) => text,
     };
-    let (pairs, warnings) = parse_registry_pairs(text);
+    let (pairs, warnings) = parse_registry_pairs(&text);
     let mut values = Map::new();
     for (key, value) in &pairs {
         values.insert(key.clone(), json_value(value));
@@ -424,10 +527,29 @@ fn warnings_for_surface(
     parse: &[ConfigWarning],
     config: &Config,
     valid: impl Fn(&str) -> bool,
+    enhancements: &EnhancementsStatus,
+    unreadable: Option<&str>,
 ) -> Vec<ConfigWarning> {
     let mut out = parse.to_vec();
+    // trmx-238 (M15): synthesized on EVERY rebuild from the tracked read health, so an unrelated
+    // re-emission cannot clear it — and so it self-clears the moment a read succeeds.
+    if let Some(message) = unreadable {
+        out.push(ConfigWarning::Unreadable {
+            message: message.to_string(),
+        });
+    }
     if let Some(warning) = shell_validity_warning(config, valid) {
         out.push(warning);
+    }
+    // trmx-238 (M18/D3): the enhancement verdict is SYNTHESIZED here rather than cached into
+    // `last_warnings`, for the same reason the shell warning is (trmx-205): this ledger is
+    // rebuilt wholesale on every read and every watcher wake, so a cached entry would either
+    // stack duplicates or — worse — be erased by the next unrelated config broadcast. Synthesizing
+    // makes it survive every rebuild AND self-clear the moment the status recovers.
+    if let EnhancementsStatus::Unavailable { reason } = enhancements {
+        out.push(ConfigWarning::EnhancementsUnavailable {
+            reason: reason.clone(),
+        });
     }
     out
 }
@@ -481,11 +603,40 @@ pub fn emit_shell_fallback_warning(
     state: &ConfigState,
     valid: impl Fn(&str) -> bool,
 ) {
+    emit_config_warnings_with(app, state, valid);
+}
+
+/// trmx-238 (M18): re-publish the CURRENT warning surface. Extracted from
+/// [`emit_shell_fallback_warning`] so an enhancement-status transition can refresh the banner and
+/// the main-window badge without waiting for an unrelated config event.
+pub fn emit_config_warnings(app: &tauri::AppHandle, state: &ConfigState) {
+    emit_config_warnings_with(app, state, crate::shells_io::is_executable_file);
+}
+
+fn emit_config_warnings_with(
+    app: &tauri::AppHandle,
+    state: &ConfigState,
+    valid: impl Fn(&str) -> bool,
+) {
     let Ok(inner) = state.0.lock() else { return };
-    let warnings = warnings_for_surface(&inner.last_warnings, &inner.last, valid);
+    let warnings = warnings_for_surface(
+        &inner.last_warnings,
+        &inner.last,
+        valid,
+        &enhancements_status_of(app),
+        inner.last_unreadable.as_deref(),
+    );
     drop(inner);
     let payload = serde_json::to_value(&warnings).unwrap_or_else(|_| JsonValue::Array(Vec::new()));
     let _ = app.emit("config:warnings", payload);
+}
+
+/// The app's recorded enhancement status, or `NotObserved` before the state is managed (every
+/// unit test and the earliest start-up moments).
+fn enhancements_status_of(app: &tauri::AppHandle) -> EnhancementsStatus {
+    app.try_state::<crate::enhancements_io::EnhancementsState>()
+        .map(|state| crate::enhancements_io::read_status(&state))
+        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
@@ -495,26 +646,47 @@ pub fn emit_shell_fallback_warning(
 /// Read the config file for the frontend registry: present-only registry-keyed values +
 /// warnings. Also (re)bases the watcher's diff state on what was read.
 #[tauri::command]
-pub fn config_read(state: State<'_, ConfigState>) -> ConfigReadResponse {
+pub fn config_read(app: tauri::AppHandle, state: State<'_, ConfigState>) -> ConfigReadResponse {
     let path = config_path();
-    let text = std::fs::read_to_string(&path).ok();
-    let mut response = read_response_from(text.as_deref(), &path);
-    let (config, _) = parse_config(text.as_deref().unwrap_or_default());
+    // trmx-238 (M15): classify, never `.ok()` — an unreadable file must not masquerade as absent.
+    let read = classify_read(std::fs::read_to_string(&path));
+    let text = match &read {
+        FileRead::Text(text) => text.clone(),
+        FileRead::Absent | FileRead::Unreadable(_) => String::new(),
+    };
+    let mut response = read_response_from(read, &path);
+    // trmx-238 (M15/D4): the Unreadable warning is SYNTHESIZED from the tracked read health, never
+    // cached into `last_warnings` — it describes this READ, not a parse. Recording it on the state
+    // (rather than splicing it onto this one response) is what keeps it alive across the wholesale
+    // rebuilds every later re-emission performs.
+    let unreadable: Option<String> = response.warnings.iter().find_map(|w| match w {
+        ConfigWarning::Unreadable { message } => Some(message.clone()),
+        _ => None,
+    });
+    let (config, _) = parse_config(&text);
     // trmx-205: the cached base stays PARSE-ONLY (the spawn-time re-emission recomputes the
     // shell check freshly over it — caching the synthesized warning would stack duplicates);
     // the published response carries parse + at most one fresh shell warning.
-    let parse_warnings = response.warnings.clone();
+    let parse_warnings: Vec<ConfigWarning> = response
+        .warnings
+        .iter()
+        .filter(|w| !matches!(w, ConfigWarning::Unreadable { .. }))
+        .cloned()
+        .collect();
     response.warnings = warnings_for_surface(
         &parse_warnings,
         &config,
         crate::shells_io::is_executable_file,
+        &enhancements_status_of(&app),
+        unreadable.as_deref(),
     );
     match state.0.lock() {
         Ok(mut inner) => {
             inner.last = config;
             inner.last_warnings = parse_warnings;
+            inner.last_unreadable = unreadable;
         }
-        Err(_) => eprintln!("termixion: config state poisoned; skipping diff-base update"),
+        Err(_) => log::warn!("termixion: config state poisoned; skipping diff-base update"),
     }
     response
 }
@@ -605,67 +777,54 @@ const CONFIG_DEBOUNCE: Duration = Duration::from_millis(250);
 /// Best-effort decoration like the title poller: any setup failure logs and disables watching
 /// rather than failing the app.
 pub fn run_config_watcher(app: tauri::AppHandle) {
-    use notify::{RecursiveMode, Watcher};
-
-    let path = config_path();
-    let Some(parent) = path.parent().map(Path::to_path_buf) else {
-        eprintln!("termixion: config path has no parent; config file watching disabled");
+    let Some(spec) = config_watch_spec() else {
+        log::warn!("termixion: config path has no parent; config file watching disabled");
         return;
     };
     // Ensure the directory exists so the watch can attach before the first lazy write
     // (create_dir_all is harmless — it creates no file).
-    if let Err(err) = std::fs::create_dir_all(&parent) {
-        eprintln!(
+    if let Err(err) = std::fs::create_dir_all(&spec.dir) {
+        log::warn!(
             "termixion: could not create {}: {err}; config file watching disabled",
-            parent.display()
+            spec.dir.display()
         );
         return;
     }
-    let (tx, rx) = std::sync::mpsc::channel::<()>();
-    let mut watcher =
-        match notify::recommended_watcher(move |event: Result<notify::Event, notify::Error>| {
-            // Only events touching termixion.toml count; the temp-file traffic of atomic
-            // writes (ours and editors') filters out here.
-            if let Ok(event) = event
-                && event
-                    .paths
-                    .iter()
-                    .any(|p| p.file_name().is_some_and(|name| name == CONFIG_FILE_NAME))
-            {
-                let _ = tx.send(());
-            }
-        }) {
-            Ok(watcher) => watcher,
-            Err(err) => {
-                eprintln!("termixion: could not create the config watcher: {err}");
-                return;
-            }
-        };
-    if let Err(err) = watcher.watch(&parent, RecursiveMode::NonRecursive) {
-        eprintln!(
-            "termixion: could not watch {}: {err}; config file watching disabled",
-            parent.display()
-        );
-        return;
-    }
-    // Debounce: block for the first event, then drain until CONFIG_DEBOUNCE of quiet before
-    // acting — the same std-thread + mpsc recv_timeout style as the rest of this shell.
-    loop {
-        if rx.recv().is_err() {
-            return; // channel closed — the watcher is gone, nothing left to do
-        }
-        while rx.recv_timeout(CONFIG_DEBOUNCE).is_ok() {}
-        on_config_file_event(&app, &path);
-    }
+    let path = config_path();
+    crate::fs_watch::run_debounced(&spec, || on_config_file_event(&app, &path));
+}
+
+/// trmx-238 (L7): this watcher's parameters, named so a unit test can pin them without starting a
+/// watcher. We watch the config file's PARENT (`NonRecursive`) because editors replace the file by
+/// rename; the filter keeps the temp-file traffic of atomic writes (ours and editors') out.
+pub fn config_watch_spec() -> Option<crate::fs_watch::WatchSpec> {
+    let parent = config_path().parent().map(Path::to_path_buf)?;
+    Some(crate::fs_watch::WatchSpec {
+        dir: parent,
+        mode: notify::RecursiveMode::NonRecursive,
+        debounce: CONFIG_DEBOUNCE,
+        filter: std::sync::Arc::new(is_config_file),
+    })
+}
+
+/// The config watcher's path filter: only `termixion.toml` itself counts.
+fn is_config_file(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name == CONFIG_FILE_NAME)
 }
 
 /// One debounced watcher wake: read the file (unreadable/absent → empty text → pure defaults),
 /// run the pure [`apply_file_text`] decision, and broadcast the outcome.
 fn on_config_file_event(app: &tauri::AppHandle, path: &Path) {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
+    // trmx-238 (M15): an unreadable file skips the wake outright, and a briefly-absent one is
+    // re-read once before we believe it — `unwrap_or_default()` used to turn both into "" and
+    // broadcast a full revert-to-defaults over the user's live UI.
+    let Some(text) = wake_text(path) else {
+        return;
+    };
     let state = app.state::<ConfigState>();
     let Ok(mut inner) = state.0.lock() else {
-        eprintln!("termixion: config state poisoned; dropping a config file event");
+        log::warn!("termixion: config state poisoned; dropping a config file event");
         return;
     };
     let Some(application) = apply_file_text(&text, &inner.last, inner.last_write_hash) else {
@@ -675,10 +834,15 @@ fn on_config_file_event(app: &tauri::AppHandle, path: &Path) {
     // PARSE-ONLY so the spawn-time re-emission can never stack duplicates.
     let mut application = application;
     let parse_warnings = application.warnings.clone();
+    // A wake only reaches here when the file was READ (wake_text returns None for unreadable), so
+    // the read health is provably clear — record that, or a stale Unreadable would outlive the fix.
+    inner.last_unreadable = None;
     application.warnings = warnings_for_surface(
         &parse_warnings,
         &application.config,
         crate::shells_io::is_executable_file,
+        &enhancements_status_of(app),
+        None,
     );
     // The pure decision, computed before `application.config` moves into the diff base.
     let mut emissions = emissions_for(&application);
@@ -970,11 +1134,23 @@ mod tests {
             got: "\"big\"".to_string(),
             expected: "an integer".to_string(),
         }];
-        let first = warnings_for_surface(&parse_only, &config, |_| false);
+        let first = warnings_for_surface(
+            &parse_only,
+            &config,
+            |_| false,
+            &EnhancementsStatus::NotObserved,
+            None,
+        );
         assert_eq!(first.len(), 2); // the parse warning + ONE shell warning
         // A second derivation from the same parse-only base (the spawn re-emission) is
         // identical — deriving from `first` would be the stacking bug.
-        let second = warnings_for_surface(&parse_only, &config, |_| false);
+        let second = warnings_for_surface(
+            &parse_only,
+            &config,
+            |_| false,
+            &EnhancementsStatus::NotObserved,
+            None,
+        );
         assert_eq!(second, first);
         let shell_count = second
             .iter()
@@ -986,7 +1162,13 @@ mod tests {
         // A fixed shell clears it wholesale.
         config.terminal.shell = String::new();
         assert_eq!(
-            warnings_for_surface(&parse_only, &config, |_| false),
+            warnings_for_surface(
+                &parse_only,
+                &config,
+                |_| false,
+                &EnhancementsStatus::NotObserved,
+                None
+            ),
             parse_only
         );
     }
@@ -1138,7 +1320,7 @@ mod tests {
 
     #[test]
     fn read_response_for_a_missing_file_is_exists_false_with_no_values() {
-        let response = read_response_from(None, Path::new("/tmp/x/termixion.toml"));
+        let response = read_response_from(FileRead::Absent, Path::new("/tmp/x/termixion.toml"));
         let value = serde_json::to_value(&response).expect("serializes");
         assert_eq!(
             value,
@@ -1154,7 +1336,7 @@ mod tests {
     #[test]
     fn read_response_values_are_registry_keyed_and_present_only() {
         let response = read_response_from(
-            Some("[terminal]\nfont_size = 14\ncursor_blink = true\n"),
+            FileRead::Text("[terminal]\nfont_size = 14\ncursor_blink = true\n".to_string()),
             Path::new("/tmp/x/termixion.toml"),
         );
         let value = serde_json::to_value(&response).expect("serializes");
@@ -1172,7 +1354,7 @@ mod tests {
     #[test]
     fn read_response_carries_typed_warnings() {
         let response = read_response_from(
-            Some("[terminal]\nfont_sise = 13\n"),
+            FileRead::Text("[terminal]\nfont_sise = 13\n".to_string()),
             Path::new("/tmp/x/termixion.toml"),
         );
         let value = serde_json::to_value(&response).expect("serializes");
@@ -1185,6 +1367,199 @@ mod tests {
                 "warnings": [ { "type": "UnknownKey", "key": "terminal.font_sise" } ],
             })
         );
+    }
+
+    // trmx-238 (M18/D3): an enhancement failure rides the SAME config:warnings surface as the
+    // parse warnings, and it must SURVIVE the wholesale rebuild that surface does on every read
+    // and every watcher wake — which is why it is synthesized here rather than cached.
+    #[test]
+    fn an_unavailable_enhancement_status_is_synthesized_into_the_warning_surface() {
+        let config = Config::default();
+        let down = EnhancementsStatus::Unavailable {
+            reason: "plugins dir is read-only".to_string(),
+        };
+        let surfaced = warnings_for_surface(&[], &config, |_| true, &down, None);
+        assert_eq!(
+            surfaced,
+            vec![ConfigWarning::EnhancementsUnavailable {
+                reason: "plugins dir is read-only".to_string()
+            }]
+        );
+        // Deriving again from the same (parse-only, empty) base is identical — no stacking.
+        assert_eq!(
+            warnings_for_surface(&[], &config, |_| true, &down, None),
+            surfaced
+        );
+
+        // Recovery self-clears: nothing cached means nothing to evict.
+        for recovered in [EnhancementsStatus::Active, EnhancementsStatus::NotObserved] {
+            assert!(
+                warnings_for_surface(&[], &config, |_| true, &recovered, None).is_empty(),
+                "a recovered status must stop being surfaced ({recovered:?})"
+            );
+        }
+    }
+
+    // trmx-238 (M15) REGRESSION (step-8 finding 1): the warning surface is rebuilt WHOLESALE on
+    // every read, wake and re-emission. An earlier revision spliced the Unreadable warning onto
+    // the config_read response only, so the very next unrelated re-emission — an enhancement-status
+    // transition, a shell fallback — published a set without it and silently cleared the banner
+    // while the file was still unreadable. It must be synthesized from the tracked read health.
+    #[test]
+    fn an_unreadable_file_keeps_warning_across_an_unrelated_re_emission() {
+        let config = Config::default();
+        let unreadable = Some("Permission denied (os error 13)");
+        let has_unreadable = |set: &[ConfigWarning]| {
+            set.iter()
+                .any(|w| matches!(w, ConfigWarning::Unreadable { .. }))
+        };
+
+        // The read itself surfaces it...
+        let first = warnings_for_surface(
+            &[],
+            &config,
+            |_| true,
+            &EnhancementsStatus::NotObserved,
+            unreadable,
+        );
+        assert!(has_unreadable(&first));
+
+        // ...and so does a rebuild triggered by something else entirely, while the file is still
+        // unreadable. This is the assertion the old splice-onto-the-response design failed.
+        let reemitted = warnings_for_surface(
+            &[],
+            &config,
+            |_| true,
+            &EnhancementsStatus::Unavailable {
+                reason: "plugins dir is read-only".to_string(),
+            },
+            unreadable,
+        );
+        assert!(has_unreadable(&reemitted), "{reemitted:?}");
+        assert!(
+            reemitted
+                .iter()
+                .any(|w| matches!(w, ConfigWarning::EnhancementsUnavailable { .. })),
+            "both degraded modes coexist: {reemitted:?}"
+        );
+
+        // A successful read clears the health, and the warning stops being synthesized.
+        assert!(!has_unreadable(&warnings_for_surface(
+            &[],
+            &config,
+            |_| true,
+            &EnhancementsStatus::NotObserved,
+            None
+        )));
+    }
+
+    // --- trmx-238 (M15): absent vs unreadable ------------------------------------------------
+
+    #[test]
+    fn classify_read_separates_absent_from_unreadable() {
+        use std::io::{Error, ErrorKind};
+        assert_eq!(
+            classify_read(Ok("x = 1\n".to_string())),
+            FileRead::Text("x = 1\n".to_string())
+        );
+        // An absent file legitimately means "defaults" — the pre-FR-13 first-launch case.
+        assert_eq!(
+            classify_read(Err(Error::from(ErrorKind::NotFound))),
+            FileRead::Absent
+        );
+        // EACCES / a directory in the way / any other I/O error means the user's settings exist
+        // and are NOT in effect. Collapsing this into Absent is the M15 bug.
+        match classify_read(Err(Error::new(ErrorKind::PermissionDenied, "boom"))) {
+            FileRead::Unreadable(message) => assert!(message.contains("boom"), "{message}"),
+            other => panic!("EACCES must classify as Unreadable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_response_for_an_unreadable_file_reports_exists_true_and_warns() {
+        // exists:true is load-bearing beyond the warning: hydrateSettings runs the legacy
+        // localStorage migration ONLY when the file does not exist, so reporting false here
+        // would silently re-run a one-time migration over a merely unreadable file.
+        let response = read_response_from(
+            FileRead::Unreadable("Permission denied (os error 13)".to_string()),
+            Path::new("/tmp/x/termixion.toml"),
+        );
+        let value = serde_json::to_value(&response).expect("serializes");
+        assert_eq!(
+            value,
+            json!({
+                "exists": true,
+                "path": "/tmp/x/termixion.toml",
+                "values": {},
+                "warnings": [
+                    { "type": "Unreadable", "message": "Permission denied (os error 13)" }
+                ],
+            })
+        );
+    }
+
+    // trmx-238 (L7): pin this watcher's parameters across the dedupe. Its wake ACTION is
+    // `on_config_file_event`, already covered by the transient-read-guard tests below.
+    #[test]
+    fn config_watch_spec_watches_the_parent_dir_for_termixion_toml_only() {
+        let spec = config_watch_spec().expect("the config path has a parent");
+        assert_eq!(spec.dir, config_path().parent().expect("parent"));
+        assert_eq!(spec.mode, notify::RecursiveMode::NonRecursive);
+        assert_eq!(spec.debounce, CONFIG_DEBOUNCE);
+        assert!((spec.filter)(&spec.dir.join(CONFIG_FILE_NAME)));
+        // The temp file of an atomic write must not wake us.
+        assert!(!(spec.filter)(&spec.dir.join("termixion.toml.tmp")));
+    }
+
+    // --- trmx-238 (M15): the transient-read guard on a watcher wake --------------------------
+
+    #[test]
+    fn read_outcome_retries_a_missing_file_and_skips_other_errors() {
+        // An editor that saves by rename-then-create (vim `backupcopy=no`, "safe write" modes)
+        // unlinks the file for a sub-millisecond window. Reading "" there is indistinguishable
+        // from a real delete, and "" parses to Config::default() — which is why the live UI
+        // reverted every customized key on a routine :w (M15).
+        assert_eq!(read_outcome(&FileRead::Absent), ReadOutcome::RetryAbsent);
+        assert_eq!(
+            read_outcome(&FileRead::Text("x = 1\n".to_string())),
+            ReadOutcome::Text("x = 1\n".to_string())
+        );
+        // EACCES is not a transient rename window; re-reading cannot help and applying defaults
+        // would be a lie. Skip the wake entirely.
+        assert_eq!(
+            read_outcome(&FileRead::Unreadable("EACCES".to_string())),
+            ReadOutcome::Skip
+        );
+    }
+
+    #[test]
+    fn wake_text_reretries_once_when_the_file_is_briefly_absent() {
+        // absent → present: the rename window. The SECOND read wins; no defaults burst.
+        let reads = std::cell::RefCell::new(vec![
+            FileRead::Absent,
+            FileRead::Text("[terminal]\nfont_size = 14\n".to_string()),
+        ]);
+        let got = wake_text_with(|| reads.borrow_mut().remove(0));
+        assert_eq!(got, Some("[terminal]\nfont_size = 14\n".to_string()));
+        assert!(reads.borrow().is_empty(), "both reads were consumed");
+    }
+
+    #[test]
+    fn wake_text_applies_defaults_when_the_file_is_really_gone() {
+        // absent → still absent: a REAL delete must still take effect (empty text ⇒ defaults).
+        let reads = std::cell::RefCell::new(vec![FileRead::Absent, FileRead::Absent]);
+        let got = wake_text_with(|| reads.borrow_mut().remove(0));
+        assert_eq!(got, Some(String::new()));
+    }
+
+    #[test]
+    fn wake_text_skips_the_wake_entirely_on_an_unreadable_file() {
+        // No re-read, no application: None means on_config_file_event returns before emitting,
+        // so an EACCES file produces no settings:changed burst at all.
+        let reads = std::cell::RefCell::new(vec![FileRead::Unreadable("EACCES".to_string())]);
+        let got = wake_text_with(|| reads.borrow_mut().remove(0));
+        assert_eq!(got, None);
+        assert!(reads.borrow().is_empty(), "exactly one read, no retry");
     }
 
     // --- the emit decision for one applied wake (trmx-80 review R2) ---------------------------

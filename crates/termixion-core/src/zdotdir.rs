@@ -101,6 +101,8 @@ fi\n\
 if [[ \"${{{auto}-}}\" == \"1\" ]] && (( ! $+functions[_zsh_autosuggest_start] )); then\n\
   if [[ -r \"${{{plugins}-}}/zsh-autosuggestions/zsh-autosuggestions.zsh\" ]]; then\n\
     source \"${{{plugins}-}}/zsh-autosuggestions/zsh-autosuggestions.zsh\"\n\
+  else\n\
+    print -u2 \"termixion: zsh-autosuggestions is enabled but its plugin file could not be read; continuing without it\" >&2\n\
   fi\n\
 fi\n\
 # trmx-207: the chosen prompt initializes AFTER the user rc and the autosuggestions layer,\n\
@@ -141,6 +143,9 @@ esac\n\
 # zsh-syntax-highlighting MUST be sourced last (its documented requirement) — keep this the\n\
 # final layering block in this file.\n\
 if [[ \"${{{hl}-}}\" == \"1\" ]] && [[ -z \"${{ZSH_HIGHLIGHT_VERSION-}}\" ]]; then\n\
+  if [[ ! -r \"${{{plugins}-}}/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh\" ]]; then\n\
+    print -u2 \"termixion: zsh-syntax-highlighting is enabled but its plugin file could not be read; continuing without it\" >&2\n\
+  fi\n\
   if [[ -r \"${{{plugins}-}}/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh\" ]]; then\n\
     source \"${{{plugins}-}}/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh\"\n\
   fi\n\
@@ -329,6 +334,94 @@ mod tests {
         // pure: guard + promptinit.
         assert!(rc.contains("$+functions[prompt_pure_setup]"));
         assert!(rc.contains("prompt pure"));
+    }
+
+    // trmx-238 (M18): a flagged plugin whose file is PRESENT but unreadable was the last silent
+    // degrade in the layer — the `-r` guard skipped it and the shell came up looking normal while
+    // Settings still showed the toggle on. The shim now says so, once, on stderr.
+    #[test]
+    fn a_flagged_but_unreadable_plugin_prints_exactly_one_warning_line() {
+        let rc = file(".zshrc");
+        for (flag, plugin, file_name) in [
+            (
+                "TERMIXION_ENH_AUTOSUGGEST",
+                "zsh-autosuggestions",
+                "zsh-autosuggestions.zsh",
+            ),
+            (
+                "TERMIXION_ENH_HIGHLIGHT",
+                "zsh-syntax-highlighting",
+                "zsh-syntax-highlighting.zsh",
+            ),
+        ] {
+            let warning =
+                format!("termixion: {plugin} is enabled but its plugin file could not be read");
+            let warned: Vec<&str> = rc.lines().filter(|line| line.contains(&warning)).collect();
+            assert_eq!(warned.len(), 1, "exactly one warning line for {plugin}");
+            let line = warned[0];
+            assert!(line.contains(">&2"), "the warning goes to stderr: {line}");
+            assert!(line.trim().starts_with("print"), "it is printed: {line}");
+
+            // Step-8 finding 6: matching the line alone would pass even if the warning were
+            // UNCONDITIONAL. Pin the control flow it sits in.
+            let idx = rc.find(line).expect("the warning line is in the rc");
+            let before = &rc[..idx];
+
+            // (a) it is inside this plugin's ENABLED gate.
+            let gate = format!("[[ \"${{{flag}-}}\" == \"1\" ]]");
+            let gate_at = before
+                .rfind(&gate)
+                .unwrap_or_else(|| panic!("{plugin}: the warning must sit inside {gate}"));
+
+            // (b) the nearest readability test before it names THIS plugin's own file...
+            let path = format!("\"${{TERMIXION_ENH_PLUGINS_DIR-}}/{plugin}/{file_name}\"");
+            let readable = format!("if [[ -r {path} ]]; then");
+            let unreadable = format!("if [[ ! -r {path} ]]; then");
+            let neg_at = before.rfind(&unreadable);
+            let pos_at = before.rfind(&readable);
+            let test_at = neg_at.max(pos_at).unwrap_or_else(|| {
+                panic!(
+                    "{plugin}: the warning must be guarded by a readability test on its own file"
+                )
+            });
+            assert!(
+                gate_at < test_at,
+                "{plugin}: the enabled gate must enclose the readability test"
+            );
+
+            // (c) ...and the warning is on the FAILING branch of it: either the test itself is
+            // negated (`! -r`), or we are past the `else` of the positive test.
+            let on_negated_branch = neg_at == Some(test_at);
+            let between = &rc[test_at..idx];
+            let after_else = between.contains("else");
+            assert!(
+                on_negated_branch || after_else,
+                "{plugin}: the warning must be on the NOT-readable branch, not the readable one"
+            );
+
+            // (d) Step-9 finding 6: (b)+(c) only look BACKWARD, so a warning moved past the
+            // closing `fi` of the readability branch — or of the enabled gate — would still pass.
+            // Pin that no `fi` closes either block between its opening and the warning. Counting
+            // is enough because these blocks contain no nested `if` after the point we anchor on:
+            // for the negated shape the branch body IS the warning; for the else shape the `else`
+            // is the anchor.
+            let branch_body = if on_negated_branch {
+                between
+            } else {
+                &between[between.find("else").expect("checked above")..]
+            };
+            assert!(
+                !branch_body.contains("fi"),
+                "{plugin}: the warning must sit INSIDE the not-readable branch — a `fi` closes it first:\n{branch_body}"
+            );
+            let gate_body = &rc[gate_at..idx];
+            let opens = gate_body.matches("; then").count();
+            let closes = gate_body.matches("fi").count();
+            assert!(
+                closes < opens,
+                "{plugin}: the warning must sit INSIDE the enabled gate ({closes} `fi` vs {opens} `then` before it)"
+            );
+        }
     }
 
     #[test]

@@ -43,14 +43,40 @@ export function getCoreVersion(invoke: InvokeFn): Promise<string> {
   return invoke("core_version") as Promise<string>;
 }
 
-/** Decode one PTY channel frame (the byte array Rust sends) into bytes. */
-export function decodePtyFrame(frame: number[]): Uint8Array {
-  return Uint8Array.from(frame);
+/**
+ * Decode one PTY channel frame into bytes (trmx-241).
+ *
+ * The frame is an `ArrayBuffer`: Rust sends `tauri::ipc::Response::new(batch)`, which Tauri
+ * delivers as raw bytes — verified on a packaged WKWebView build across BOTH of its internal
+ * paths (`eval` below 1024 bytes, `fetch` above), in order and byte-exact.
+ *
+ * A `Uint8Array` over the buffer is a VIEW, not a copy — that is most of the win here, on top of
+ * no longer shipping every byte as JSON text.
+ *
+ * The runtime check is load-bearing and is NOT redundant with the type annotation. TypeScript
+ * types are erased, and `new Uint8Array([104, 105])` is perfectly legal at runtime: it produces
+ * the right bytes. So if Tauri ever fell back to the JSON `number[]` transport (its
+ * `format_result` path, reachable on macOS when the custom protocol is unavailable), a
+ * permissive decode would keep working and the regression would surface as an unexplained
+ * slowdown instead of a failure. Better to break loudly.
+ *
+ * The brand check is `Object.prototype.toString`, not `instanceof`: `instanceof` is CROSS-REALM
+ * UNSAFE — a buffer created in another realm (jsdom vs Node under Vitest, and in principle any
+ * other context) is a genuine ArrayBuffer that fails `instanceof`. The same trap is noted in
+ * `App.spawnFailure.test.tsx`. This still rejects a `number[]`, which brands as `[object Array]`.
+ */
+export function decodePtyFrame(frame: ArrayBuffer): Uint8Array {
+  if (Object.prototype.toString.call(frame) !== "[object ArrayBuffer]") {
+    throw new TypeError(
+      `pty frame must be an ArrayBuffer, got ${Object.prototype.toString.call(frame)}`,
+    );
+  }
+  return new Uint8Array(frame);
 }
 
 /** Route a PTY channel's messages into `onBytes`, decoding each frame. */
 export function wirePtyChannel(
-  channel: MessageChannel<number[]>,
+  channel: MessageChannel<ArrayBuffer>,
   onBytes: PtyBytesHandler,
 ): void {
   channel.onmessage = (frame) => onBytes(decodePtyFrame(frame));
@@ -95,7 +121,7 @@ export async function openPty(
   opts?: { cwd?: string },
   invoke: InvokeFn = realInvoke,
 ): Promise<SessionInfo> {
-  const channel = new Channel<number[]>();
+  const channel = new Channel<ArrayBuffer>();
   wirePtyChannel(channel, onBytes);
   const args: Record<string, unknown> = { channel, rows, cols };
   if (opts?.cwd !== undefined) args.cwd = opts.cwd;

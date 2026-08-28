@@ -10,7 +10,7 @@
 // secondary text; a plain browser (null path) hides it. trmx-148: the row opens BACKEND-side
 // through the injected openConfigFile seam (config_open_file — the webview opener plugin command
 // is capability-denied in the packaged app) and surfaces a rejection as an inline error pill.
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AboutSettings } from "./AboutSettings";
 import { makeFakeAppInfo } from "../update/appInfo";
@@ -53,6 +53,9 @@ function renderAbout(
   settings: SettingsStore = makeSettingsStore(fakeStorage()),
   // trmx-148: the backend-side config-file open seam; defaults to a resolving fake.
   openConfigFile: () => Promise<void> = vi.fn(async () => {}),
+  // trmx-236: the log-folder seams (backend-resolved path + backend-side open).
+  getLogDir: () => Promise<string> = vi.fn(async () => LOG_DIR),
+  openLogDir: () => Promise<void> = vi.fn(async () => {}),
 ) {
   render(
     <AboutSettings
@@ -61,10 +64,38 @@ function renderAbout(
       opener={opener}
       settings={settings}
       openConfigFile={openConfigFile}
+      getLogDir={getLogDir}
+      openLogDir={openLogDir}
     />,
   );
   return opener;
 }
+
+const LOG_DIR = "/Users/t/Library/Logs/dev.termixion.terminal";
+
+describe("AboutSettings Logs row (trmx-236)", () => {
+  it("shows the backend-resolved log folder as the row description", async () => {
+    renderAbout(fakeUpdate());
+    expect(await screen.findByText(LOG_DIR)).toBeInTheDocument();
+    expect(screen.getByText("Open log folder")).toBeInTheDocument();
+  });
+  it("Open calls the backend-side openLogDir seam", async () => {
+    const openLogDir = vi.fn(async () => {});
+    renderAbout(fakeUpdate(), undefined, undefined, undefined, undefined, openLogDir);
+    await screen.findByText(LOG_DIR);
+    const row = screen.getByText("Open log folder").closest(".tx-setting-row") ?? screen.getByText("Open log folder").parentElement!.parentElement!;
+    fireEvent.click(within(row as HTMLElement).getByRole("button", { name: "Open folder" }));
+    expect(openLogDir).toHaveBeenCalledTimes(1);
+  });
+  it("a rejected open surfaces as an inline error pill", async () => {
+    const openLogDir = vi.fn(async () => { throw new Error("no Finder"); });
+    renderAbout(fakeUpdate(), undefined, undefined, undefined, undefined, openLogDir);
+    await screen.findByText(LOG_DIR);
+    const row = screen.getByText("Open log folder").closest(".tx-setting-row") ?? screen.getByText("Open log folder").parentElement!.parentElement!;
+    fireEvent.click(within(row as HTMLElement).getByRole("button", { name: "Open folder" }));
+    expect(await screen.findByText("no Finder")).toBeInTheDocument();
+  });
+});
 
 describe("AboutSettings identity", () => {
   it("shows the app name and resolved version", async () => {

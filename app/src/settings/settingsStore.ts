@@ -28,6 +28,7 @@ import { isRegisteredThemeId, isUserThemeIdShape } from "../theme/registry";
 import { isRemovedBuiltinThemeId, type ThemeId } from "../theme/themes";
 import { realInvoke, type InvokeFn } from "../ipc/backend";
 import { realEventBus } from "../ipc/eventBus";
+import { log } from "../ipc/logSink";
 
 /** The minimal Web-Storage slice we depend on (injectable; adds removeItem for reset). */
 export interface KeyValueStore {
@@ -412,9 +413,15 @@ export interface ConfigWarningItem {
 
 /** Render a backend warning payload human-readably (defensive: junk shapes get a generic line). */
 function renderConfigWarning(payload: unknown): string {
-  const w = payload as Partial<
-    { type: string; message: string; key: string; got: unknown; expected: string; clamped_to: unknown }
-  > | null;
+  const w = payload as Partial<{
+    type: string;
+    message: string;
+    key: string;
+    got: unknown;
+    expected: string;
+    clamped_to: unknown;
+    reason: string;
+  }> | null;
   switch (w?.type) {
     case "SyntaxError":
       return `Config file syntax error: ${w.message ?? "unknown error"}`;
@@ -428,6 +435,14 @@ function renderConfigWarning(payload: unknown): string {
       return `Value for "${w.key ?? "?"}" is out of range: ${String(w.got)} (clamped to ${String(
         w.clamped_to,
       )})`;
+    // trmx-238 (M15): the file exists but could not be read — the user's settings are NOT in
+    // effect, which is a very different thing to say than "using defaults".
+    case "Unreadable":
+      return `Config file could not be read: ${w.message ?? "unknown error"}. Your settings are not being applied.`;
+    // trmx-238 (M18): the zsh enhancement layer failed, so sessions spawn bare while the
+    // Settings toggles still read "on".
+    case "EnhancementsUnavailable":
+      return `Shell enhancements unavailable: ${w.reason ?? "unknown reason"}. New sessions start without them.`;
     default:
       return `Config file warning: ${JSON.stringify(payload)}`;
   }
@@ -450,6 +465,14 @@ let configPath: string | null = null;
 // invalid → (re)set, valid → cleared.
 let fileWarnings: ConfigWarningItem[] = [];
 const clientWarnings = new Map<SettingKey, ConfigWarningItem>();
+// trmx-238 (M14): the per-key write ticket. `set()` is fire-and-forget by contract, so two rapid
+// writes to one key can settle OUT OF ORDER — without a ticket an older rejection would publish a
+// warning describing a value the file no longer holds. Only the latest ticket for a key may author
+// or clear that key's WRITE-failure warning.
+const writeSeq = new Map<SettingKey, number>();
+// Which keys currently carry a write-FAILURE warning (as opposed to a validation warning): a
+// successful write clears only its own kind, so an "invalid value in the file" complaint survives.
+const writeFailedKeys = new Set<SettingKey>();
 // The invoke used for config_write/config_reset_all after (or before) hydration. hydrateSettings
 // swaps in its injected invoke so every store instance writes through the same channel.
 let configInvoke: InvokeFn = realInvoke;
@@ -479,6 +502,69 @@ export function getConfigFilePath(): string | null {
  */
 export function openConfigFile(): Promise<void> {
   return invokeSafely("config_open_file").then(() => {});
+}
+
+/** trmx-236: the log directory (backend-resolved — `~/Library/Logs/<bundle id>` on macOS). */
+export function getLogDir(): Promise<string> {
+  return invokeSafely("log_dir").then((dir) => String(dir));
+}
+
+/** trmx-236: open the log folder — BACKEND-side like openConfigFile (the webview opener plugin
+ * command is capability-denied in the packaged app). */
+export function openLogDir(): Promise<void> {
+  return invokeSafely("log_open_dir").then(() => {});
+}
+
+/**
+ * trmx-238 (M14): persist one key and SURFACE a rejection instead of swallowing it into a
+ * `console.warn`. The Rust side already refuses correctly (config_io declines to rewrite
+ * unparseable TOML) — this is the missing producer that tells the user their change did not land.
+ *
+ * Ordering is guarded by a per-key ticket: a rejection authors a warning only while it is still
+ * the newest write for that key, and a resolution clears only a WRITE-failure warning (never a
+ * validation warning, which describes the file's content rather than our write).
+ */
+function persist(key: SettingKey, value: SettingsValues[SettingKey]): Promise<boolean> {
+  const ticket = (writeSeq.get(key) ?? 0) + 1;
+  writeSeq.set(key, ticket);
+  return invokeSafely("config_write", { key, value })
+    .then(() => {
+      // Superseded ⇒ the newer write owns the verdict; still report success to OUR caller, whose
+      // own write did land (the migration removes its legacy key on this).
+      if (
+        writeSeq.get(key) === ticket &&
+        writeFailedKeys.delete(key) &&
+        clientWarnings.delete(key)
+      ) {
+        publishConfigWarnings();
+      }
+      return true;
+    })
+    .catch((err: unknown) => {
+      // Never throws: the optimistic snapshot value stands for this session; an unwritable config
+      // file must not break the control that wrote it. It IS surfaced, though.
+      log.warn(`config_write failed for ${key}`, err);
+      if (writeSeq.get(key) === ticket) {
+        writeFailedKeys.add(key);
+        clientWarnings.set(key, {
+          source: "client",
+          message: `Could not save "${key}": ${errorText(err)}`,
+        });
+        publishConfigWarnings();
+      }
+      return false;
+    });
+}
+
+/** Fire-and-forget over [`persist`] — the `set()` / materialization shape, which never awaits. */
+function writeThrough(key: SettingKey, value: SettingsValues[SettingKey]): void {
+  void persist(key, value);
+}
+
+/** A human-readable one-liner for an unknown rejection value. */
+function errorText(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return typeof err === "string" ? err : String(err);
 }
 
 /** The current config warnings for the settings UI (T3e): the MERGED ledgers, file-rendered
@@ -526,6 +612,8 @@ export function __resetSettingsForTest(): void {
   configPath = null;
   fileWarnings = [];
   clientWarnings.clear();
+  writeSeq.clear();
+  writeFailedKeys.clear();
   configWarningsListeners.clear();
   configInvoke = realInvoke;
   busSubscribed = false;
@@ -604,18 +692,17 @@ function makeSnapshotStore(bus: SettingsBus | undefined, source: string): Settin
       // UI/session can never diverge from the file over an invalid write.
       const effective = coerce(key, value);
       if (effective === undefined) {
-        console.warn(`[termixion] ignoring invalid value for ${key}:`, value);
+        log.warn(`ignoring invalid value for ${key}`, value);
         return;
       }
       snapshot.set(key, effective);
       // A valid local write supersedes any client warning for this key (the file gets the
       // valid value; the old "invalid value in the file" complaint no longer applies).
-      if (clientWarnings.delete(key)) publishConfigWarnings();
-      invokeSafely("config_write", { key, value: effective }).catch((err: unknown) => {
-        // Fire-and-forget by contract: the optimistic snapshot value stands for this session;
-        // an unwritable config file must never break the control that wrote it.
-        console.warn(`[termixion] config_write failed for ${key}`, err);
-      });
+      if (clientWarnings.delete(key)) {
+        writeFailedKeys.delete(key);
+        publishConfigWarnings();
+      }
+      writeThrough(key, effective);
       broadcast(key, effective);
     },
     loadLastCheckAt() {
@@ -638,7 +725,7 @@ function makeSnapshotStore(bus: SettingsBus | undefined, source: string): Settin
     resetAll() {
       for (const key of SETTING_KEYS) snapshot.delete(key);
       invokeSafely("config_reset_all").catch((err: unknown) => {
-        console.warn("[termixion] config_reset_all failed", err);
+        log.warn("config_reset_all failed", err);
       });
       try {
         safeLocalStorage()?.removeItem(LAST_CHECK_AT_KEY);
@@ -784,7 +871,7 @@ export async function hydrateSettings(deps: HydrateSettingsDeps = {}): Promise<v
     read = parseConfigRead(await invokeSafely("config_read"));
   } catch {
     // No backend (plain browser/jsdom): defaults, no migration — reads derive via defaultFor.
-    read = null;
+    // `read` stays null from its initializer.
     // trmx-81 D1: the dev/e2e seam — seed the snapshot from the URL query. ONLY here, on the
     // REJECTION path: a resolved config_read of any shape (even junk) means a backend exists and
     // owns the values, so the packaged app never reaches this line (config_read always resolves
@@ -843,11 +930,9 @@ export async function hydrateSettings(deps: HydrateSettingsDeps = {}): Promise<v
     if (!snapshot.has("appearance.theme")) {
       const derived = defaultThemeId();
       snapshot.set("appearance.theme", derived);
-      try {
-        await invokeSafely("config_write", { key: "appearance.theme", value: derived });
-      } catch (err) {
-        console.warn("[termixion] theme materialization write failed", err);
-      }
+      // trmx-238 (M14): the same guarded write as set() — a failed materialization keeps the
+      // derived value for this session (it re-derives next launch) AND now says so.
+      writeThrough("appearance.theme", derived);
     }
 
     // Hydration replaced/authored warnings above — publish once for any early subscriber.
@@ -902,7 +987,9 @@ function seedSnapshotFromQuery(): void {
  */
 async function migrateLegacySettings(storage: KeyValueStore): Promise<void> {
   for (const key of SETTING_KEYS) {
-    let raw: string | null = null;
+    // No initializer: the catch `continue`s, so the only path that reaches a read of `raw` is the
+    // one where getItem assigned it.
+    let raw: string | null;
     try {
       raw = storage.getItem(STORAGE_KEYS[key]);
     } catch {
@@ -911,12 +998,12 @@ async function migrateLegacySettings(storage: KeyValueStore): Promise<void> {
     if (raw === null) continue;
     const value = parse(key, raw);
     snapshot.set(key, value);
-    try {
-      await invokeSafely("config_write", { key, value });
-      storage.removeItem(STORAGE_KEYS[key]);
-    } catch (err) {
-      console.warn(`[termixion] settings migration write failed for ${key}`, err);
-    }
+    // trmx-238 (M14): the SAME ticketed helper as the other two write sites — an inline copy here
+    // would author or clear warnings without a ticket, so a migration write and a concurrent set()
+    // for one key could settle out of order (a stale rejection warning, or a stale success
+    // clearing a newer failure). The legacy key is still removed ONLY after the write lands, so a
+    // failure leaves it for a retry on the next launch.
+    if (await persist(key, value)) storage.removeItem(STORAGE_KEYS[key]);
   }
 }
 

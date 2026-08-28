@@ -26,7 +26,11 @@ use termixion_core::zdotdir::{
 };
 
 /// The vendored plugin trees (single source of truth: `resources/shell-enhancements/`).
-static PLUGINS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../resources/shell-enhancements");
+// trmx-240 (L14): embed the BUILD-STAGED tree (build.rs `stage_enhancements`), not the source
+// directory. `include_dir!` bakes bytes in at COMPILE time, so a runtime filter cannot stop
+// wordcode from shipping inside the binary — only staging can. The runtime `is_embeddable` filter
+// below is defence in depth for the materialized tree.
+static PLUGINS: Dir<'_> = include_dir!("$TERMIXION_ENHANCEMENTS_DIR");
 
 /// The materialized, version-pinned paths one spawn points its env at.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +75,12 @@ fn version_key() -> String {
 fn hash_embedded(dir: &Dir<'_>, hasher: &mut impl std::hash::Hasher) {
     use std::hash::Hash;
     for file in dir.files() {
+        // trmx-240: skipped for the same reason write_embedded skips them — and additionally so a
+        // stray build-time `.zwc` cannot shift the version key and force every install to
+        // re-materialize an identical tree.
+        if !is_embeddable(file.path()) {
+            continue;
+        }
         file.path().to_string_lossy().hash(hasher);
         file.contents().hash(hasher);
     }
@@ -86,11 +96,28 @@ fn paths_for(version_dir: &Path) -> Materialized {
     }
 }
 
+/// trmx-240 (L14): compiled zsh wordcode NEVER reaches a materialized tree, whatever is sitting in
+/// `resources/` at build time.
+///
+/// This is the load-bearing half of the guard, and the git-side half cannot substitute for it:
+/// `include_dir!` is a FILESYSTEM macro, so it embeds whatever is on disk and neither `.gitignore`
+/// nor a `git ls-files` gate has any say. That matters concretely because the real-PTY tests point
+/// p10k at `resources/shell-enhancements` directly, so `cargo test` leaves freshly-compiled `.zwc`
+/// there — and CI's macOS job runs the tests BEFORE the packaged build. Without this filter a
+/// test-then-build sequence would embed and ship the very blobs trmx-240 removed, while every git
+/// guard reported clean.
+fn is_embeddable(path: &Path) -> bool {
+    path.extension().is_none_or(|ext| ext != "zwc")
+}
+
 fn write_embedded(dir: &Dir<'_>, under: &Path) -> Result<(), String> {
     for sub in dir.dirs() {
         write_embedded(sub, under)?;
     }
     for file in dir.files() {
+        if !is_embeddable(file.path()) {
+            continue;
+        }
         let target = under.join(file.path());
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {parent:?}: {e}"))?;
@@ -193,6 +220,112 @@ fn gc_stale_versions(versions: &Path, current: &str) {
     }
 }
 
+/// trmx-238 (M18): what the last real zsh spawn actually did with the enhancement layer.
+///
+/// Three states, not two: `NotObserved` is NOT a degraded mode — it is every bypass path (a
+/// smoke/perf launch, a non-zsh shell, the master kill switch, nothing-to-layer) plus "no session
+/// has started yet". Reporting those as "unavailable" would light up the UI for users who never
+/// asked for enhancements.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum EnhancementsStatus {
+    /// No zsh spawn has exercised the layer this session.
+    #[default]
+    NotObserved,
+    /// The layer was applied to the last such spawn.
+    Active,
+    /// The last such spawn went bare, for this reason.
+    Unavailable { reason: String },
+}
+
+/// trmx-238 (M18): the app-wide record of the last real spawn's enhancement outcome, behind the
+/// `enhancements_status` command.
+///
+/// Managed Tauri state rather than an emission-only channel because the settings page needs to
+/// ASK on mount, not only hear about changes.
+#[derive(Default)]
+pub struct EnhancementsState(std::sync::Mutex<EnhancementsStatus>);
+
+/// Read the recorded status (pure over the state — `tauri::State` cannot be constructed in a unit
+/// test, so every command here is a one-line wrapper over a helper like this).
+pub fn read_status(state: &EnhancementsState) -> EnhancementsStatus {
+    state
+        .0
+        .lock()
+        .map(|inner| inner.clone())
+        .unwrap_or_default()
+}
+
+/// Record the status. Returns `true` when it actually CHANGED, so the caller can emit only on a
+/// real transition. A bypass (`NotObserved`) never overwrites a meaningful prior verdict: a
+/// non-zsh pane opened next to a degraded zsh one must not erase the warning.
+pub fn commit_status(state: &EnhancementsState, next: EnhancementsStatus) -> bool {
+    let Ok(mut inner) = state.0.lock() else {
+        return false;
+    };
+    if next == EnhancementsStatus::NotObserved && *inner != EnhancementsStatus::NotObserved {
+        return false;
+    }
+    if *inner == next {
+        return false;
+    }
+    *inner = next;
+    true
+}
+
+/// trmx-238 (M18/D9): commit the spawn's enhancement verdict — but ONLY if the spawn actually
+/// succeeded. Recording it beside the env computation (where the decision is made) would let a
+/// session that never started claim "Active", which is precisely the class of lie this issue
+/// exists to remove. Returns whether a real transition was recorded, so the caller emits once.
+///
+/// A named function rather than an `if` at the call site so the ordering rule is testable: a
+/// `tauri::AppHandle` cannot be built in a unit test, but this can.
+pub fn commit_after_spawn(
+    spawn_succeeded: bool,
+    state: &EnhancementsState,
+    status: EnhancementsStatus,
+) -> bool {
+    if !spawn_succeeded {
+        return false;
+    }
+    commit_status(state, status)
+}
+
+/// The event a committed transition broadcasts, so a MOUNTED settings page reflects a recovery
+/// (or a new failure) without polling.
+pub const ENHANCEMENTS_STATUS_EVENT: &str = "enhancements:status";
+
+/// trmx-238 (M18): what the last real zsh spawn did with the enhancement layer. The Settings
+/// toggles previously read "on" over a shell that had spawned bare.
+#[tauri::command]
+pub fn enhancements_status(state: tauri::State<'_, EnhancementsState>) -> EnhancementsStatus {
+    read_status(&state)
+}
+
+/// trmx-238 (M18): the spawn env PLUS why it looks the way it does.
+///
+/// Before this, `enhancement_env` returned a bare `Option<Vec<..>>` and every reason for `None` —
+/// deliberate bypass, materializer error, missing starship binary — was indistinguishable to the
+/// caller and invisible to the user. The status is the missing half.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnhancementDecision {
+    /// `Some(env)` layers the enhancements onto the spawn; `None` spawns byte-identical to the
+    /// baseline. A `None` is never an error — a failed layer must never fail a shell.
+    pub env: Option<Vec<(OsString, OsString)>>,
+    /// What to report to the settings UI, committed only once the spawn actually succeeds.
+    pub status: EnhancementsStatus,
+}
+
+impl EnhancementDecision {
+    /// A deliberate bypass: no env, and nothing to tell the user about.
+    fn bypassed() -> Self {
+        Self {
+            env: None,
+            status: EnhancementsStatus::NotObserved,
+        }
+    }
+}
+
 /// THE spawn-side decision (the plan's spyable seam). `None` — with the materializer provably
 /// un-invoked — for special launches (smoke/perf), non-zsh effective shells, the master kill
 /// switch, and the nothing-to-layer case; the spawn then proceeds byte-identical to the
@@ -206,25 +339,35 @@ pub fn enhancement_env(
     inherited_zdotdir: Option<OsString>,
     resolve_starship: impl FnOnce() -> Option<PathBuf>,
     materialize: impl FnOnce() -> Result<Materialized, String>,
-) -> Option<Vec<(OsString, OsString)>> {
+) -> EnhancementDecision {
     if special_launch || !shell.enhancements {
-        return None;
+        return EnhancementDecision::bypassed();
     }
     if !shell.autosuggestions
         && !shell.syntax_highlighting
         && shell.prompt == PromptChoice::Existing
     {
-        return None; // nothing to layer — don't shim at all
+        return EnhancementDecision::bypassed(); // nothing to layer — don't shim at all
     }
-    let basename = Path::new(effective_program).file_name()?.to_str()?;
+    let Some(basename) = Path::new(effective_program)
+        .file_name()
+        .and_then(|name| name.to_str())
+    else {
+        return EnhancementDecision::bypassed();
+    };
     if basename != "zsh" {
-        return None;
+        return EnhancementDecision::bypassed();
     }
     let materialized = match materialize() {
         Ok(m) => m,
         Err(error) => {
-            eprintln!("termixion: shell enhancements unavailable (spawning bare): {error}");
-            return None;
+            log::warn!("termixion: shell enhancements unavailable (spawning bare): {error}");
+            // trmx-238 (M18): the degrade is still silent to the SPAWN (a bare shell, never a
+            // failure) but no longer silent to the USER — the reason rides back on the decision.
+            return EnhancementDecision {
+                env: None,
+                status: EnhancementsStatus::Unavailable { reason: error },
+            };
         }
     };
     let mut env: Vec<(OsString, OsString)> = vec![
@@ -254,14 +397,26 @@ pub fn enhancement_env(
         ));
     }
     // trmx-207 round 2 (lazy, step-8 finding 2): the resolver runs ONLY here — after every
-    // bypass gate — so bypassed spawns never probe the filesystem. No binary resolved ⇒ the env
-    // var stays absent and the shim's -x guard degrades silently (existing prompt kept).
-    if shell.prompt == PromptChoice::Starship
-        && let Some(bin) = resolve_starship()
-    {
-        env.push((OsString::from(ENV_STARSHIP_BIN), bin.into_os_string()));
+    // bypass gate — so bypassed spawns never probe the filesystem.
+    // trmx-238 (M18): an UNRESOLVED starship used to be the quietest failure in the app — the env
+    // var simply stayed absent, the shim's `-x` guard kept the existing prompt, and Settings went
+    // on showing the chosen prompt. The resolver reports no reason of its own, so author one.
+    let mut status = EnhancementsStatus::Active;
+    if shell.prompt == PromptChoice::Starship {
+        match resolve_starship() {
+            Some(bin) => env.push((OsString::from(ENV_STARSHIP_BIN), bin.into_os_string())),
+            None => {
+                status = EnhancementsStatus::Unavailable {
+                    reason: "the Starship prompt is selected but no starship binary was found"
+                        .to_string(),
+                };
+            }
+        }
     }
-    Some(env)
+    EnhancementDecision {
+        env: Some(env),
+        status,
+    }
 }
 
 /// trmx-207: resolve the starship binary. The BUNDLED SIDECAR beside the app executable is
@@ -297,6 +452,219 @@ pub fn default_starship_bin() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- trmx-238 (M18): the status the last real spawn recorded --------------------------------
+
+    // trmx-240 (L14): the embedding boundary is the guard that actually protects the SHIPPED app.
+    #[test]
+    fn wordcode_is_never_embeddable() {
+        assert!(!is_embeddable(Path::new(
+            "powerlevel10k/internal/p10k.zsh.zwc"
+        )));
+        assert!(!is_embeddable(Path::new("a.zwc")));
+        // Everything else still ships, including files with no extension and lookalike names.
+        assert!(is_embeddable(Path::new("powerlevel10k/internal/p10k.zsh")));
+        assert!(is_embeddable(Path::new("pure/async.zsh")));
+        assert!(is_embeddable(Path::new("gitstatus/install")));
+        assert!(is_embeddable(Path::new("not-a.zwcx")));
+        assert!(is_embeddable(Path::new("zwc")));
+    }
+
+    /// trmx-240: the assertion that actually covers the SHIPPED binary. `PLUGINS` is what
+    /// `include_dir!` baked in at compile time, so if this is empty of wordcode then none was
+    /// embedded — which a materialization-only test cannot establish (it inspects what was written
+    /// out, not what the executable carries).
+    #[test]
+    fn no_wordcode_is_embedded_in_the_binary() {
+        fn walk(dir: &Dir<'_>, found: &mut Vec<String>) {
+            for file in dir.files() {
+                if file.path().extension().is_some_and(|e| e == "zwc") {
+                    found.push(file.path().display().to_string());
+                }
+            }
+            for sub in dir.dirs() {
+                walk(sub, found);
+            }
+        }
+        let mut found = Vec::new();
+        walk(&PLUGINS, &mut found);
+        assert!(
+            found.is_empty(),
+            "wordcode was embedded into the binary: {found:?}"
+        );
+    }
+
+    #[test]
+    fn a_materialized_tree_contains_no_wordcode() {
+        // The end-to-end assertion the git guards cannot make: whatever `include_dir!` picked up
+        // from disk at build time, no `.zwc` reaches a materialized version directory. This fails
+        // if the filter is removed AND the build tree carried wordcode — the exact CI
+        // test-then-build sequence that would otherwise ship it.
+        let base = std::env::temp_dir().join(format!("trmx240-mat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let materialized = materialize_enhancements(&base).expect("materialize");
+        let mut found: Vec<PathBuf> = Vec::new();
+        let mut stack = vec![materialized.plugins_dir.clone()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "zwc") {
+                    found.push(path);
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(
+            found.is_empty(),
+            "wordcode reached the materialized tree: {found:?}"
+        );
+    }
+
+    #[test]
+    fn a_failed_materializer_reports_the_error_string_and_still_spawns_bare() {
+        // The spawn contract is unchanged — env None means byte-identical baseline — but the
+        // reason is no longer swallowed by a log::warn.
+        let decision = enhancement_env(
+            false,
+            &zsh(),
+            &ShellConfig::default(),
+            None,
+            || None,
+            || Err("plugins dir is read-only".to_string()),
+        );
+        assert_eq!(
+            decision.env, None,
+            "a failed layer must never fail the spawn"
+        );
+        assert_eq!(
+            decision.status,
+            EnhancementsStatus::Unavailable {
+                reason: "plugins dir is read-only".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn a_starship_prompt_with_no_binary_reports_an_authored_reason() {
+        // The quietest failure in the app before trmx-238: the env var simply stayed absent, the
+        // shim's `-x` guard kept the existing prompt, and Settings went on showing "Starship".
+        // The resolver returns a bare None, so the reason has to be authored here.
+        let called = Cell::new(false);
+        let decision = enhancement_env(
+            false,
+            &zsh(),
+            &ShellConfig {
+                prompt: PromptChoice::Starship,
+                ..ShellConfig::default()
+            },
+            None,
+            || None,
+            spy(&called, fake_materialized()),
+        );
+        assert!(decision.env.is_some(), "the other layers still apply");
+        match decision.status {
+            EnhancementsStatus::Unavailable { reason } => {
+                assert!(reason.to_lowercase().contains("starship"), "{reason}")
+            }
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_applied_layer_reports_active() {
+        let called = Cell::new(false);
+        let decision = enhancement_env(
+            false,
+            &zsh(),
+            &ShellConfig::default(),
+            None,
+            || None,
+            spy(&called, fake_materialized()),
+        );
+        assert!(decision.env.is_some());
+        assert_eq!(decision.status, EnhancementsStatus::Active);
+    }
+
+    #[test]
+    fn commit_status_round_trips_and_reports_only_real_transitions() {
+        let state = EnhancementsState::default();
+        assert_eq!(read_status(&state), EnhancementsStatus::NotObserved);
+
+        assert!(commit_status(&state, EnhancementsStatus::Active));
+        assert_eq!(read_status(&state), EnhancementsStatus::Active);
+        // Re-committing the same verdict is not a transition — no event, no re-emit.
+        assert!(!commit_status(&state, EnhancementsStatus::Active));
+
+        let down = EnhancementsStatus::Unavailable {
+            reason: "boom".to_string(),
+        };
+        assert!(commit_status(&state, down.clone()));
+        assert_eq!(read_status(&state), down);
+
+        // A BYPASS must not erase a meaningful verdict: opening a non-zsh pane beside a degraded
+        // zsh one would otherwise silently clear the warning.
+        assert!(!commit_status(&state, EnhancementsStatus::NotObserved));
+        assert_eq!(read_status(&state), down);
+
+        // Recovery clears it.
+        assert!(commit_status(&state, EnhancementsStatus::Active));
+        assert_eq!(read_status(&state), EnhancementsStatus::Active);
+    }
+
+    #[test]
+    fn a_failed_spawn_never_commits_its_verdict() {
+        // The ordering rule (D9). A pane whose PTY failed to open must not leave "Active" behind,
+        // and must not erase what the last SUCCESSFUL spawn reported.
+        let state = EnhancementsState::default();
+        let earlier = EnhancementsStatus::Unavailable {
+            reason: "plugins dir is read-only".to_string(),
+        };
+        assert!(commit_after_spawn(true, &state, earlier.clone()));
+        assert_eq!(read_status(&state), earlier);
+
+        // A later spawn WOULD have reported Active — but it failed.
+        assert!(!commit_after_spawn(
+            false,
+            &state,
+            EnhancementsStatus::Active
+        ));
+        assert_eq!(
+            read_status(&state),
+            earlier,
+            "a failed spawn leaves the previous verdict untouched"
+        );
+
+        // The next successful one does commit.
+        assert!(commit_after_spawn(true, &state, EnhancementsStatus::Active));
+        assert_eq!(read_status(&state), EnhancementsStatus::Active);
+    }
+
+    #[test]
+    fn the_status_wire_shape_is_pinned() {
+        // `tauri::State` cannot be constructed in a unit test, so the command itself is a
+        // one-line wrapper over read_status; what matters here is the shape the frontend parses.
+        assert_eq!(
+            serde_json::to_value(EnhancementsStatus::NotObserved).expect("serializes"),
+            serde_json::json!({ "state": "notObserved" })
+        );
+        assert_eq!(
+            serde_json::to_value(EnhancementsStatus::Active).expect("serializes"),
+            serde_json::json!({ "state": "active" })
+        );
+        assert_eq!(
+            serde_json::to_value(EnhancementsStatus::Unavailable {
+                reason: "no starship".to_string()
+            })
+            .expect("serializes"),
+            serde_json::json!({ "state": "unavailable", "reason": "no starship" })
+        );
+    }
+
     use std::cell::Cell;
 
     fn zsh() -> OsString {
@@ -364,7 +732,7 @@ mod tests {
                 },
                 spy(&called, fake_materialized()),
             );
-            assert_eq!(env, None, "{program:?} special={special}");
+            assert_eq!(env.env, None, "{program:?} special={special}");
             assert!(!called.get(), "materializer must not run for {program:?}");
             assert!(
                 !resolver_called.get(),
@@ -384,6 +752,7 @@ mod tests {
             || None,
             spy(&called, fake_materialized()),
         )
+        .env
         .expect("enhances");
         assert!(called.get());
         let get = |key: &str| env.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
@@ -411,6 +780,7 @@ mod tests {
             || None,
             spy(&called, fake_materialized()),
         )
+        .env
         .expect("enhances");
         assert!(env.iter().all(|(k, _)| k != ENV_ORIG_ZDOTDIR));
         assert!(env.iter().any(|(k, _)| k == ENV_AUTOSUGGEST));
@@ -434,6 +804,7 @@ mod tests {
             || None,
             spy(&called, fake_materialized()),
         )
+        .env
         .expect("a prompt alone is a reason to shim");
         assert!(env.iter().any(|(k, v)| k == ENV_PROMPT && v == "pure"));
         assert!(env.iter().all(|(k, _)| k != ENV_STARSHIP_BIN));
@@ -452,7 +823,7 @@ mod tests {
             || None,
             spy(&called, fake_materialized()),
         );
-        assert_eq!(env, None, "existing + no plugins = nothing to layer");
+        assert_eq!(env.env, None, "existing + no plugins = nothing to layer");
         assert!(!called.get());
     }
 
@@ -471,6 +842,7 @@ mod tests {
             || Some(PathBuf::from("/bundle/starship")),
             spy(&called, fake_materialized()),
         )
+        .env
         .expect("enhances");
         assert!(
             env.iter()
@@ -487,6 +859,7 @@ mod tests {
             || None,
             spy(&called, fake_materialized()),
         )
+        .env
         .expect("still shims — the -x guard degrades in the shell");
         assert!(env.iter().all(|(k, _)| k != ENV_STARSHIP_BIN));
     }
@@ -525,7 +898,7 @@ mod tests {
             || None,
             || Err("disk full".to_string()),
         );
-        assert_eq!(env, None);
+        assert_eq!(env.env, None);
     }
 
     #[test]

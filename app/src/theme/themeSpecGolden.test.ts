@@ -1,21 +1,59 @@
 // SPDX-License-Identifier: ISC
 // Copyright (c) 2026 Eric Y. Liu
 //
-// trmx-89 (test-first): the ThemeSpec golden. `app/src/theme/__fixtures__/theme-golden.json` is a
-// byte-for-byte copy of the core's `crates/termixion-core/tests/fixtures/theme-golden.json` (the JSON
-// that `parse_theme` emits). The two MUST NOT drift — if the core fixture changes and this copy does
-// not, this gate (or the core's own golden gate) breaks, which is exactly the signal we want. This
-// pins the contract: required fields present, camelCase keys (brightBlack / errorBg / activeBorder),
-// and deriveTheme expanding the fixture into a full ThemeTokens where the fixture's provided optionals
-// survive and any omitted optional is filled.
+// trmx-89 (test-first) + trmx-239 (M21): the ThemeSpec golden, read from THE core fixture
+// (`crates/termixion-core/tests/fixtures/theme-golden.json`, the JSON `parse_theme` emits).
+//
+// It used to be a copy in `app/src/theme/__fixtures__/`, with this comment claiming the two "MUST
+// NOT drift" — while the only assertions were "the required keys are present". The copy had in fact
+// already drifted (it was missing the `terminal.search` block), so the claim was false and the gate
+// green. trmx-239 removed the copy: one source cannot drift, whereas an equality check only reports
+// drift after it happens.
+//
+// Pins the contract: every value the fixture provides survives `deriveTheme` (recursive, so a NEW
+// fixture key the app does not consume fails this suite), camelCase keys, and omitted optionals
+// getting filled.
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import golden from "./__fixtures__/theme-golden.json";
 import { deriveTheme, type ThemeSpec } from "./themeDerive";
+
+// trmx-239 (M21): read the CORE fixture directly — there is no app-side copy any more. The old copy
+// had already drifted (it was missing `terminal.search`) while this suite claimed the two "MUST NOT
+// drift", which is precisely the documented-but-not-enforced pattern this issue exists to end. A
+// single source cannot drift; an equality assertion only notices after it has. (readFileSync, not a
+// JSON module import — the shape `themeTokensToToml.test.ts` already proves resolves cross-tree.)
+const golden = JSON.parse(
+  readFileSync(
+    resolve(
+      dirname(fileURLToPath(import.meta.url)),
+      "../../../crates/termixion-core/tests/fixtures/theme-golden.json",
+    ),
+    "utf8",
+  ),
+) as unknown;
 
 // The fixture arrives untyped (a JSON import); treat it as the contract type it mirrors.
 const spec = golden as unknown as ThemeSpec;
 
 describe("theme-golden fixture (mirrors the core parse_theme fixture)", () => {
+  // trmx-239 (M21): THE gate for the issue's stated criterion — "the test fails if the core fixture
+  // gains a key the app does not consume". Named assertions cannot do that: the fixture arrives as
+  // `unknown as ThemeSpec`, so a new JSON property type-checks silently and deriveTheme may drop it
+  // with every named expectation still green. This is recursive and name-agnostic instead: every
+  // value the fixture provides must survive derivation, whatever it is called.
+  it("deriveTheme consumes EVERY value the core fixture provides", () => {
+    expect(deriveTheme(spec)).toMatchObject(golden as Record<string, unknown>);
+  });
+
+  it("consumes the fixture's terminal.search block (the key the old app copy had drifted away)", () => {
+    expect(spec.terminal.search).toBeDefined();
+    const t = deriveTheme(spec);
+    expect(t.terminal.search.match).toBe(spec.terminal.search?.match);
+    expect(t.terminal.search.activeMatch).toBe(spec.terminal.search?.activeMatch);
+  });
+
   it("carries the required fields", () => {
     expect(typeof spec.isDark).toBe("boolean");
     expect(spec.color.bg.primary).toMatch(/^#[0-9a-f]{6}$/i);

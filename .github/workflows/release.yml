@@ -18,17 +18,52 @@ name: release
 on:
   push:
     tags: ["v*"]
+  # trmx-242: a DRY-RUN trigger. It takes no version input and CANNOT publish: the `publish` job
+  # below carries `if: github.event_name == 'push'`, so a manual run exercises ci-green +
+  # build-macos (including the release smoke) and stops. Artifact UPLOADS stay ungated on purpose —
+  # a dry run must keep its own evidence. Removing that `if` would create a manual publish path.
+  workflow_dispatch:
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+# trmx-242: read-only by DEFAULT; `contents: write` is granted to the `publish` job alone rather
+# than to every job in the workflow (trmx-234 narrowed this token deliberately — this narrows it
+# further rather than widening it for the new gate).
 permissions:
-  contents: write # create the GitHub Release + upload the installers
+  contents: read
 
 jobs:
+  # trmx-242 (grill H8): releases were triggered by a tag with nothing between the tag and the
+  # build. "Wait for post-merge main CI green before tagging" was a human convention; this is the
+  # gate. Eleven releases in sixty-six days were published without CI ever having executed them.
+  ci-green:
+    name: require green main CI for this commit (required before building)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      actions: read # list workflow runs for this SHA
+      contents: read # git ancestry check
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0 # ancestry check needs history
+      - name: Require a green push-to-main ci.yml run for this commit
+        # The gate logic lives in a SCRIPT with a self-test (scripts/check-main-ci-green.test.sh,
+        # run by ci.yml) rather than inline here. Inline YAML cannot be unit-tested: a dry run on a
+        # branch only ever reaches the no-matching-run path, so newest-run precedence and the
+        # non-success conclusions — the parts that make this gate correct rather than merely
+        # present — would never be exercised until the day they had to be right.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+          R: ${{ github.repository }}
+        run: bash scripts/check-main-ci-green.sh
+
   build-macos:
     name: build macos (signs + notarizes when configured)
+    needs: [ci-green]
     runs-on: macos-14
     timeout-minutes: 90
     outputs:
@@ -94,7 +129,12 @@ jobs:
 
       - name: Release metadata + tag gate
         env:
-          EXPECTED_TAG: ${{ github.ref_name }}
+          # trmx-242: only a TAG PUSH carries a tag to check. On workflow_dispatch `github.ref_name`
+          # is the branch ("main"), and check-release-metadata.sh would compare it against
+          # "v<workspace_version>" and fail — the dry-run trigger would abort before ever reaching
+          # the build it exists to exercise. Empty means "no tag to verify", which that script
+          # already treats as skip; the version-alignment checks still run.
+          EXPECTED_TAG: ${{ github.event_name == 'push' && github.ref_name || '' }}
         run: bash scripts/check-release-metadata.sh
 
       # trmx-207: the Starship sidecar (tauri.conf externalBin) — pinned + sha256-verified;
@@ -131,6 +171,34 @@ jobs:
           projectPath: crates/termixion-tauri
           args: --bundles app,dmg --config tauri.updater.conf.json --config tauri.sidecar.conf.json
 
+      # trmx-242 (grill H8): EXECUTE the release bundle, do not merely assert it exists. `--smoke`
+      # previously ran only against `cargo tauri build --debug`, while what ships is the release
+      # profile (panic="abort", lto="thin", strip=true) — a materially different artifact that no
+      # gate had ever launched.
+      - name: Smoke the RELEASE bundle (launches the app + drives a real PTY)
+        # Resolution lives in scripts/resolve-release-app.sh, exercised by
+        # scripts/check-release-app-resolution.test.sh in ci.yml. It prints exactly one verified
+        # release .app path or fails: `smoke.sh` defaults to the DEBUG bundle via `${1:-…}`, and
+        # `${1:-…}` substitutes on an EMPTY argument as well as a missing one, so an unmatched
+        # `find` piped straight in would silently smoke a cached debug build and let this gate pass
+        # while testing the wrong artifact.
+        run: |
+          set -euo pipefail
+          app="$(bash scripts/resolve-release-app.sh)"
+          echo "smoking release bundle: $app"
+          bash scripts/smoke.sh "$app" 2>&1 | tee smoke-release.log
+
+      # Uploaded even on failure — a gate whose diagnostics vanish when it trips is one people
+      # learn to re-run instead of read. `panic="abort"` + `strip=true` means a release-build
+      # failure has no backtrace, so this log is the only evidence there is.
+      - name: Upload the release smoke log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: smoke-release-log
+          path: smoke-release.log
+          if-no-files-found: warn
+
       # Signed: prove notarized + stapled BEFORE publishing. Unsigned: assert existence + log the ad-hoc sig.
       - name: Verify artifact (stapler + Gatekeeper when signed; existence when unsigned)
         env:
@@ -165,6 +233,13 @@ jobs:
   publish:
     name: publish draft release (macOS + latest.json)
     needs: [build-macos]
+    # trmx-242: the ONLY job that creates a GitHub Release, and the only one gated on the tag
+    # trigger. A `workflow_dispatch` dry run therefore cannot publish by construction rather than
+    # by discipline. Removing this line would turn the manual trigger into a publish path.
+    if: github.event_name == 'push'
+    permissions:
+      contents: write # create the Release + upload the installers
+      actions: read # download the build artifacts
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:

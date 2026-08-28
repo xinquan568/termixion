@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: ISC
 // Copyright (c) 2026 Eric Y. Liu
+// trmx-236: stdout/stderr are for stdio CONTRACTS only (the `ctl` JSON reply, --version/--help, the
+// pre-builder usage errors, the fatal's stderr branch) — everything else goes through `log::*` into the
+// logging sink (`logging.rs`). The two functions that hold contracts carry an explicit allowance.
+#![deny(clippy::print_stdout, clippy::print_stderr)]
+#![cfg_attr(test, allow(clippy::print_stdout, clippy::print_stderr))]
 //! Termixion — the thin Tauri 2 desktop shell. Since trmx-74 it drives the multi-session
 //! [`SessionRegistry`] (one session per tab) and streams each session to the xterm.js webview over
 //! its own Tauri IPC `Channel` (ADR-0001): a dedicated thread per session runs the core reader
@@ -22,7 +27,7 @@ use std::time::Duration;
 
 use tauri::ipc::Channel;
 use tauri::{Emitter, Manager, State, WindowEvent};
-use termixion_core::{PtySize, SessionRegistry, SessionSpec};
+use termixion_core::{PtyFactory, PtyReader, PtySize, SessionId, SessionRegistry, SessionSpec};
 use termixion_platform::{
     ForegroundProcess, PlatformPtyFactory, foreground_args, foreground_process,
     foreground_stdin_is_tty, is_busy, is_interpreter, unwrap_interpreter_shim,
@@ -32,6 +37,8 @@ mod config_io;
 mod control;
 mod control_io;
 mod enhancements_io;
+mod fs_watch;
+mod logging;
 mod menu;
 mod scripts_io;
 mod services_io;
@@ -459,19 +466,45 @@ fn smoke_shell(exists: impl Fn(&str) -> bool) -> (&'static str, &'static [&'stat
     }
 }
 
+/// trmx-237 (grill H4): what happened to a requested working directory. `Some` only when the request
+/// could not be honored, so the caller can tell the user where the shell actually started.
+#[derive(Debug, PartialEq, Eq, Clone)]
+struct CwdFallback {
+    /// The directory the caller asked for (a stale OSC-7 inheritance, a deleted project dir, …).
+    requested: PathBuf,
+    /// Where the session starts instead: core's validated `$HOME`, or `None` = inherit the parent.
+    used: Option<PathBuf>,
+}
+
+/// The one-line notice written into the new session when a requested cwd could not be used.
+fn cwd_fallback_notice(fallback: &CwdFallback) -> String {
+    match &fallback.used {
+        Some(used) => format!(
+            "[termixion] {} is not a directory — starting in {} instead",
+            fallback.requested.display(),
+            used.display()
+        ),
+        None => format!(
+            "[termixion] {} is not a directory — starting in the inherited working directory",
+            fallback.requested.display()
+        ),
+    }
+}
+
 fn session_spec_for(
     smoke: bool,
     perf: bool,
     cwd: Option<String>,
     configured_shell: Option<String>,
-) -> SessionSpec {
+    is_dir: impl Fn(&std::path::Path) -> bool,
+) -> (SessionSpec, Option<CwdFallback>) {
     if smoke || perf {
         let (program, args) = smoke_shell(|p| std::path::Path::new(p).exists());
         let mut s = SessionSpec::shell(program);
         for a in args {
             s.args.push((*a).into());
         }
-        s
+        (s, None)
     } else {
         // trmx-205: a valid configured shell wins; anything else (empty, missing, not
         // executable) falls through to the unchanged System-default chain inside core.
@@ -479,11 +512,69 @@ fn session_spec_for(
             configured_shell.map(std::ffi::OsString::from),
             shells_io::is_executable_file,
         );
-        if let Some(dir) = cwd {
-            s.cwd = Some(PathBuf::from(dir));
+        // trmx-237 (grill H4): only a REAL directory may overwrite the core default. Before this the
+        // overwrite was unconditional, so a stale OSC-7 cwd (a `rm -rf`'d project dir inherited by a new
+        // tab) reached the platform layer and became a hard `PtyError::Spawn` — a silent dead pane. The
+        // fallback is core's already-validated `$HOME` (trmx-185, `pty.rs:226`), NOT `None`: `None` means
+        // *inherit the parent's cwd*, which for a Finder/launchd launch is `/`.
+        match cwd.map(PathBuf::from) {
+            Some(dir) if is_dir(&dir) => {
+                s.cwd = Some(dir);
+                (s, None)
+            }
+            Some(requested) => {
+                let used = s.cwd.clone();
+                (s, Some(CwdFallback { requested, used }))
+            }
+            None => (s, None),
         }
-        s
     }
+}
+
+/// Payload of the `session:notice` event (trmx-237): a one-line message the frontend writes into the
+/// pane owning `session_id`. Backend-authored text only — never user or PTY data (R5).
+#[derive(Clone, serde::Serialize)]
+struct SessionNotice {
+    session_id: SessionId,
+    text: String,
+}
+
+/// Emit a pane notice. Best-effort like every other emit: a webview that is gone cannot be told.
+fn notify_session(app: &tauri::AppHandle, session_id: SessionId, text: &str) {
+    let _ = app.emit(
+        "session:notice",
+        SessionNotice {
+            session_id,
+            text: text.to_string(),
+        },
+    );
+}
+
+/// trmx-237 (grill H4): spawn a session and, when the requested working directory could not be honored,
+/// tell the user in the pane itself. Extracted from `open_pty` so the behaviour is testable over a fake
+/// factory (R8) — the handler body past this point is adapter wiring (poller gate, credit cell, hand-off
+/// channel, pump + batch sender) whose coverage is trmx-245's scope.
+///
+/// The notice is emitted only after a SUCCESSFUL spawn: a failed spawn has no session to write into, and
+/// its error is already surfaced to the caller.
+fn open_session_with<N>(
+    registry: &mut SessionRegistry,
+    factory: &dyn PtyFactory,
+    spec: &SessionSpec,
+    size: PtySize,
+    fallback: Option<&CwdFallback>,
+    notify: N,
+) -> Result<(SessionId, Box<dyn PtyReader>), String>
+where
+    N: FnOnce(SessionId, &str),
+{
+    let (id, reader) = registry
+        .spawn(factory, spec, size)
+        .map_err(|e| e.to_string())?;
+    if let Some(fallback) = fallback {
+        notify(id, &cwd_fallback_notice(fallback));
+    }
+    Ok((id, reader))
 }
 
 /// trmx-78 round 2: the natural-batching hand-off between the core pump and the IPC channel.
@@ -522,22 +613,6 @@ const PTY_CREDIT_WAIT: Duration = Duration::from_millis(500);
 /// forever without acking.
 const PTY_CREDIT_FLOOR: i64 = -PTY_CREDIT_BYTES;
 
-/// Outcome of a floored consume: did the caller get permission to send?
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum ConsumeOutcome {
-    /// Credits available, or a timeout probe above the floor — send.
-    Proceed,
-    /// Parked at the floor and released by a refill — re-evaluate (credits deducted).
-    Refilled,
-}
-
-impl ConsumeOutcome {
-    #[cfg(test)]
-    fn proceeded(self) -> bool {
-        matches!(self, ConsumeOutcome::Proceed | ConsumeOutcome::Refilled)
-    }
-}
-
 /// Per-session unacked-byte accounting (trmx-78 round 2b). Consumers park at <= 0; `pty_ack`
 /// refills on parse completion. Negative overdraw is bounded by one batch (PTY_BATCH_MAX_BYTES).
 struct CreditCell {
@@ -557,24 +632,31 @@ impl CreditCell {
     /// A timeout with credits still ABOVE `floor` proceeds as a probe (overdraw bounded by the
     /// floor); at or below the floor the park repeats until a refill arrives. Always deducts on
     /// return, so the floor is a hard bound on unacked bytes.
-    fn consume_floored(&self, bytes: i64, slice: Duration, floor: i64) -> ConsumeOutcome {
+    ///
+    /// trmx-241 (L4): returns `()`. It used to return a `ConsumeOutcome` distinguishing "proceeded"
+    /// from "released by a refill", documented as something to re-evaluate on — but the sole
+    /// production caller discarded it, so the type asserted a contract nothing honoured. The
+    /// distinction is not observable to a caller anyway: every arm deducts and returns, and what
+    /// matters (parking, the slice wait, floor-bounded overdraw) is timing, which the unit tests
+    /// now assert directly.
+    fn consume_floored(&self, bytes: i64, slice: Duration, floor: i64) {
         loop {
             let Ok(guard) = self.credits.lock() else {
-                return ConsumeOutcome::Proceed; // poisoned peer: degrade to unthrottled
+                return; // poisoned peer: degrade to unthrottled
             };
             let Ok((mut guard, timeout)) =
                 self.refilled
                     .wait_timeout_while(guard, slice, |credits| *credits <= 0)
             else {
-                return ConsumeOutcome::Proceed;
+                return;
             };
             if !timeout.timed_out() {
                 *guard -= bytes;
-                return ConsumeOutcome::Refilled;
+                return;
             }
             if *guard > floor {
                 *guard -= bytes;
-                return ConsumeOutcome::Proceed; // probe: overdraw stays floor-bounded
+                return; // probe: overdraw stays floor-bounded
             }
             // At the floor with no refill: stay parked (drop the lock, take another slice).
         }
@@ -675,7 +757,7 @@ fn run_batch_sender(
 #[tauri::command]
 fn open_pty(
     app: tauri::AppHandle,
-    channel: Channel<Vec<u8>>,
+    channel: Channel<tauri::ipc::Response>,
     rows: u16,
     cols: u16,
     cwd: Option<String>,
@@ -696,17 +778,18 @@ fn open_pty(
             shells_io::is_executable_file,
         );
     }
-    let mut spec = session_spec_for(
+    let (mut spec, cwd_fallback) = session_spec_for(
         launch.smoke.is_some(),
         launch.perf.is_some(),
         cwd,
         configured_shell,
+        |p| p.is_dir(),
     );
     // trmx-206: the zsh enhancement layer — enhancement_env is the ONE gate (None = smoke/perf,
     // non-zsh, kill switch, nothing-to-layer, or materialization failure ⇒ byte-identical
     // baseline spawn; the materializer is provably untouched on every None path).
     let shell_config = config_io::shell_config(&app.state::<config_io::ConfigState>());
-    if let Some(enhancement_env) = enhancements_io::enhancement_env(
+    let enhancement_decision = enhancements_io::enhancement_env(
         launch.smoke.is_some() || launch.perf.is_some(),
         &spec.program,
         &shell_config,
@@ -716,16 +799,39 @@ fn open_pty(
             enhancements_io::default_base_dir()
                 .and_then(|base| enhancements_io::materialize_enhancements(&base))
         },
-    ) {
-        spec.env.extend(enhancement_env);
+    );
+    if let Some(env) = enhancement_decision.env.clone() {
+        spec.env.extend(env);
     }
 
-    let (id, reader) = state
-        .registry
-        .lock()
-        .map_err(|_| "pty state poisoned".to_string())?
-        .spawn(&PlatformPtyFactory, &spec, PtySize::new(rows, cols))
-        .map_err(|e| e.to_string())?;
+    let spawned = open_session_with(
+        &mut *state
+            .registry
+            .lock()
+            .map_err(|_| "pty state poisoned".to_string())?,
+        &PlatformPtyFactory,
+        &spec,
+        PtySize::new(rows, cols),
+        cwd_fallback.as_ref(),
+        |session_id, notice| notify_session(&app, session_id, notice),
+    );
+
+    // trmx-238 (M18/D9): the enhancement verdict is committed HERE — after the spawn resolved, and
+    // only when it succeeded — so a session that never started can never claim "Active". Ordered
+    // before the `?` so the failure path is the tested one.
+    if enhancements_io::commit_after_spawn(
+        spawned.is_ok(),
+        &app.state::<enhancements_io::EnhancementsState>(),
+        enhancement_decision.status.clone(),
+    ) {
+        let _ = app.emit(
+            enhancements_io::ENHANCEMENTS_STATUS_EVENT,
+            &enhancement_decision.status,
+        );
+        config_io::emit_config_warnings(&app, &app.state::<config_io::ConfigState>());
+    }
+
+    let (id, reader) = spawned?;
 
     // trmx-75: a session now exists to watch — wake the title poller out of its zero-session
     // park. After a successful spawn only, and after the registry lock above is released.
@@ -761,8 +867,8 @@ fn open_pty(
                 // Flow control: park until the webview has parsed enough of what is in flight
                 // (ack via pty_ack). Timeout probes proceed only above the overdraw floor, so
                 // unacked bytes are hard-bounded; a dead channel fails the send and ends us.
-                let _ = cell.consume_floored(batch.len() as i64, PTY_CREDIT_WAIT, PTY_CREDIT_FLOOR);
-                channel.send(batch).is_ok()
+                cell.consume_floored(batch.len() as i64, PTY_CREDIT_WAIT, PTY_CREDIT_FLOOR);
+                channel.send(tauri::ipc::Response::new(batch)).is_ok()
             },
             move || {
                 if let Ok(mut credits) = credits_map.lock() {
@@ -1093,19 +1199,19 @@ fn perf_done(report: String, success: bool, launch: State<'_, SpecialLaunch>) {
         let path = Path::new(dir).join("report.json");
         if let Err(err) = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&path, &report))
         {
-            eprintln!(
+            log::error!(
                 "termixion-perf: FAIL — could not write {}: {err}",
                 path.display()
             );
             std::process::exit(1);
         }
-        println!("termixion-perf: report written to {}", path.display());
+        log::info!("termixion-perf: report written to {}", path.display());
     }
     if success {
-        println!("termixion-perf: OK — budgets met");
+        log::info!("termixion-perf: OK — budgets met");
         std::process::exit(0);
     }
-    eprintln!("termixion-perf: FAIL — budgets missed or the run was invalid");
+    log::error!("termixion-perf: FAIL — budgets missed or the run was invalid");
     std::process::exit(1);
 }
 
@@ -1113,10 +1219,10 @@ fn perf_done(report: String, success: bool, launch: State<'_, SpecialLaunch>) {
 #[tauri::command]
 fn smoke_done(success: bool, reason: String) {
     if success {
-        println!("termixion-smoke: OK — {reason}");
+        log::info!("termixion-smoke: OK — {reason}");
         std::process::exit(0);
     }
-    eprintln!("termixion-smoke: FAIL — {reason}");
+    log::error!("termixion-smoke: FAIL — {reason}");
     std::process::exit(1);
 }
 
@@ -1169,6 +1275,10 @@ fn quit_confirmed(window: tauri::WebviewWindow) {
     let _ = window.close();
 }
 
+// stdio-contract: --version / --help / usage and the pre-builder launch-mode errors print to the
+// terminal BEFORE any logger can exist; the post-run fatal keeps a stderr branch for when the sink
+// never installed (see the end of this function).
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 fn main() -> ExitCode {
     // trmx-101 (FR-9.4): `termixion ctl <…>` is a non-GUI CLI — connect to the control socket, send one
     // request, print the response, exit. An EARLY fork, before the tauri app is ever built.
@@ -1180,16 +1290,19 @@ fn main() -> ExitCode {
     // second GUI instance (no window, no PTY, no updater, no watchdog threads).
     match cli_query(std::env::args().skip(1)) {
         CliQuery::Version => {
+            // stdio-contract: --version → stdout (CLI contract, before the Tauri builder)
             println!("{}", version_line());
             return ExitCode::SUCCESS;
         }
         CliQuery::Help => {
+            // stdio-contract: --help → stdout (CLI contract)
             println!("{}", usage());
             return ExitCode::SUCCESS;
         }
         CliQuery::UnknownFlag(flag) => {
             // Debug-format the flag: argv is attacker-adjacent input, and a raw echo could write
             // control bytes (ANSI/OSC) into the caller's terminal — {flag:?} escapes them.
+            // stdio-contract: unrecognized flag → usage on stderr (CLI contract)
             eprintln!("termixion: unrecognized flag {flag:?}\n\n{}", usage());
             return ExitCode::from(2);
         }
@@ -1210,6 +1323,7 @@ fn main() -> ExitCode {
     let (smoke, perf) = match resolved {
         Ok(modes) => modes,
         Err(msg) => {
+            // stdio-contract: launch-mode usage error before the builder (no logger yet)
             eprintln!("{msg}");
             return ExitCode::FAILURE;
         }
@@ -1222,7 +1336,7 @@ fn main() -> ExitCode {
         // extract on Linux CI) is not mistaken for a hang — the happy path exits in <5 s regardless.
         std::thread::spawn(|| {
             std::thread::sleep(Duration::from_secs(SMOKE_WATCHDOG_SECS));
-            eprintln!(
+            log::error!(
                 "termixion-smoke: FAIL — timed out waiting for the webview sentinel sequence"
             );
             std::process::exit(1);
@@ -1232,7 +1346,7 @@ fn main() -> ExitCode {
         // trmx-78: same discipline, sized to the harness's schedule (see PERF_WATCHDOG_SECS).
         std::thread::spawn(|| {
             std::thread::sleep(Duration::from_secs(PERF_WATCHDOG_SECS));
-            eprintln!("termixion-perf: FAIL — timed out waiting for the webview perf driver");
+            log::error!("termixion-perf: FAIL — timed out waiting for the webview perf driver");
             std::process::exit(1);
         });
     }
@@ -1262,6 +1376,7 @@ fn main() -> ExitCode {
         // trmx-80 (FR-13): the config backbone's state — the file-watch diff base + the
         // self-echo latch for our own writes.
         .manage(config_io::ConfigState::default())
+        .manage(enhancements_io::EnhancementsState::default())
         // trmx-101 (FR-9.4): the opt-in external control channel's socket-listener state. A --smoke/--perf
         // launch is deterministic → the control socket NEVER opens (baked into ControlState, so EVERY
         // apply path — initial load, config write/reset, the watcher — is forced off).
@@ -1271,6 +1386,17 @@ fn main() -> ExitCode {
         // submenu + Window tab-cycling items; trmx-75 adds Rename Tab… and spawns the
         // foreground-title poller (parked on its condvar gate until the first session opens).
         .setup(|app| {
+            // trmx-236: the logging sink FIRST — from a caught path with a stdout-only fallback, so an
+            // unwritable ~/Library/Logs never aborts the launch (logging.rs).
+            let installed = logging::install(app.handle());
+            if installed.sinks.is_empty() {
+                // stdio-contract: the sink itself could not start — stderr is the only channel left
+                // (this closure runs inside `main`, whose allowance covers it).
+                eprintln!(
+                    "termixion: logging unavailable ({}); continuing without a log sink",
+                    installed.file_disabled_reason.as_deref().unwrap_or("unknown")
+                );
+            }
             let menu = menu::build_menu(app.handle())?;
             app.set_menu(menu)?;
             let state = app.state::<PtyState>();
@@ -1309,7 +1435,7 @@ fn main() -> ExitCode {
                     },
                 );
                 if !registered {
-                    eprintln!("[termixion] services provider not registered (duplicate or off-main-thread)");
+                    log::warn!("[termixion] services provider not registered (duplicate or off-main-thread)");
                 }
             }
             // trmx-101 (FR-9.4): apply the remote-control state from the config at startup. A --smoke/--perf
@@ -1333,7 +1459,7 @@ fn main() -> ExitCode {
             match menu::menu_action(event.id().0.as_str()) {
                 Some(menu::MenuAction::ShowSettings { section }) => {
                     if let Err(err) = window_manager::show_settings_window(app, section) {
-                        eprintln!("termixion: failed to open the settings window: {err}");
+                        log::error!("termixion: failed to open the settings window: {err}");
                     }
                 }
                 // trmx-74/94: the frontend owns tab/pane/window/settings state, so the menu broadcasts
@@ -1341,7 +1467,7 @@ fn main() -> ExitCode {
                 // (incl. window-close → window.close and app-settings → app.settings, trmx-94 finding 7).
                 Some(menu::MenuAction::EmitTabsAction(action)) => {
                     if let Err(err) = app.emit("tabs:action", action) {
-                        eprintln!("termixion: failed to emit tabs:action ({action}): {err}");
+                        log::error!("termixion: failed to emit tabs:action ({action}): {err}");
                     }
                 }
                 None => {}
@@ -1375,6 +1501,10 @@ fn main() -> ExitCode {
             scripts_io::scripts_open_dir,
             shell_integration_io::shell_integration_reveal,
             control::control_response,
+            logging::log_message,
+            logging::log_dir,
+            logging::log_open_dir,
+            enhancements_io::enhancements_status,
             quit_confirmed
         ])
         .on_window_event(|window, event| {
@@ -1421,8 +1551,18 @@ fn main() -> ExitCode {
         .run(tauri::generate_context!());
 
     if let Err(err) = result {
-        // No unwrap/expect: report and exit non-zero rather than panic.
-        eprintln!("termixion: fatal error running the app: {err}");
+        // No unwrap/expect: report and exit non-zero rather than panic. trmx-236: ONCE — through the
+        // logger when one installed (stdout + file), else to stderr (the sink is the likely culprit,
+        // hence the hint). `log::max_level()` stays `Off` until a logger attaches.
+        if log::max_level() == log::LevelFilter::Off {
+            // stdio-contract: no logger installed — stderr is the only channel left.
+            eprintln!(
+                "termixion: fatal error running the app: {err}\n  (if the log sink failed to open ~/Library/Logs, set {}=1 to launch without the log file)",
+                logging::NO_FILE_ENV
+            );
+        } else {
+            log::error!("termixion: fatal error running the app: {err}");
+        }
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
@@ -2135,26 +2275,182 @@ mod tests {
         );
     }
 
+    /// trmx-237 (grill H4): a factory that RECORDS the spec it was handed and can be made to FAIL.
+    /// Neither core fake suffices: `FakePtyFactory`/`SeparableFakePtyFactory` both take `_spec` and
+    /// ignore it (`core/src/fake.rs:81,254`), and neither can return an error — so the spec that
+    /// actually reaches the PTY layer would go unasserted. Delegates to the separable fake because
+    /// `SessionRegistry::spawn` requires a detachable reader.
+    struct RecordingFactory {
+        seen: std::cell::RefCell<Vec<SessionSpec>>,
+        fail: bool,
+    }
+
+    impl RecordingFactory {
+        fn new() -> Self {
+            Self {
+                seen: std::cell::RefCell::new(Vec::new()),
+                fail: false,
+            }
+        }
+        fn failing() -> Self {
+            Self {
+                seen: std::cell::RefCell::new(Vec::new()),
+                fail: true,
+            }
+        }
+        fn last_cwd(&self) -> Option<PathBuf> {
+            self.seen.borrow().last().and_then(|s| s.cwd.clone())
+        }
+    }
+
+    impl termixion_core::PtyFactory for RecordingFactory {
+        fn spawn(
+            &self,
+            spec: &SessionSpec,
+            size: PtySize,
+        ) -> Result<Box<dyn termixion_core::PtyBackend>, termixion_core::PtyError> {
+            self.seen.borrow_mut().push(spec.clone());
+            if self.fail {
+                return Err(termixion_core::PtyError::Spawn("nope".into()));
+            }
+            termixion_core::fake::FakePtyFactory::with_separable_reader().spawn(spec, size)
+        }
+    }
+
+    /// Drive the REAL `session_spec_for` → `open_session_with` path: the decision and the glue together,
+    /// which is what the user actually experiences. `$HOME` comes from core's validated default on this
+    /// host (`SessionSpec::login_shell().cwd`), so the assertions never hardcode a machine-specific path.
+    fn open_with(
+        cwd: Option<&str>,
+        is_dir: impl Fn(&Path) -> bool,
+        factory: &RecordingFactory,
+    ) -> (Result<SessionId, String>, Option<PathBuf>, Vec<String>) {
+        let (spec, fallback) =
+            session_spec_for(false, false, cwd.map(str::to_string), None, is_dir);
+        let mut registry = SessionRegistry::new();
+        let notices = std::cell::RefCell::new(Vec::new());
+        let result = open_session_with(
+            &mut registry,
+            factory,
+            &spec,
+            PtySize::new(24, 80),
+            fallback.as_ref(),
+            |_id, text| notices.borrow_mut().push(text.to_string()),
+        );
+        (
+            result.map(|(id, _reader)| id),
+            factory.last_cwd(),
+            notices.into_inner(),
+        )
+    }
+
+    /// The headline H4 case: a stale/deleted cwd must NOT reach the platform layer (where it becomes a
+    /// hard spawn error and a silent dead pane) and must NOT become `None` (which means inherit-parent,
+    /// i.e. `/` under launchd) — it falls back to core's validated `$HOME`, and the user is told.
+    ///
+    /// RED against the pre-trmx-237 code: the overwrite was unconditional, so the factory received
+    /// `/gone/project` and no notice was ever produced.
+    #[test]
+    fn a_dead_cwd_falls_back_to_the_core_default_and_notifies() {
+        let home = SessionSpec::login_shell().cwd;
+        let factory = RecordingFactory::new();
+        let (result, spawned_cwd, notices) = open_with(Some("/gone/project"), |_| false, &factory);
+        assert!(result.is_ok());
+        assert_eq!(
+            spawned_cwd, home,
+            "the factory must receive core's validated default — not the dead path"
+        );
+        assert_ne!(
+            spawned_cwd,
+            Some(PathBuf::from("/gone/project")),
+            "the dead path must never reach the PTY layer"
+        );
+        assert_eq!(notices.len(), 1, "exactly one notice");
+        assert!(
+            notices[0].contains("/gone/project"),
+            "names what was asked for: {}",
+            notices[0]
+        );
+    }
+
+    #[test]
+    fn a_live_cwd_is_honored_and_says_nothing() {
+        let factory = RecordingFactory::new();
+        let (result, spawned_cwd, notices) = open_with(Some("/work/repo"), |_| true, &factory);
+        assert!(result.is_ok());
+        assert_eq!(spawned_cwd, Some(PathBuf::from("/work/repo")));
+        assert!(
+            notices.is_empty(),
+            "an honored cwd is not worth a line of the user's scrollback"
+        );
+    }
+
+    /// The notice text distinguishes the two fallbacks, so the message is never a lie about where the
+    /// shell started. (`used: None` = the inherit-parent contract of a homeless environment.)
+    #[test]
+    fn the_notice_names_home_or_says_inherited() {
+        let to_home = CwdFallback {
+            requested: PathBuf::from("/gone"),
+            used: Some(PathBuf::from("/Users/t")),
+        };
+        let notice = cwd_fallback_notice(&to_home);
+        assert!(
+            notice.contains("/gone") && notice.contains("/Users/t"),
+            "got: {notice}"
+        );
+
+        let inherited = CwdFallback {
+            requested: PathBuf::from("/gone"),
+            used: None,
+        };
+        let notice = cwd_fallback_notice(&inherited);
+        assert!(
+            notice.contains("/gone") && notice.contains("inherited"),
+            "got: {notice}"
+        );
+    }
+
+    /// A spawn failure propagates unchanged: no notice (there is no session to write into) and nothing
+    /// partially created.
+    #[test]
+    fn a_spawn_failure_propagates_without_a_notice() {
+        let factory = RecordingFactory::failing();
+        let (result, _, notices) = open_with(Some("/gone"), |_| false, &factory);
+        assert!(result.is_err(), "the caller must see the spawn error");
+        assert!(notices.is_empty(), "no session exists to notify");
+    }
+
     #[test]
     fn session_spec_for_selects_the_rc_free_shell_for_smoke_or_perf() {
-        // Production: login shell, cwd honored.
-        let prod = session_spec_for(false, false, Some("/tmp/somewhere".to_string()), None);
+        // Production: login shell, an EXISTING cwd honored (trmx-237: the probe says it is a dir).
+        let (prod, fallback) = session_spec_for(
+            false,
+            false,
+            Some("/tmp/somewhere".to_string()),
+            None,
+            |_| true,
+        );
         assert_eq!(prod.cwd, Some(PathBuf::from("/tmp/somewhere")));
         assert!(prod.args.is_empty(), "login shell spawns with no args");
+        assert_eq!(fallback, None, "an honored cwd reports no fallback");
 
         // trmx-185: with no explicit cwd the tauri layer adds no policy of its own — the spec
         // carries exactly the core login_shell() default ($HOME when valid, else None).
-        let defaulted = session_spec_for(false, false, None, None);
+        let (defaulted, fallback) = session_spec_for(false, false, None, None, |_| true);
         assert_eq!(
             defaulted.cwd,
             SessionSpec::login_shell().cwd,
             "session_spec_for must pass the core cwd default through untouched"
         );
+        assert_eq!(fallback, None);
 
         // Smoke or perf (or both): deterministic rc-free `zsh -f`, cwd deliberately ignored so
         // rc/prompt noise and a surprising working dir can never pollute the driven sequence.
         for (smoke, perf) in [(true, false), (false, true), (true, true)] {
-            let spec = session_spec_for(smoke, perf, Some("/tmp/ignored".to_string()), None);
+            let (spec, _) =
+                session_spec_for(smoke, perf, Some("/tmp/ignored".to_string()), None, |_| {
+                    true
+                });
             // The CI/dev host has /bin/zsh, so the live pick is zsh -f.
             assert_eq!(spec.program, OsStr::new("/bin/zsh"));
             assert_eq!(spec.args, vec![std::ffi::OsString::from("-f")]);
@@ -2345,41 +2641,31 @@ mod tests {
         // cap), which is what makes the accounting simple: park only at <= 0.
         let cell = CreditCell::new(8);
         let started = std::time::Instant::now();
-        assert!(
-            cell.consume_floored(6, Duration::from_millis(500), -100)
-                .proceeded()
-        );
-        assert!(
-            cell.consume_floored(6, Duration::from_millis(500), -100)
-                .proceeded(),
-            "2 left: still positive, overdraws"
-        );
+        cell.consume_floored(6, Duration::from_millis(500), -100);
+        cell.consume_floored(6, Duration::from_millis(500), -100); // 2 left: positive, overdraws
         assert!(
             started.elapsed() < Duration::from_millis(100),
             "no parking while positive"
         );
         cell.refill(100);
+        let after_refill = std::time::Instant::now();
+        cell.consume_floored(50, Duration::from_millis(50), -100);
         assert!(
-            cell.consume_floored(50, Duration::from_millis(50), -100)
-                .proceeded()
+            after_refill.elapsed() < Duration::from_millis(40),
+            "a refilled cell consumes without parking"
         );
     }
 
     #[test]
     fn credit_cell_zero_or_negative_parks_and_refill_unparks() {
         let cell = Arc::new(CreditCell::new(4));
-        assert!(
-            cell.consume_floored(4, Duration::from_millis(50), 0)
-                .proceeded()
-        ); // now 0 — parks
+        cell.consume_floored(4, Duration::from_millis(50), 0); // now 0 — the next one parks
         let parked = Arc::clone(&cell);
         let (tx, rx) = mpsc::channel::<bool>();
         let waiter = std::thread::spawn(move || {
             // floor 0: at zero credits there is no probe headroom — a pure park-until-refill.
-            let got = parked
-                .consume_floored(2, Duration::from_millis(200), 0)
-                .proceeded();
-            tx.send(got).expect("send");
+            parked.consume_floored(2, Duration::from_millis(200), 0);
+            tx.send(true).expect("send");
         });
         std::thread::sleep(Duration::from_millis(80));
         assert!(
@@ -2397,17 +2683,20 @@ mod tests {
         // A webview that stops acking: the bounded wait expires and the consumer PROBES (send
         // failure of a dead channel ends the loop) — but only above the overdraw floor.
         let cell = CreditCell::new(1);
-        assert!(
-            cell.consume_floored(1, Duration::from_millis(10), -100)
-                .proceeded()
-        );
+        cell.consume_floored(1, Duration::from_millis(10), -100);
         let started = std::time::Instant::now();
-        assert_eq!(
-            cell.consume_floored(1, Duration::from_millis(60), -100),
-            ConsumeOutcome::Proceed,
-            "timeout above the floor is a probe"
+        // Above the floor, an unacked wait EXPIRES and the consumer proceeds — observable as the
+        // call returning after roughly the slice rather than parking indefinitely.
+        cell.consume_floored(1, Duration::from_millis(60), -100);
+        let waited = started.elapsed();
+        assert!(
+            waited >= Duration::from_millis(55),
+            "waited the slice: {waited:?}"
         );
-        assert!(started.elapsed() >= Duration::from_millis(55));
+        assert!(
+            waited < Duration::from_millis(500),
+            "but did not park: {waited:?}"
+        );
     }
 
     #[test]
@@ -2417,20 +2706,14 @@ mod tests {
         // at the floor the consumer parks (sliced, indefinitely) until a refill.
         let cell = Arc::new(CreditCell::new(4));
         // Drain into overdraw with timeout-probes: 4 -> 0 -> -4 (floor for this test = -4).
-        assert!(
-            cell.consume_floored(4, Duration::from_millis(10), -4)
-                .proceeded()
-        );
-        assert!(
-            cell.consume_floored(4, Duration::from_millis(10), -4)
-                .proceeded()
-        ); // probe: 0 > floor
+        cell.consume_floored(4, Duration::from_millis(10), -4);
+        cell.consume_floored(4, Duration::from_millis(10), -4); // probe: 0 > floor
         // credits now -4 == floor: further consumes must PARK, not proceed.
         let parked = Arc::clone(&cell);
         let (tx, rx) = mpsc::channel::<bool>();
         let waiter = std::thread::spawn(move || {
-            let outcome = parked.consume_floored(4, Duration::from_millis(30), -4);
-            tx.send(outcome.proceeded()).expect("send");
+            parked.consume_floored(4, Duration::from_millis(30), -4);
+            tx.send(true).expect("send");
         });
         std::thread::sleep(Duration::from_millis(120));
         assert!(

@@ -21,7 +21,6 @@
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -172,80 +171,13 @@ fn resolve_socket_path(cfg: &RemoteControlConfig) -> (PathBuf, SocketPathOrigin)
     )
 }
 
-/// DEFAULT-path policy: ensure `dir` is a private, current-uid-owned directory with mode `0700`. Creates
-/// it if absent; if it EXISTS as a real directory we own, TIGHTENS it to `0700` (so a `0755` config dir
-/// created by another subsystem still yields a private socket dir — review finding 3); rejects a symlink,
-/// a non-directory, or a foreign-owned directory (review finding 5) rather than trusting/loosening it.
-fn ensure_private_dir_default(dir: &Path) -> Result<(), String> {
-    match std::fs::symlink_metadata(dir) {
-        Ok(md) => {
-            let ft = md.file_type();
-            if ft.is_symlink() {
-                return Err(format!("{} is a symlink; refusing", dir.display()));
-            }
-            if !ft.is_dir() {
-                return Err(format!("{} is not a directory", dir.display()));
-            }
-            let euid = unsafe { libc::geteuid() };
-            if md.uid() != euid {
-                return Err(format!(
-                    "{} is owned by uid {} (not {euid}); refusing",
-                    dir.display(),
-                    md.uid()
-                ));
-            }
-            // We own it → tighten to 0700 (drops any group/world bits).
-            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-                .map_err(|e| format!("could not chmod {}: {e}", dir.display()))
-        }
-        Err(_) => {
-            std::fs::create_dir_all(dir)
-                .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
-            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-                .map_err(|e| format!("could not chmod {}: {e}", dir.display()))
-        }
-    }
-}
-
-/// OVERRIDE-path policy (trmx-235 L12): `dir` must ALREADY be a real, current-uid-owned directory with
-/// mode EXACTLY `0700`. Nothing is created and nothing is chmod-ed — a `socket_path` under `$HOME` must
-/// never silently tighten `$HOME`.
-fn require_private_dir(dir: &Path) -> Result<(), String> {
-    let md = std::fs::symlink_metadata(dir).map_err(|e| {
-        format!(
-            "{} does not exist ({e}); a custom socket_path parent must be a private 0700 directory you own (it is never created or chmod-ed for you)",
-            dir.display()
-        )
-    })?;
-    let ft = md.file_type();
-    if ft.is_symlink() {
-        return Err(format!("{} is a symlink; refusing", dir.display()));
-    }
-    if !ft.is_dir() {
-        return Err(format!("{} is not a directory", dir.display()));
-    }
-    let euid = unsafe { libc::geteuid() };
-    if md.uid() != euid {
-        return Err(format!(
-            "{} is owned by uid {} (not {euid}); refusing",
-            dir.display(),
-            md.uid()
-        ));
-    }
-    let mode = md.mode() & 0o777;
-    if mode != 0o700 {
-        return Err(format!(
-            "{} has mode {mode:04o}; a custom socket_path parent must be exactly 0700 (it is never chmod-ed for you)",
-            dir.display()
-        ));
-    }
-    Ok(())
-}
-
-/// Create + bind the socket at `path` with `0600` perms in a `0700` parent (created-or-tightened for the
-/// default path; REQUIRED, never touched, for an override — trmx-235). Probe-before-unlink: a LIVE listener
-/// is NOT clobbered (Err); a stale socket is reclaimed. Bind ONCE (a race → Err, no re-clobber).
-/// AppHandle-free so it is unit-testable.
+/// trmx-239 (M12): create + bind the control socket. The PLATFORM mechanics — the effective-uid
+/// check, the two directory guarantees, and the `0600` bind — now live behind the R1 seam in
+/// `termixion_platform::socket`; this function keeps the CONTROL-DOMAIN decision, which is the only
+/// part that belongs in the shell: which directory policy a socket path earns based on where it
+/// came from. A default path may be created and tightened for the user; a user-supplied override
+/// must already be a private 0700 directory, because tightening a path under `$HOME` on someone's
+/// behalf is not ours to do (trmx-235 L12). AppHandle-free so it is unit-testable.
 fn create_socket(path: &Path, origin: SocketPathOrigin) -> Result<UnixListener, String> {
     if origin == SocketPathOrigin::Override && !path.is_absolute() {
         return Err(format!(
@@ -257,34 +189,10 @@ fn create_socket(path: &Path, origin: SocketPathOrigin) -> Result<UnixListener, 
         .parent()
         .ok_or_else(|| "socket path has no parent".to_string())?;
     match origin {
-        SocketPathOrigin::Default => ensure_private_dir_default(parent)?,
-        SocketPathOrigin::Override => require_private_dir(parent)?,
+        SocketPathOrigin::Default => termixion_platform::ensure_private_dir(parent)?,
+        SocketPathOrigin::Override => termixion_platform::require_private_dir(parent)?,
     }
-    // Only ever touch a SOCKET node at `path` (review finding 4): never delete a regular file / symlink /
-    // directory a misconfigured socket_path might point at.
-    if let Ok(md) = std::fs::symlink_metadata(path) {
-        if !md.file_type().is_socket() {
-            return Err(format!(
-                "{} exists and is not a socket; refusing to touch it",
-                path.display()
-            ));
-        }
-        if UnixStream::connect(path).is_ok() {
-            return Err(format!(
-                "{} is a live control socket (another instance?); not clobbering",
-                path.display()
-            ));
-        }
-        let _ = std::fs::remove_file(path); // a stale SOCKET — reclaim
-    }
-    let listener =
-        UnixListener::bind(path).map_err(|e| format!("bind {} failed: {e}", path.display()))?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-        .map_err(|e| format!("could not chmod {}: {e}", path.display()))?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|e| format!("set_nonblocking failed: {e}"))?;
-    Ok(listener)
+    termixion_platform::create_socket_at(path)
 }
 
 /// What the acceptor does with an `accept` error (trmx-235). Pure — pinned by tests.
@@ -368,7 +276,7 @@ pub fn apply_with(
         && let Some(handle) = guard.take()
     {
         teardown(handle);
-        eprintln!(
+        log::info!(
             "termixion: remote control {}.",
             if action == Reconcile::Stop {
                 "stopped"
@@ -391,18 +299,18 @@ pub fn apply_with(
                             dead,
                             thread,
                         });
-                        eprintln!("termixion: remote control listening (opt-in).");
+                        log::info!("termixion: remote control listening (opt-in).");
                     }
                     Err(e) => {
                         // No acceptor → nobody owns the bound socket: unlink it, stay stopped (no abort).
                         let _ = std::fs::remove_file(&path);
-                        eprintln!(
+                        log::error!(
                             "termixion: remote control not started — could not spawn the acceptor thread: {e}"
                         );
                     }
                 }
             }
-            Err(e) => eprintln!("termixion: remote control not started — {e}"),
+            Err(e) => log::error!("termixion: remote control not started — {e}"),
         }
     }
     action
@@ -504,7 +412,9 @@ pub fn run_acceptor<A, S, Z>(
                     Box::new(move || handle_connection(stream, &process, &next_id, permit, &stop));
                 if let Err(e) = spawn(job) {
                     // The job — and the permit it owns — dropped with the Err: the slot is free again.
-                    eprintln!("termixion: remote control could not spawn a connection worker: {e}");
+                    log::error!(
+                        "termixion: remote control could not spawn a connection worker: {e}"
+                    );
                     if let Some(n) = notify {
                         write_client_error(&n, "spawn-failed");
                     }
@@ -513,11 +423,11 @@ pub fn run_acceptor<A, S, Z>(
             Err(e) => match accept_error_action(e.kind()) {
                 AcceptAction::Poll => sleep(ACCEPT_POLL),
                 AcceptAction::RetryAfterDelay => {
-                    eprintln!("termixion: remote control accept error (transient, retrying): {e}");
+                    log::warn!("termixion: remote control accept error (transient, retrying): {e}");
                     sleep(ACCEPT_POLL);
                 }
                 AcceptAction::Fatal => {
-                    eprintln!(
+                    log::error!(
                         "termixion: remote control acceptor stopped: {e} — the next config apply restarts it (toggle remote_control.enabled)"
                     );
                     dead.store(true, Ordering::SeqCst);
@@ -663,7 +573,7 @@ pub fn resolve_pending(pending: &Pending, id: u64, payload: JsonValue) -> bool {
 #[tauri::command]
 pub fn control_response(id: u64, payload: JsonValue, state: State<'_, ControlState>) {
     if !resolve_pending(&state.pending, id, payload) {
-        eprintln!(
+        log::warn!(
             "termixion: late control response for request {id} (already answered as timeout; the command may have run)"
         );
     }
@@ -681,10 +591,14 @@ pub fn decode_response_line(bytes: &[u8]) -> String {
 
 /// `termixion ctl <…>`: connect to the socket, send one request, print the response line, exit 0/1 on
 /// `ok`. Non-GUI — never builds the tauri app.
+// stdio-contract: `termixion ctl` is a CLI — the JSON reply goes to stdout (scripts parse it), client
+// errors to stderr; it forks before the Tauri builder, so no logger exists here by construction.
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 pub fn run_ctl<I: IntoIterator<Item = String>>(args: I) -> std::process::ExitCode {
     let req = match parse_ctl_argv(args) {
         Ok(r) => r,
         Err(e) => {
+            // stdio-contract: ctl client error → stderr (the CLI contract; no logger exists in the ctl fork)
             eprintln!("termixion ctl: {e}");
             return std::process::ExitCode::FAILURE;
         }
@@ -700,6 +614,7 @@ pub fn run_ctl<I: IntoIterator<Item = String>>(args: I) -> std::process::ExitCod
     let mut stream = match UnixStream::connect(&path) {
         Ok(s) => s,
         Err(e) => {
+            // stdio-contract: ctl client error → stderr
             eprintln!(
                 "termixion ctl: cannot connect to {} ({e}). Is remote control enabled?",
                 path.display()
@@ -713,6 +628,7 @@ pub fn run_ctl<I: IntoIterator<Item = String>>(args: I) -> std::process::ExitCod
         .write_all(format!("{}\n", req.request_line).as_bytes())
         .is_err()
     {
+        // stdio-contract: ctl client error → stderr
         eprintln!("termixion ctl: failed to write the request");
         return std::process::ExitCode::FAILURE;
     }
@@ -722,9 +638,11 @@ pub fn run_ctl<I: IntoIterator<Item = String>>(args: I) -> std::process::ExitCod
     let _ = reader.read_until(b'\n', &mut raw); // one response line (a read error → whatever arrived)
     let buf = decode_response_line(&raw);
     if buf.is_empty() {
+        // stdio-contract: ctl client error → stderr
         eprintln!("termixion ctl: no response");
         return std::process::ExitCode::FAILURE;
     }
+    // stdio-contract: ctl prints the JSON reply on stdout — parsed by scripts (docs/remote-control.md)
     println!("{buf}");
     let ok = serde_json::from_str::<JsonValue>(&buf)
         .ok()
@@ -741,6 +659,9 @@ pub fn run_ctl<I: IntoIterator<Item = String>>(args: I) -> std::process::ExitCod
 mod tests {
     use super::*;
     use std::collections::VecDeque;
+    // trmx-239 (M12): the uid/mode PRIMITIVES moved to termixion-platform (and their direct tests
+    // with them); these remain because the ORCHESTRATION tests below still set and read modes.
+    use std::os::unix::fs::PermissionsExt;
 
     fn tmp_dir(tag: &str) -> PathBuf {
         // Short names: macOS caps a unix-socket path at 104 bytes.
@@ -859,6 +780,28 @@ mod tests {
         assert!(CTL_READ_TIMEOUT > REQUEST_TIMEOUT);
     }
 
+    /// trmx-236 (L2): the private `lock()` helper RECOVERS the stored value from a poisoned mutex (a
+    /// peer panicked while holding it) — the pending-sender map must stay usable. Deliberately different
+    /// from the poller / credit-cell / Services-queue degrade policies, which are not changed.
+    #[test]
+    fn lock_recovers_a_poisoned_mutex() {
+        let shared = Arc::new(Mutex::new(41u32));
+        let poisoner = Arc::clone(&shared);
+        let result = std::thread::spawn(move || {
+            let mut g = poisoner.lock().unwrap();
+            *g += 1;
+            panic!("poison while holding the lock");
+        })
+        .join();
+        assert!(result.is_err(), "the thread must have panicked");
+        assert!(shared.lock().is_err(), "the mutex is poisoned");
+        assert_eq!(
+            *lock(&shared),
+            42,
+            "lock() recovers the value written before the panic"
+        );
+    }
+
     #[test]
     fn control_state_records_the_deterministic_flag() {
         assert!(!ControlState::default().deterministic);
@@ -866,36 +809,10 @@ mod tests {
     }
 
     // ---------- socket-path policy (T5/T6) ----------
-
-    #[test]
-    fn ensure_private_dir_default_creates_and_tightens_a_0700_dir_we_own() {
-        let dir = tmp_dir("priv");
-        std::fs::remove_dir_all(&dir).ok();
-        // absent → created 0700
-        ensure_private_dir_default(&dir).expect("create");
-        assert_eq!(mode_of(&dir), 0o700);
-        // a 0755 dir we own (like the shared config dir) is TIGHTENED to 0700, not rejected (finding 3).
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-        ensure_private_dir_default(&dir).expect("tighten");
-        assert_eq!(mode_of(&dir), 0o700);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn ensure_private_dir_default_rejects_a_symlink_and_a_non_directory() {
-        let base = tmp_dir("sym");
-        std::fs::remove_dir_all(&base).ok();
-        std::fs::create_dir_all(&base).unwrap();
-        let real = base.join("real");
-        std::fs::create_dir(&real).unwrap();
-        let link = base.join("link");
-        std::os::unix::fs::symlink(&real, &link).unwrap();
-        assert!(ensure_private_dir_default(&link).is_err());
-        let file = base.join("afile");
-        std::fs::write(&file, b"x").unwrap();
-        assert!(ensure_private_dir_default(&file).is_err());
-        std::fs::remove_dir_all(&base).ok();
-    }
+    // trmx-239 (M12): the two `ensure_private_dir_default` unit tests moved to
+    // `termixion-platform/src/socket.rs` with the function itself. What remains here exercises the
+    // shell's ORCHESTRATION — which directory policy each SocketPathOrigin earns — through
+    // `create_socket`, which is the part that stayed.
 
     #[test]
     fn override_parent_must_be_exactly_0700_and_is_never_chmoded() {

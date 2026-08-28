@@ -13,6 +13,7 @@
 //! ([`source_command`](termixion_core::source_command)) so the frontend never re-implements the
 //! escaping (trmx-93 review finding 1).
 
+use notify::RecursiveMode;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -165,50 +166,62 @@ const SCRIPTS_DEBOUNCE: Duration = Duration::from_millis(250);
 /// themes watch this is `Recursive` (nested folders are the grouping mechanism). Best-effort: any
 /// setup failure logs and disables watching rather than failing the app.
 pub fn run_scripts_watcher(app: tauri::AppHandle) {
-    use notify::{RecursiveMode, Watcher};
-
-    let dir = scripts_dir();
-    if let Err(err) = std::fs::create_dir_all(&dir) {
-        eprintln!(
+    let spec = scripts_watch_spec();
+    if let Err(err) = std::fs::create_dir_all(&spec.dir) {
+        log::warn!(
             "termixion: could not create {}: {err}; script file watching disabled",
-            dir.display()
+            spec.dir.display()
         );
         return;
     }
-    let (tx, rx) = std::sync::mpsc::channel::<()>();
-    let mut watcher =
-        match notify::recommended_watcher(move |event: Result<notify::Event, notify::Error>| {
-            if let Ok(event) = event
-                && event.paths.iter().any(|path| is_script_event_path(path))
-            {
-                let _ = tx.send(());
-            }
-        }) {
-            Ok(watcher) => watcher,
-            Err(err) => {
-                eprintln!("termixion: could not create the scripts watcher: {err}");
-                return;
-            }
-        };
-    if let Err(err) = watcher.watch(&dir, RecursiveMode::Recursive) {
-        eprintln!(
-            "termixion: could not watch {}: {err}; script file watching disabled",
-            dir.display()
-        );
-        return;
-    }
-    loop {
-        if rx.recv().is_err() {
-            return; // channel closed — the watcher is gone
-        }
-        while rx.recv_timeout(SCRIPTS_DEBOUNCE).is_ok() {}
-        let _ = app.emit("scripts:changed", ());
+    crate::fs_watch::run_debounced(&spec, || {
+        on_scripts_wake(&|event| {
+            let _ = app.emit(event, ());
+        })
+    });
+}
+
+/// trmx-238 (L7): this watcher's parameters, named so a unit test can pin them without starting a
+/// watcher. `Recursive` unlike the other two — nested folders are the scripts grouping mechanism.
+pub fn scripts_watch_spec() -> crate::fs_watch::WatchSpec {
+    crate::fs_watch::WatchSpec {
+        dir: scripts_dir(),
+        mode: RecursiveMode::Recursive,
+        debounce: SCRIPTS_DEBOUNCE,
+        filter: std::sync::Arc::new(is_script_event_path),
     }
 }
+
+/// trmx-238 (L7): this watcher's WAKE ACTION, with the emitter injected (see `on_themes_wake`).
+pub fn on_scripts_wake(emit: &dyn Fn(&str)) {
+    emit(SCRIPTS_WAKE_EVENT);
+}
+
+/// The event a scripts wake emits.
+pub const SCRIPTS_WAKE_EVENT: &str = "scripts:changed";
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // trmx-238 (L7): pin this watcher's parameters + wake action across the dedupe. The Recursive
+    // mode is the one that differs from config/themes — nested folders group scripts.
+    #[test]
+    fn scripts_watch_spec_is_recursive_and_debounced() {
+        let spec = scripts_watch_spec();
+        assert_eq!(spec.dir, scripts_dir());
+        assert_eq!(spec.mode, RecursiveMode::Recursive);
+        assert_eq!(spec.debounce, SCRIPTS_DEBOUNCE);
+        assert!((spec.filter)(&scripts_dir().join("group/deploy.sh")));
+        assert!(!(spec.filter)(&scripts_dir().join(".hidden.sh")));
+    }
+
+    #[test]
+    fn a_scripts_wake_emits_exactly_scripts_changed() {
+        let seen = std::cell::RefCell::new(Vec::new());
+        on_scripts_wake(&|event| seen.borrow_mut().push(event.to_string()));
+        assert_eq!(seen.into_inner(), vec!["scripts:changed".to_string()]);
+    }
 
     // --- path resolution -----------------------------------------------------------------
 

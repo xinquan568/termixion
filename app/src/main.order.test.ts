@@ -16,7 +16,9 @@ import source from "./main.tsx?raw";
 
 describe("main.tsx startup ordering (trmx-80/89: hydrate → hydrateUserThemes → theme → gates → mount)", () => {
   const bootStart = source.indexOf("async function boot");
-  const bootInvoke = source.indexOf("void boot()");
+  // trmx-237: the invocation gained a .catch — a rejected boot mounts the H3 recovery surface, since no
+  // component (and therefore no error boundary) exists yet at that point. The pinned ORDER is unchanged.
+  const bootInvoke = source.indexOf("boot().catch(");
   const hydrateIndex = source.indexOf("hydrateSettings(");
   // trmx-89: the user-theme registry hydration, between the settings read and the themed paint.
   const hydrateThemesIndex = source.indexOf("hydrateUserThemes(");

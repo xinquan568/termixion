@@ -22,9 +22,11 @@ tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
 tauri-plugin-opener = "2.5.4"
 tauri-plugin-clipboard-manager = "2.3.2"
+# trmx-236: the logging sink — stdout + ~/Library/Logs/<bundle id>/termixion.log (2 MiB, one archive).
+tauri-plugin-log = "2.9.0"
+log = "0.4"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
-libc = "0.2"
 # trmx-80 (FR-13): comment-preserving edits of ~/.config/termixion/termixion.toml + watching it.
 toml_edit = "0.25.12"
 # trmx-206: embed the vendored zsh plugin trees (resources/shell-enhancements) in the binary.
@@ -32,6 +34,9 @@ include_dir = "0.7"
 notify = "8.2.0"
 
 [dev-dependencies]
+# trmx-239 (M12): TEST-only — logging.rs's probe test skips its assertion when running as root.
+# The shell's non-test uid/mode work goes through termixion-platform behind the R1 seam.
+libc = "0.2"
 # trmx-224: parse the authored Info.plist in the NSServices shape test (lockfile-aligned 1.x).
 plist = "1"
 
