@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: ISC
-# Termixion pre-commit hook (A-4). Fast staged-content guardrails (§2.2).
+# Termixion pre-commit hook (A-4, extended by trmx-239 M24). Fast staged-content guardrails (§2.2).
 # Install: scripts/install-hooks.sh  (sets core.hooksPath = .claude/hooks).
 # CI mirrors these so a `--no-verify` bypass still fails the gate: the secret scan runs there over the PR /
 # push diff (`secret-scan.sh --range`, trmx-234) and the seam guard runs as a required job.
+#
+# trmx-239: `cargo fmt --check` and `pnpm --filter app lint` were DOCUMENTED here but never ran.
+# Both are seconds and fixable in place, so they belong at commit time. Clippy is deliberately NOT
+# here — a cold clippy is minutes, and a hook slow enough to get bypassed protects nothing; it runs
+# at pre-push instead, and the docs now say so. What this hook runs is pinned by
+# .claude/hooks/hooks.test.sh.
 set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
@@ -11,3 +17,5 @@ cd "$ROOT"
 bash scripts/secret-scan.sh
 bash scripts/check-core-seam.sh
 bash scripts/check-isc-headers.sh
+cargo fmt --all --check
+pnpm --filter app lint

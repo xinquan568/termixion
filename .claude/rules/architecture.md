@@ -4,11 +4,29 @@ Load-bearing invariants for the codebase, modeled on ClauDepot's `.claude/rules/
 The git hooks in `.claude/hooks/` (install: `scripts/install-hooks.sh`) and CI (E-1) enforce the
 machine-checkable ones; the rest are review guidance.
 
-## R1 — Pure-core / thin-shell
+**Every rule below names its enforcement in the heading** — a script, a lint, or `review rule`. That
+convention exists because five rules once claimed enforcement they did not have (trmx-239); an
+unenforced rule should be *visibly* unenforced rather than ambiguously stated. See
+[Claims and gates](../../docs/CONTRIBUTING.md#claims-and-gates-trmx-239).
+
+## R1 — Pure-core / thin-shell (enforced: `scripts/check-core-seam.sh`, gates (a) + (c))
 `termixion-core` is **platform-agnostic**: the domain model + the PTY/session seam (traits only).
-`termixion-platform` holds the platform traits + macOS impls (the only crate allowed `cfg(target_os)`
-/ platform crates). `termixion-tauri` and `app/` are thin presentation. Logic lives in the core so it
-is unit-testable headless on Linux CI.
+Logic lives there so it is unit-testable headless on Linux CI.
+
+**`termixion-platform` owns platform DOMAIN code** — the PTY backend, clipboard, foreground-process
+resolution, and uid/mode/socket primitives — and is the only crate that may DECLARE a platform crate
+(`libc`, `nix`, `objc*`, `cocoa*`) as a normal dependency.
+
+**`termixion-tauri` and `app/` are thin presentation.** The shell MAY use `std::os` and
+platform-gated *presentation* APIs behind `#[cfg(target_os = …)]` — window chrome, Services
+registration — because that is what a presentation layer for one platform is. What it may NOT do is
+carry platform domain logic or declare a platform crate to reach it; that belongs behind the seam.
+
+trmx-239 (M12) narrowed this rule and made it checkable at the same time: the shell used to declare
+`libc` and call `geteuid` for socket hardening, which the old wording forbade in text and nothing
+caught. Gate (c) of `check-core-seam.sh` now scans the shell's DIRECT normal dependencies
+(dev/build excluded — a test-only platform crate is fine), self-tested by
+`scripts/check-core-seam.test.sh`.
 
 ## R2 — The core seam (enforced: `scripts/check-core-seam.sh`)
 In `termixion-core` non-test code: **no platform `cfg` selectors** (`cfg(target_os|target_family|
@@ -16,9 +34,12 @@ target_env|target_arch|target_vendor|target_pointer_width)`, bare `cfg(unix)`/`c
 `std::os::`**. `cfg(test)` is allowed. (D-1 adds a cargo-metadata forbidden-dependency scan: no
 `tauri`, `portable-pty`, `cocoa`/`objc`/`core-foundation`, `libc`, `nix`, `windows*` in core.)
 
-## R3 — No panics in core
-No `unwrap()` / `expect()` in `termixion-core` non-test code — return `Result`/`Option`. (Review rule
-for now; a clippy lint gate can enforce it later.)
+## R3 — No panics in core (enforced: `deny(clippy::unwrap_used, clippy::expect_used)`)
+No `unwrap()` / `expect()` in `termixion-core` non-test code — return `Result`/`Option`. Machine-checked
+since trmx-239 (L8) by `#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]` in
+`crates/termixion-core/src/lib.rs`, caught by `cargo clippy --workspace --all-targets -- -D warnings`
+(pre-push + CI). `cfg_attr(not(test), …)` leaves the test modules free, which they need. The deny cost
+nothing to add — core had zero non-test violations at the time — which is the ideal moment to ratchet.
 
 ## R4 — ISC headers (enforced: `scripts/check-isc-headers.sh`)
 Every new `.rs` / `.ts` / `.tsx` source file starts with `// SPDX-License-Identifier: ISC`. Config
@@ -32,10 +53,10 @@ secrets live only as GitHub Actions secrets (P0-2).
 ## R6 — Conventional commits (enforced: `.claude/hooks/commit-msg`)
 `<type>(<scope>): <subject>`, `type ∈ feat|fix|chore|docs|test|refactor|perf|build|ci|style`.
 
-## R7 — One PR per task
+## R7 — One PR per task (review rule)
 Short-lived branch per Execution-Plan task; merge only on green gates + review (the `issue2pr` loop).
 
-## R8 — Test-driven development (fundamental)
+## R8 — Test-driven development (fundamental) (partly enforced: CI `lint + test + build`; test-FIRST is a review rule)
 We **write tests first**. For every behavioral change follow **RED → GREEN → REFACTOR**:
 
 1. **RED** — write a failing test that specifies the new/changed behavior; run it and confirm it fails
@@ -56,7 +77,7 @@ We **write tests first**. For every behavioral change follow **RED → GREEN →
 > Enforcement is two-layer: the hooks are the fast local copy; **every load-bearing check is also a
 > required CI step (E-1)** so a `--no-verify` bypass still fails the gate.
 
-## R9 — Every change traces to a GitHub issue (`trmx-N`)
+## R9 — Every change traces to a GitHub issue (`trmx-N`) (enforced: `scripts/check-issue-link.sh` via the `r9-issue-link` required CI check)
 Every change ships against a **GitHub issue**, so the what / why / how of each modification is always
 recoverable from the issue. Reference an issue by the repo-local id **`trmx-<N>`**, where `<N>` is the
 GitHub issue number (e.g. issue #1 → `trmx-1`). Use `trmx-<N>` consistently wherever a change is tracked:
@@ -94,7 +115,7 @@ Apps), the branch shape keeps it narrow, and a human PR on a `dependabot/…`-sh
 full gate. `scripts/check-issue-link.test.sh` pins both the allowance and the refusals. **No other
 exemption exists** — every human change still traces to an issue.
 
-## R10 — Changelog: curated, user-facing, auto-generated
+## R10 — Changelog: curated, user-facing, auto-generated (enforced: `git-cliff` + `cliff.toml`; it is generated, never hand-edited)
 `CHANGELOG.md` records **user-facing** changes only — `feat` → **Added**, `fix` → **Fixed**, `perf` →
 **Changed**, and security fixes (a `fix(security):` / `feat(security):` scope) → **Security** — in
 [Keep a Changelog](https://keepachangelog.com) form. A breaking change among those types is flagged

@@ -55,12 +55,50 @@ bash scripts/install-hooks.sh   # sets core.hooksPath = .claude/hooks; makes the
 
 The hooks enforce the §2.2 guardrails locally (see `.claude/rules/architecture.md`):
 
-- **pre-commit** → `scripts/secret-scan.sh` + `scripts/check-core-seam.sh` + `scripts/check-isc-headers.sh`.
+- **pre-commit** → `scripts/secret-scan.sh` + `scripts/check-core-seam.sh` +
+  `scripts/check-isc-headers.sh` + `cargo fmt --all --check` + `pnpm --filter app lint`.
 - **commit-msg** → Conventional Commits (`<type>(<scope>): <subject>`).
-- **pre-push** → `cargo test --workspace`.
+- **pre-push** → `cargo clippy --workspace --all-targets -- -D warnings` + `cargo test --workspace`
+  + `pnpm --filter app test`.
+
+Clippy sits at pre-push rather than pre-commit: a cold run is minutes, and a commit hook slow enough
+to get bypassed protects nothing.
 
 They are the fast local copy; **CI (E-1) mirrors every load-bearing check**, so a `--no-verify` bypass
-still fails the gate.
+still fails the gate. The list above is pinned by `.claude/hooks/hooks.test.sh` — see
+[Claims and gates](#claims-and-gates-trmx-239).
+
+## Claims and gates (trmx-239)
+
+The 2026-08-26 review found **five** places where a document said something was checked and nothing
+checked it. One is a slip; five is a pattern — **claims get written faster than gates.**
+
+The five, as the worked example:
+
+| Claim | Reality | Closed by |
+| ----- | ------- | --------- |
+| `.claude/hooks/README.md`: pre-commit runs `cargo fmt --check`, clippy, `pnpm lint` | it ran none of them | trmx-239 |
+| CI runs a secret scan over the diff | it did not | trmx-234 |
+| R1: only `termixion-platform` may use platform crates | `termixion-tauri` declared `libc` and called `geteuid` | trmx-239 |
+| `themeSpecGolden.test.ts`: the app fixture "MUST NOT drift" from core's | it had already drifted; the test only checked required keys | trmx-239 |
+| R3: no panics in core | true, but enforced by review alone | trmx-239 |
+
+So, when you write that something is checked:
+
+**Either add the check in the same PR, or write the sentence as an intention.** "Should", not "is
+enforced in CI". An unenforced rule stated as enforced is worse than an unstated one — it buys false
+confidence and it decays silently, because nothing fails when it stops being true.
+
+Two habits follow:
+
+- Every R-rule in `.claude/rules/architecture.md` names **which gate enforces it**, or says
+  `review rule` outright. An unenforced rule should be visibly unenforced.
+- If your PR adds a claim about enforcement, it adds the enforcement. There is a line for this in
+  the PR checklist (`.github/pull_request_template.md`).
+
+There is deliberately **no CI job checking for ungated claims** — a gate that checks for missing
+gates would be its own joke. This is a documentation and review habit, and the count going 5 → 0 is
+the evidence it worked.
 
 ## Changelog (A-5)
 

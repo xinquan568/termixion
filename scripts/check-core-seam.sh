@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: ISC
-# Termixion core seam guard (A-4 + D-1). Keeps termixion-core platform-agnostic. Two gates:
+# Termixion core seam guard (A-4 + D-1 + trmx-239). Keeps termixion-core platform-agnostic and the
+# Tauri shell free of DIRECT platform dependencies. Three gates:
 #   (a) forbidden-dependency scan — termixion-core's resolved dependency graph (all targets, all
 #       features) must contain NO platform crate (tauri, portable-pty, cocoa/objc/core-foundation/
 #       core-graphics, libc, nix, windows*/winapi). Fails CLOSED if cargo can't resolve.
 #   (b) source scan — no platform cfg selector (target_os/family/env/arch/vendor/pointer_width, or bare
 #       unix/windows) and no std::os (in any import shape) in core source.
+#   (c) shell direct-dependency scan (trmx-239, M12) — termixion-tauri must not DECLARE a platform crate
+#       (libc/nix/objc*/cocoa*) as a normal dependency; that work belongs in termixion-platform. Direct
+#       edges only, dev/build excluded, all targets. Self-tested by scripts/check-core-seam.test.sh.
 # Both gates read the WORKING TREE; under CI (a fresh checkout) that IS the committed tree — the
 # authoritative required gate — so the two scans always agree there. (A pre-commit hook therefore also
 # flags unstaged core changes, which fails closed and is fine.)
@@ -38,6 +42,41 @@ if command -v cargo >/dev/null 2>&1; then
   fi
 else
   echo "check-core-seam: cargo not found — skipping the forbidden-dependency scan." >&2
+fi
+
+# (c) SHELL-crate direct-dependency scan (trmx-239, M12). R1 names `termixion-platform` as the home
+# for platform crates, but `termixion-tauri` declared `libc` and called geteuid — documented, not
+# enforced. This gate keeps the uid/mode work behind the seam.
+#
+# Three deliberate differences from gate (a), each load-bearing:
+#   --depth 1     DIRECT declarations only. termixion-tauri depends on `tauri` by definition and thus
+#                 transitively on objc2/core-foundation; a transitive scan would fail permanently.
+#   --edges normal  Build- and dev-dependencies are excluded. The shell legitimately keeps a TEST-only
+#                 libc (logging.rs's root check), so cargo tree's DEFAULT edge set (normal+build+dev)
+#                 would fail the very commit that fixed M12.
+#   --target all  cargo tree otherwise resolves for the HOST only, letting a dependency declared under
+#                 [target.'cfg(...)'.dependencies] evade the gate on a different machine.
+# (No --all-features here, unlike gate (a): the tauri crate's features are Tauri's own and resolving
+# all of them costs a far larger graph for no added safety on a three-name denylist.)
+if command -v cargo >/dev/null 2>&1; then
+  shell_forbidden_re='^(libc|nix|objc2?([_-].*)?|cocoa([_-].*)?)$'
+  if ! shell_tree="$(cargo tree -p termixion-tauri --depth 1 --edges normal --target all --prefix none 2>&1)"; then
+    echo "check-core-seam: cargo tree could not resolve termixion-tauri's direct dependencies — failing closed:" >&2
+    printf '%s\n' "$shell_tree" | sed 's/^/    /' >&2
+    exit 1
+  fi
+  shell_deps="$(printf '%s\n' "$shell_tree" \
+    | sed -E 's/ v[0-9].*$//; s/ \(.*\)$//' \
+    | grep -vxE 'termixion-tauri' | sort -u || true)"
+  shell_bad="$(printf '%s\n' "$shell_deps" | grep -vE '^$' | grep -E "$shell_forbidden_re" || true)"
+  if [ -n "$shell_bad" ]; then
+    echo "check-core-seam: FORBIDDEN direct dependency in termixion-tauri (R1: platform crates belong in termixion-platform):" >&2
+    printf '%s\n' "$shell_bad" | sed 's/^/    /' >&2
+    echo "    Move the platform work behind the seam (see termixion_platform::socket), or declare it dev-only if it is test-only." >&2
+    exit 1
+  fi
+else
+  echo "check-core-seam: cargo not found — skipping the shell direct-dependency scan." >&2
 fi
 
 # (b) Source scan — tracked core source files (read from the working tree).
