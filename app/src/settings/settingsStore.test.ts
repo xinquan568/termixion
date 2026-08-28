@@ -104,6 +104,11 @@ function fakeConfigBackend(
   return { invoke, calls, writes };
 }
 
+/** Flush the microtask queue so fire-and-forget rejections have settled. */
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 8; i += 1) await Promise.resolve();
+}
+
 // Every test starts from an empty module snapshot (the snapshot is module-level BY DESIGN — all
 // storage-less stores share it — so tests must reset it explicitly).
 beforeEach(() => {
@@ -1022,6 +1027,178 @@ describe("shared snapshot backend (trmx-80)", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(warn).toHaveBeenCalled();
+  });
+
+  // trmx-238 (M14): a rejected config_write used to be console.warn-only, so the toggle showed the
+  // new value over a file that never changed — with a syntax-broken config (config_io refuses to
+  // rewrite unparseable TOML) EVERY settings change silently reverted on the next launch.
+  describe("trmx-238 (M14): a rejected config_write is surfaced as a client warning", () => {
+    it("set(): authors a warning keyed by the setting, and a later successful write clears it", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      let fail = true;
+      const invoke = (cmd: string): Promise<unknown> => {
+        if (cmd === "config_read")
+          return Promise.resolve({ exists: true, path: "/c.toml", values: {}, warnings: [] });
+        if (cmd === "config_write")
+          return fail ? Promise.reject(new Error("disk full")) : Promise.resolve(null);
+        return Promise.reject(new Error(`unexpected ${cmd}`));
+      };
+      await hydrateSettings({ invoke, bus: fakeListenBus(), storage: fakeStorage() });
+      const store = makeSettingsStore(undefined, fakeBus(), "settings");
+
+      store.set("terminal.fontSize", 18);
+      await flushMicrotasks();
+      // Scoped to the key under test: hydration's own first-run theme materialization write also
+      // rejects against this backend, and authoring THAT warning is correct (M14 covers it too).
+      const forKey = () =>
+        getConfigWarnings().filter((w) => w.message.includes("terminal.fontSize"));
+      expect(forKey()).toHaveLength(1);
+      expect(forKey()[0].source).toBe("client");
+      expect(forKey()[0].message).toContain("disk full");
+
+      // The file became writable again: the next successful write clears that key's complaint.
+      fail = false;
+      store.set("terminal.fontSize", 19);
+      await flushMicrotasks();
+      expect(forKey()).toHaveLength(0);
+    });
+
+    it("set(): a SUPERSEDED rejection never revives a warning the newer write already cleared", async () => {
+      // set() is fire-and-forget by contract, so two rapid writes to one key can settle out of
+      // order. Without a per-key ticket the older failure would publish a warning describing a
+      // value the file no longer holds.
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const gates: Array<() => void> = [];
+      let call = 0;
+      const invoke = (cmd: string): Promise<unknown> => {
+        if (cmd === "config_read")
+          return Promise.resolve({ exists: true, path: "/c.toml", values: {}, warnings: [] });
+        if (cmd === "config_write") {
+          const mine = call++;
+          // First write REJECTS, second RESOLVES — but the first settles last.
+          return new Promise((resolve, reject) => {
+            gates.push(() => (mine === 0 ? reject(new Error("stale")) : resolve(null)));
+          });
+        }
+        return Promise.reject(new Error(`unexpected ${cmd}`));
+      };
+      await hydrateSettings({ invoke, bus: fakeListenBus(), storage: fakeStorage() });
+      const store = makeSettingsStore(undefined, fakeBus(), "settings");
+
+      store.set("terminal.fontSize", 18); // ticket 1 — will fail
+      store.set("terminal.fontSize", 19); // ticket 2 — will succeed
+      gates[1]();                          // the NEWER write settles first
+      await flushMicrotasks();
+      gates[0]();                          // the older failure settles afterwards
+      await flushMicrotasks();
+
+      expect(
+        getConfigWarnings().filter((w) => w.message.includes("terminal.fontSize")),
+      ).toHaveLength(0);
+    });
+
+    it("theme materialization: a rejected first-run write authors the keyed warning", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      // No theme in the file at all ⇒ hydration derives one and writes it through (trmx-53).
+      const backend = fakeConfigBackend({ values: {} }, { failWrites: true });
+      await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+      await flushMicrotasks();
+      const warned = getConfigWarnings().filter((w) => w.message.includes("appearance.theme"));
+      expect(warned).toHaveLength(1);
+      expect(warned[0].source).toBe("client");
+    });
+
+    it("legacy migration: goes through the SAME ticket, so a concurrent set() is not clobbered", async () => {
+      // Step-9 finding 2: the migration used to keep an inline copy of the rejection handling and
+      // never touched writeSeq, so its verdict could overwrite a newer set()'s. Here the
+      // migration write FAILS while a later set() SUCCEEDS — the newer write must own the verdict.
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const gates: Array<() => void> = [];
+      let call = 0;
+      const invoke = (cmd: string): Promise<unknown> => {
+        if (cmd === "config_read")
+          return Promise.resolve({ exists: false, path: "/c.toml", values: {}, warnings: [] });
+        if (cmd === "config_write") {
+          const mine = call++;
+          return new Promise((resolve, reject) => {
+            gates.push(() => (mine === 0 ? reject(new Error("migration boom")) : resolve(null)));
+          });
+        }
+        return Promise.reject(new Error(`unexpected ${cmd}`));
+      };
+      const storage = fakeStorage({ "termixion.terminal.fontSize": "17" });
+      const hydrating = hydrateSettings({ invoke, bus: fakeListenBus(), storage });
+      await flushMicrotasks();
+
+      // A normal write for the SAME key supersedes the in-flight migration write.
+      const store = makeSettingsStore(undefined, fakeBus(), "settings");
+      store.set("terminal.fontSize", 20);
+      await flushMicrotasks();
+
+      gates[1]?.(); // the newer set() lands
+      await flushMicrotasks();
+      gates[0]?.(); // the older migration write fails afterwards
+      await flushMicrotasks();
+      gates.slice(2).forEach((g) => g());
+      await hydrating.catch(() => {});
+      await flushMicrotasks();
+
+      expect(
+        getConfigWarnings().filter((w) => w.message.includes("terminal.fontSize")),
+      ).toHaveLength(0);
+    });
+
+    it("legacy migration: a rejected write authors the keyed warning and keeps the legacy key", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const storage = fakeStorage({ "termixion.terminal.fontSize": "17" });
+      // exists:false ⇒ the pre-FR-13 migration runs; every config_write rejects.
+      const backend = fakeConfigBackend({ exists: false, values: {} }, { failWrites: true });
+      await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage });
+      await flushMicrotasks();
+      const warned = getConfigWarnings().filter((w) => w.message.includes("terminal.fontSize"));
+      expect(warned).toHaveLength(1);
+      // A failed write must leave the legacy key for a retry on the next launch.
+      expect(storage.getItem("termixion.terminal.fontSize")).toBe("17");
+    });
+  });
+
+  // trmx-238 (M15/M18): the two new backend warning variants must render as sentences. The
+  // renderer is private, so this goes through the PUBLIC surface — a config:warnings broadcast
+  // followed by getConfigWarnings() — which is also what the UI actually observes.
+  describe("trmx-238: the new ConfigWarning variants render readably", () => {
+    it("renders Unreadable and EnhancementsUnavailable instead of raw JSON", async () => {
+      const bus = fakeListenBus();
+      await hydrateSettings({
+        invoke: fakeConfigBackend().invoke,
+        bus,
+        storage: fakeStorage(),
+      });
+      bus.fire(CONFIG_WARNINGS_EVENT, [
+        { type: "Unreadable", message: "Permission denied (os error 13)" },
+        { type: "EnhancementsUnavailable", reason: "no starship binary found" },
+      ]);
+      const messages = getConfigWarnings().map((w) => w.message);
+      expect(messages[0]).toContain("Permission denied");
+      expect(messages[0]).not.toContain("{");
+      expect(messages[1]).toContain("no starship binary found");
+      expect(messages[1]).not.toContain("{");
+    });
+
+    it("an unreadable file (exists:true) does NOT run the legacy migration", async () => {
+      // M15's second half: config_read used to map EACCES to exists:false, and exists:false is
+      // exactly the flag that decides the one-time pre-FR-13 migration is due. A permissions
+      // accident must not re-run it.
+      const storage = fakeStorage({ "termixion.terminal.fontSize": "17" });
+      const backend = fakeConfigBackend({
+        exists: true,
+        values: {},
+        warnings: [{ type: "Unreadable", message: "Permission denied (os error 13)" }],
+      });
+      await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage });
+      await flushMicrotasks();
+      expect(backend.writes().some((w) => w.key === "terminal.fontSize")).toBe(false);
+      expect(storage.getItem("termixion.terminal.fontSize")).toBe("17");
+    });
   });
 
   it("resetAll clears the snapshot to defaults, invokes config_reset_all, and broadcasts each default", async () => {

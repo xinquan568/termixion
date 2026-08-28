@@ -37,6 +37,7 @@ mod config_io;
 mod control;
 mod control_io;
 mod enhancements_io;
+mod fs_watch;
 mod logging;
 mod menu;
 mod scripts_io;
@@ -797,7 +798,7 @@ fn open_pty(
     // non-zsh, kill switch, nothing-to-layer, or materialization failure ⇒ byte-identical
     // baseline spawn; the materializer is provably untouched on every None path).
     let shell_config = config_io::shell_config(&app.state::<config_io::ConfigState>());
-    if let Some(enhancement_env) = enhancements_io::enhancement_env(
+    let enhancement_decision = enhancements_io::enhancement_env(
         launch.smoke.is_some() || launch.perf.is_some(),
         &spec.program,
         &shell_config,
@@ -807,11 +808,12 @@ fn open_pty(
             enhancements_io::default_base_dir()
                 .and_then(|base| enhancements_io::materialize_enhancements(&base))
         },
-    ) {
-        spec.env.extend(enhancement_env);
+    );
+    if let Some(env) = enhancement_decision.env.clone() {
+        spec.env.extend(env);
     }
 
-    let (id, reader) = open_session_with(
+    let spawned = open_session_with(
         &mut *state
             .registry
             .lock()
@@ -821,7 +823,24 @@ fn open_pty(
         PtySize::new(rows, cols),
         cwd_fallback.as_ref(),
         |session_id, notice| notify_session(&app, session_id, notice),
-    )?;
+    );
+
+    // trmx-238 (M18/D9): the enhancement verdict is committed HERE — after the spawn resolved, and
+    // only when it succeeded — so a session that never started can never claim "Active". Ordered
+    // before the `?` so the failure path is the tested one.
+    if enhancements_io::commit_after_spawn(
+        spawned.is_ok(),
+        &app.state::<enhancements_io::EnhancementsState>(),
+        enhancement_decision.status.clone(),
+    ) {
+        let _ = app.emit(
+            enhancements_io::ENHANCEMENTS_STATUS_EVENT,
+            &enhancement_decision.status,
+        );
+        config_io::emit_config_warnings(&app, &app.state::<config_io::ConfigState>());
+    }
+
+    let (id, reader) = spawned?;
 
     // trmx-75: a session now exists to watch — wake the title poller out of its zero-session
     // park. After a successful spawn only, and after the registry lock above is released.
@@ -1366,6 +1385,7 @@ fn main() -> ExitCode {
         // trmx-80 (FR-13): the config backbone's state — the file-watch diff base + the
         // self-echo latch for our own writes.
         .manage(config_io::ConfigState::default())
+        .manage(enhancements_io::EnhancementsState::default())
         // trmx-101 (FR-9.4): the opt-in external control channel's socket-listener state. A --smoke/--perf
         // launch is deterministic → the control socket NEVER opens (baked into ControlState, so EVERY
         // apply path — initial load, config write/reset, the watcher — is forced off).
@@ -1493,6 +1513,7 @@ fn main() -> ExitCode {
             logging::log_message,
             logging::log_dir,
             logging::log_open_dir,
+            enhancements_io::enhancements_status,
             quit_confirmed
         ])
         .on_window_event(|window, event| {

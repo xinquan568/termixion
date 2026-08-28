@@ -10,6 +10,7 @@
 //! ([`themes_dir_from`], [`read_entry`], [`read_entries_in`], [`sanitize_stem`], [`is_theme_file`]);
 //! the filesystem / `notify` edge around them is thin runtime glue.
 
+use notify::RecursiveMode;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -222,58 +223,67 @@ const THEMES_DEBOUNCE: Duration = Duration::from_millis(250);
 /// frontend re-runs [`themes_read`]. Best-effort like the config watcher: any setup failure logs and
 /// disables watching rather than failing the app.
 pub fn run_themes_watcher(app: tauri::AppHandle) {
-    use notify::{RecursiveMode, Watcher};
-
-    let dir = themes_dir();
+    let spec = themes_watch_spec();
     // Ensure the directory exists so the watch can attach before the first theme is written
     // (create_dir_all is harmless — it creates no file).
-    if let Err(err) = std::fs::create_dir_all(&dir) {
+    if let Err(err) = std::fs::create_dir_all(&spec.dir) {
         log::warn!(
             "termixion: could not create {}: {err}; theme file watching disabled",
-            dir.display()
+            spec.dir.display()
         );
         return;
     }
-    let (tx, rx) = std::sync::mpsc::channel::<()>();
-    let mut watcher =
-        match notify::recommended_watcher(move |event: Result<notify::Event, notify::Error>| {
-            // Only events touching a *.toml theme file count; the temp-file traffic of atomic
-            // writes (ours and editors') and non-toml/dotfile noise filters out here.
-            if let Ok(event) = event
-                && event.paths.iter().any(|path| is_theme_file(path))
-            {
-                let _ = tx.send(());
-            }
-        }) {
-            Ok(watcher) => watcher,
-            Err(err) => {
-                log::warn!("termixion: could not create the themes watcher: {err}");
-                return;
-            }
-        };
-    if let Err(err) = watcher.watch(&dir, RecursiveMode::NonRecursive) {
-        log::warn!(
-            "termixion: could not watch {}: {err}; theme file watching disabled",
-            dir.display()
-        );
-        return;
-    }
-    // Debounce: block for the first event, then drain until THEMES_DEBOUNCE of quiet before
-    // signalling — the same std-thread + mpsc recv_timeout style as the config watcher.
-    loop {
-        if rx.recv().is_err() {
-            return; // channel closed — the watcher is gone, nothing left to do
-        }
-        while rx.recv_timeout(THEMES_DEBOUNCE).is_ok() {}
-        // A bare signal — the frontend re-runs themes_read to pick up the change. Best-effort like
-        // the config watcher's emits (a webview may be mid-teardown).
-        let _ = app.emit("themes:changed", ());
+    crate::fs_watch::run_debounced(&spec, || {
+        on_themes_wake(&|event| {
+            // Best-effort like the config watcher's emits (a webview may be mid-teardown).
+            let _ = app.emit(event, ());
+        })
+    });
+}
+
+/// trmx-238 (L7): this watcher's parameters, named so a unit test can pin them without starting
+/// a watcher — the dir, the flat (`NonRecursive`) mode, the debounce, and the `*.toml` filter.
+pub fn themes_watch_spec() -> crate::fs_watch::WatchSpec {
+    crate::fs_watch::WatchSpec {
+        dir: themes_dir(),
+        mode: RecursiveMode::NonRecursive,
+        debounce: THEMES_DEBOUNCE,
+        filter: std::sync::Arc::new(is_theme_file),
     }
 }
+
+/// trmx-238 (L7): this watcher's WAKE ACTION, with the emitter injected so a test can assert the
+/// event name — `tauri::AppHandle` is not constructible in a unit test. A bare signal: the
+/// frontend re-runs `themes_read` to pick up the change.
+pub fn on_themes_wake(emit: &dyn Fn(&str)) {
+    emit(THEMES_WAKE_EVENT);
+}
+
+/// The event a themes wake emits.
+pub const THEMES_WAKE_EVENT: &str = "themes:changed";
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // trmx-238 (L7): the three watchers now share one loop, so each one's PARAMETERS and its WAKE
+    // ACTION are pinned here — otherwise the dedupe could silently change a mode or an event name.
+    #[test]
+    fn themes_watch_spec_is_flat_toml_only_and_debounced() {
+        let spec = themes_watch_spec();
+        assert_eq!(spec.dir, themes_dir());
+        assert_eq!(spec.mode, RecursiveMode::NonRecursive);
+        assert_eq!(spec.debounce, THEMES_DEBOUNCE);
+        assert!((spec.filter)(&themes_dir().join("night.toml")));
+        assert!(!(spec.filter)(&themes_dir().join("night.toml.tmp")));
+    }
+
+    #[test]
+    fn a_themes_wake_emits_exactly_themes_changed() {
+        let seen = std::cell::RefCell::new(Vec::new());
+        on_themes_wake(&|event| seen.borrow_mut().push(event.to_string()));
+        assert_eq!(seen.into_inner(), vec!["themes:changed".to_string()]);
+    }
 
     /// A minimal VALID theme: exactly the required set and nothing else (mirrors core's fixture).
     const MINIMAL: &str = r##"
