@@ -40,6 +40,11 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: core seam guard (forbidden-dep + no platform cfg / std::os)
         run: bash scripts/check-core-seam.sh
+      # trmx-240: hosted in the REQUIRED job on purpose. In the advisory shell-integration job it
+      # would only report a violation, and the docs would then be claiming enforcement that does not
+      # exist — the ungated-claim failure trmx-239 closed.
+      - name: no committed zsh wordcode (trmx-240)
+        run: bash scripts/check-no-zwc.sh
 
   # R5 (trmx-234): the same secret scan the pre-commit hook runs, over the PR diff (or the pushed range)
   # so a `--no-verify` bypass or a hook-less clone still fails here. Full history so the base ref resolves —
@@ -109,8 +114,6 @@ jobs:
         run: bash scripts/check-core-seam.test.sh
       - name: git-hook self-test (the hooks run what the docs claim, trmx-239)
         run: bash .claude/hooks/hooks.test.sh
-      - name: no committed zsh wordcode (trmx-240)
-        run: bash scripts/check-no-zwc.sh
       - name: no-zwc gate self-test (trmx-240)
         run: bash scripts/check-no-zwc.test.sh
       - name: repo-stats unit tests (trmx-213)

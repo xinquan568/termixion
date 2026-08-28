@@ -8,6 +8,8 @@
 #   * the planted .zwc is `git add`-ed — `git ls-files` reports only TRACKED files, so an untracked
 #     fixture would sail past a gate that is working perfectly, and the test would go green either way;
 #   * the assertion is on the gate's non-zero EXIT STATUS, not on anything it printed.
+# Case (iv) covers the same class one level up: a gate that cannot run its query must fail closed
+# rather than report "clean".
 #
 # Everything happens in a temp `git init`; the real tree is never touched.
 # Run: bash scripts/check-no-zwc.test.sh
@@ -62,8 +64,13 @@ new_repo "$tmp/untracked"
 printf '\x00zwc-fixture' > "$tmp/untracked/resources/shell-enhancements/powerlevel10k/internal/p10k.zsh.zwc"
 check "an UNTRACKED .zwc is ignored (git ls-files is tracked-only)" "$tmp/untracked" pass
 
+# (iv) a directory that is not a git repo must FAIL CLOSED, not report "clean". A gate that goes
+# green when it could not run its query is worse than no gate.
+mkdir -p "$tmp/notgit"
+check "a non-git directory FAILS CLOSED (never a vacuous OK)" "$tmp/notgit" fail
+
 if [ "$fails" -ne 0 ]; then
   echo "check-no-zwc.test: $fails case(s) failed." >&2
   exit 1
 fi
-echo "check-no-zwc.test: OK (3 cases)."
+echo "check-no-zwc.test: OK (4 cases)."

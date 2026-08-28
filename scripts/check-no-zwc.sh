@@ -19,7 +19,13 @@ set -euo pipefail
 ROOT="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 cd "$ROOT"
 
-found="$(git ls-files -- '*.zwc' || true)"
+# NOT `|| true`: a failing query (not a git repo, unreadable index) must never read as "no
+# wordcode found". A gate that goes green when it could not look is the exact failure this PR is
+# about, one level up.
+if ! found="$(git ls-files -- '*.zwc')"; then
+  echo "check-no-zwc: 'git ls-files' failed in $ROOT — cannot verify; failing closed." >&2
+  exit 1
+fi
 if [ -n "$found" ]; then
   echo "check-no-zwc: FORBIDDEN committed zsh wordcode (trmx-240):" >&2
   printf '%s\n' "$found" | sed 's/^/    /' >&2

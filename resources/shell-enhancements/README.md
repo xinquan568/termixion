@@ -29,7 +29,16 @@ directly): **first load 307 ms, second load 78 ms — a ~229 ms one-time differe
 materialized version, not per session. The issue that removed the blobs estimated ~100 ms; this is
 the measured figure and is indicative rather than a guarantee (a cold first launch will differ).
 
-Two guards keep them out: `*.zwc` is in `.gitignore`, and `scripts/check-no-zwc.sh` fails CI on any
-tracked one. The `.gitignore` entry earns its place — `crates/termixion-platform/tests/common/mod.rs`
-points the real-PTY tests at this tree DIRECTLY, so running `cargo test -p termixion-platform`
-leaves freshly-compiled wordcode here.
+**Three guards, and the third is the one that actually protects the shipped app.**
+
+1. `*.zwc` is in `.gitignore`. It earns its place: `crates/termixion-platform/tests/common/mod.rs`
+   points the real-PTY tests at this tree DIRECTLY, so `cargo test -p termixion-platform` leaves
+   freshly-compiled wordcode here.
+2. `scripts/check-no-zwc.sh` fails on any TRACKED `.zwc`. It runs in the **required** `core seam
+   guard` job, so it blocks a merge rather than merely reporting.
+3. **`enhancements_io::is_embeddable` refuses to embed or materialize `.zwc` at all.** This is the
+   load-bearing one, because the first two are git-side and `include_dir!` is a FILESYSTEM macro —
+   it embeds whatever is on disk, and neither `.gitignore` nor a `git ls-files` gate has any say.
+   CI's macOS job runs the tests (which write wordcode here) BEFORE the packaged build, so without
+   this filter a test-then-build sequence would ship the very blobs trmx-240 removed while every git
+   guard reported clean. Pinned by `a_materialized_tree_contains_no_wordcode`.
