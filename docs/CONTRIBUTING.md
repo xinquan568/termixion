@@ -100,6 +100,25 @@ There is deliberately **no CI job checking for ungated claims** — a gate that 
 gates would be its own joke. This is a documentation and review habit, and the count going 5 → 0 is
 the evidence it worked.
 
+## Dependency updates (trmx-234, trmx-266)
+
+Dependabot opens one grouped PR per ecosystem weekly (`.github/dependabot.yml`). They carry no
+`trmx-N`, so `scripts/check-issue-link.sh` grants bot PRs an explicit allowance — see the note at the
+top of that config before renaming any branch prefix.
+
+**Some majors are held.** A grouped PR fails as a unit, so one package that breaks a gate blocks
+every other update in the group indefinitely. The `ignore:` list holds those, and **every entry names
+the condition that lifts it** — a hold without an exit becomes a permanent pin nobody dares touch.
+Currently held: `typescript` (typescript-eslint 8.x refuses TS >= 7), `@types/node` (must track
+`.nvmrc` / the workflows' `node-version`), and `@xterm/*` (xterm 6 rebuilt the viewport, which
+`app/src/terminal/scrollbar.ts` depends on).
+
+**To lift a hold:** bump the package *and its partners* in one PR — a TypeScript major goes with
+`typescript-eslint`, an `@types/node` major with `.nvmrc` and both workflows, an xterm major with
+every `@xterm/*` addon — verify `pnpm --filter app lint`, `test`, `build` **and** `exec playwright
+test`, then delete the `ignore:` entry in the same PR. Leaving the entry behind silently re-pins the
+package you just upgraded.
+
 ## Changelog (A-5)
 
 `CHANGELOG.md` is generated from Conventional Commits by [git-cliff](https://git-cliff.org)

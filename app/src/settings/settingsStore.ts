@@ -871,7 +871,7 @@ export async function hydrateSettings(deps: HydrateSettingsDeps = {}): Promise<v
     read = parseConfigRead(await invokeSafely("config_read"));
   } catch {
     // No backend (plain browser/jsdom): defaults, no migration — reads derive via defaultFor.
-    read = null;
+    // `read` stays null from its initializer.
     // trmx-81 D1: the dev/e2e seam — seed the snapshot from the URL query. ONLY here, on the
     // REJECTION path: a resolved config_read of any shape (even junk) means a backend exists and
     // owns the values, so the packaged app never reaches this line (config_read always resolves
@@ -987,7 +987,9 @@ function seedSnapshotFromQuery(): void {
  */
 async function migrateLegacySettings(storage: KeyValueStore): Promise<void> {
   for (const key of SETTING_KEYS) {
-    let raw: string | null = null;
+    // No initializer: the catch `continue`s, so the only path that reaches a read of `raw` is the
+    // one where getItem assigned it.
+    let raw: string | null;
     try {
       raw = storage.getItem(STORAGE_KEYS[key]);
     } catch {

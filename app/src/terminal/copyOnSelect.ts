@@ -216,7 +216,8 @@ export function attachCopyOnSelect(
       host.setPointerCapture(ev.pointerId); // deliver pointerup/cancel even on a release outside the host
       captured = true;
     } catch {
-      captured = false; // jsdom / old engine
+      // jsdom / old engine — `captured` stays false from its initializer and the document
+      // fallback below takes over.
     }
     if (!captured) installDocFallback();
   };

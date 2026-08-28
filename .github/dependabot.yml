@@ -30,3 +30,30 @@ updates:
       npm:
         patterns: ["*"]
     open-pull-requests-limit: 3
+    # trmx-266: three MAJOR holds. Without them the whole grouped npm PR fails `full gate (macos)`
+    # every week on one package, and the other dozen updates are blocked behind it. Each hold names
+    # the exact condition that lifts it — a hold with no exit turns into a permanent pin nobody dares
+    # touch. Lifting one is its own PR: bump the package and its partners together, then delete the
+    # entry here.
+    ignore:
+      # typescript-eslint 8.x refuses TS >= 7.0 outright (`typescript-eslint does not support TS 7.0`,
+      # typescript-eslint/typescript-eslint#10940). LIFT WHEN: typescript-eslint ships TS 7.1+ support
+      # — bump `typescript` and `typescript-eslint` in the same PR.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
+      # @types/node must track the runtime we actually build on: .nvmrc is 24.12.0 and both CI and the
+      # release workflow pin `node-version: 24`. Pinned deliberately by trmx-239 (L3); a ^26 bump
+      # re-introduces the mismatch it fixed. LIFT WHEN: .nvmrc and the workflows move to the next
+      # Node LTS — bump all three together.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # xterm 6 rebuilt the viewport: `.xterm-viewport` no longer scrolls natively (scrollHeight ==
+      # clientHeight) and a new `.xterm-scrollable-element` handles it in JS instead. That is the
+      # premise `app/src/terminal/scrollbar.ts` depends on (trmx-41: it listens to the viewport's
+      # native `scroll` because xterm suppresses `onScroll` for user scrolls), and it breaks
+      # `e2e/scrollbar.spec.ts`. A terminal's rendering engine deserves its own PR with manual
+      # verification in the packaged app, not a slot in a grouped bump. LIFT WHEN: that migration
+      # issue lands — bump `@xterm/xterm`, `@xterm/headless`, `@xterm/addon-webgl` and the remaining
+      # addons together.
+      - dependency-name: "@xterm/*"
+        update-types: ["version-update:semver-major"]
