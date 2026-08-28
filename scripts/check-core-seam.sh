@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: ISC
-# Termixion core seam guard (A-4 + D-1). Keeps termixion-core platform-agnostic. Two gates:
+# Termixion core seam guard (A-4 + D-1 + trmx-239). Keeps termixion-core platform-agnostic and the
+# Tauri shell free of DIRECT platform dependencies. Three gates:
 #   (a) forbidden-dependency scan — termixion-core's resolved dependency graph (all targets, all
 #       features) must contain NO platform crate (tauri, portable-pty, cocoa/objc/core-foundation/
 #       core-graphics, libc, nix, windows*/winapi). Fails CLOSED if cargo can't resolve.
 #   (b) source scan — no platform cfg selector (target_os/family/env/arch/vendor/pointer_width, or bare
 #       unix/windows) and no std::os (in any import shape) in core source.
+#   (c) shell direct-dependency scan (trmx-239, M12) — termixion-tauri must not DECLARE a platform crate
+#       (libc/nix/objc*/cocoa*) as a NORMAL dependency; that work belongs in termixion-platform. Reads
+#       declarations via `cargo metadata --no-deps`, so optional and target-gated ones are caught too
+#       (a resolved-graph scan would miss them). Self-tested by scripts/check-core-seam.test.sh.
 # Both gates read the WORKING TREE; under CI (a fresh checkout) that IS the committed tree — the
 # authoritative required gate — so the two scans always agree there. (A pre-commit hook therefore also
 # flags unstaged core changes, which fails closed and is fine.)
@@ -38,6 +43,56 @@ if command -v cargo >/dev/null 2>&1; then
   fi
 else
   echo "check-core-seam: cargo not found — skipping the forbidden-dependency scan." >&2
+fi
+
+# (c) SHELL-crate direct-dependency scan (trmx-239, M12). R1 names `termixion-platform` as the home
+# for platform crates, but `termixion-tauri` declared `libc` and called geteuid — documented, not
+# enforced. This gate keeps the uid/mode work behind the seam.
+#
+# It reads DECLARATIONS (`cargo metadata --no-deps`), not the resolved graph. A `cargo tree` scan —
+# the first design — judges what is ACTIVE for the selected targets/features, so an OPTIONAL normal
+# dependency behind a disabled feature is simply absent from the output and passes, which is exactly
+# the loophole a rule about "must not declare" has to close. Declarations also cost no resolution
+# (`--no-deps` does not touch the network or the lockfile graph), so this is both stricter and faster.
+#
+# `kind` is the whole judgement: null = a normal dependency (forbidden — it ships in the binary);
+# "dev"/"build" are allowed, because the shell legitimately keeps a TEST-only libc (logging.rs's
+# root check). Target-gated and optional declarations are caught like any other, since a declaration
+# exists regardless of the host or the feature set.
+if command -v cargo >/dev/null 2>&1; then
+  # Fail CLOSED: if metadata can't be read, the required scan must not silently pass.
+  if ! meta_out="$(cargo metadata --no-deps --format-version 1 2>&1)"; then
+    echo "check-core-seam: cargo metadata failed for the workspace — failing closed:" >&2
+    printf '%s\n' "$meta_out" | sed 's/^/    /' >&2
+    exit 1
+  fi
+  shell_bad="$(printf '%s' "$meta_out" | python3 -c '
+import json, re, sys
+
+FORBIDDEN = re.compile(r"^(libc|nix|objc2?([_-].*)?|cocoa([_-].*)?)$")
+meta = json.load(sys.stdin)
+for pkg in meta.get("packages", []):
+    if pkg.get("name") != "termixion-tauri":
+        continue
+    for dep in pkg.get("dependencies", []):
+        # kind: null = normal (ships in the binary); "dev"/"build" never do.
+        name = dep.get("name", "")
+        if dep.get("kind") is None and FORBIDDEN.match(name):
+            where = dep.get("target") or "all targets"
+            opt = " (optional)" if dep.get("optional") else ""
+            print(name + " — normal dependency for " + str(where) + opt)
+')" || {
+    echo "check-core-seam: could not parse cargo metadata — failing closed." >&2
+    exit 1
+  }
+  if [ -n "$shell_bad" ]; then
+    echo "check-core-seam: FORBIDDEN direct dependency in termixion-tauri (R1: platform crates belong in termixion-platform):" >&2
+    printf '%s\n' "$shell_bad" | sed 's/^/    /' >&2
+    echo "    Move the platform work behind the seam (see termixion_platform::socket), or declare it dev-only if it is test-only." >&2
+    exit 1
+  fi
+else
+  echo "check-core-seam: cargo not found — skipping the shell direct-dependency scan." >&2
 fi
 
 # (b) Source scan — tracked core source files (read from the working tree).

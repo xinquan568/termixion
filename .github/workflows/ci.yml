@@ -96,7 +96,7 @@ jobs:
       - name: Install zsh (for the zsh half of the source-and-assert test)
         run: sudo apt-get update && sudo apt-get install -y zsh
       - name: shellcheck the bash snippet, the test, and the secret-scan / control-protocol / issue-link scripts
-        run: shellcheck -s bash resources/shell-integration/termixion.bash resources/shell-integration/integration_test.sh scripts/secret-scan.sh scripts/secret-scan.test.sh scripts/check-control-protocol.sh scripts/check-control-protocol.test.sh scripts/check-issue-link.sh scripts/check-issue-link.test.sh
+        run: shellcheck -s bash resources/shell-integration/termixion.bash resources/shell-integration/integration_test.sh scripts/secret-scan.sh scripts/secret-scan.test.sh scripts/check-control-protocol.sh scripts/check-control-protocol.test.sh scripts/check-issue-link.sh scripts/check-issue-link.test.sh scripts/check-core-seam.sh scripts/check-core-seam.test.sh .claude/hooks/hooks.test.sh .claude/hooks/pre-commit .claude/hooks/pre-push
       - name: source-and-assert (idempotency, hook preservation, $?-capture)
         run: bash resources/shell-integration/integration_test.sh
       - name: secret-scan self-test (range mode detects a planted token; bad range fails loudly)
@@ -105,6 +105,10 @@ jobs:
         run: bash scripts/check-control-protocol.test.sh
       - name: issue-link gate self-test (R9 + the dependabot[bot] allowance, trmx-261)
         run: bash scripts/check-issue-link.test.sh
+      - name: core-seam shell-dependency gate self-test (R1, trmx-239)
+        run: bash scripts/check-core-seam.test.sh
+      - name: git-hook self-test (the hooks run what the docs claim, trmx-239)
+        run: bash .claude/hooks/hooks.test.sh
       - name: repo-stats unit tests (trmx-213)
         run: python3 scripts/repo-stats.test.py
 

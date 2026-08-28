@@ -8,6 +8,12 @@
 //!
 //! Invariants enforced by `scripts/check-core-seam.sh` (D-1): no platform crates, no
 //! `cfg(target_os | …)` / bare `cfg(unix)` / `cfg(windows)`, and no `std::os::` in this crate.
+//!
+//! trmx-239 (L8): R3 — "no panics in core" — is now MACHINE-CHECKED by the lint below rather than
+//! by review alone. It was already true (zero non-test `unwrap`/`expect` when the deny was added),
+//! so this costs nothing today and stops the next one. `cfg_attr(not(test), …)` leaves the test
+//! modules free, which they need: core's tests use `expect()` heavily to assert on fixtures.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod config;
 pub mod fake;

@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: ISC
-# Termixion pre-push hook (A-4). The heavier gate — run the test suite before sharing.
+# Termixion pre-push hook (A-4, extended by trmx-239 M24). The heavier gate — run before sharing.
+#
+# trmx-239: `pnpm --filter app test` and the workspace clippy were missing, so a frontend regression
+# or a new lint surfaced only in the 30+ minute macOS CI job. Clippy lives here rather than at
+# pre-commit because a cold run is minutes; the hooks' documentation now describes this split
+# instead of claiming clippy runs at commit time. What this hook runs is pinned by
+# .claude/hooks/hooks.test.sh.
 set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
+
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --quiet
+pnpm --filter app test
