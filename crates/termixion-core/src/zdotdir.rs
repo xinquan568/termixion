@@ -342,25 +342,60 @@ mod tests {
     #[test]
     fn a_flagged_but_unreadable_plugin_prints_exactly_one_warning_line() {
         let rc = file(".zshrc");
-        for (flag, plugin) in [
-            ("TERMIXION_ENH_AUTOSUGGEST", "zsh-autosuggestions"),
-            ("TERMIXION_ENH_HIGHLIGHT", "zsh-syntax-highlighting"),
+        for (flag, plugin, file_name) in [
+            (
+                "TERMIXION_ENH_AUTOSUGGEST",
+                "zsh-autosuggestions",
+                "zsh-autosuggestions.zsh",
+            ),
+            (
+                "TERMIXION_ENH_HIGHLIGHT",
+                "zsh-syntax-highlighting",
+                "zsh-syntax-highlighting.zsh",
+            ),
         ] {
-            // The else-branch of the readability guard, for the flagged case only.
-            let warned: Vec<&str> = rc
-                .lines()
-                .filter(|line| line.contains("termixion:") && line.contains(plugin))
-                .collect();
-            assert_eq!(
-                warned.len(),
-                1,
-                "exactly one warning line for {plugin} (flag {flag}); got {warned:?}"
-            );
+            let warning =
+                format!("termixion: {plugin} is enabled but its plugin file could not be read");
+            let warned: Vec<&str> = rc.lines().filter(|line| line.contains(&warning)).collect();
+            assert_eq!(warned.len(), 1, "exactly one warning line for {plugin}");
             let line = warned[0];
             assert!(line.contains(">&2"), "the warning goes to stderr: {line}");
+            assert!(line.trim().starts_with("print"), "it is printed: {line}");
+
+            // Step-8 finding 6: matching the line alone would pass even if the warning were
+            // UNCONDITIONAL. Pin the control flow it sits in.
+            let idx = rc.find(line).expect("the warning line is in the rc");
+            let before = &rc[..idx];
+
+            // (a) it is inside this plugin's ENABLED gate.
+            let gate = format!("[[ \"${{{flag}-}}\" == \"1\" ]]");
+            let gate_at = before
+                .rfind(&gate)
+                .unwrap_or_else(|| panic!("{plugin}: the warning must sit inside {gate}"));
+
+            // (b) the nearest readability test before it names THIS plugin's own file...
+            let path = format!("\"${{TERMIXION_ENH_PLUGINS_DIR-}}/{plugin}/{file_name}\"");
+            let readable = format!("if [[ -r {path} ]]; then");
+            let unreadable = format!("if [[ ! -r {path} ]]; then");
+            let neg_at = before.rfind(&unreadable);
+            let pos_at = before.rfind(&readable);
+            let test_at = neg_at.max(pos_at).unwrap_or_else(|| {
+                panic!(
+                    "{plugin}: the warning must be guarded by a readability test on its own file"
+                )
+            });
             assert!(
-                line.contains("print") || line.contains("echo"),
-                "the warning is actually printed: {line}"
+                gate_at < test_at,
+                "{plugin}: the enabled gate must enclose the readability test"
+            );
+
+            // (c) ...and the warning is on the FAILING branch of it: either the test itself is
+            // negated (`! -r`), or we are past the `else` of the positive test.
+            let on_negated_branch = neg_at == Some(test_at);
+            let after_else = rc[test_at..idx].contains("else");
+            assert!(
+                on_negated_branch || after_else,
+                "{plugin}: the warning must be on the NOT-readable branch, not the readable one"
             );
         }
     }

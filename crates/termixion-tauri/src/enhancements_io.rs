@@ -246,6 +246,24 @@ pub fn commit_status(state: &EnhancementsState, next: EnhancementsStatus) -> boo
     true
 }
 
+/// trmx-238 (M18/D9): commit the spawn's enhancement verdict — but ONLY if the spawn actually
+/// succeeded. Recording it beside the env computation (where the decision is made) would let a
+/// session that never started claim "Active", which is precisely the class of lie this issue
+/// exists to remove. Returns whether a real transition was recorded, so the caller emits once.
+///
+/// A named function rather than an `if` at the call site so the ordering rule is testable: a
+/// `tauri::AppHandle` cannot be built in a unit test, but this can.
+pub fn commit_after_spawn(
+    spawn_succeeded: bool,
+    state: &EnhancementsState,
+    status: EnhancementsStatus,
+) -> bool {
+    if !spawn_succeeded {
+        return false;
+    }
+    commit_status(state, status)
+}
+
 /// The event a committed transition broadcasts, so a MOUNTED settings page reflects a recovery
 /// (or a new failure) without polling.
 pub const ENHANCEMENTS_STATUS_EVENT: &str = "enhancements:status";
@@ -498,6 +516,34 @@ mod tests {
 
         // Recovery clears it.
         assert!(commit_status(&state, EnhancementsStatus::Active));
+        assert_eq!(read_status(&state), EnhancementsStatus::Active);
+    }
+
+    #[test]
+    fn a_failed_spawn_never_commits_its_verdict() {
+        // The ordering rule (D9). A pane whose PTY failed to open must not leave "Active" behind,
+        // and must not erase what the last SUCCESSFUL spawn reported.
+        let state = EnhancementsState::default();
+        let earlier = EnhancementsStatus::Unavailable {
+            reason: "plugins dir is read-only".to_string(),
+        };
+        assert!(commit_after_spawn(true, &state, earlier.clone()));
+        assert_eq!(read_status(&state), earlier);
+
+        // A later spawn WOULD have reported Active — but it failed.
+        assert!(!commit_after_spawn(
+            false,
+            &state,
+            EnhancementsStatus::Active
+        ));
+        assert_eq!(
+            read_status(&state),
+            earlier,
+            "a failed spawn leaves the previous verdict untouched"
+        );
+
+        // The next successful one does commit.
+        assert!(commit_after_spawn(true, &state, EnhancementsStatus::Active));
         assert_eq!(read_status(&state), EnhancementsStatus::Active);
     }
 

@@ -56,14 +56,36 @@ pub fn should_wake(
     }
 }
 
-/// Block for one signal, then drain until `debounce` of quiet. `false` = the channel closed and the
-/// loop should end. Split out so a scripted burst can be asserted to collapse into exactly one wake.
-pub fn drain_debounced(rx: &Receiver<()>, debounce: Duration) -> bool {
-    if rx.recv().is_err() {
-        return false;
+/// Block until a WAKE-WORTHY event arrives. `false` = the event stream ended and the loop is done.
+///
+/// Filtering happens here rather than in a fan-in thread: an earlier revision fanned events into a
+/// second channel from inside `std::thread::scope`, which could DEADLOCK — a panic in `on_wake`
+/// unwinds into the scope's implicit join, but the fan-in thread stays blocked on a stream whose
+/// sender lives in the notify watcher one frame further out, so it never ends. One thread, one
+/// channel, no join, no deadlock.
+fn wait_for_wake(
+    events: &Receiver<Result<notify::Event, notify::Error>>,
+    filter: &dyn Fn(&Path) -> bool,
+) -> bool {
+    while let Ok(event) = events.recv() {
+        if should_wake(&event, filter) {
+            if let Err(err) = &event {
+                log::warn!("termixion: file watcher reported lost events: {err}");
+            }
+            return true;
+        }
     }
-    while rx.recv_timeout(debounce).is_ok() {}
-    true
+    false
+}
+
+/// After a wake-worthy event, swallow everything until `debounce` of quiet — a burst of events (an
+/// editor's atomic-write dance, a bulk copy) collapses into ONE wake. Anything arriving in the
+/// quiet window extends it, filtered or not: the point is to act once the filesystem settles.
+pub fn drain_debounced(
+    events: &Receiver<Result<notify::Event, notify::Error>>,
+    debounce: Duration,
+) {
+    while events.recv_timeout(debounce).is_ok() {}
 }
 
 /// The loop, with the event stream injected. Production passes a real notify watcher's receiver
@@ -73,25 +95,10 @@ pub fn run_watcher_with(
     events: Receiver<Result<notify::Event, notify::Error>>,
     mut on_wake: impl FnMut(),
 ) {
-    let (tx, rx) = channel::<()>();
-    // Fan the (filtered) event stream into the debounce channel on this thread's behalf: the
-    // production watcher calls back from its own thread, so the shapes stay identical.
-    std::thread::scope(|scope| {
-        let filter = Arc::clone(&spec.filter);
-        scope.spawn(move || {
-            for event in events {
-                if should_wake(&event, filter.as_ref()) {
-                    if let Err(err) = &event {
-                        log::warn!("termixion: file watcher reported lost events: {err}");
-                    }
-                    let _ = tx.send(());
-                }
-            }
-        });
-        while drain_debounced(&rx, spec.debounce) {
-            on_wake();
-        }
-    });
+    while wait_for_wake(&events, spec.filter.as_ref()) {
+        drain_debounced(&events, spec.debounce);
+        on_wake();
+    }
 }
 
 /// Start a real notify watcher for `spec` and run the debounced loop over it. Returns (having
@@ -119,6 +126,10 @@ pub fn run_debounced(spec: &WatchSpec, on_wake: impl FnMut()) {
         return;
     }
     run_watcher_with(spec, rx, on_wake);
+    // `watcher` is deliberately still alive here: dropping it earlier would close the event stream
+    // and end the loop immediately. It drops when this function returns, which is what lets
+    // run_watcher_with observe the stream ending.
+    drop(watcher);
 }
 
 #[cfg(test)]
@@ -168,6 +179,9 @@ mod tests {
         assert!(!should_wake(&other, &matches_toml));
     }
 
+    // Deterministic by construction: every event is queued BEFORE the loop runs and the loop is
+    // single-threaded, so the drain sees them all already buffered — no scheduler race, and the
+    // 20 ms debounce is only ever waited out once, after the queue is empty.
     #[test]
     fn a_burst_of_events_collapses_into_exactly_one_wake() {
         let (tx, rx) = channel::<Result<notify::Event, notify::Error>>();
@@ -215,6 +229,26 @@ mod tests {
             wakes.load(Ordering::SeqCst),
             1,
             "a pathless rescan must wake the loop"
+        );
+    }
+
+    #[test]
+    fn the_loop_ends_when_the_event_stream_closes_and_never_joins_a_helper_thread() {
+        // Regression for the scoped-fan-in deadlock: a panicking on_wake must not hang. There is
+        // no helper thread to join now, so the panic simply propagates.
+        let (tx, rx) = channel::<Result<notify::Event, notify::Error>>();
+        tx.send(Ok(
+            Event::new(EventKind::Other).add_path(PathBuf::from("/tmp/x/a.toml"))
+        ))
+        .expect("scripted send");
+        drop(tx);
+        let spec = spec_for(matches_toml);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_watcher_with(&spec, rx, || panic!("wake exploded"));
+        }));
+        assert!(
+            result.is_err(),
+            "the panic propagates instead of deadlocking"
         );
     }
 

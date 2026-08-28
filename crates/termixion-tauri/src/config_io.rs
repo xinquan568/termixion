@@ -70,6 +70,13 @@ struct ConfigInner {
     /// shell-fallback re-emission layers the fresh shell warning onto (no file change happens
     /// when a configured shell is uninstalled, so the cached set is the only honest base).
     last_warnings: Vec<ConfigWarning>,
+    /// trmx-238 (M15): the READ HEALTH of the last read — `Some(reason)` while the file is present
+    /// but unreadable. Tracked separately from `last_warnings` (which stays parse-only) because
+    /// the warning surface is rebuilt wholesale on every read, wake and re-emission: without this,
+    /// the first unrelated re-emission (an enhancement-status transition, a shell fallback) would
+    /// publish a set with no `Unreadable` in it and silently clear the banner while the file was
+    /// still unreadable.
+    last_unreadable: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -521,8 +528,16 @@ fn warnings_for_surface(
     config: &Config,
     valid: impl Fn(&str) -> bool,
     enhancements: &EnhancementsStatus,
+    unreadable: Option<&str>,
 ) -> Vec<ConfigWarning> {
     let mut out = parse.to_vec();
+    // trmx-238 (M15): synthesized on EVERY rebuild from the tracked read health, so an unrelated
+    // re-emission cannot clear it — and so it self-clears the moment a read succeeds.
+    if let Some(message) = unreadable {
+        out.push(ConfigWarning::Unreadable {
+            message: message.to_string(),
+        });
+    }
     if let Some(warning) = shell_validity_warning(config, valid) {
         out.push(warning);
     }
@@ -609,6 +624,7 @@ fn emit_config_warnings_with(
         &inner.last,
         valid,
         &enhancements_status_of(app),
+        inner.last_unreadable.as_deref(),
     );
     drop(inner);
     let payload = serde_json::to_value(&warnings).unwrap_or_else(|_| JsonValue::Array(Vec::new()));
@@ -639,15 +655,14 @@ pub fn config_read(app: tauri::AppHandle, state: State<'_, ConfigState>) -> Conf
         FileRead::Absent | FileRead::Unreadable(_) => String::new(),
     };
     let mut response = read_response_from(read, &path);
-    // trmx-238 (M15/D4): the Unreadable warning is SYNTHESIZED, never cached — it describes this
-    // read, not a parse, so it must not enter `last_warnings` (a later re-emission over a
-    // now-readable file would otherwise keep reporting it). Split it out before caching.
-    let unreadable: Vec<ConfigWarning> = response
-        .warnings
-        .iter()
-        .filter(|w| matches!(w, ConfigWarning::Unreadable { .. }))
-        .cloned()
-        .collect();
+    // trmx-238 (M15/D4): the Unreadable warning is SYNTHESIZED from the tracked read health, never
+    // cached into `last_warnings` — it describes this READ, not a parse. Recording it on the state
+    // (rather than splicing it onto this one response) is what keeps it alive across the wholesale
+    // rebuilds every later re-emission performs.
+    let unreadable: Option<String> = response.warnings.iter().find_map(|w| match w {
+        ConfigWarning::Unreadable { message } => Some(message.clone()),
+        _ => None,
+    });
     let (config, _) = parse_config(&text);
     // trmx-205: the cached base stays PARSE-ONLY (the spawn-time re-emission recomputes the
     // shell check freshly over it — caching the synthesized warning would stack duplicates);
@@ -663,12 +678,13 @@ pub fn config_read(app: tauri::AppHandle, state: State<'_, ConfigState>) -> Conf
         &config,
         crate::shells_io::is_executable_file,
         &enhancements_status_of(&app),
+        unreadable.as_deref(),
     );
-    response.warnings.extend(unreadable);
     match state.0.lock() {
         Ok(mut inner) => {
             inner.last = config;
             inner.last_warnings = parse_warnings;
+            inner.last_unreadable = unreadable;
         }
         Err(_) => log::warn!("termixion: config state poisoned; skipping diff-base update"),
     }
@@ -818,11 +834,15 @@ fn on_config_file_event(app: &tauri::AppHandle, path: &Path) {
     // PARSE-ONLY so the spawn-time re-emission can never stack duplicates.
     let mut application = application;
     let parse_warnings = application.warnings.clone();
+    // A wake only reaches here when the file was READ (wake_text returns None for unreadable), so
+    // the read health is provably clear — record that, or a stale Unreadable would outlive the fix.
+    inner.last_unreadable = None;
     application.warnings = warnings_for_surface(
         &parse_warnings,
         &application.config,
         crate::shells_io::is_executable_file,
         &enhancements_status_of(app),
+        None,
     );
     // The pure decision, computed before `application.config` moves into the diff base.
     let mut emissions = emissions_for(&application);
@@ -1119,6 +1139,7 @@ mod tests {
             &config,
             |_| false,
             &EnhancementsStatus::NotObserved,
+            None,
         );
         assert_eq!(first.len(), 2); // the parse warning + ONE shell warning
         // A second derivation from the same parse-only base (the spawn re-emission) is
@@ -1128,6 +1149,7 @@ mod tests {
             &config,
             |_| false,
             &EnhancementsStatus::NotObserved,
+            None,
         );
         assert_eq!(second, first);
         let shell_count = second
@@ -1144,7 +1166,8 @@ mod tests {
                 &parse_only,
                 &config,
                 |_| false,
-                &EnhancementsStatus::NotObserved
+                &EnhancementsStatus::NotObserved,
+                None
             ),
             parse_only
         );
@@ -1355,7 +1378,7 @@ mod tests {
         let down = EnhancementsStatus::Unavailable {
             reason: "plugins dir is read-only".to_string(),
         };
-        let surfaced = warnings_for_surface(&[], &config, |_| true, &down);
+        let surfaced = warnings_for_surface(&[], &config, |_| true, &down, None);
         assert_eq!(
             surfaced,
             vec![ConfigWarning::EnhancementsUnavailable {
@@ -1364,17 +1387,70 @@ mod tests {
         );
         // Deriving again from the same (parse-only, empty) base is identical — no stacking.
         assert_eq!(
-            warnings_for_surface(&[], &config, |_| true, &down),
+            warnings_for_surface(&[], &config, |_| true, &down, None),
             surfaced
         );
 
         // Recovery self-clears: nothing cached means nothing to evict.
         for recovered in [EnhancementsStatus::Active, EnhancementsStatus::NotObserved] {
             assert!(
-                warnings_for_surface(&[], &config, |_| true, &recovered).is_empty(),
+                warnings_for_surface(&[], &config, |_| true, &recovered, None).is_empty(),
                 "a recovered status must stop being surfaced ({recovered:?})"
             );
         }
+    }
+
+    // trmx-238 (M15) REGRESSION (step-8 finding 1): the warning surface is rebuilt WHOLESALE on
+    // every read, wake and re-emission. An earlier revision spliced the Unreadable warning onto
+    // the config_read response only, so the very next unrelated re-emission — an enhancement-status
+    // transition, a shell fallback — published a set without it and silently cleared the banner
+    // while the file was still unreadable. It must be synthesized from the tracked read health.
+    #[test]
+    fn an_unreadable_file_keeps_warning_across_an_unrelated_re_emission() {
+        let config = Config::default();
+        let unreadable = Some("Permission denied (os error 13)");
+        let has_unreadable = |set: &[ConfigWarning]| {
+            set.iter()
+                .any(|w| matches!(w, ConfigWarning::Unreadable { .. }))
+        };
+
+        // The read itself surfaces it...
+        let first = warnings_for_surface(
+            &[],
+            &config,
+            |_| true,
+            &EnhancementsStatus::NotObserved,
+            unreadable,
+        );
+        assert!(has_unreadable(&first));
+
+        // ...and so does a rebuild triggered by something else entirely, while the file is still
+        // unreadable. This is the assertion the old splice-onto-the-response design failed.
+        let reemitted = warnings_for_surface(
+            &[],
+            &config,
+            |_| true,
+            &EnhancementsStatus::Unavailable {
+                reason: "plugins dir is read-only".to_string(),
+            },
+            unreadable,
+        );
+        assert!(has_unreadable(&reemitted), "{reemitted:?}");
+        assert!(
+            reemitted
+                .iter()
+                .any(|w| matches!(w, ConfigWarning::EnhancementsUnavailable { .. })),
+            "both degraded modes coexist: {reemitted:?}"
+        );
+
+        // A successful read clears the health, and the warning stops being synthesized.
+        assert!(!has_unreadable(&warnings_for_surface(
+            &[],
+            &config,
+            |_| true,
+            &EnhancementsStatus::NotObserved,
+            None
+        )));
     }
 
     // --- trmx-238 (M15): absent vs unreadable ------------------------------------------------

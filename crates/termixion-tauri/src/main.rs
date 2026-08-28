@@ -813,7 +813,7 @@ fn open_pty(
         spec.env.extend(env);
     }
 
-    let (id, reader) = open_session_with(
+    let spawned = open_session_with(
         &mut *state
             .registry
             .lock()
@@ -823,18 +823,13 @@ fn open_pty(
         PtySize::new(rows, cols),
         cwd_fallback.as_ref(),
         |session_id, notice| notify_session(&app, session_id, notice),
-    )?;
+    );
 
-    // trmx-75: a session now exists to watch — wake the title poller out of its zero-session
-    // park. After a successful spawn only, and after the registry lock above is released.
-    state.poller_gate.notify_session_opened();
-
-    // trmx-238 (M18): commit the enhancement verdict only now — AFTER the spawn actually
-    // succeeded. Recording it beside the env computation would let a session that never started
-    // claim "Active", which is exactly the class of lie this issue exists to remove. A real
-    // transition re-emits config:warnings too, so the banner/badge track it without waiting for
-    // an unrelated config event.
-    if enhancements_io::commit_status(
+    // trmx-238 (M18/D9): the enhancement verdict is committed HERE — after the spawn resolved, and
+    // only when it succeeded — so a session that never started can never claim "Active". Ordered
+    // before the `?` so the failure path is the tested one.
+    if enhancements_io::commit_after_spawn(
+        spawned.is_ok(),
         &app.state::<enhancements_io::EnhancementsState>(),
         enhancement_decision.status.clone(),
     ) {
@@ -844,6 +839,12 @@ fn open_pty(
         );
         config_io::emit_config_warnings(&app, &app.state::<config_io::ConfigState>());
     }
+
+    let (id, reader) = spawned?;
+
+    // trmx-75: a session now exists to watch — wake the title poller out of its zero-session
+    // park. After a successful spawn only, and after the registry lock above is released.
+    state.poller_gate.notify_session_opened();
 
     // Output → webview via the core pump + the trmx-78 natural-batching sender (ADR-0001; one
     // coalesced message per send instead of one per 4096-byte read). The pump thread's only job
