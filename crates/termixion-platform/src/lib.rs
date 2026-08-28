@@ -16,6 +16,8 @@ pub mod foreground;
 // (macos-gated inside the module).
 pub mod services;
 #[cfg(unix)]
+pub mod socket;
+#[cfg(unix)]
 pub mod unix;
 
 #[cfg(unix)]
@@ -24,6 +26,10 @@ pub use foreground::{
     is_interpreter, unwrap_interpreter_shim,
 };
 #[cfg(unix)]
+// trmx-239 (M12): the uid/mode primitives the Tauri shell used to reach for via a direct `libc`
+// dependency of its own.
+#[cfg(unix)]
+pub use socket::{create_socket_at, current_euid, ensure_private_dir, require_private_dir};
 pub use unix::{Clipboard, UnixClipboard, UnixPtyFactory};
 
 /// The neutral PTY factory the tauri shell constructs. A `pub use` re-export (NOT a `type` alias), so the
