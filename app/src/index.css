@@ -1403,3 +1403,50 @@ body {
 .error-boundary__actions button:hover {
   background: #3a2f34;
 }
+
+/*
+ * trmx-238 (M19) — the config-warnings badge in the title-bar right slot. Deliberately narrow
+ * ("⚠ N" plus a dismiss ×): it shares the slot with the AI-session counter, so crowding — not
+ * overlap — is the worst case. The full warning text rides the native `title` tooltip rather than
+ * a custom panel; there is nothing here to size against the viewport, so no layout risk.
+ */
+.config-warnings {
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  color: var(--tx-text);
+}
+.config-warnings__button,
+.config-warnings__dismiss {
+  background: none;
+  border: none;
+  padding: 0 4px;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.config-warnings__button {
+  opacity: 0.9;
+}
+.config-warnings__dismiss {
+  opacity: 0.55;
+}
+.config-warnings__button:hover,
+.config-warnings__dismiss:hover {
+  opacity: 1;
+}
+
+/*
+ * trmx-238 (M18) — the enhancement-status line under the Shell Enhancements toggle. The toggle
+ * says what the user asked for; this says what the last real zsh spawn actually did.
+ */
+.enhancements-status {
+  margin: -4px 0 8px;
+  font-size: 12px;
+  opacity: 0.7;
+}
+.enhancements-status--unavailable {
+  color: var(--tx-warn, #d08770);
+  opacity: 1;
+}

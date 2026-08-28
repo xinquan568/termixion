@@ -101,7 +101,37 @@ export interface TerminalSettingsProps {
   /** trmx-225: settings:changed observation (config-watcher / cross-window edits) so the
    * Focus Follows Mouse toggle reflects external changes live. Injected for tests. */
   observeChanges?: (onChange: (payload: unknown) => void) => () => void;
+  /** trmx-238 (M18): `enhancements:status` observation, so a MOUNTED page reflects a recovery (or
+   * a fresh failure) without polling. Injected for tests. */
+  observeEnhancementsStatus?: (onChange: () => void) => () => void;
 }
+
+/** trmx-238 (M18): what the last real zsh spawn did with the enhancement layer. */
+type EnhancementsStatus =
+  | { state: "notObserved" }
+  | { state: "active" }
+  | { state: "unavailable"; reason: string };
+
+/** The `enhancements:status` subscription, shaped like realObserveSettingsChanges above. */
+const realObserveEnhancementsStatus = (onChange: () => void): (() => void) => {
+  let live = true;
+  let unlisten: (() => void) | undefined;
+  realEventBus
+    .listen("enhancements:status", () => {
+      if (live) onChange();
+    })
+    .then((u) => {
+      if (live) unlisten = u;
+      else u();
+    })
+    .catch(() => {
+      // No runtime — the status simply never refreshes live.
+    });
+  return () => {
+    live = false;
+    unlisten?.();
+  };
+};
 
 // The teardown-before-resolve settings:changed subscription (the realObserveTabsAction shape).
 const realObserveSettingsChanges = (onChange: (payload: unknown) => void): (() => void) => {
@@ -128,7 +158,13 @@ export function TerminalSettings({
   settings,
   invoke = realInvoke,
   observeChanges = realObserveSettingsChanges,
+  observeEnhancementsStatus = realObserveEnhancementsStatus,
 }: TerminalSettingsProps) {
+  // trmx-238 (M18): the toggles below say what the user ASKED for; this says what the last real
+  // zsh spawn actually did. Before this they could disagree indefinitely and silently.
+  const [enhancementsStatus, setEnhancementsStatus] = useState<EnhancementsStatus>({
+    state: "notObserved",
+  });
   const [cursorStyle, setCursorStyle] = useState<CursorStyle>(() =>
     settings.get("terminal.cursorStyle"),
   );
@@ -233,6 +269,29 @@ export function TerminalSettings({
       cancelled = true;
     };
   }, [invoke, shellRevision]);
+
+  // trmx-238 (M18): fetch on mount, and re-fetch on every committed status transition so an
+  // Unavailable → Active recovery reaches a page that is already open.
+  useEffect(() => {
+    let live = true;
+    const refresh = () => {
+      void Promise.resolve(invoke("enhancements_status"))
+        .then((value) => {
+          if (live && value && typeof value === "object") {
+            setEnhancementsStatus(value as EnhancementsStatus);
+          }
+        })
+        .catch(() => {
+          // No backend (plain dev server): the status row simply stays absent.
+        });
+    };
+    refresh();
+    const stop = observeEnhancementsStatus(refresh);
+    return () => {
+      live = false;
+      stop();
+    };
+  }, [invoke, observeEnhancementsStatus]);
   const showEnhancements = effectiveShellKind === null || effectiveShellKind === "zsh";
 
   const [scrollback, setScrollback] = useState<number>(() =>
@@ -417,6 +476,23 @@ export function TerminalSettings({
                 }}
               />
             </SettingRow>
+            {/* trmx-238 (M18): what the last real zsh spawn DID. `notObserved` renders nothing —
+                it covers every bypass path (non-zsh, kill switch, nothing-to-layer) plus "no
+                session yet", none of which is a degraded mode worth alarming the user about. */}
+            {enhancementsStatus.state !== "notObserved" ? (
+              <p
+                className={
+                  enhancementsStatus.state === "unavailable"
+                    ? "enhancements-status enhancements-status--unavailable"
+                    : "enhancements-status"
+                }
+                data-testid="enhancements-status"
+              >
+                {enhancementsStatus.state === "unavailable"
+                  ? `Not applied to your last session: ${enhancementsStatus.reason}`
+                  : "Active in your last session"}
+              </p>
+            ) : null}
             <SettingRow
               label="Autosuggestions"
               description="Fish-style inline suggestions (zsh-autosuggestions)"

@@ -90,6 +90,65 @@ describe("TerminalSettings", () => {
     ]);
   });
 
+  // trmx-238 (M18): the toggles say what the user ASKED for; this row says what the last real zsh
+  // spawn actually DID. They could previously disagree forever — a failed materialization or an
+  // unresolved starship binary spawned bare while the toggles kept reading "on".
+  describe("trmx-238 (M18): the enhancement status row", () => {
+    const statusInvoke = (status: unknown) => (cmd: string) =>
+      cmd === "enhancements_status" ? Promise.resolve(status) : Promise.resolve(null);
+
+    it("renders nothing for notObserved (every bypass path, and before the first session)", async () => {
+      const store = makeSettingsStore(fakeStorage());
+      render(
+        <TerminalSettings
+          settings={store}
+          invoke={statusInvoke({ state: "notObserved" })}
+          observeEnhancementsStatus={() => () => {}}
+        />,
+      );
+      await waitFor(() => expect(screen.queryByTestId("enhancements-status")).toBeNull());
+    });
+
+    it("shows the reason when the last session went bare", async () => {
+      const store = makeSettingsStore(fakeStorage());
+      render(
+        <TerminalSettings
+          settings={store}
+          invoke={statusInvoke({ state: "unavailable", reason: "no starship binary found" })}
+          observeEnhancementsStatus={() => () => {}}
+        />,
+      );
+      const row = await screen.findByTestId("enhancements-status");
+      expect(row.textContent).toContain("no starship binary found");
+    });
+
+    it("refreshes on enhancements:status — an Unavailable → Active recovery reaches an open page", async () => {
+      const store = makeSettingsStore(fakeStorage());
+      let status: unknown = { state: "unavailable", reason: "plugins dir is read-only" };
+      let fire = () => {};
+      render(
+        <TerminalSettings
+          settings={store}
+          invoke={(cmd: string) =>
+            cmd === "enhancements_status" ? Promise.resolve(status) : Promise.resolve(null)
+          }
+          observeEnhancementsStatus={(onChange) => {
+            fire = onChange;
+            return () => {};
+          }}
+        />,
+      );
+      const row = await screen.findByTestId("enhancements-status");
+      expect(row.textContent).toContain("plugins dir is read-only");
+
+      status = { state: "active" };
+      act(() => fire());
+      await waitFor(() =>
+        expect(screen.getByTestId("enhancements-status").textContent).toContain("Active"),
+      );
+    });
+  });
+
   it("offers vmark's glyphed options and defaults to Underline", () => {
     const store = makeSettingsStore(fakeStorage());
     render(<TerminalSettings settings={store} />);

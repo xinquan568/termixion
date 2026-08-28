@@ -101,6 +101,8 @@ fi\n\
 if [[ \"${{{auto}-}}\" == \"1\" ]] && (( ! $+functions[_zsh_autosuggest_start] )); then\n\
   if [[ -r \"${{{plugins}-}}/zsh-autosuggestions/zsh-autosuggestions.zsh\" ]]; then\n\
     source \"${{{plugins}-}}/zsh-autosuggestions/zsh-autosuggestions.zsh\"\n\
+  else\n\
+    print -u2 \"termixion: zsh-autosuggestions is enabled but its plugin file could not be read; continuing without it\" >&2\n\
   fi\n\
 fi\n\
 # trmx-207: the chosen prompt initializes AFTER the user rc and the autosuggestions layer,\n\
@@ -141,6 +143,9 @@ esac\n\
 # zsh-syntax-highlighting MUST be sourced last (its documented requirement) — keep this the\n\
 # final layering block in this file.\n\
 if [[ \"${{{hl}-}}\" == \"1\" ]] && [[ -z \"${{ZSH_HIGHLIGHT_VERSION-}}\" ]]; then\n\
+  if [[ ! -r \"${{{plugins}-}}/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh\" ]]; then\n\
+    print -u2 \"termixion: zsh-syntax-highlighting is enabled but its plugin file could not be read; continuing without it\" >&2\n\
+  fi\n\
   if [[ -r \"${{{plugins}-}}/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh\" ]]; then\n\
     source \"${{{plugins}-}}/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh\"\n\
   fi\n\
@@ -329,6 +334,35 @@ mod tests {
         // pure: guard + promptinit.
         assert!(rc.contains("$+functions[prompt_pure_setup]"));
         assert!(rc.contains("prompt pure"));
+    }
+
+    // trmx-238 (M18): a flagged plugin whose file is PRESENT but unreadable was the last silent
+    // degrade in the layer — the `-r` guard skipped it and the shell came up looking normal while
+    // Settings still showed the toggle on. The shim now says so, once, on stderr.
+    #[test]
+    fn a_flagged_but_unreadable_plugin_prints_exactly_one_warning_line() {
+        let rc = file(".zshrc");
+        for (flag, plugin) in [
+            ("TERMIXION_ENH_AUTOSUGGEST", "zsh-autosuggestions"),
+            ("TERMIXION_ENH_HIGHLIGHT", "zsh-syntax-highlighting"),
+        ] {
+            // The else-branch of the readability guard, for the flagged case only.
+            let warned: Vec<&str> = rc
+                .lines()
+                .filter(|line| line.contains("termixion:") && line.contains(plugin))
+                .collect();
+            assert_eq!(
+                warned.len(),
+                1,
+                "exactly one warning line for {plugin} (flag {flag}); got {warned:?}"
+            );
+            let line = warned[0];
+            assert!(line.contains(">&2"), "the warning goes to stderr: {line}");
+            assert!(
+                line.contains("print") || line.contains("echo"),
+                "the warning is actually printed: {line}"
+            );
+        }
     }
 
     #[test]

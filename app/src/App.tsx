@@ -39,6 +39,7 @@ import {
 } from "react";
 import { TerminalView, type SettingsObservation } from "./terminal/TerminalView";
 import { TitleBar } from "./chrome/TitleBar";
+import { ConfigWarningsBadge } from "./chrome/ConfigWarningsBadge";
 import { AiSessionCounter } from "./chrome/AiSessionCounter";
 import { NAMED_BUCKETS, sessionsFrom, type AiSession } from "./chrome/aiSessionBuckets";
 import { TabStrip } from "./tabs/TabStrip";
@@ -2127,6 +2128,16 @@ export function App({
         rightSlot={
           <>
             {titleBarSlotFixture !== null ? <span>{titleBarSlotFixture}</span> : null}
+            {/* trmx-238 (M19): config-file warnings were visible ONLY in the settings window, so a
+                hand-edited typo in termixion.toml said nothing here. Placed before the AI counter:
+                a degraded config is more urgent than a session count, and the badge is narrow. */}
+            <ConfigWarningsBadge
+              onOpenSettings={() => {
+                invoke("open_settings_window", { section: null }).catch((err: unknown) =>
+                  log.error("open settings (config warnings) failed", err),
+                );
+              }}
+            />
             {/* trmx-190: the AI-session counter — gated by titleBar.aiCounter, absent with no AI
                 sessions. The fixture (dev-server e2e only) substitutes synthetic sessions. */}
             {aiCounterOn && aiSessions.length > 0 && (

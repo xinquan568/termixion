@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use crate::enhancements_io::EnhancementsStatus;
 use serde_json::{Map, Value as JsonValue};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
@@ -519,10 +520,21 @@ fn warnings_for_surface(
     parse: &[ConfigWarning],
     config: &Config,
     valid: impl Fn(&str) -> bool,
+    enhancements: &EnhancementsStatus,
 ) -> Vec<ConfigWarning> {
     let mut out = parse.to_vec();
     if let Some(warning) = shell_validity_warning(config, valid) {
         out.push(warning);
+    }
+    // trmx-238 (M18/D3): the enhancement verdict is SYNTHESIZED here rather than cached into
+    // `last_warnings`, for the same reason the shell warning is (trmx-205): this ledger is
+    // rebuilt wholesale on every read and every watcher wake, so a cached entry would either
+    // stack duplicates or — worse — be erased by the next unrelated config broadcast. Synthesizing
+    // makes it survive every rebuild AND self-clear the moment the status recovers.
+    if let EnhancementsStatus::Unavailable { reason } = enhancements {
+        out.push(ConfigWarning::EnhancementsUnavailable {
+            reason: reason.clone(),
+        });
     }
     out
 }
@@ -576,11 +588,39 @@ pub fn emit_shell_fallback_warning(
     state: &ConfigState,
     valid: impl Fn(&str) -> bool,
 ) {
+    emit_config_warnings_with(app, state, valid);
+}
+
+/// trmx-238 (M18): re-publish the CURRENT warning surface. Extracted from
+/// [`emit_shell_fallback_warning`] so an enhancement-status transition can refresh the banner and
+/// the main-window badge without waiting for an unrelated config event.
+pub fn emit_config_warnings(app: &tauri::AppHandle, state: &ConfigState) {
+    emit_config_warnings_with(app, state, crate::shells_io::is_executable_file);
+}
+
+fn emit_config_warnings_with(
+    app: &tauri::AppHandle,
+    state: &ConfigState,
+    valid: impl Fn(&str) -> bool,
+) {
     let Ok(inner) = state.0.lock() else { return };
-    let warnings = warnings_for_surface(&inner.last_warnings, &inner.last, valid);
+    let warnings = warnings_for_surface(
+        &inner.last_warnings,
+        &inner.last,
+        valid,
+        &enhancements_status_of(app),
+    );
     drop(inner);
     let payload = serde_json::to_value(&warnings).unwrap_or_else(|_| JsonValue::Array(Vec::new()));
     let _ = app.emit("config:warnings", payload);
+}
+
+/// The app's recorded enhancement status, or `NotObserved` before the state is managed (every
+/// unit test and the earliest start-up moments).
+fn enhancements_status_of(app: &tauri::AppHandle) -> EnhancementsStatus {
+    app.try_state::<crate::enhancements_io::EnhancementsState>()
+        .map(|state| crate::enhancements_io::read_status(&state))
+        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
@@ -590,7 +630,7 @@ pub fn emit_shell_fallback_warning(
 /// Read the config file for the frontend registry: present-only registry-keyed values +
 /// warnings. Also (re)bases the watcher's diff state on what was read.
 #[tauri::command]
-pub fn config_read(state: State<'_, ConfigState>) -> ConfigReadResponse {
+pub fn config_read(app: tauri::AppHandle, state: State<'_, ConfigState>) -> ConfigReadResponse {
     let path = config_path();
     // trmx-238 (M15): classify, never `.ok()` — an unreadable file must not masquerade as absent.
     let read = classify_read(std::fs::read_to_string(&path));
@@ -622,6 +662,7 @@ pub fn config_read(state: State<'_, ConfigState>) -> ConfigReadResponse {
         &parse_warnings,
         &config,
         crate::shells_io::is_executable_file,
+        &enhancements_status_of(&app),
     );
     response.warnings.extend(unreadable);
     match state.0.lock() {
@@ -781,6 +822,7 @@ fn on_config_file_event(app: &tauri::AppHandle, path: &Path) {
         &parse_warnings,
         &application.config,
         crate::shells_io::is_executable_file,
+        &enhancements_status_of(app),
     );
     // The pure decision, computed before `application.config` moves into the diff base.
     let mut emissions = emissions_for(&application);
@@ -1072,11 +1114,21 @@ mod tests {
             got: "\"big\"".to_string(),
             expected: "an integer".to_string(),
         }];
-        let first = warnings_for_surface(&parse_only, &config, |_| false);
+        let first = warnings_for_surface(
+            &parse_only,
+            &config,
+            |_| false,
+            &EnhancementsStatus::NotObserved,
+        );
         assert_eq!(first.len(), 2); // the parse warning + ONE shell warning
         // A second derivation from the same parse-only base (the spawn re-emission) is
         // identical — deriving from `first` would be the stacking bug.
-        let second = warnings_for_surface(&parse_only, &config, |_| false);
+        let second = warnings_for_surface(
+            &parse_only,
+            &config,
+            |_| false,
+            &EnhancementsStatus::NotObserved,
+        );
         assert_eq!(second, first);
         let shell_count = second
             .iter()
@@ -1088,7 +1140,12 @@ mod tests {
         // A fixed shell clears it wholesale.
         config.terminal.shell = String::new();
         assert_eq!(
-            warnings_for_surface(&parse_only, &config, |_| false),
+            warnings_for_surface(
+                &parse_only,
+                &config,
+                |_| false,
+                &EnhancementsStatus::NotObserved
+            ),
             parse_only
         );
     }
@@ -1287,6 +1344,37 @@ mod tests {
                 "warnings": [ { "type": "UnknownKey", "key": "terminal.font_sise" } ],
             })
         );
+    }
+
+    // trmx-238 (M18/D3): an enhancement failure rides the SAME config:warnings surface as the
+    // parse warnings, and it must SURVIVE the wholesale rebuild that surface does on every read
+    // and every watcher wake — which is why it is synthesized here rather than cached.
+    #[test]
+    fn an_unavailable_enhancement_status_is_synthesized_into_the_warning_surface() {
+        let config = Config::default();
+        let down = EnhancementsStatus::Unavailable {
+            reason: "plugins dir is read-only".to_string(),
+        };
+        let surfaced = warnings_for_surface(&[], &config, |_| true, &down);
+        assert_eq!(
+            surfaced,
+            vec![ConfigWarning::EnhancementsUnavailable {
+                reason: "plugins dir is read-only".to_string()
+            }]
+        );
+        // Deriving again from the same (parse-only, empty) base is identical — no stacking.
+        assert_eq!(
+            warnings_for_surface(&[], &config, |_| true, &down),
+            surfaced
+        );
+
+        // Recovery self-clears: nothing cached means nothing to evict.
+        for recovered in [EnhancementsStatus::Active, EnhancementsStatus::NotObserved] {
+            assert!(
+                warnings_for_surface(&[], &config, |_| true, &recovered).is_empty(),
+                "a recovered status must stop being surfaced ({recovered:?})"
+            );
+        }
     }
 
     // --- trmx-238 (M15): absent vs unreadable ------------------------------------------------
