@@ -8,8 +8,9 @@
 #   (b) source scan — no platform cfg selector (target_os/family/env/arch/vendor/pointer_width, or bare
 #       unix/windows) and no std::os (in any import shape) in core source.
 #   (c) shell direct-dependency scan (trmx-239, M12) — termixion-tauri must not DECLARE a platform crate
-#       (libc/nix/objc*/cocoa*) as a normal dependency; that work belongs in termixion-platform. Direct
-#       edges only, dev/build excluded, all targets. Self-tested by scripts/check-core-seam.test.sh.
+#       (libc/nix/objc*/cocoa*) as a NORMAL dependency; that work belongs in termixion-platform. Reads
+#       declarations via `cargo metadata --no-deps`, so optional and target-gated ones are caught too
+#       (a resolved-graph scan would miss them). Self-tested by scripts/check-core-seam.test.sh.
 # Both gates read the WORKING TREE; under CI (a fresh checkout) that IS the committed tree — the
 # authoritative required gate — so the two scans always agree there. (A pre-commit hook therefore also
 # flags unstaged core changes, which fails closed and is fine.)
@@ -48,27 +49,42 @@ fi
 # for platform crates, but `termixion-tauri` declared `libc` and called geteuid — documented, not
 # enforced. This gate keeps the uid/mode work behind the seam.
 #
-# Three deliberate differences from gate (a), each load-bearing:
-#   --depth 1     DIRECT declarations only. termixion-tauri depends on `tauri` by definition and thus
-#                 transitively on objc2/core-foundation; a transitive scan would fail permanently.
-#   --edges normal  Build- and dev-dependencies are excluded. The shell legitimately keeps a TEST-only
-#                 libc (logging.rs's root check), so cargo tree's DEFAULT edge set (normal+build+dev)
-#                 would fail the very commit that fixed M12.
-#   --target all  cargo tree otherwise resolves for the HOST only, letting a dependency declared under
-#                 [target.'cfg(...)'.dependencies] evade the gate on a different machine.
-# (No --all-features here, unlike gate (a): the tauri crate's features are Tauri's own and resolving
-# all of them costs a far larger graph for no added safety on a three-name denylist.)
+# It reads DECLARATIONS (`cargo metadata --no-deps`), not the resolved graph. A `cargo tree` scan —
+# the first design — judges what is ACTIVE for the selected targets/features, so an OPTIONAL normal
+# dependency behind a disabled feature is simply absent from the output and passes, which is exactly
+# the loophole a rule about "must not declare" has to close. Declarations also cost no resolution
+# (`--no-deps` does not touch the network or the lockfile graph), so this is both stricter and faster.
+#
+# `kind` is the whole judgement: null = a normal dependency (forbidden — it ships in the binary);
+# "dev"/"build" are allowed, because the shell legitimately keeps a TEST-only libc (logging.rs's
+# root check). Target-gated and optional declarations are caught like any other, since a declaration
+# exists regardless of the host or the feature set.
 if command -v cargo >/dev/null 2>&1; then
-  shell_forbidden_re='^(libc|nix|objc2?([_-].*)?|cocoa([_-].*)?)$'
-  if ! shell_tree="$(cargo tree -p termixion-tauri --depth 1 --edges normal --target all --prefix none 2>&1)"; then
-    echo "check-core-seam: cargo tree could not resolve termixion-tauri's direct dependencies — failing closed:" >&2
-    printf '%s\n' "$shell_tree" | sed 's/^/    /' >&2
+  # Fail CLOSED: if metadata can't be read, the required scan must not silently pass.
+  if ! meta_out="$(cargo metadata --no-deps --format-version 1 2>&1)"; then
+    echo "check-core-seam: cargo metadata failed for the workspace — failing closed:" >&2
+    printf '%s\n' "$meta_out" | sed 's/^/    /' >&2
     exit 1
   fi
-  shell_deps="$(printf '%s\n' "$shell_tree" \
-    | sed -E 's/ v[0-9].*$//; s/ \(.*\)$//' \
-    | grep -vxE 'termixion-tauri' | sort -u || true)"
-  shell_bad="$(printf '%s\n' "$shell_deps" | grep -vE '^$' | grep -E "$shell_forbidden_re" || true)"
+  shell_bad="$(printf '%s' "$meta_out" | python3 -c '
+import json, re, sys
+
+FORBIDDEN = re.compile(r"^(libc|nix|objc2?([_-].*)?|cocoa([_-].*)?)$")
+meta = json.load(sys.stdin)
+for pkg in meta.get("packages", []):
+    if pkg.get("name") != "termixion-tauri":
+        continue
+    for dep in pkg.get("dependencies", []):
+        # kind: null = normal (ships in the binary); "dev"/"build" never do.
+        name = dep.get("name", "")
+        if dep.get("kind") is None and FORBIDDEN.match(name):
+            where = dep.get("target") or "all targets"
+            opt = " (optional)" if dep.get("optional") else ""
+            print(name + " — normal dependency for " + str(where) + opt)
+')" || {
+    echo "check-core-seam: could not parse cargo metadata — failing closed." >&2
+    exit 1
+  }
   if [ -n "$shell_bad" ]; then
     echo "check-core-seam: FORBIDDEN direct dependency in termixion-tauri (R1: platform crates belong in termixion-platform):" >&2
     printf '%s\n' "$shell_bad" | sed 's/^/    /' >&2

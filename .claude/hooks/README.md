@@ -15,6 +15,7 @@ defeat a gate — the hooks are the fast local copy, not the enforcement.
 to get bypassed protects nothing.
 
 This list is not a promise — it is **pinned by `.claude/hooks/hooks.test.sh`**, which traces each
-hook and asserts the command set it actually invokes. That test exists because this file previously
+hook and asserts the exact command lines it invokes. That test **runs in CI** (the
+`shell integration` job), so the claim on this page is itself gated rather than merely written. That test exists because this file previously
 described three checks (`cargo fmt --check`, clippy, `pnpm lint`) that no hook ran (trmx-239, M24).
 If you change a hook, the test fails until you change it too — and this file should change with both.

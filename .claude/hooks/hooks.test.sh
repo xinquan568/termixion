@@ -23,40 +23,58 @@ trap 'rm -rf "$tmp"' EXIT
 fails=0
 
 mkdir -p "$tmp/bin"
-for tool in cargo pnpm; do
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$tmp/bin/$tool"
-  chmod +x "$tmp/bin/$tool"
-done
+printf '#!/usr/bin/env bash\nexit 0\n' > "$tmp/bin/pnpm"
+# `cargo` mostly no-ops, but `cargo metadata` must return parseable JSON: pre-commit runs
+# check-core-seam.sh, whose gate (c) reads metadata and FAILS CLOSED on unparseable output. An
+# exit-0-and-print-nothing stub would therefore make the hook exit 1 for a reason that has nothing
+# to do with what this test is asserting. (The exit-status check below caught exactly that.)
+cat > "$tmp/bin/cargo" <<'STUB'
+#!/usr/bin/env bash
+if [ "${1-}" = metadata ]; then printf '{"packages":[]}\n'; fi
+exit 0
+STUB
+chmod +x "$tmp/bin/cargo" "$tmp/bin/pnpm"
 
 trace=""
 run_hook() { # run_hook <name>
+  local rc=0
   trace="$tmp/$1.trace"
-  ( cd "$ROOT" && PATH="$tmp/bin:$PATH" bash -x "$HOOKS/$1" ) >/dev/null 2>"$trace" || true
+  ( cd "$ROOT" && PATH="$tmp/bin:$PATH" bash -x "$HOOKS/$1" ) >/dev/null 2>"$trace" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "FAIL: $1 exited $rc under stubbed tooling — it should succeed"
+    fails=$((fails + 1))
+  fi
+  # xtrace lines look like `+ cmd args` (nested subshells add `+`s). Normalise to the bare command
+  # line so assertions can be ANCHORED to the WHOLE line: a substring match would accept
+  # `cargo fmt` for the required `cargo fmt --all --check`, or match a longer unrelated command.
+  sed -E 's/^\++ //' "$trace" | sed -E "s/^cd .*//" > "$tmp/$1.cmds"
+  trace="$tmp/$1.cmds"
 }
 
-expect() { # expect <hook> <substring>
-  local hook="$1" needle="$2"
-  if grep -qF -- "$needle" "$trace"; then
-    echo "ok: $hook invokes '$needle'"
+expect() { # expect <hook> <exact command line>
+  local hook="$1" cmd="$2"
+  if grep -qxF -- "$cmd" "$trace"; then
+    echo "ok: $hook runs \`$cmd\`"
   else
-    echo "FAIL: $hook does NOT invoke '$needle'"
+    echo "FAIL: $hook does NOT run \`$cmd\` (exact line)"
+    echo "  it ran:"; grep -vE '^$' "$trace" | sed 's/^/    /'
     fails=$((fails + 1))
   fi
 }
 
 # --- pre-commit: the fast, staged-content guardrails --------------------------------------------
 run_hook pre-commit
-expect pre-commit "scripts/secret-scan.sh"
-expect pre-commit "scripts/check-core-seam.sh"
-expect pre-commit "scripts/check-isc-headers.sh"
-expect pre-commit "cargo fmt"                    # trmx-239: claimed by the README, never run
+expect pre-commit "bash scripts/secret-scan.sh"
+expect pre-commit "bash scripts/check-core-seam.sh"
+expect pre-commit "bash scripts/check-isc-headers.sh"
+expect pre-commit "cargo fmt --all --check"          # trmx-239: claimed by the README, never run
 expect pre-commit "pnpm --filter app lint"
 
 # --- pre-push: the heavier gate -------------------------------------------------------------------
 run_hook pre-push
-expect pre-push "cargo test --workspace"
-expect pre-push "pnpm --filter app test"          # trmx-239: frontend regressions reached only CI
-expect pre-push "cargo clippy --workspace --all-targets"
+expect pre-push "cargo test --workspace --quiet"
+expect pre-push "pnpm --filter app test"             # trmx-239: frontend regressions reached only CI
+expect pre-push "cargo clippy --workspace --all-targets -- -D warnings"
 
 if [ "$fails" -ne 0 ]; then
   echo "hooks.test: $fails expectation(s) failed." >&2
