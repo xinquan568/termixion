@@ -50,7 +50,7 @@ async function boot() {
   try {
     smokeDir = (await realInvoke("smoke_config")) as string | null;
   } catch {
-    smokeDir = null;
+    // No backend (plain browser / jsdom): stay null and take the normal launch path.
   }
 
   if (smokeDir) {
@@ -65,7 +65,7 @@ async function boot() {
   try {
     perfConfig = (await realInvoke("perf_config")) as PerfLaunchConfig | null;
   } catch {
-    perfConfig = null;
+    // No backend (plain browser / jsdom): stay null and take the normal launch path.
   }
   if (perfConfig) {
     // trmx-103: the backend's `scenario` picks the driver — `multipane` runs the v0.0.9
