@@ -111,7 +111,7 @@ every other update in the group indefinitely. The `ignore:` list holds those, an
 the condition that lifts it** — a hold without an exit becomes a permanent pin nobody dares touch.
 Currently held: `typescript` (typescript-eslint 8.x refuses TS >= 7), `@types/node` (must track
 `.nvmrc` / the workflows' `node-version`), and `@xterm/*` (xterm 6 rebuilt the viewport, which
-`app/src/terminal/scrollbar.ts` depends on).
+`app/src/terminal/scrollbar.ts` depends on — tracked as trmx-279).
 
 **To lift a hold:** bump the package *and its partners* in one PR — a TypeScript major goes with
 `typescript-eslint`, an `@types/node` major with `.nvmrc` and both workflows, an xterm major with
