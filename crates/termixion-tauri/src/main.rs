@@ -1279,7 +1279,10 @@ fn run_teardown_once(done: &std::sync::atomic::AtomicBool, body: impl FnOnce()) 
 /// `perf_done`) runs code but emits no run event, and `AppHandle::restart()` called on the main
 /// thread documents that it skips both `ExitRequested` and `Exit` — neither reaches this function.
 /// Termixion calls neither of those on a user-facing path today: the updater's `relaunch()` reaches
-/// `AppHandle::request_restart()`, which always requests an exit and so always emits the events.
+/// `AppHandle::request_restart()`, which requests an exit and so emits the events — whenever that
+/// request succeeds, which is the normal live-event-loop case. If `request_exit` itself returns
+/// `Err`, Tauri falls back to `cleanup_before_exit()` + a direct re-exec and emits nothing, so that
+/// fallback reaps nothing either. Hence the qualifier above is on the run event, not on the path.
 fn teardown_once(app: &tauri::AppHandle) {
     run_teardown_once(&MAIN_TEARDOWN_DONE, || {
         if let Some(state) = app.try_state::<PtyState>()
