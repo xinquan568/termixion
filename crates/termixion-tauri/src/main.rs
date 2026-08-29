@@ -1262,6 +1262,61 @@ fn begin_teardown(done: &std::sync::atomic::AtomicBool) -> bool {
     !done.swap(true, std::sync::atomic::Ordering::SeqCst)
 }
 
+/// trmx-267: run `body` exactly once however many callers race. Split out of [`teardown_once`] so
+/// the race invariant is testable without a Tauri runtime — the latch, not the caller, is what
+/// makes the teardown idempotent.
+fn run_teardown_once(done: &std::sync::atomic::AtomicBool, body: impl FnOnce()) {
+    if begin_teardown(done) {
+        body();
+    }
+}
+
+/// trmx-267: the single teardown. Reaps every PTY child, stops the control socket, and closes the
+/// settings window. Every exit path **that emits a run event** calls this, and the
+/// `MAIN_TEARDOWN_DONE` latch makes it a no-op after the first, however many paths race.
+///
+/// The qualifier is exact, not hedging. A launch that ends via `std::process::exit` (`smoke_done` /
+/// `perf_done`) runs code but emits no run event, and `AppHandle::restart()` called on the main
+/// thread documents that it skips both `ExitRequested` and `Exit` — neither reaches this function.
+/// Termixion calls neither of those on a user-facing path today: the updater's `relaunch()` reaches
+/// `AppHandle::request_restart()`, which always requests an exit and so always emits the events.
+fn teardown_once(app: &tauri::AppHandle) {
+    run_teardown_once(&MAIN_TEARDOWN_DONE, || {
+        if let Some(state) = app.try_state::<PtyState>()
+            && let Ok(mut registry) = state.registry.lock()
+        {
+            registry.kill_all();
+        }
+        // trmx-101 (FR-9.4): tear down the control socket (acceptor + unlink).
+        if let Some(control_state) = app.try_state::<control::ControlState>() {
+            control::shutdown(&control_state);
+        }
+        if let Some(settings) = app.get_webview_window(window_manager::SETTINGS_WINDOW_LABEL) {
+            let _ = settings.close();
+        }
+    });
+}
+
+/// trmx-267: what a `RunEvent::ExitRequested` must do, decided from the exit code alone. Pure, so
+/// the run-event callback stays thin and this is unit-testable with no Tauri runtime.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum ExitAction {
+    /// An updater restart (`RESTART_EXIT_CODE`): reap, then let it proceed. `prevent_exit()` is a
+    /// documented no-op for this code, so there is nothing to gate here.
+    TeardownAndProceed,
+    /// Any other exit code: leave it to the window close gate. trmx-268 owns user-initiated quit
+    /// consent, and tearing down here would kill busy shells before its dialog could run.
+    LeaveToCloseGate,
+}
+
+fn exit_action(code: Option<i32>) -> ExitAction {
+    if code == Some(tauri::RESTART_EXIT_CODE) {
+        ExitAction::TeardownAndProceed
+    } else {
+        ExitAction::LeaveToCloseGate
+    }
+}
+
 /// trmx-144: the webview's confirmed-quit handoff. The frontend gate (the `close:requested`
 /// listener) calls this once the quit may proceed; it authorizes the close and re-drives it, so
 /// the `CloseRequested` handler runs the teardown and releases the window. Only the PTY-owning
@@ -1526,29 +1581,37 @@ fn main() -> ExitCode {
                         let _ = window.emit_to(window.label(), "close:requested", ());
                     }
                     CloseAction::TeardownAndAllow => {
-                        if begin_teardown(&MAIN_TEARDOWN_DONE) {
-                            if let Some(state) = window.try_state::<PtyState>()
-                                && let Ok(mut registry) = state.registry.lock()
-                            {
-                                registry.kill_all();
-                            }
-                            // trmx-101 (FR-9.4): tear down the control socket (acceptor + unlink).
-                            if let Some(control_state) = window.try_state::<control::ControlState>()
-                            {
-                                control::shutdown(&control_state);
-                            }
-                            if let Some(settings) = window
-                                .app_handle()
-                                .get_webview_window(window_manager::SETTINGS_WINDOW_LABEL)
-                            {
-                                let _ = settings.close();
-                            }
-                        }
+                        // trmx-267: one shared implementation, so an exit/restart that never reaches
+                        // this handler reaps the same way.
+                        teardown_once(window.app_handle());
                     }
                 }
             }
         })
-        .run(tauri::generate_context!());
+        // trmx-267: `.build(ctx).map(|app| app.run(cb))` rather than `.run(ctx)` — `Builder::run` is
+        // literally `self.build(context)?.run(|_, _| {})`, so this is the same call with a real
+        // callback, and `map` preserves the `Result<()>` that `main`'s ExitCode contract binds (no `?`).
+        // Without a RunEvent handler there is NO teardown on an exit or an updater restart: the
+        // shells the user had open are orphaned, reparented and never reaped (trmx-267).
+        .build(tauri::generate_context!())
+        .map(|app| {
+            app.run(|app_handle, event| match event {
+                // The updater path: the frontend's `relaunch()` reaches `request_restart()`, which
+                // always requests an exit with RESTART_EXIT_CODE. Reap, then let it proceed —
+                // `api.prevent_exit()` is a documented no-op for this code, so vetoing would be
+                // misleading rather than merely useless. Any other code is left to the window close
+                // gate; trmx-268 owns user-quit consent and must see it first.
+                tauri::RunEvent::ExitRequested { code, .. } => match exit_action(code) {
+                    ExitAction::TeardownAndProceed => teardown_once(app_handle),
+                    ExitAction::LeaveToCloseGate => {}
+                },
+                // Last-resort net. Unconditional by design: the latch makes it a no-op whenever a
+                // close path already ran, and a PREVENTED exit never reaches `Exit` at all. Tauri
+                // dispatches this before it re-execs on a restart, so the reap still happens.
+                tauri::RunEvent::Exit => teardown_once(app_handle),
+                _ => {}
+            })
+        });
 
     if let Err(err) = result {
         // No unwrap/expect: report and exit non-zero rather than panic. trmx-236: ONCE — through the
@@ -1667,6 +1730,50 @@ mod tests {
         assert_eq!(close_action(false, true), CloseAction::Ignore);
         assert_eq!(close_action(true, false), CloseAction::PreventAndAsk);
         assert_eq!(close_action(true, true), CloseAction::TeardownAndAllow);
+    }
+
+    #[test]
+    fn run_teardown_once_runs_the_body_exactly_once_under_a_race() {
+        // trmx-267 acceptance: two racing callers → the body runs exactly once. Both threads wait on
+        // a barrier so they genuinely contend on the latch instead of running in sequence, and the
+        // assertion counts BODY EXECUTIONS — the property `begin_teardown_latches_exactly_once`
+        // (which only inspects the latch's return value) leaves unpinned.
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let done = AtomicBool::new(false);
+        let runs = AtomicUsize::new(0);
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|s| {
+            for _ in 0..2 {
+                s.spawn(|| {
+                    barrier.wait();
+                    run_teardown_once(&done, || {
+                        runs.fetch_add(1, Ordering::SeqCst);
+                    });
+                });
+            }
+        });
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            1,
+            "the teardown body runs exactly once"
+        );
+    }
+
+    #[test]
+    fn exit_action_tears_down_only_on_the_updater_restart_code() {
+        // trmx-267: the updater's `relaunch()` reaches `AppHandle::request_restart()`, which always
+        // requests an exit with RESTART_EXIT_CODE — that is the one code this gate owns. Named, not
+        // spelled `i32::MAX`: the point is that we agree with Tauri's constant, so if upstream ever
+        // changes it this test must follow rather than silently pass.
+        assert_eq!(
+            exit_action(Some(tauri::RESTART_EXIT_CODE)),
+            ExitAction::TeardownAndProceed
+        );
+        // Every other code belongs to the window close gate. trmx-268 owns user-initiated quit
+        // consent; tearing down here would kill busy shells before its dialog could run.
+        assert_eq!(exit_action(None), ExitAction::LeaveToCloseGate);
+        assert_eq!(exit_action(Some(0)), ExitAction::LeaveToCloseGate);
+        assert_eq!(exit_action(Some(1)), ExitAction::LeaveToCloseGate);
     }
 
     #[test]
