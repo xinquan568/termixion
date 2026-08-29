@@ -13,9 +13,18 @@
 //! [`create_socket_at`] reaches for `std::os::unix` rather than `libc`, but enforcing
 //! `0600` on a security-sensitive node is platform mode policy either way.
 
+use std::collections::HashSet;
+use std::fs::File;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
-use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::Path;
+use std::os::unix::io::AsRawFd;
+use std::os::unix::net::UnixListener;
+use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
+
+/// Lock files this PROCESS holds. POSIX record locks are per-PROCESS: a second `F_SETLK` from the
+/// same process succeeds even while the first is held, so the kernel supplies only the
+/// cross-process half of the exclusion. This set supplies the in-process half.
+static HELD: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 
 /// The current effective uid.
 pub fn current_euid() -> u32 {
@@ -94,28 +103,152 @@ pub fn require_private_dir(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Create + bind a non-blocking `0600` socket at `path`. Probe-before-unlink: a LIVE listener is
-/// NOT clobbered (Err); a stale socket is reclaimed; a non-socket node is never touched. Binds
-/// ONCE, so a race yields an Err rather than a re-clobber. The PARENT-directory guarantee is the
-/// caller's to establish first (see [`ensure_private_dir`] / [`require_private_dir`]) — which of
-/// the two applies is the shell's policy decision, not this module's.
-pub fn create_socket_at(path: &Path) -> Result<UnixListener, String> {
+/// The liveness token for a control socket: an exclusive POSIX record lock on a sibling `.lock`
+/// file, held for as long as the socket is served.
+///
+/// Why not just connect to the socket? Because `UnixStream::connect` succeeding proves only that
+/// SOME descriptor for the listening socket still exists — never that anyone is accepting on it.
+/// macOS cannot create a socket with `FD_CLOEXEC` atomically (there is no `SOCK_CLOEXEC`; `std`
+/// does `socket()` then `ioctl(FIOCLEX)`), so a `posix_spawn` from another thread landing between
+/// those two syscalls hands an unrelated child a permanent copy of the descriptor. That child
+/// keeps a DEAD instance's socket connectable for as long as it runs, and the old probe read that
+/// as "another instance is running" — refusing to start, for as long as the stray process lived
+/// (trmx-278).
+///
+/// A POSIX record lock has exactly the property the probe lacked: it is NOT inherited across
+/// `fork`, and the kernel drops it when the owning process dies. (`flock` would NOT do — it
+/// attaches to the open file description, so a leaked descriptor WOULD keep it held.)
+#[derive(Debug)]
+pub struct SocketLock {
+    /// Held open for as long as the socket is served: closing it releases the record lock.
+    _file: File,
+    path: PathBuf,
+}
+
+impl Drop for SocketLock {
+    fn drop(&mut self) {
+        HELD.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.path);
+        // Closing `_file` releases the lock. The lock NODE is deliberately left on disk: unlinking
+        // it would let a newcomer lock a fresh inode while an existing owner still held the old
+        // one, and both would believe they had won.
+    }
+}
+
+/// A bound control socket and the liveness lock that says it is ours. They belong together —
+/// releasing the lock while still serving the listener would let a second instance reclaim the
+/// path out from under this one.
+#[derive(Debug)]
+pub struct ControlSocket {
+    listener: UnixListener,
+    lock: SocketLock,
+}
+
+impl ControlSocket {
+    /// The bound, non-blocking, `0600` listener.
+    pub fn listener(&self) -> &UnixListener {
+        &self.listener
+    }
+
+    /// Split into the listener and its liveness lock, for callers that move the listener into an
+    /// acceptor thread. Keep the lock alive alongside it and drop both at teardown.
+    pub fn into_parts(self) -> (UnixListener, SocketLock) {
+        (self.listener, self.lock)
+    }
+}
+
+/// Where a socket's liveness lock lives: a sibling `<name>.lock` in the same (already guaranteed
+/// private) directory. The parent is canonicalized so two spellings of one path cannot each take
+/// the lock and both conclude they are alone.
+fn lock_path_for(socket: &Path) -> Result<PathBuf, String> {
+    let parent = socket
+        .parent()
+        .ok_or_else(|| format!("{} has no parent directory", socket.display()))?;
+    let name = socket
+        .file_name()
+        .ok_or_else(|| format!("{} has no file name", socket.display()))?;
+    let dir = std::fs::canonicalize(parent)
+        .map_err(|e| format!("could not resolve {}: {e}", parent.display()))?;
+    Ok(dir.join(format!("{}.lock", name.to_string_lossy())))
+}
+
+/// Take the liveness lock, or `None` if a LIVE instance holds it.
+fn take_liveness_lock(lock_path: &Path) -> Result<Option<SocketLock>, String> {
+    // `HELD` is held across the whole operation: two threads racing here would otherwise both pass
+    // the in-process check and then both win the (per-process) kernel lock.
+    let mut held = HELD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if held.contains(lock_path) {
+        return Ok(None);
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(lock_path)
+        .map_err(|e| format!("could not open {}: {e}", lock_path.display()))?;
+    std::fs::set_permissions(lock_path, std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| format!("could not chmod {}: {e}", lock_path.display()))?;
+
+    let req = libc::flock {
+        l_start: 0,
+        l_len: 0, // 0 == through end of file, however long it grows
+        l_pid: 0,
+        l_type: libc::F_WRLCK as libc::c_short,
+        l_whence: libc::SEEK_SET as libc::c_short,
+    };
+    // SAFETY: `fcntl` is variadic; `F_SETLK` consumes exactly one `*const flock`, which is what we
+    // pass, and `req` outlives the call. `file` owns the descriptor, so it is open throughout.
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &req) } != 0 {
+        let err = std::io::Error::last_os_error();
+        // EAGAIN/EACCES is the answer we asked for: someone alive holds it. Anything else is a
+        // real failure and must not be misreported as "another instance".
+        return match err.raw_os_error() {
+            Some(libc::EAGAIN) | Some(libc::EACCES) => Ok(None),
+            _ => Err(format!("could not lock {}: {err}", lock_path.display())),
+        };
+    }
+    held.insert(lock_path.to_path_buf());
+    Ok(Some(SocketLock {
+        _file: file,
+        path: lock_path.to_path_buf(),
+    }))
+}
+
+/// Create + bind a non-blocking `0600` socket at `path`. Liveness is decided by the sibling lock
+/// (see [`SocketLock`]), NOT by connecting to the socket: a LIVE instance is never clobbered
+/// (Err), while a socket whose owner is gone is reclaimed however many descriptors for it leaked
+/// into other processes (trmx-278). A non-socket node is never touched. Binds ONCE, so a race
+/// yields an Err rather than a re-clobber. The PARENT-directory guarantee is the caller's to
+/// establish first (see [`ensure_private_dir`] / [`require_private_dir`]) — which of the two
+/// applies is the shell's policy decision, not this module's.
+pub fn create_socket_at(path: &Path) -> Result<ControlSocket, String> {
     // Only ever touch a SOCKET node at `path`: never delete a regular file / symlink / directory a
-    // misconfigured socket_path might point at.
-    if let Ok(md) = std::fs::symlink_metadata(path) {
-        if !md.file_type().is_socket() {
+    // misconfigured socket_path might point at. Checked BEFORE anything is created, so refusing
+    // leaves no lock file beside a path that was never ours.
+    let stale = match std::fs::symlink_metadata(path) {
+        Ok(md) if !md.file_type().is_socket() => {
             return Err(format!(
                 "{} exists and is not a socket; refusing to touch it",
                 path.display()
             ));
         }
-        if UnixStream::connect(path).is_ok() {
-            return Err(format!(
-                "{} is a live control socket (another instance?); not clobbering",
-                path.display()
-            ));
-        }
-        let _ = std::fs::remove_file(path); // a stale SOCKET — reclaim
+        Ok(_) => true,
+        Err(_) => false,
+    };
+
+    let lock_path = lock_path_for(path)?;
+    let Some(lock) = take_liveness_lock(&lock_path)? else {
+        return Err(format!(
+            "{} is a live control socket (another instance?); not clobbering",
+            path.display()
+        ));
+    };
+
+    // We hold the lock, so no live instance owns this path: whatever socket node is left is stale.
+    if stale {
+        let _ = std::fs::remove_file(path);
     }
     let listener =
         UnixListener::bind(path).map_err(|e| format!("bind {} failed: {e}", path.display()))?;
@@ -124,13 +257,13 @@ pub fn create_socket_at(path: &Path) -> Result<UnixListener, String> {
     listener
         .set_nonblocking(true)
         .map_err(|e| format!("set_nonblocking failed: {e}"))?;
-    Ok(listener)
+    Ok(ControlSocket { listener, lock })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::os::unix::net::UnixStream;
 
     fn tmp_dir(tag: &str) -> PathBuf {
         // Short names: macOS caps a unix-socket path at 104 bytes.
@@ -233,6 +366,53 @@ mod tests {
             b"precious",
             "and is left untouched"
         );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// trmx-278: an unrelated child that inherited the listening socket's descriptor must NOT make a
+    /// dead instance look alive. macOS has no `SOCK_CLOEXEC`, so `UnixListener::bind` sets
+    /// `FD_CLOEXEC` in a SECOND syscall; a `posix_spawn` from another thread landing in that window
+    /// hands the child a permanent copy. `dup` reproduces that leak deterministically (it returns a
+    /// descriptor WITHOUT `FD_CLOEXEC`), so this pins the bug instead of racing for it.
+    #[test]
+    fn create_socket_at_reclaims_a_socket_whose_descriptor_leaked_into_a_live_child() {
+        let base = tmp_dir("leak");
+        std::fs::remove_dir_all(&base).ok();
+        std::fs::create_dir_all(&base).expect("base");
+        let path = base.join("c.sock");
+
+        let sock = create_socket_at(&path).expect("bind");
+        // SAFETY: `dup` on a descriptor we own and keep alive across the call; the copy it returns
+        // is closed below. Unlike the original it carries no `FD_CLOEXEC`, so it survives `exec`.
+        let leaked = unsafe { libc::dup(sock.listener().as_raw_fd()) };
+        assert!(leaked >= 0, "dup");
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn");
+        // SAFETY: closing our own copy of a descriptor no longer used here; the child keeps the
+        // one it inherited, which is the whole point of the scenario.
+        unsafe { libc::close(leaked) };
+        drop(sock); // the OWNER is gone; only the child's inherited descriptor remains
+
+        assert!(
+            UnixStream::connect(&path).is_ok(),
+            "precondition: a leaked descriptor keeps a DEAD instance's socket connectable — which \
+             is exactly why connect() cannot be the liveness authority"
+        );
+
+        let again = create_socket_at(&path);
+        let _ = child.kill(); // before any assert, so a failure never strands the child
+        let _ = child.wait();
+        assert!(
+            again.is_ok(),
+            "a socket whose OWNER is gone is reclaimed, however many descriptors leaked: {:?}",
+            again.err()
+        );
+
         std::fs::remove_dir_all(&base).ok();
     }
 

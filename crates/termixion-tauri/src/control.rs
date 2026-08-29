@@ -31,6 +31,7 @@ use std::time::Duration;
 
 use serde_json::{Value as JsonValue, json};
 use tauri::{AppHandle, Emitter, State};
+use termixion_platform::{ControlSocket, SocketLock};
 
 use crate::control_io::{
     PROTOCOL_VERSION, Request, Response, parse_ctl_argv, parse_request, serialize_response,
@@ -114,6 +115,9 @@ struct ListenerHandle {
     stop: Arc<AtomicBool>,
     dead: Arc<AtomicBool>,
     thread: JoinHandle<()>,
+    /// The liveness lock for `path` (trmx-278). Held for exactly as long as this listener is
+    /// served: `teardown` drops the handle, which releases it for the next instance.
+    _lock: SocketLock,
 }
 
 /// The managed control-channel state (registered via `.manage(...)`).
@@ -178,7 +182,7 @@ fn resolve_socket_path(cfg: &RemoteControlConfig) -> (PathBuf, SocketPathOrigin)
 /// came from. A default path may be created and tightened for the user; a user-supplied override
 /// must already be a private 0700 directory, because tightening a path under `$HOME` on someone's
 /// behalf is not ours to do (trmx-235 L12). AppHandle-free so it is unit-testable.
-fn create_socket(path: &Path, origin: SocketPathOrigin) -> Result<UnixListener, String> {
+fn create_socket(path: &Path, origin: SocketPathOrigin) -> Result<ControlSocket, String> {
     if origin == SocketPathOrigin::Override && !path.is_absolute() {
         return Err(format!(
             "socket_path '{}' must be an absolute path",
@@ -236,7 +240,7 @@ pub fn reconcile(want_enabled: bool, has_handle: bool, dead: bool) -> Reconcile 
 }
 
 /// Bind the socket (production: [`create_socket`]).
-pub type CreateSocket = Box<dyn Fn(&Path, SocketPathOrigin) -> Result<UnixListener, String>>;
+pub type CreateSocket = Box<dyn Fn(&Path, SocketPathOrigin) -> Result<ControlSocket, String>>;
 /// Spawn the acceptor thread over `(listener, stop, dead)` (production: `Builder::spawn` of
 /// [`run_acceptor`] with the real accept / worker-spawn / webview-bridge closures).
 pub type SpawnAcceptor =
@@ -288,7 +292,8 @@ pub fn apply_with(
     if matches!(action, Reconcile::Start | Reconcile::Restart) {
         let (path, origin) = resolve_socket_path(desired);
         match (deps.create_socket)(&path, origin) {
-            Ok(listener) => {
+            Ok(socket) => {
+                let (listener, lock) = socket.into_parts();
                 let stop = Arc::new(AtomicBool::new(false));
                 let dead = Arc::new(AtomicBool::new(false));
                 match (deps.spawn_acceptor)(listener, stop.clone(), dead.clone()) {
@@ -298,6 +303,7 @@ pub fn apply_with(
                             stop,
                             dead,
                             thread,
+                            _lock: lock,
                         });
                         log::info!("termixion: remote control listening (opt-in).");
                     }
@@ -1298,7 +1304,7 @@ mod tests {
         let state = ControlState::new(true);
         let deps = ApplyDeps {
             create_socket: Box::new(
-                |_p: &Path, _o: SocketPathOrigin| -> Result<UnixListener, String> {
+                |_p: &Path, _o: SocketPathOrigin| -> Result<ControlSocket, String> {
                     panic!("must not bind")
                 },
             ),
