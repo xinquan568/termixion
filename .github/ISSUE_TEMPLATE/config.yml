@@ -1,0 +1,3 @@
+# trmx-264: keep the blank box. Under R9 the maintainer files `trmx-N` spec issues by hand, and those are
+# specifications — no version, no repro, no log. The forms below are an offer to reporters, never a wall.
+blank_issues_enabled: true

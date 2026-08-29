@@ -168,6 +168,23 @@ caught path: if the directory cannot be used, the app still launches with stdout
 - Unified logging (`os_log` / Console.app streaming) is a follow-up: the plugin has no such target and it
   belongs behind a `termixion-platform` seam (R1).
 
+### Reporting a bug (trmx-264)
+
+Bug reports go through **[the bug form](https://github.com/xinquan568/termixion/issues/new/choose)**,
+which asks for the version, the OS, the repro — and the log, because that is usually the difference
+between a fix and a guess. Issues filed through it carry the `has-log` label, so the share of reports
+that arrive with a log is a label query rather than a judgement call. (The label records that the form
+was *used*, not that a usable log was attached — GitHub applies a template's labels unconditionally.)
+
+Blank issues stay enabled: the maintainer files `trmx-N` specifications by hand (R9), and those have no
+version, no repro and no log. The form is an offer to reporters, never a wall.
+
+The form repeats the guarantee this section makes — Termixion **never logs** PTY input/output,
+environment values, clipboard contents, or `send-text` payloads — and its counterpart: logs **may
+include** settings keys/values and error messages, which can contain a username or a path, so a reporter
+should look over the tail before posting. Keep the two in step: the list above is the canonical one, and
+the form points at it rather than maintaining a second copy.
+
 ## Test-driven development (R8 — fundamental)
 
 **Write tests first.** Every behavioral change follows **RED → GREEN → REFACTOR**:

@@ -1,0 +1,33 @@
+name: Feature request
+description: Suggest something Termixion should be able to do.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Filing a specification as the maintainer? Use the blank issue instead — these forms are for
+        people who don't already know the codebase.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you unable to do today? Describe the situation, not the solution.
+      placeholder: When I …, Termixion …, so I have to …
+    validations:
+      required: true
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed behaviour
+      description: What should Termixion do instead?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: >-
+        What else would solve it — another tool, a workaround, a different design? "None" is a fine
+        answer, but say so deliberately.
+    validations:
+      required: true
