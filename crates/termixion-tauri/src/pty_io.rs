@@ -4,15 +4,15 @@
 //!
 //! Everything between the webview and a live terminal session (ADR-0001): [`PtyState`] (the
 //! registry, the poller gate and the per-session flow-control cells), the spawn path with its cwd
-//! fallback notice, the natural-batching hand-off between the core reader pump and the IPC channel
-//! ([`next_batch`], [`run_batch_sender`]) with its credit window ([`CreditCell`]), and the five
-//! commands the frontend routes by session id.
+//! fallback notice, and the five commands the frontend routes by session id.
 //!
-//! The transport invariants live in the doc comments beside the code that implements them: one
-//! Tauri `Channel` per session, a BOUNDED hand-off queue ([`PTY_HANDOFF_CHUNKS`]) so a slow webview
-//! backpressures the PTY reader instead of growing a queue, a [`PTY_BATCH_MAX_BYTES`] cap on one
-//! coalesced message, and a [`PTY_CREDIT_BYTES`] unacked-byte window the webview refills from
-//! xterm's parse callback via `pty_ack`.
+//! trmx-244 (grill M5) moved the transport-agnostic half — natural batching and the credit window —
+//! down into [`termixion_core::flow`], where the headless Linux job covers it. What stays here is
+//! the TAURI-shaped glue: one `Channel` per session, the thread that runs
+//! [`termixion_core::flow::run_batch_sender`] against `channel.send`, and `pty_ack` refilling the
+//! cell from xterm's parse callback. The invariants those pieces uphold — the bounded hand-off
+//! queue, the coalescing cap, the unacked-byte window — are documented in `flow.rs` beside the code
+//! that implements them.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;

@@ -3,7 +3,8 @@
 //
 //! trmx-101 (FR-9.4): the control-channel socket edge — the `std::os::unix` listener, its lifecycle, and
 //! the request bridge to the webview. OFF by default; socket `0600` in a `0700` dir; NO TCP, ever. Lives
-//! in `termixion-tauri` (never core — R2 forbids `std::os` there). The pure protocol codec is `control_io`.
+//! in `termixion-tauri` (never core — R2 forbids `std::os` there). The pure protocol codec this
+//! wraps is [`termixion_core::control`] (moved down in trmx-244).
 //!
 //! Lifecycle: `apply_remote_control` is idempotent + reached from all three config paths (initial load,
 //! app-originated write/reset, external file edit). The acceptor is non-blocking (polls a stop flag) and
