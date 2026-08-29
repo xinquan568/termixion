@@ -33,10 +33,10 @@ use serde_json::{Value as JsonValue, json};
 use tauri::{AppHandle, Emitter, State};
 use termixion_platform::{ControlSocket, SocketLock};
 
-use crate::control_io::{
+use termixion_core::config::{RemoteControlConfig, default_control_socket_path};
+use termixion_core::control::{
     PROTOCOL_VERSION, Request, Response, parse_ctl_argv, parse_request, serialize_response,
 };
-use termixion_core::config::{RemoteControlConfig, default_control_socket_path};
 
 /// How long the socket edge waits for the webview to answer ONE bridged request. trmx-235: 8 s (the old
 /// 2 s was routinely exceeded by a throttled/occluded webview). A `timeout` reply means the command's fate

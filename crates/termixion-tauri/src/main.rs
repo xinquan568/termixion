@@ -26,7 +26,6 @@ use tauri::{Emitter, Manager, WindowEvent};
 mod close_gate;
 mod config_io;
 mod control;
-mod control_io;
 mod enhancements_io;
 mod fs_watch;
 mod launch;

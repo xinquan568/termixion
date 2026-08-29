@@ -16,6 +16,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod config;
+pub mod control;
 pub mod fake;
 pub mod pty;
 pub mod pump;

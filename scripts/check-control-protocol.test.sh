@@ -10,10 +10,10 @@ fails=0
 check() { if [ "$2" = "$3" ]; then echo "  ok   $1 (exit $3)"; else echo "  FAIL $1: expected exit $2, got $3"; fails=$((fails + 1)); fi; }
 run() { set +e; (cd "$tmp" && bash "$GATE" --range "$1" >/dev/null 2>&1); rc=$?; set -e; echo "$rc"; }
 write_tree() { # write_tree <protocol> <ids-json-array>
-  mkdir -p "$tmp/app/src/control/__fixtures__" "$tmp/crates/termixion-tauri/src"
+  mkdir -p "$tmp/app/src/control/__fixtures__" "$tmp/crates/termixion-core/src"
   printf '{ "protocol": %s, "commands": %s }\n' "$1" "$2" > "$tmp/app/src/control/__fixtures__/control-commands.json"
   printf 'export const CONTROL_PROTOCOL_VERSION = %s;\n' "$1" > "$tmp/app/src/control/controlBridge.ts"
-  printf 'pub const PROTOCOL_VERSION: u32 = %s;\n' "$1" > "$tmp/crates/termixion-tauri/src/control_io.rs"
+  printf 'pub const PROTOCOL_VERSION: u32 = %s;\n' "$1" > "$tmp/crates/termixion-core/src/control.rs"
 }
 git -C "$tmp" init -q -b main; git -C "$tmp" config user.email t@example.com; git -C "$tmp" config user.name t; git -C "$tmp" config commit.gpgsign false
 write_tree 1 '["pane.close", "tab.new"]'; git -C "$tmp" add -A; git -C "$tmp" commit -q -m base

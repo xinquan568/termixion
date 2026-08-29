@@ -5,12 +5,12 @@
 # the remote-control protocol (docs/remote-control.md) — and the SET ITSELF is part of the protocol — so
 # between <a> and <b> this refuses ANY change to the `commands` set (add, remove, rename) unless `protocol`
 # increases AND both source constants (CONTROL_PROTOCOL_VERSION in controlBridge.ts, PROTOCOL_VERSION in
-# control_io.rs) equal the new value. Exit: 0 ok · 1 violation · 2 usage / unresolvable range (never vacuous).
+# core's control.rs) equal the new value. Exit: 0 ok · 1 violation · 2 usage / unresolvable range (never vacuous).
 set -euo pipefail
 
 FIXTURE="app/src/control/__fixtures__/control-commands.json"
 TS="app/src/control/controlBridge.ts"
-RS="crates/termixion-tauri/src/control_io.rs"
+RS="crates/termixion-core/src/control.rs"
 
 usage() { echo "check-control-protocol: usage: check-control-protocol.sh --range <a>..<b> | --range <a>...<b>"; }
 if [ "$#" -ne 2 ] || [ "$1" != "--range" ]; then usage; exit 2; fi
@@ -59,7 +59,7 @@ if changed and hp <= bp:
     problems.append(f"callable set changed ({what}) but protocol stayed {bp} -> bump `protocol` in the fixture")
 if hp != bp or changed:
     if ts != str(hp): problems.append(f"controlBridge.ts CONTROL_PROTOCOL_VERSION = {ts}, fixture protocol = {hp}")
-    if rs != str(hp): problems.append(f"control_io.rs PROTOCOL_VERSION = {rs}, fixture protocol = {hp}")
+    if rs != str(hp): problems.append(f"core control.rs PROTOCOL_VERSION = {rs}, fixture protocol = {hp}")
 print(f"removed={len(removed)} added={len(added)} protocol {bp}->{hp} ts={ts} rs={rs}")
 for p in problems: print("VIOLATION: " + p)
 sys.exit(1 if problems else 0)
