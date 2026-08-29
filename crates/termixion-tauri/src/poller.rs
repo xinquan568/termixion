@@ -63,7 +63,8 @@ impl PollerGate {
 /// Payload of the `session:title-hint` event (trmx-75): the foreground poller observed that
 /// session `session_id`'s foreground process is now `name`. A **hint only** — the frontend folds
 /// it into its per-tab title sources (where manual/OSC outrank it) and remains the single core-
-/// title writer; the poller never calls `registry.set_title`. camelCase for the frontend.
+/// title writer; the poller only ever HINTS and never writes a title anywhere. camelCase for
+/// the frontend.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TitleHint {

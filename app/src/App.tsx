@@ -114,7 +114,6 @@ import {
   onTitleHint,
   realInvoke,
   sendPtyInput,
-  setSessionTitle,
   takePendingOpenPaths,
   type InvokeFn,
   type SessionInfo,
@@ -474,8 +473,6 @@ export interface AppProps {
   observeCloseRequested?: CloseRequestedObservation;
   /** Injection seam for tests; defaults to retitling the native window (trmx-75). */
   setWindowTitle?: (title: string) => void;
-  /** Injection seam for tests; defaults to the real `set_session_title` core mirror (trmx-75). */
-  mirrorTitle?: (sessionId: number, title: string) => Promise<void>;
   /** Injection seam for tests; the frame schedule that throttles divider-drag dispatches (trmx-85). */
   dragSchedule?: FrameSchedule;
   /** Injection seam for tests; defaults to the real themes hot-reload installer (trmx-89). */
@@ -509,7 +506,6 @@ export function App({
   observeSessionNotice = realObserveSessionNotice,
   observeCloseRequested = realObserveCloseRequested,
   setWindowTitle = realSetWindowTitle,
-  mirrorTitle = setSessionTitle,
   dragSchedule = realFrameSchedule,
   installHotReload = installThemeHotReload,
   sendInput = (sessionId, data) => sendPtyInput(sessionId, data),
@@ -664,7 +660,6 @@ export function App({
   const readyCbsRef = useRef(new Map<PaneId, (handle: TerminalHandle) => void>()); // stable onReady per pane
   const oscTitleCbsRef = useRef(new Map<PaneId, (title: string) => void>()); // stable onOscTitle per pane
   const badgeCbsRef = useRef(new Map<PaneId, (badge: string | null) => void>()); // stable onBadge per pane (trmx-90)
-  const mirroredRef = useRef(new Map<PaneId, string>()); // last title mirrored to the core, per pane
   // Attach epoch per pane: each onReady bumps it; a resolution whose epoch is no longer current is
   // STALE (StrictMode's dev remount opens two PTYs — only the current epoch keeps its session).
   const attachEpochRef = useRef(new Map<PaneId, number>());
@@ -700,7 +695,6 @@ export function App({
     closeAcknowledged,
     closeSession,
     setWindowTitle,
-    mirrorTitle,
     sendInput,
   });
   seamsRef.current = {
@@ -710,7 +704,6 @@ export function App({
     closeAcknowledged,
     closeSession,
     setWindowTitle,
-    mirrorTitle,
     sendInput,
   };
   boundsRef.current = bounds;
@@ -1050,7 +1043,6 @@ export function App({
     readyCbsRef.current.delete(paneId);
     oscTitleCbsRef.current.delete(paneId);
     badgeCbsRef.current.delete(paneId);
-    mirroredRef.current.delete(paneId);
     attachEpochRef.current.delete(paneId);
     // trmx-91: cancel this pane's pending activity timer and drop its debounce state (no stray fire
     // into a dead pane, no leaked ActivityState).
@@ -1855,29 +1847,15 @@ export function App({
     seamsRef.current.setWindowTitle(activeTitle);
   }, [activeTitle]);
 
-  // trmx-75/84: the core mirror — every ATTACHED pane's effective title is written into its session
-  // (set_session_title) whenever it changes, so core `Session::title` always matches each pane's own
-  // title. The per-pane dedup map bounds the invoke stream to real changes; a hint under an OSC title
-  // leaves the pane title unchanged → nothing writes.
-  // trmx-166: the tab's manual rename is a TAB-scoped PIN (Tab.manualTitle) — it drives the tab label
-  // and the native window title (activeTab.title, above) ONLY. It is deliberately NOT mirrored here:
-  // each pane's core Session::title keeps tracking that pane's own osc/process/fallback title (a tab
-  // pin can't map to one of N panes' sessions). So a process/OSC hint on a pane under a pinned tab
-  // DOES update that pane's core title, while the tab LABEL stays pinned.
-  useEffect(() => {
-    for (const tab of state.tabs) {
-      for (const paneId of tabPaneIds(tab)) {
-        const sessionId = sessionsRef.current.get(paneId);
-        if (sessionId === undefined) continue; // not attached yet
-        const title = tab.panes[paneId].title;
-        if (mirroredRef.current.get(paneId) === title) continue;
-        mirroredRef.current.set(paneId, title);
-        seamsRef.current.mirrorTitle(sessionId, title).catch((err: unknown) => {
-          log.error("title mirror failed", err);
-        });
-      }
-    }
-  }, [state.tabs]);
+  // trmx-243 (grill L6): the core title mirror used to live here — every attached pane's effective
+  // title was written into its core session over an IPC per change, and nothing ever read it back
+  // (`SessionRegistry::title()` had no production caller; the control protocol's `ls` snapshot is
+  // built frontend-side in controlBridge.ts). Titles are frontend state, full stop.
+  //
+  // trmx-166 still holds and is still tested: a tab's manual rename is a TAB-scoped PIN
+  // (Tab.manualTitle) driving the tab label and the native window title (activeTab.title, above)
+  // ONLY. A process/OSC hint on a pane under a pinned tab updates that PANE's own title while the
+  // tab LABEL stays pinned.
 
   // trmx-85 (FR-3.3): divider drag-resize. A pointer drag on a divider maps the pointer (converted to
   // content-area coords, matching solveRects' space) → a clamped ratio for that split (dividerDrag.ts),

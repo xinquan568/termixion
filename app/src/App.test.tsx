@@ -220,7 +220,6 @@ function renderApp(
   const input = makeInputObservation(); // trmx-159: keystroke-input observations
   const settingsChanged = makeObservation<unknown>(); // trmx-81: settings:changed broadcasts
   const setWindowTitle = vi.fn();
-  const mirrorTitle = vi.fn(() => Promise.resolve());
   // trmx-89: the themes hot-reload installer seam — a no-op returning a teardown spy keeps these
   // tests backend-free (the real installer subscribes to the Tauri themes:changed bus).
   const hotReloadTeardown = vi.fn();
@@ -237,7 +236,6 @@ function renderApp(
     observeInput: input.observe,
     observeSettings: settingsChanged.observe,
     setWindowTitle,
-    mirrorTitle,
     dragSchedule: frame.schedule,
     installHotReload,
     // trmx-151: injectable backend invoke (keys_read drives the keymap rebuild); undefined keeps
@@ -270,7 +268,6 @@ function renderApp(
     input,
     settingsChanged,
     setWindowTitle,
-    mirrorTitle,
     frame,
     installHotReload,
     hotReloadTeardown,
@@ -930,12 +927,9 @@ describe("App tab titles (trmx-75)", () => {
     expect(screen.getByTestId("tab-strip")).not.toHaveTextContent("ghost");
   });
 
-  it("a rename PINS the tab label + window title but is NOT mirrored to the core; the pane keeps its own title (trmx-166)", async () => {
-    const { calls, titleHint, mirrorTitle, setWindowTitle } = renderApp();
+  it("a rename PINS the tab label + window title while the pane keeps its own title (trmx-166)", async () => {
+    const { calls, titleHint, setWindowTitle } = renderApp();
     await resolveAttach(calls[0], { sessionId: 11, title: "zsh" });
-    // The attach mirrors the PANE's effective title into the core session.
-    expect(mirrorTitle).toHaveBeenCalledWith(11, "zsh");
-    const countAfterAttach = mirrorTitle.mock.calls.length;
 
     // Rename via the real path (double-click the label, type, Enter) — a TAB-scoped PIN (trmx-166).
     fireEvent.doubleClick(screen.getByTitle("zsh"));
@@ -947,29 +941,13 @@ describe("App tab titles (trmx-75)", () => {
     // The tab LABEL and the native WINDOW TITLE show the pin…
     expect(screen.getByTestId("tab-1")).toHaveTextContent("My Tab");
     expect(setWindowTitle).toHaveBeenLastCalledWith("My Tab");
-    // …but the pin is a tab-level label — it is NOT mirrored into the core session (which tracks the
-    // PANE's own title). No new mirror fired, and never with the manual name.
-    expect(mirrorTitle).not.toHaveBeenCalledWith(11, "My Tab");
-    expect(mirrorTitle.mock.calls.length).toBe(countAfterAttach);
 
-    // A process hint now updates the PANE's own title → it mirrors to the core session (the pane's
-    // real title), while the tab LABEL stays pinned (trmx-166 contract).
+    // …and a process hint still updates the PANE's own title underneath, while the tab LABEL stays
+    // pinned (the trmx-166 contract). The pane's title is what the pane host renders.
     await act(async () => {
       titleHint.fire(11, "vim");
     });
-    expect(mirrorTitle).toHaveBeenCalledWith(11, "vim");
     expect(screen.getByTestId("tab-1")).toHaveTextContent("My Tab");
-  });
-
-  it("never mirrors a title for a tab whose session has not attached", async () => {
-    const { mirrorTitle } = renderApp(); // the attach stays in flight
-
-    await act(async () => {
-      recorder.mounts[0].onOscTitle?.("early bird");
-    });
-
-    expect(screen.getByTestId("tab-1")).toHaveTextContent("early bird");
-    expect(mirrorTitle).not.toHaveBeenCalled();
   });
 });
 
@@ -1431,7 +1409,7 @@ describe("App split panes (trmx-84)", () => {
   });
 
   it("rename PINS the tab title across pane focus changes (multi-pane) (trmx-166)", async () => {
-    const { calls, mirrorTitle, tabsAction } = renderApp();
+    const { calls, tabsAction } = renderApp();
     await resolveAttach(calls[0], { sessionId: 11, title: "one" });
     cmdD(); // split → pane 2 focused
     await resolveAttach(calls[1], { sessionId: 22, title: "two" });
@@ -1443,9 +1421,6 @@ describe("App split panes (trmx-84)", () => {
     fireEvent.keyDown(input, { key: "Enter" });
 
     expect(screen.getByTestId("tab-1")).toHaveTextContent("deploy");
-    // trmx-166: the rename is a TAB-scoped pin, not a pane manual — it is NOT mirrored to any
-    // pane's core session.
-    expect(mirrorTitle).not.toHaveBeenCalledWith(22, "deploy");
     // Focus a DIFFERENT pane → the tab title STAYS pinned (the trmx-166 bug fix; it used to revert
     // to the newly focused pane's title).
     await act(async () => {

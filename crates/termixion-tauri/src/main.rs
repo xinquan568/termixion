@@ -10,9 +10,8 @@
 //! its own Tauri IPC `Channel` (ADR-0001): a dedicated thread per session runs the core reader
 //! pump while `pty_write` / `pty_resize` / `close_pty` route by session id. trmx-75 (FR-2.4) adds
 //! the tab-title plumbing: a 1 Hz foreground-name poller (condvar-parked at zero sessions via
-//! [`PollerGate`]) emitting change-only `session:title-hint` events, and the `set_session_title`
-//! command through which the frontend — the single core-title writer — mirrors each tab's
-//! effective title. The session domain logic lives in `termixion-core`; this file is runtime glue
+//! [`PollerGate`]) emitting change-only `session:title-hint` events, which the frontend folds into
+//! its own per-tab title state (the core holds no title since trmx-243). The session domain logic lives in `termixion-core`; this file is runtime glue
 //! (validated by the C-3 packaged `--smoke` and `cargo tauri dev`) — the pure pieces
 //! (`program_title`, [`poll_tick`], the payload wire shapes, the gate's park/wake) are unit-tested.
 //! trmx-80 (FR-13) adds the `config_io` module: the `termixion.toml` read/write/reset commands and
@@ -48,7 +47,7 @@ use close_gate::{
     webview_close_request,
 };
 use poller::run_title_poller;
-use pty_io::{PtyState, close_pty, open_pty, pty_ack, pty_resize, pty_write, set_session_title};
+use pty_io::{PtyState, close_pty, open_pty, pty_ack, pty_resize, pty_write};
 
 use launch::{
     CliQuery, PERF_WATCHDOG_SECS, SMOKE_WATCHDOG_SECS, SpecialLaunch, cli_query, launch_modes,
@@ -297,7 +296,6 @@ fn main() -> ExitCode {
             pty_ack,
             pty_resize,
             close_pty,
-            set_session_title,
             smoke_config,
             smoke_done,
             perf_config,

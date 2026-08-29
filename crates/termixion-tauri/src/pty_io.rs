@@ -567,24 +567,6 @@ pub(crate) fn close_pty(session_id: u64, state: State<'_, PtyState>) -> Result<(
         .map_err(|e| e.to_string())
 }
 
-/// Mirror a tab's EFFECTIVE title into its core session (trmx-75). The frontend computes the
-/// effective title (manual > OSC > process hint > fallback) in its reducer and is the **single
-/// core-title writer** — the foreground poller only emits hints and never lands here. Absent id
-/// (a tab whose session already exited) surfaces the registry's NotFound as an error string.
-#[tauri::command]
-pub(crate) fn set_session_title(
-    session_id: u64,
-    title: String,
-    state: State<'_, PtyState>,
-) -> Result<(), String> {
-    state
-        .registry
-        .lock()
-        .map_err(|_| "pty state poisoned".to_string())?
-        .set_title(session_id, title)
-        .map_err(|e| e.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc;
