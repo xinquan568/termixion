@@ -18,6 +18,7 @@
 pub mod config;
 pub mod control;
 pub mod fake;
+pub mod flow;
 pub mod pty;
 pub mod pump;
 pub mod registry;
