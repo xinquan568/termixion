@@ -3370,31 +3370,60 @@ mod tests {
     }
 
     #[test]
-    fn sender_releases_the_blocked_producer_before_on_done_runs() {
-        // R2 step-8 F2: rx must drop BEFORE the done guard fires so a producer blocked on the
-        // full hand-off is already released when on_done (the reap) runs.
+    fn sender_drops_the_receiver_before_on_done_runs() {
+        // R2 step-8 F2: `rx` must drop BEFORE the done guard fires, so a producer blocked on the
+        // full hand-off is already released (SendError) by the time `on_done` — the reap — runs.
+        //
+        // trmx-250: asserted through the drop ORDER, with no threads, no sleeps and no timeouts.
+        // The previous shape parked a real producer on a blocking send and could not be made
+        // deterministic: `next_batch` consumes the buffered item, which frees the slot and lets the
+        // blocked send SUCCEED, so the test raced `send_batch → false → break → drop(rx)` against
+        // the producer waking up. It failed roughly 1 run in 70 on
+        // `assert!(producer.join()…is_err())` and cost a CI re-run on five separate PRs.
+        //
+        // The receiver being gone is precisely what releases a blocked producer, so observing that
+        // from inside `on_done` pins the same invariant — and, unlike the old test, it cannot pass
+        // by accident: a still-live receiver would ACCEPT this probe, because `next_batch` has just
+        // freed the slot.
+        //
+        // This also subsumes the former `sender_end_releases_a_producer_blocked_on_the_full_queue`,
+        // which raced the same way (5 failures in 150 harness runs, measured) and whose premise was
+        // not achievable deterministically: `run_batch_sender` always consumes a batch before it
+        // breaks, so the consumer itself frees the producer — there is no way to hold one blocked
+        // while the consumer runs. What that test actually asserted beyond this one was
+        // `std::sync::mpsc`'s own guarantee that a blocked send resolves to `SendError` once the
+        // receiver drops; the part that is OURS is that `run_batch_sender` drops the receiver at
+        // all, and does so before the reap — which is exactly what is asserted here.
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc::TrySendError;
+
         let (tx, rx) = sync_channel::<Vec<u8>>(1);
-        tx.send(b"fill".to_vec()).expect("queue");
-        let (sig_tx, sig_rx) = mpsc::channel::<()>();
-        let producer = std::thread::spawn(move || {
-            let result = tx.send(b"blocked".to_vec());
-            let _ = sig_tx.send(()); // signals release (send resolved, Err expected)
-            result
-        });
-        std::thread::sleep(Duration::from_millis(50));
+        tx.send(b"one".to_vec()).expect("queue"); // one batch, so the loop body runs exactly once
+        let probe = tx.clone();
+        let receiver_gone = std::sync::Arc::new(AtomicBool::new(false));
+        let observed = std::sync::Arc::clone(&receiver_gone);
+
         run_batch_sender(
             rx,
             1024,
             Duration::from_millis(PTY_BATCH_WINDOW_MS),
-            |_| false,
+            |_| false, // transport gone → break after the first batch
             move || {
-                // The reap observes the producer ALREADY released (deterministic: bounded wait).
-                sig_rx
-                    .recv_timeout(Duration::from_secs(2))
-                    .expect("producer must be released before on_done");
+                observed.store(
+                    matches!(
+                        probe.try_send(b"probe".to_vec()),
+                        Err(TrySendError::Disconnected(_))
+                    ),
+                    Ordering::SeqCst,
+                );
             },
         );
-        assert!(producer.join().expect("producer").is_err());
+
+        assert!(
+            receiver_gone.load(Ordering::SeqCst),
+            "rx must drop before on_done runs, so a producer blocked on the hand-off is already \
+             released when the reap fires"
+        );
     }
 
     #[test]
@@ -3459,28 +3488,6 @@ mod tests {
         assert!(
             elapsed < Duration::from_millis(PTY_BATCH_WINDOW_MS * 2),
             "idle send must be immediate-ish, took {elapsed:?}"
-        );
-    }
-
-    #[test]
-    fn sender_end_releases_a_producer_blocked_on_the_full_queue() {
-        // (i) a pump blocked on a full bounded hand-off must unblock with SendError once the
-        // sender ends (receiver dropped) — otherwise a dead webview would wedge the pump thread.
-        let (tx, rx) = sync_channel::<Vec<u8>>(1);
-        tx.send(b"fill".to_vec()).expect("queue");
-        let producer = std::thread::spawn(move || tx.send(b"blocked".to_vec()));
-        std::thread::sleep(Duration::from_millis(50)); // let the producer park on the full queue
-        run_batch_sender(
-            rx,
-            1024,
-            Duration::from_millis(PTY_BATCH_WINDOW_MS),
-            |_| false,
-            || {},
-        );
-        let result = producer.join().expect("producer thread");
-        assert!(
-            result.is_err(),
-            "the blocked send must resolve to SendError after the receiver drops"
         );
     }
 
