@@ -27,9 +27,9 @@ pub mod theme;
 pub mod zdotdir;
 
 pub use config::{
-    CheckFrequency, Config, ConfigWarning, CursorStyle, DEFAULT_TEMPLATE, LabelOrientation,
-    RegistryValue, ScriptsConfig, TabBarPosition, TabsConfig, diff_configs, parse_config,
-    parse_registry_pairs, toml_path_for,
+    CheckFrequency, Config, ConfigWarning, CursorStyle, DEFAULT_TEMPLATE, FileApplication,
+    LabelOrientation, RegistryValue, ScriptsConfig, TabBarPosition, TabsConfig, apply_file_text,
+    diff_configs, parse_config, parse_registry_pairs, text_hash, toml_path_for,
 };
 pub use pty::{PtyBackend, PtyError, PtyFactory, PtyReader, PtySize, SessionSpec};
 pub use pump::pump;

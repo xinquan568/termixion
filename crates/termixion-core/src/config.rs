@@ -11,7 +11,9 @@
 //! actually fix in the file).
 
 use std::collections::BTreeMap;
+use std::collections::hash_map::DefaultHasher;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::ops::RangeInclusive;
 
 use serde::{Deserialize, Serialize};
@@ -1184,6 +1186,54 @@ fn describe_value(value: &toml::Value) -> String {
     } else {
         "a datetime".to_string()
     }
+}
+
+// ---------------------------------------------------------------------------
+// The watcher's pure decision (trmx-244, grill M5 — moved here from the shell's config_io.rs)
+//
+// These are the config-apply seam: given the file's text, the last-applied config and the hash of
+// the last bytes WE wrote, decide whether this watcher wake is a real external edit or our own echo,
+// and if real, what changed. No filesystem, no notify, no Tauri — the shell keeps that edge and
+// calls in here. Living in core means the headless Linux job covers them (R1).
+// ---------------------------------------------------------------------------
+
+/// Hash of a file's text content (std `DefaultHasher` — cheap, in-process only, never persisted).
+pub fn text_hash(text: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Should a watcher wake apply the file content with this hash? `false` exactly when it equals
+/// the hash of the last bytes we ourselves wrote (the self-echo, D6).
+fn should_apply(file_hash: u64, last_write_hash: Option<u64>) -> bool {
+    last_write_hash != Some(file_hash)
+}
+
+/// What one applied watcher wake yields: the new diff base, the changed registry pairs to
+/// broadcast, and any parse warnings to surface.
+pub struct FileApplication {
+    pub config: Config,
+    pub changed: Vec<(String, RegistryValue)>,
+    pub warnings: Vec<ConfigWarning>,
+}
+
+/// The pure core of one watcher wake: drop the self-echo (D6), otherwise parse + diff.
+pub fn apply_file_text(
+    text: &str,
+    last: &Config,
+    last_write_hash: Option<u64>,
+) -> Option<FileApplication> {
+    if !should_apply(text_hash(text), last_write_hash) {
+        return None;
+    }
+    let (config, warnings) = parse_config(text);
+    let changed = diff_configs(last, &config);
+    Some(FileApplication {
+        config,
+        changed,
+        warnings,
+    })
 }
 
 #[cfg(test)]
@@ -2557,5 +2607,88 @@ show_shortcut_hints = false
             .find(|l| l.contains("the default socket path (`"))
             .expect("the socket_path field doc names the default path");
         assert!(doc_line.contains(&rendered), "field doc: {doc_line}");
+    }
+
+    // --- trmx-244: the config-apply decision, moved from the shell's config_io.rs ---
+
+    #[test]
+    fn should_apply_drops_the_self_echo_hash() {
+        assert!(!should_apply(42, Some(42)));
+    }
+    #[test]
+    fn should_apply_applies_a_different_hash() {
+        assert!(should_apply(42, Some(7)));
+    }
+    #[test]
+    fn should_apply_applies_when_no_write_hash_is_recorded() {
+        assert!(should_apply(42, None));
+    }
+    #[test]
+    fn text_hash_is_stable_and_content_sensitive() {
+        assert_eq!(text_hash("abc"), text_hash("abc"));
+        assert_ne!(text_hash("abc"), text_hash("abd"));
+    }
+    #[test]
+    fn apply_file_text_drops_the_self_echo() {
+        let text = "[terminal]\nfont_size = 14\n";
+        let application = apply_file_text(text, &Config::default(), Some(text_hash(text)));
+        assert!(
+            application.is_none(),
+            "our own write echoing back must be dropped (D6)"
+        );
+    }
+    #[test]
+    fn apply_file_text_diffs_against_last_and_reports_changed_pairs() {
+        let text = "[terminal]\nfont_size = 14\n";
+        let application =
+            apply_file_text(text, &Config::default(), None).expect("an external edit applies");
+        assert_eq!(
+            application.changed,
+            vec![("terminal.fontSize".to_string(), RegistryValue::Int(14))]
+        );
+        assert_eq!(application.config.terminal.font_size, 14);
+        assert!(application.warnings.is_empty());
+    }
+    #[test]
+    fn apply_file_text_surfaces_warnings() {
+        let application = apply_file_text("[nope]\nx = 1\n", &Config::default(), None)
+            .expect("a warned parse still applies");
+        assert!(application.changed.is_empty(), "defaults did not change");
+        assert_eq!(
+            application.warnings,
+            vec![ConfigWarning::UnknownKey {
+                key: "nope".to_string()
+            }]
+        );
+    }
+    #[test]
+    fn apply_file_text_empty_text_returns_to_defaults() {
+        // A deleted/unreadable file reads as "" — the world goes back to defaults, and the
+        // diff against the previous state carries exactly the keys that must revert.
+        let mut last = Config::default();
+        last.terminal.font_size = 14;
+        let application = apply_file_text("", &last, None).expect("applies");
+        assert_eq!(
+            application.changed,
+            vec![("terminal.fontSize".to_string(), RegistryValue::Int(12))]
+        );
+        assert_eq!(application.config, Config::default());
+        assert!(application.warnings.is_empty());
+    }
+    #[test]
+    fn apply_file_text_default_template_is_not_latched_and_reverts_non_defaults() {
+        // trmx-148 design pin: config_open_file's materialization write is deliberately NOT
+        // latched (no last_write_hash), so the watcher applies the template like any external
+        // edit — the template parses to pure defaults, and the diff against the previous state
+        // carries exactly the non-default keys that must revert.
+        let last = parse_config("[terminal]\nfont_size = 14\n").0;
+        let application = apply_file_text(DEFAULT_TEMPLATE, &last, None)
+            .expect("an unlatched template write must apply, not be suppressed");
+        assert_eq!(
+            application.changed,
+            vec![("terminal.fontSize".to_string(), RegistryValue::Int(12))]
+        );
+        assert_eq!(application.config, Config::default());
+        assert!(application.warnings.is_empty());
     }
 }
