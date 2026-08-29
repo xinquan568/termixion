@@ -6,7 +6,7 @@
 // Enter run, Esc / backdrop cancel). Purely presentational + generic over the item type: the caller
 // supplies the items, the fuzzy key, the React key, how to render a row, and the class prefix / a11y
 // strings. Data loading (scripts, commands, themes) stays in the caller.
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { fuzzyFilter } from "../scripts/fuzzy";
 
 export interface PaletteOverlayProps<T> {
@@ -50,23 +50,37 @@ export function PaletteOverlay<T>({
   initialQuery = "",
 }: PaletteOverlayProps<T>) {
   const [query, setQuery] = useState(initialQuery);
-  const [selected, setSelected] = useState(0);
+  // trmx-291: the selection is held in a REF as well as state. A key handler can be re-entered
+  // before React commits the next render — two keystrokes inside one batch, which key-repeat or a
+  // fast typist produces — and a closure read of `selected` would then see the PRE-move index.
+  // ↑/↓ were already safe (functional updater); Enter was not, and it RUNS the item, so the stale
+  // read meant executing the wrong script. The ref is the authority for reads inside handlers; the
+  // state drives rendering. Both are written through `select`, so they cannot drift.
+  const [selected, setSelectedState] = useState(0);
+  const selectedRef = useRef(0);
+  const select = (next: number) => {
+    selectedRef.current = next;
+    setSelectedState(next);
+  };
 
   const filtered = useMemo(() => fuzzyFilter(query, items, filterKey), [query, items, filterKey]);
 
   // A new filter — or a refreshed item list — re-selects the top result (keeps the highlight in range).
-  useEffect(() => setSelected(0), [query, items]);
+  useEffect(() => select(0), [query, items]);
 
   const onKeyDown = (event: React.KeyboardEvent) => {
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      setSelected((s) => Math.min(s + 1, filtered.length - 1));
+      select(Math.min(selectedRef.current + 1, filtered.length - 1));
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
-      setSelected((s) => Math.max(s - 1, 0));
+      select(Math.max(selectedRef.current - 1, 0));
     } else if (event.key === "Enter") {
       event.preventDefault();
-      const item = filtered[selected];
+      // Read the ref, not the closure: this handler may not have re-rendered since the ↑/↓ above.
+      // A stale `filtered` can only make this index out of range, which is inert (no run) — never
+      // the wrong item.
+      const item = filtered[selectedRef.current];
       if (item !== undefined) onRun(item);
     } else if (event.key === "Escape") {
       event.preventDefault();
@@ -103,7 +117,7 @@ export function PaletteOverlay<T>({
                 role="option"
                 aria-selected={index === selected}
                 className={`${classPrefix}__item${index === selected ? ` ${classPrefix}__item--active` : ""}`}
-                onMouseEnter={() => setSelected(index)}
+                onMouseEnter={() => select(index)}
                 onClick={() => onRun(item)}
               >
                 {renderItem(item)}

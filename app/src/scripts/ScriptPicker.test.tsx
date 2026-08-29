@@ -3,7 +3,7 @@
 //
 // trmx-93 (FR-5, test-first): the script picker overlay — keyboard-first fuzzy list. Type to filter,
 // ↑/↓ to move, Enter to run, Esc/backdrop to cancel. Catalog rides an injected `invoke` fake.
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ScriptPicker } from "./ScriptPicker";
 import type { InvokeFn } from "../ipc/backend";
@@ -50,6 +50,21 @@ describe("ScriptPicker (trmx-93)", () => {
     const overlay = screen.getByTestId("script-picker");
     fireEvent.keyDown(overlay, { key: "ArrowDown" });
     fireEvent.keyDown(overlay, { key: "Enter" });
+    expect(onRun).toHaveBeenCalledTimes(1);
+    expect(onRun.mock.calls[0][0].relPath).toBe("work/proj-x.sh");
+  });
+
+  it("↓ then Enter in ONE batch still runs the highlighted script (stale-closure guard)", async () => {
+    // trmx-291: `Enter` read `selected` from the render closure while ↑/↓ used the functional
+    // updater. When no re-render commits between the two keystrokes — two keys inside one React
+    // batch, which a fast typist or key-repeat can produce — Enter saw the PRE-move index and ran
+    // the WRONG script. Scripts are executed, so that is a destructive misfire, not a cosmetic one.
+    const { onRun } = await renderPicker();
+    const overlay = screen.getByTestId("script-picker");
+    await act(async () => {
+      overlay.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+      overlay.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
     expect(onRun).toHaveBeenCalledTimes(1);
     expect(onRun.mock.calls[0][0].relPath).toBe("work/proj-x.sh");
   });
