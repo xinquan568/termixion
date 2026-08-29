@@ -23,6 +23,7 @@ internal changes (build / CI / tests / refactors / docs) live in the git history
 - Decide socket liveness by lock, not by connect (trmx-278) (#284)
 - Teardown_once on every exit path that emits a run event (trmx-267) (#286)
 - One close gate for every gesture that reaches code (trmx-268) (#287)
+- Read the palette selection from a ref, not a stale closure (trmx-291) (#292)
 
 ## [0.1.1] - 2026-08-02
 
