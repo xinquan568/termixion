@@ -1,0 +1,94 @@
+name: Bug report
+description: Something in Termixion is broken — with the log that makes it diagnosable.
+title: "[bug] "
+labels: ["bug", "has-log"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. The log is the field that matters most — it is usually the difference
+        between a fix and a guess.
+
+        Filing a specification as the maintainer? Use the blank issue instead; this form is for
+        people who don't already know the codebase.
+
+  - type: input
+    id: version
+    attributes:
+      label: Termixion version
+      description: "Settings → About, or run `termixion --version`."
+      placeholder: 0.1.1
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: macOS version and chip
+      description: "Apple menu → About This Mac."
+      placeholder: 15.5, Apple silicon (M2)
+    validations:
+      required: true
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+      placeholder: |
+        Steps:
+        1.
+        2.
+
+        Expected:
+
+        Actually happened:
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        ### About the log
+
+        Termixion **never logs** your terminal input or output, environment values, clipboard
+        contents, or `send-text` payloads.
+
+        Logs **may include** settings keys and values, and error messages — which can contain a
+        username or a path. Have a glance over the tail before posting, and redact anything you'd
+        rather not publish.
+
+        This is a summary; the policy it summarises lives in
+        [CONTRIBUTING → Logging](https://github.com/xinquan568/termixion/blob/main/docs/CONTRIBUTING.md#logging-trmx-236).
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: |
+        Open **Settings → About → Logs → "Open folder"**, or go straight to
+        `~/Library/Logs/dev.termixion.terminal/termixion.log`.
+
+        Paste the tail below, or drag the file into this box to attach it. The last few hundred
+        lines around the problem are usually plenty. If you paste, a ``` fence keeps it readable.
+      placeholder: |
+        2026-08-29T12:00:00Z INFO  termixion: …
+    validations:
+      required: true
+
+  - type: input
+    id: shell
+    attributes:
+      label: Shell
+      description: Which shell the affected pane was running, if you know.
+      placeholder: zsh
+
+  - type: dropdown
+    id: enhancements
+    attributes:
+      label: Shell enhancements
+      description: "Settings → Terminal → Shell enhancements (autosuggestions / syntax highlighting)."
+      options:
+        - Not sure
+        - "On"
+        - "Off"
