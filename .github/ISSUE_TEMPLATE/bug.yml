@@ -58,6 +58,9 @@ body:
         username or a path. Have a glance over the tail before posting, and redact anything you'd
         rather not publish.
 
+        This is a summary; the policy it summarises lives in
+        [CONTRIBUTING → Logging](https://github.com/xinquan568/termixion/blob/main/docs/CONTRIBUTING.md#logging-trmx-236).
+
   - type: textarea
     id: log
     attributes:

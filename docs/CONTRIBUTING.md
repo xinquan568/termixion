@@ -172,9 +172,10 @@ caught path: if the directory cannot be used, the app still launches with stdout
 
 Bug reports go through **[the bug form](https://github.com/xinquan568/termixion/issues/new/choose)**,
 which asks for the version, the OS, the repro — and the log, because that is usually the difference
-between a fix and a guess. Issues filed through it carry the `has-log` label, so the share of reports
-that arrive with a log is a label query rather than a judgement call. (The label records that the form
-was *used*, not that a usable log was attached — GitHub applies a template's labels unconditionally.)
+between a fix and a guess. Issues filed through it carry the `has-log` label, which measures **bug-form
+use** — that is, whether a reporter was asked for a log. It does not measure whether one was attached or
+whether it is diagnosable: GitHub applies a template's labels unconditionally, and a required textarea
+accepts any non-empty text, so those still take a human look.
 
 Blank issues stay enabled: the maintainer files `trmx-N` specifications by hand (R9), and those have no
 version, no repro and no log. The form is an offer to reporters, never a wall.
@@ -182,8 +183,9 @@ version, no repro and no log. The form is an offer to reporters, never a wall.
 The form repeats the guarantee this section makes — Termixion **never logs** PTY input/output,
 environment values, clipboard contents, or `send-text` payloads — and its counterpart: logs **may
 include** settings keys/values and error messages, which can contain a username or a path, so a reporter
-should look over the tail before posting. Keep the two in step: the list above is the canonical one, and
-the form points at it rather than maintaining a second copy.
+should look over the tail before posting. The form necessarily restates that in reporter-facing words —
+a GitHub issue form cannot transclude — so it links back to this section, which stays canonical. Change
+the list here first, then update the form to match.
 
 ## Test-driven development (R8 — fundamental)
 
