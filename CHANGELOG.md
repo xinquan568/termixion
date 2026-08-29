@@ -5,6 +5,25 @@ The user-facing changes to Termixion are documented here. The format follows
 [Semantic Versioning](https://semver.org). Auto-generated from Conventional Commits by git-cliff;
 internal changes (build / CI / tests / refactors / docs) live in the git history and the linked issues.
 
+## [0.1.2] - 2026-08-29
+
+### Added
+- Search matches page content, not just nav labels (trmx-232) (#233)
+- Logging sink for the packaged app — file + stdout, bounded webview forwarding, Open log folder (trmx-236) (#260)
+- Surface degraded modes — config_write failures, transient-read guard, enhancement status, config warnings in the main window (trmx-238) (#270)
+
+### Changed
+- Send PTY frames as raw bytes (ArrayBuffer) instead of JSON number[] (trmx-241) (#273)
+
+### Fixed
+- Give SessionSpec a vocabulary for an absent env var (trmx-230) (#231)
+- UTF-8 ctl output, bounded self-healing acceptor, protocol-pinned command set, socket-path docs (trmx-235) (#259)
+- React error boundary + global handlers; PTY spawn failure visible in the pane (trmx-237) (#269)
+- Hold @xterm/* minor bumps too — the addons are 0.x, so minor is the breaking position (trmx-279) (#282)
+- Decide socket liveness by lock, not by connect (trmx-278) (#284)
+- Teardown_once on every exit path that emits a run event (trmx-267) (#286)
+- One close gate for every gesture that reaches code (trmx-268) (#287)
+
 ## [0.1.1] - 2026-08-02
 
 ### Added
