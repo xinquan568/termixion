@@ -93,7 +93,7 @@ export interface Tab {
    * trmx-166: the user's tab-level manual title (the rename PIN) — `undefined` (or empty after
    * sanitize) means "follow focus". When set, it overrides the focused pane's effective title for
    * the derived `title`, so the tab label stays put across pane splits and focus changes. It is a
-   * TAB label only: per-pane `PaneState.title` (and the core session mirror) are unaffected.
+   * TAB label only: each pane's own `PaneState.title` is unaffected.
    */
   manualTitle?: string;
   /**

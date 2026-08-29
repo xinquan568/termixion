@@ -19,7 +19,6 @@ import {
   sendPtyInput,
   sendPtyResize,
   SESSION_ACTIVITY_EVENT,
-  setSessionTitle,
   takePendingOpenPaths,
   TITLE_HINT_EVENT,
   wirePtyChannel,
@@ -228,26 +227,6 @@ describe("pty input/resize/close (session-scoped, trmx-74)", () => {
     invoke.mockResolvedValue(undefined);
     await closePty(5, invoke);
     expect(invoke).toHaveBeenCalledWith("close_pty", { sessionId: 5 });
-  });
-});
-
-// trmx-75: the core-title mirror path — App writes each tab's EFFECTIVE title into the core
-// session (the SOLE core-title writer; the poller only hints).
-describe("setSessionTitle", () => {
-  it("invokes set_session_title with exactly { sessionId, title }", async () => {
-    const invoke = vi.fn<InvokeFn>();
-    invoke.mockResolvedValue(undefined);
-    await setSessionTitle(3, "build box", invoke);
-    expect(invoke).toHaveBeenCalledExactlyOnceWith("set_session_title", {
-      sessionId: 3,
-      title: "build box",
-    });
-  });
-
-  it("propagates a rejected invoke (App's mirror catch owns the error)", async () => {
-    const invoke = vi.fn<InvokeFn>();
-    invoke.mockRejectedValue(new Error("session gone"));
-    await expect(setSessionTitle(3, "x", invoke)).rejects.toThrow("session gone");
   });
 });
 

@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: ISC
 // Copyright (c) 2026 Eric Y. Liu
-//! The single-session domain model — one PTY-backed terminal session with id / title / size /
-//! liveness — independent of any platform. A tab manager owns a collection of these (P1-4, later).
+//! The single-session domain model — one PTY-backed terminal session with id / size / liveness —
+//! independent of any platform. A tab manager owns a collection of these (P1-4, later).
+//!
+//! trmx-243 (grill L6) retired the title: the core carried a `title` the frontend mirrored in over
+//! an IPC per change and nothing ever read back. Each pane's title is frontend state, and the
+//! control protocol's `ls` snapshot is assembled there too.
 
 use crate::pty::{PtyBackend, PtyError, PtyFactory, PtySize, SessionSpec};
 
@@ -11,15 +15,13 @@ pub type SessionId = u64;
 /// One terminal session: its backend plus the domain state the UI needs.
 pub struct Session {
     id: SessionId,
-    title: String,
     size: PtySize,
     alive: bool,
     backend: Box<dyn PtyBackend>,
 }
 
 impl Session {
-    /// Spawn a new session via `factory`. The title defaults to the spec's program; callers may
-    /// override it with [`Session::set_title`] (e.g. from an OSC title or the foreground process).
+    /// Spawn a new session via `factory`.
     ///
     /// Rejects a zero-row or zero-col `size` with [`PtyError::InvalidSize`] — a PTY grid is at
     /// least 1x1, and a degenerate size must never reach a backend.
@@ -33,7 +35,6 @@ impl Session {
         let backend = factory.spawn(spec, size)?;
         Ok(Self {
             id,
-            title: spec.program.to_string_lossy().into_owned(),
             size,
             alive: true,
             backend,
@@ -43,16 +44,6 @@ impl Session {
     /// The session's stable id.
     pub fn id(&self) -> SessionId {
         self.id
-    }
-
-    /// The current title.
-    pub fn title(&self) -> &str {
-        &self.title
-    }
-
-    /// Override the title (manual rename, OSC title, or foreground-process name).
-    pub fn set_title(&mut self, title: impl Into<String>) {
-        self.title = title.into();
     }
 
     /// The last size set (initial size or the most recent [`Session::resize`]).
@@ -142,14 +133,13 @@ mod tests {
     use crate::fake::FakePtyFactory;
 
     #[test]
-    fn spawn_write_read_resize_title_kill() {
+    fn spawn_write_read_resize_kill() {
         let factory = FakePtyFactory;
         let spec = SessionSpec::shell("/bin/zsh");
         let mut session =
             Session::spawn(7, &factory, &spec, PtySize::new(24, 80)).expect("spawn should succeed");
 
         assert_eq!(session.id(), 7);
-        assert_eq!(session.title(), "/bin/zsh");
         assert!(session.is_alive());
         assert_eq!(session.size(), PtySize::new(24, 80));
 
@@ -163,10 +153,6 @@ mod tests {
         // resize updates the stored size.
         session.resize(PtySize::new(40, 120)).expect("resize");
         assert_eq!(session.size(), PtySize::new(40, 120));
-
-        // title override.
-        session.set_title("vim");
-        assert_eq!(session.title(), "vim");
 
         // kill -> not alive, further writes error, kill is idempotent.
         session.kill().expect("kill");

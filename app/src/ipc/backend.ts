@@ -275,19 +275,6 @@ export function onTitleHint(
   };
 }
 
-/**
- * Mirror one tab's EFFECTIVE title into its core session (trmx-75). App is the SOLE core-title
- * writer — the poller only ever hints — so `Session::title` always equals what the tab renders
- * (manual > osc > process > fallback, tabTitle.ts), never a raw hint.
- */
-export function setSessionTitle(
-  sessionId: number,
-  title: string,
-  invoke: InvokeFn = realInvoke,
-): Promise<void> {
-  return invoke("set_session_title", { sessionId, title }).then(() => {});
-}
-
 /** The backend broadcast carrying a session's foreground busy<->idle transitions (trmx-91). */
 export const SESSION_ACTIVITY_EVENT = "session:activity";
 

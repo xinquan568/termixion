@@ -71,7 +71,6 @@ function renderApp(over: Partial<AppProps> = {}) {
       observeActivity={vi.fn(() => vi.fn()) as unknown as AppProps["observeActivity"]}
       observeSettings={obs<unknown>()}
       setWindowTitle={vi.fn()}
-      mirrorTitle={vi.fn(() => Promise.resolve())}
       installHotReload={vi.fn(() => vi.fn())}
       {...over}
     />,

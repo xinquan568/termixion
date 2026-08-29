@@ -137,7 +137,6 @@ function renderApp(over: Partial<AppProps> = {}) {
     observeControlRequest: controlRequest.observe,
     observeCloseRequested: closeRequested.observe,
     setWindowTitle: vi.fn(),
-    mirrorTitle: vi.fn(() => Promise.resolve()),
     installHotReload: vi.fn(() => vi.fn()),
     invoke,
     ...over, // trmx-224: per-test seams (service nudge / take invoke)

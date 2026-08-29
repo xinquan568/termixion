@@ -100,6 +100,30 @@ There is deliberately **no CI job checking for ungated claims** — a gate that 
 gates would be its own joke. This is a documentation and review habit, and the count going 5 → 0 is
 the evidence it worked.
 
+## File line budgets (trmx-243)
+
+`scripts/check-file-budgets.sh` fails CI when a watched file grows past an explicit budget, counted
+in **non-test lines** — for a `.rs` file, the body before its inline `#[cfg(test)]` module; for
+`App.tsx`, whose tests live in sibling `*.test.tsx` files, the whole file. A test-heavy PR is never
+punished by it. Two files are watched today: `crates/termixion-tauri/src/main.rs` and
+`app/src/App.tsx`. It runs in the cheap `shell integration` job.
+
+The reason it exists: `main.rs` reached 1969 non-test lines because every new handler landed there by
+default, and nobody decided that — it just drifted. trmx-243 split it into five modules; this stops
+it coming back.
+
+**It is a ratchet, not a wall.** When it fails, two responses are equally legitimate:
+
+1. **Split the file** — move a cohesive concern into its own module. trmx-243 is the worked example.
+2. **Raise the budget in the same PR**, with a one-line reason beside the number in the script's
+   `WATCHED` table.
+
+The second is not a defeat, and reviewers should not treat it as one. A budget is a claim about the
+size a file *should* be, and that claim is allowed to change — deliberately, visibly, and with a
+reason attached. What the gate prevents is neither response: growth nobody decided on. Budgets are
+set at the actual plus a little headroom, so lower them as files shrink — an over-generous budget
+never fires, and one set exactly at the truth fires on the next honest line.
+
 ## Dependency updates (trmx-234, trmx-266)
 
 Dependabot opens one grouped PR per ecosystem weekly (`.github/dependabot.yml`). They carry no
