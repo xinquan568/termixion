@@ -28,7 +28,10 @@ pub use foreground::{
 // trmx-239 (M12): the uid/mode primitives the Tauri shell used to reach for via a direct `libc`
 // dependency of its own.
 #[cfg(unix)]
-pub use socket::{create_socket_at, current_euid, ensure_private_dir, require_private_dir};
+pub use socket::{
+    ControlSocket, SocketLock, create_socket_at, current_euid, ensure_private_dir,
+    require_private_dir,
+};
 #[cfg(unix)]
 pub use unix::{Clipboard, UnixClipboard, UnixPtyFactory};
 
