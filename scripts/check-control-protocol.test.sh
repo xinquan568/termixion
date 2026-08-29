@@ -25,6 +25,10 @@ branch add-no-bump;         write_tree 1 '["pane.close", "tab.new", "tab.rename"
 branch add-bump;            write_tree 2 '["pane.close", "tab.new", "tab.rename"]'; git -C "$tmp" commit -qam x
 branch unchanged;           echo doc > "$tmp/README"; git -C "$tmp" add README; git -C "$tmp" commit -qm x
 branch rollback;            write_tree 0 '["pane.close", "tab.new"]';         git -C "$tmp" commit -qam x
+# trmx-244: the pinned Rust source disappears while the fixture stands still — the shape a future
+# file move takes if it forgets this script. The constant checks below only run when the fixture
+# changed, so without a fail-closed read this range would exit 0 and the gate would pin nothing.
+branch rs-source-gone;      rm "$tmp/crates/termixion-core/src/control.rs"; git -C "$tmp" commit -qam x
 echo "check-control-protocol.test:"
 check "removal without bump is refused"            1 "$(run main...remove-no-bump)"
 check "removal with a bump on all three sides passes" 0 "$(run main...remove-bump)"
@@ -33,6 +37,7 @@ check "addition without a bump is refused"         1 "$(run main...add-no-bump)"
 check "addition with a bump passes"                0 "$(run main...add-bump)"
 check "unchanged fixture passes"                   0 "$(run main...unchanged)"
 check "protocol rollback with an unchanged set is refused" 1 "$(run main...rollback)"
+check "a MISSING pinned Rust source FAILS CLOSED even with an unchanged fixture" 1 "$(run main...rs-source-gone)"
 check "two-dot range works"                        1 "$(run main..remove-no-bump)"
 check "unresolvable range fails loudly"            2 "$(run main...no-such-ref)"
 set +e; (cd "$tmp" && bash "$GATE" --range --quiet >/dev/null 2>&1); rc=$?; set -e; check "malformed operand exits 2" 2 "$rc"

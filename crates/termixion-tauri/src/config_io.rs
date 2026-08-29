@@ -9,9 +9,11 @@
 //! deliberately NOT the Tauri app-data dir (that is for caches/state, not a hand-edited config).
 //!
 //! Discipline mirrors `main.rs`: every DECISION is a pure, unit-tested function
-//! ([`config_path_from`], [`should_apply`], [`edit_document`], [`read_response_from`],
-//! [`apply_file_text`]); the filesystem / `notify` edge around them is thin runtime glue
-//! (validated by the packaged smoke).
+//! ([`config_path_from`], [`edit_document`], [`read_response_from`]); the filesystem / `notify`
+//! edge around them is thin runtime glue (validated by the packaged smoke). trmx-244 moved the
+//! watcher's own decision — `text_hash` / `should_apply` / [`apply_file_text`] — down into
+//! [`termixion_core::config`], so the headless Linux job covers it; this module keeps the edge that
+//! calls in.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

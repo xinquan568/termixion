@@ -43,6 +43,22 @@ head_ts="$(show "$head" "$TS")"; head_rs="$(show "$head" "$RS")"
 ts_const="$(printf '%s\n' "$head_ts" | sed -nE 's/^export const CONTROL_PROTOCOL_VERSION = ([0-9]+);.*/\1/p' | head -1)"
 rs_const="$(printf '%s\n' "$head_rs" | sed -nE 's/^pub const PROTOCOL_VERSION: u32 = ([0-9]+);.*/\1/p' | head -1)"
 
+# Fail CLOSED when a pinned constant cannot be READ, and do it BEFORE the fixture comparison — the
+# checks below run only when the fixture moved, so a source that was renamed, moved or deleted while
+# the fixture stood still would otherwise leave this gate exiting 0 forever while pinning nothing.
+# trmx-244 moved the Rust constant from termixion-tauri to core and updated the path here; the next
+# such move must fail loudly rather than silently stop being guarded.
+if [ -z "$ts_const" ]; then
+  echo "check-control-protocol: cannot read CONTROL_PROTOCOL_VERSION from $TS at $head — failing closed." >&2
+  echo "    If the file moved, update TS in this script in the same commit." >&2
+  exit 1
+fi
+if [ -z "$rs_const" ]; then
+  echo "check-control-protocol: cannot read PROTOCOL_VERSION from $RS at $head — failing closed." >&2
+  echo "    If the file moved, update RS in this script in the same commit." >&2
+  exit 1
+fi
+
 verdict="$(BASE_FIXTURE="$base_fixture" HEAD_FIXTURE="$head_fixture" TS_CONST="${ts_const:-?}" RS_CONST="${rs_const:-?}" python3 - <<'PY'
 import json, os, sys
 b = json.loads(os.environ["BASE_FIXTURE"]); h = json.loads(os.environ["HEAD_FIXTURE"])
