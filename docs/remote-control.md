@@ -91,7 +91,7 @@ server answers `too-many-connections` (or `spawn-failed` if the OS refuses a thr
 Every id in the [command reference](commands.md) is callable. That set is pinned, per protocol version, by
 `app/src/control/__fixtures__/control-commands.json` — **any** change to it (adding, removing, or renaming an
 id) is a protocol change: `protocol` in that file, `CONTROL_PROTOCOL_VERSION` (`controlBridge.ts`), and
-`PROTOCOL_VERSION` (`control_io.rs`) bump together, and CI's `scripts/check-control-protocol.sh` refuses a
+`PROTOCOL_VERSION` (`crates/termixion-core/src/control.rs`) bump together, and CI's `scripts/check-control-protocol.sh` refuses a
 change that doesn't. Gate scripts on `version` / `commands` and they will see the bump.
 
 **Close commands never prompt.** `pane.close`, `tab.close`, and `window.close` over the socket bypass the

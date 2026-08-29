@@ -9,13 +9,13 @@
 //! deliberately NOT the Tauri app-data dir (that is for caches/state, not a hand-edited config).
 //!
 //! Discipline mirrors `main.rs`: every DECISION is a pure, unit-tested function
-//! ([`config_path_from`], [`should_apply`], [`edit_document`], [`read_response_from`],
-//! [`apply_file_text`]); the filesystem / `notify` edge around them is thin runtime glue
-//! (validated by the packaged smoke).
+//! ([`config_path_from`], [`edit_document`], [`read_response_from`]); the filesystem / `notify`
+//! edge around them is thin runtime glue (validated by the packaged smoke). trmx-244 moved the
+//! watcher's own decision — `text_hash` / `should_apply` / [`apply_file_text`] — down into
+//! [`termixion_core::config`], so the headless Linux job covers it; this module keeps the edge that
+//! calls in.
 
 use std::collections::BTreeMap;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -25,8 +25,8 @@ use serde_json::{Map, Value as JsonValue};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 use termixion_core::{
-    Config, ConfigWarning, DEFAULT_TEMPLATE, RegistryValue, diff_configs, parse_config,
-    parse_registry_pairs, toml_path_for,
+    Config, ConfigWarning, DEFAULT_TEMPLATE, FileApplication, RegistryValue, apply_file_text,
+    parse_config, parse_registry_pairs, text_hash, toml_path_for,
 };
 
 /// The config file's basename, shared by the path resolver and the watcher's event filter.
@@ -77,49 +77,6 @@ struct ConfigInner {
     /// publish a set with no `Unreadable` in it and silently clear the banner while the file was
     /// still unreadable.
     last_unreadable: Option<String>,
-}
-
-// ---------------------------------------------------------------------------
-// Pure decision pieces
-// ---------------------------------------------------------------------------
-
-/// Hash of a file's text content (std `DefaultHasher` — cheap, in-process only, never persisted).
-fn text_hash(text: &str) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    text.hash(&mut hasher);
-    hasher.finish()
-}
-
-/// Should a watcher wake apply the file content with this hash? `false` exactly when it equals
-/// the hash of the last bytes we ourselves wrote (the self-echo, D6).
-fn should_apply(file_hash: u64, last_write_hash: Option<u64>) -> bool {
-    last_write_hash != Some(file_hash)
-}
-
-/// What one applied watcher wake yields: the new diff base, the changed registry pairs to
-/// broadcast, and any parse warnings to surface.
-struct FileApplication {
-    config: Config,
-    changed: Vec<(String, RegistryValue)>,
-    warnings: Vec<ConfigWarning>,
-}
-
-/// The pure core of one watcher wake: drop the self-echo (D6), otherwise parse + diff.
-fn apply_file_text(
-    text: &str,
-    last: &Config,
-    last_write_hash: Option<u64>,
-) -> Option<FileApplication> {
-    if !should_apply(text_hash(text), last_write_hash) {
-        return None;
-    }
-    let (config, warnings) = parse_config(text);
-    let changed = diff_configs(last, &config);
-    Some(FileApplication {
-        config,
-        changed,
-        warnings,
-    })
 }
 
 /// The TOML value class a registry key expects — the shell-side type gate for writes.
@@ -878,6 +835,9 @@ fn on_config_file_event(app: &tauri::AppHandle, path: &Path) {
 mod tests {
     use super::*;
     use serde_json::json;
+    // trmx-244: diff_configs moved out of this module's production path with apply_file_text; only
+    // this suite's keys-map test still needs it, so it is imported here rather than crate-wide.
+    use termixion_core::diff_configs;
 
     // --- path resolution -----------------------------------------------------------------
 
@@ -907,51 +867,7 @@ mod tests {
 
     // --- echo suppression ----------------------------------------------------------------
 
-    #[test]
-    fn should_apply_drops_the_self_echo_hash() {
-        assert!(!should_apply(42, Some(42)));
-    }
-
-    #[test]
-    fn should_apply_applies_a_different_hash() {
-        assert!(should_apply(42, Some(7)));
-    }
-
-    #[test]
-    fn should_apply_applies_when_no_write_hash_is_recorded() {
-        assert!(should_apply(42, None));
-    }
-
-    #[test]
-    fn text_hash_is_stable_and_content_sensitive() {
-        assert_eq!(text_hash("abc"), text_hash("abc"));
-        assert_ne!(text_hash("abc"), text_hash("abd"));
-    }
-
     // --- the pure watcher decision ---------------------------------------------------------
-
-    #[test]
-    fn apply_file_text_drops_the_self_echo() {
-        let text = "[terminal]\nfont_size = 14\n";
-        let application = apply_file_text(text, &Config::default(), Some(text_hash(text)));
-        assert!(
-            application.is_none(),
-            "our own write echoing back must be dropped (D6)"
-        );
-    }
-
-    #[test]
-    fn apply_file_text_diffs_against_last_and_reports_changed_pairs() {
-        let text = "[terminal]\nfont_size = 14\n";
-        let application =
-            apply_file_text(text, &Config::default(), None).expect("an external edit applies");
-        assert_eq!(
-            application.changed,
-            vec![("terminal.fontSize".to_string(), RegistryValue::Int(14))]
-        );
-        assert_eq!(application.config.terminal.font_size, 14);
-        assert!(application.warnings.is_empty());
-    }
 
     // trmx-94: the [keys] read + the keys:changed emit decision (the map is invisible to the scalar
     // diff, so the watcher needs keys_map_changed).
@@ -978,51 +894,6 @@ mod tests {
             !keys_map_changed(&new, &new),
             "identical maps do not change"
         );
-    }
-
-    #[test]
-    fn apply_file_text_surfaces_warnings() {
-        let application = apply_file_text("[nope]\nx = 1\n", &Config::default(), None)
-            .expect("a warned parse still applies");
-        assert!(application.changed.is_empty(), "defaults did not change");
-        assert_eq!(
-            application.warnings,
-            vec![ConfigWarning::UnknownKey {
-                key: "nope".to_string()
-            }]
-        );
-    }
-
-    #[test]
-    fn apply_file_text_empty_text_returns_to_defaults() {
-        // A deleted/unreadable file reads as "" — the world goes back to defaults, and the
-        // diff against the previous state carries exactly the keys that must revert.
-        let mut last = Config::default();
-        last.terminal.font_size = 14;
-        let application = apply_file_text("", &last, None).expect("applies");
-        assert_eq!(
-            application.changed,
-            vec![("terminal.fontSize".to_string(), RegistryValue::Int(12))]
-        );
-        assert_eq!(application.config, Config::default());
-        assert!(application.warnings.is_empty());
-    }
-
-    #[test]
-    fn apply_file_text_default_template_is_not_latched_and_reverts_non_defaults() {
-        // trmx-148 design pin: config_open_file's materialization write is deliberately NOT
-        // latched (no last_write_hash), so the watcher applies the template like any external
-        // edit — the template parses to pure defaults, and the diff against the previous state
-        // carries exactly the non-default keys that must revert.
-        let last = parse_config("[terminal]\nfont_size = 14\n").0;
-        let application = apply_file_text(DEFAULT_TEMPLATE, &last, None)
-            .expect("an unlatched template write must apply, not be suppressed");
-        assert_eq!(
-            application.changed,
-            vec![("terminal.fontSize".to_string(), RegistryValue::Int(12))]
-        );
-        assert_eq!(application.config, Config::default());
-        assert!(application.warnings.is_empty());
     }
 
     // --- edit_document (the pure write logic) ----------------------------------------------

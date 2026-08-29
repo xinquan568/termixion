@@ -2,9 +2,13 @@
 // Copyright (c) 2026 Eric Y. Liu
 //
 //! trmx-101 (FR-9.4): the PURE protocol codec + `ctl` argv mapper for the external control channel. No
-//! Tauri, no socket, no I/O — just parse a JSON-lines request line into a `Request`, serialize a
-//! `Response`, and map `termixion ctl <…>` argv into a request line. The socket edge (`control.rs`) is a
-//! thin shell around these; keeping the codec pure makes it headless-unit-testable (the `smoke_mode` style).
+//! Tauri, no socket, no I/O — just parse a JSON-lines request line into a [`Request`], serialize a
+//! [`Response`], and map `termixion ctl <…>` argv into a request line.
+//!
+//! trmx-244 (grill M5) moved this here from `termixion-tauri/src/control_io.rs`. There are now two
+//! modules named `control`: **this one is the codec**, and `termixion-tauri`'s `control.rs` is the
+//! socket edge — the acceptor, the worker pool and the webview bridge — that wraps it. Keeping the
+//! codec in core means the headless Linux job covers it instead of only the macOS full gate.
 
 use serde::Serialize;
 use serde_json::{Value as JsonValue, json};

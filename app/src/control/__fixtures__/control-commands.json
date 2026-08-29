@@ -1,5 +1,5 @@
 {
-  "_comment": "trmx-235: the externally callable command set for control protocol 1 (docs/remote-control.md). Every registry id is callable (the documented contract), and the SET ITSELF is part of the protocol: ANY change here (add, remove, rename) bumps `protocol` together with CONTROL_PROTOCOL_VERSION (app/src/control/controlBridge.ts) and PROTOCOL_VERSION (crates/termixion-tauri/src/control_io.rs); scripts/check-control-protocol.sh enforces the bump in CI.",
+  "_comment": "trmx-235: the externally callable command set for control protocol 1 (docs/remote-control.md). Every registry id is callable (the documented contract), and the SET ITSELF is part of the protocol: ANY change here (add, remove, rename) bumps `protocol` together with CONTROL_PROTOCOL_VERSION (app/src/control/controlBridge.ts) and PROTOCOL_VERSION (crates/termixion-core/src/control.rs); scripts/check-control-protocol.sh enforces the bump in CI.",
   "protocol": 1,
   "commands": [
     "app.check-updates",

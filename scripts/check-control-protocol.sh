@@ -5,12 +5,12 @@
 # the remote-control protocol (docs/remote-control.md) — and the SET ITSELF is part of the protocol — so
 # between <a> and <b> this refuses ANY change to the `commands` set (add, remove, rename) unless `protocol`
 # increases AND both source constants (CONTROL_PROTOCOL_VERSION in controlBridge.ts, PROTOCOL_VERSION in
-# control_io.rs) equal the new value. Exit: 0 ok · 1 violation · 2 usage / unresolvable range (never vacuous).
+# core's control.rs) equal the new value. Exit: 0 ok · 1 violation · 2 usage / unresolvable range (never vacuous).
 set -euo pipefail
 
 FIXTURE="app/src/control/__fixtures__/control-commands.json"
 TS="app/src/control/controlBridge.ts"
-RS="crates/termixion-tauri/src/control_io.rs"
+RS="crates/termixion-core/src/control.rs"
 
 usage() { echo "check-control-protocol: usage: check-control-protocol.sh --range <a>..<b> | --range <a>...<b>"; }
 if [ "$#" -ne 2 ] || [ "$1" != "--range" ]; then usage; exit 2; fi
@@ -43,6 +43,22 @@ head_ts="$(show "$head" "$TS")"; head_rs="$(show "$head" "$RS")"
 ts_const="$(printf '%s\n' "$head_ts" | sed -nE 's/^export const CONTROL_PROTOCOL_VERSION = ([0-9]+);.*/\1/p' | head -1)"
 rs_const="$(printf '%s\n' "$head_rs" | sed -nE 's/^pub const PROTOCOL_VERSION: u32 = ([0-9]+);.*/\1/p' | head -1)"
 
+# Fail CLOSED when a pinned constant cannot be READ, and do it BEFORE the fixture comparison — the
+# checks below run only when the fixture moved, so a source that was renamed, moved or deleted while
+# the fixture stood still would otherwise leave this gate exiting 0 forever while pinning nothing.
+# trmx-244 moved the Rust constant from termixion-tauri to core and updated the path here; the next
+# such move must fail loudly rather than silently stop being guarded.
+if [ -z "$ts_const" ]; then
+  echo "check-control-protocol: cannot read CONTROL_PROTOCOL_VERSION from $TS at $head — failing closed." >&2
+  echo "    If the file moved, update TS in this script in the same commit." >&2
+  exit 1
+fi
+if [ -z "$rs_const" ]; then
+  echo "check-control-protocol: cannot read PROTOCOL_VERSION from $RS at $head — failing closed." >&2
+  echo "    If the file moved, update RS in this script in the same commit." >&2
+  exit 1
+fi
+
 verdict="$(BASE_FIXTURE="$base_fixture" HEAD_FIXTURE="$head_fixture" TS_CONST="${ts_const:-?}" RS_CONST="${rs_const:-?}" python3 - <<'PY'
 import json, os, sys
 b = json.loads(os.environ["BASE_FIXTURE"]); h = json.loads(os.environ["HEAD_FIXTURE"])
@@ -59,7 +75,7 @@ if changed and hp <= bp:
     problems.append(f"callable set changed ({what}) but protocol stayed {bp} -> bump `protocol` in the fixture")
 if hp != bp or changed:
     if ts != str(hp): problems.append(f"controlBridge.ts CONTROL_PROTOCOL_VERSION = {ts}, fixture protocol = {hp}")
-    if rs != str(hp): problems.append(f"control_io.rs PROTOCOL_VERSION = {rs}, fixture protocol = {hp}")
+    if rs != str(hp): problems.append(f"core control.rs PROTOCOL_VERSION = {rs}, fixture protocol = {hp}")
 print(f"removed={len(removed)} added={len(added)} protocol {bp}->{hp} ts={ts} rs={rs}")
 for p in problems: print("VIOLATION: " + p)
 sys.exit(1 if problems else 0)

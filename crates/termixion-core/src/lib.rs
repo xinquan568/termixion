@@ -16,7 +16,9 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod config;
+pub mod control;
 pub mod fake;
+pub mod flow;
 pub mod pty;
 pub mod pump;
 pub mod registry;
@@ -27,9 +29,9 @@ pub mod theme;
 pub mod zdotdir;
 
 pub use config::{
-    CheckFrequency, Config, ConfigWarning, CursorStyle, DEFAULT_TEMPLATE, LabelOrientation,
-    RegistryValue, ScriptsConfig, TabBarPosition, TabsConfig, diff_configs, parse_config,
-    parse_registry_pairs, toml_path_for,
+    CheckFrequency, Config, ConfigWarning, CursorStyle, DEFAULT_TEMPLATE, FileApplication,
+    LabelOrientation, RegistryValue, ScriptsConfig, TabBarPosition, TabsConfig, apply_file_text,
+    diff_configs, parse_config, parse_registry_pairs, text_hash, toml_path_for,
 };
 pub use pty::{PtyBackend, PtyError, PtyFactory, PtyReader, PtySize, SessionSpec};
 pub use pump::pump;
