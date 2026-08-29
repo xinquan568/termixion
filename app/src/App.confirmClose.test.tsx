@@ -85,20 +85,31 @@ function makeActivityObservation() {
   return { observe, fire: (sessionId: number, busy: boolean) => handler?.(sessionId, busy) };
 }
 
-// The zero-arg close:requested seam (the backend's native-close round-trip).
+// The close:requested seam. trmx-268: it now carries the ask GENERATION, so a stale ack answering a
+// streak that has since been restarted can be rejected by the backend.
 function makeVoidObservation() {
-  let handler: (() => void) | undefined;
-  const observe = vi.fn((h: () => void) => {
+  let handler: ((generation: number) => void) | undefined;
+  const observe = vi.fn((h: (generation: number) => void) => {
     handler = h;
     return vi.fn();
   });
-  return { observe, fire: () => handler?.() };
+  return { observe, fire: (generation = 1) => handler?.(generation) };
 }
 
 function renderApp(over: Partial<AppProps> = {}) {
   const { attach, calls } = makeAttach();
-  const closeWindow = vi.fn();
-  const quitConfirmed = vi.fn();
+  const order: string[] = [];
+  const closeWindow = vi.fn(() => {
+    order.push("closeWindow");
+  });
+  const quitConfirmed = vi.fn(() => {
+    order.push("quitConfirmed");
+  });
+  // trmx-268: the webview's proof of life, carrying the generation it answers.
+  const closeAcknowledged = vi.fn((generation: number) => {
+    order.push(`ack:${generation}`);
+    return Promise.resolve();
+  });
   const closeSession = vi.fn(() => Promise.resolve());
   const tabsAction = makeObservation<unknown>();
   const ptyExited = makeObservation<number>();
@@ -111,6 +122,7 @@ function renderApp(over: Partial<AppProps> = {}) {
     attach,
     closeWindow,
     quitConfirmed,
+    closeAcknowledged,
     closeSession,
     observeTabsAction: tabsAction.observe,
     observePtyExited: ptyExited.observe,
@@ -131,6 +143,8 @@ function renderApp(over: Partial<AppProps> = {}) {
     calls,
     closeWindow,
     quitConfirmed,
+    closeAcknowledged,
+    order,
     closeSession,
     tabsAction,
     ptyExited,
@@ -330,7 +344,10 @@ describe("confirm-before-close: the open dialog owns the surface (trmx-144)", ()
     act(() => seams.activity.fire(11, true));
     act(() => seams.activity.fire(12, true));
 
-    act(() => seams.closeRequested.fire());
+    await act(async () => {
+      seams.closeRequested.fire();
+      await Promise.resolve(); // trmx-268: the answer is chained onto the ack
+    });
 
     expect(dialog()).toHaveTextContent("2 tabs have running programs.");
   });
@@ -416,7 +433,10 @@ describe("confirm-before-close: the quit gate (trmx-144)", () => {
     await resolveAttach(seams.calls[0], { sessionId: 11, title: "one" });
     act(() => seams.activity.fire(11, true));
 
-    act(() => seams.closeRequested.fire());
+    await act(async () => {
+      seams.closeRequested.fire();
+      await Promise.resolve(); // trmx-268: the answer is chained onto the ack
+    });
 
     expect(dialog()).toBeInTheDocument();
     expect(dialog()).toHaveTextContent("Quit Termixion?");
@@ -432,7 +452,10 @@ describe("confirm-before-close: the quit gate (trmx-144)", () => {
     await resolveAttach(seams.calls[0], { sessionId: 11, title: "one" });
     act(() => seams.activity.fire(11, true));
 
-    act(() => seams.closeRequested.fire());
+    await act(async () => {
+      seams.closeRequested.fire();
+      await Promise.resolve(); // trmx-268: the answer is chained onto the ack
+    });
     fireEvent.click(dialogButton("Cancel"));
 
     expect(dialog()).toBeNull();
@@ -444,7 +467,10 @@ describe("confirm-before-close: the quit gate (trmx-144)", () => {
     const seams = renderApp();
     await resolveAttach(seams.calls[0], { sessionId: 11, title: "one" });
 
-    act(() => seams.closeRequested.fire());
+    await act(async () => {
+      seams.closeRequested.fire();
+      await Promise.resolve(); // trmx-268: the answer is chained onto the ack
+    });
 
     expect(dialog()).toBeNull();
     expect(seams.quitConfirmed).toHaveBeenCalledTimes(1);
@@ -470,7 +496,10 @@ describe("confirm-before-close: the quit gate (trmx-144)", () => {
     cmdW(); // idle pane → last pane → last tab → the gated gesture reaches closeWindow
     expect(seams.closeWindow).toHaveBeenCalledTimes(1);
 
-    act(() => seams.closeRequested.fire()); // the backend round-trips the native close
+    await act(async () => {
+      seams.closeRequested.fire();
+      await Promise.resolve(); // trmx-268: the answer is chained onto the ack
+    }); // the backend round-trips the native close
 
     expect(dialog()).toBeNull();
     expect(seams.quitConfirmed).toHaveBeenCalledTimes(1);
@@ -511,5 +540,69 @@ describe("service delivery during a pending close-confirm (trmx-224)", () => {
     expect(screen.getByTestId("pane-host-2")).toBeInTheDocument();
     expect(seams.closeSession).not.toHaveBeenCalled();
     expect(seams.closeWindow).not.toHaveBeenCalled();
+  });
+
+  // ---------- trmx-268: the close gate's frontend half ----------
+  //
+  // Two properties are load-bearing and neither is obvious from the component: the ack carries the
+  // GENERATION it answers and lands before any close call, and it still fires when a confirm dialog
+  // is already up — a webview showing the dialog is demonstrably alive and must not look hung.
+
+  it("trmx-268: acknowledges the exact generation from close:requested, before answering", async () => {
+    const seams = renderApp();
+    await act(async () => {
+      seams.closeRequested.fire(7);
+      await Promise.resolve();
+    });
+    expect(seams.closeAcknowledged).toHaveBeenCalledWith(7);
+    const ack = seams.order.indexOf("ack:7");
+    const answer = seams.order.findIndex((o) => o === "quitConfirmed" || o === "closeWindow");
+    expect(ack).toBeGreaterThanOrEqual(0);
+    expect(answer).toBeGreaterThanOrEqual(0);
+    // Ordering, not just occurrence: acking after the answer would let the NEXT gesture read a live
+    // webview as hung and tear down busy shells without a dialog.
+    expect(ack).toBeLessThan(answer);
+  });
+
+  it("trmx-268: acknowledges the generation carried by the tabs:action close ask", async () => {
+    const seams = renderApp();
+    await act(async () => {
+      seams.tabsAction.fire({ action: "window-close", gen: 3 });
+      await Promise.resolve();
+    });
+    expect(seams.closeAcknowledged).toHaveBeenCalledWith(3);
+  });
+
+  it("trmx-268: still acknowledges while a confirm dialog is already pending", async () => {
+    const seams = renderApp();
+    await act(async () => {
+      seams.closeRequested.fire(1);
+      await Promise.resolve();
+    });
+    seams.closeAcknowledged.mockClear();
+    await act(async () => {
+      seams.tabsAction.fire({ action: "window-close", gen: 2 });
+      await Promise.resolve();
+    });
+    expect(seams.closeAcknowledged).toHaveBeenCalledWith(2);
+  });
+
+  it("trmx-268: leaves every other menu verb's plain-string payload untouched", async () => {
+    const seams = renderApp();
+    await act(async () => {
+      seams.tabsAction.fire("new-tab");
+      await Promise.resolve();
+    });
+    expect(seams.closeAcknowledged).not.toHaveBeenCalled();
+  });
+
+  it("trmx-268: ignores a malformed close ask rather than acking a bogus generation", async () => {
+    const seams = renderApp();
+    await act(async () => {
+      seams.tabsAction.fire({ action: "window-close" });
+      seams.tabsAction.fire({ action: "window-close", gen: "x" });
+      await Promise.resolve();
+    });
+    expect(seams.closeAcknowledged).not.toHaveBeenCalled();
   });
 });
