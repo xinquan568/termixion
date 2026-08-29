@@ -106,9 +106,14 @@ function renderApp(over: Partial<AppProps> = {}) {
     order.push("quitConfirmed");
   });
   // trmx-268: the webview's proof of life, carrying the generation it answers.
+  let releaseAck: (() => void) | undefined;
+  let deferAck = false;
   const closeAcknowledged = vi.fn((generation: number) => {
     order.push(`ack:${generation}`);
-    return Promise.resolve();
+    if (!deferAck) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      releaseAck = resolve;
+    });
   });
   const closeSession = vi.fn(() => Promise.resolve());
   const tabsAction = makeObservation<unknown>();
@@ -145,6 +150,12 @@ function renderApp(over: Partial<AppProps> = {}) {
     quitConfirmed,
     closeAcknowledged,
     order,
+    // trmx-268 F2: hold the ack open so a test can prove nothing closes until it RESOLVES —
+    // asserting the ack was merely *called* cannot tell ordered invocation from ordered completion.
+    deferAck: () => {
+      deferAck = true;
+    },
+    releaseAck: () => releaseAck?.(),
     closeSession,
     tabsAction,
     ptyExited,
@@ -604,5 +615,54 @@ describe("service delivery during a pending close-confirm (trmx-224)", () => {
       await Promise.resolve();
     });
     expect(seams.closeAcknowledged).not.toHaveBeenCalled();
+  });
+
+  it("trmx-268: nothing closes until the ack RESOLVES — close:requested", async () => {
+    const seams = renderApp();
+    seams.deferAck();
+    await act(async () => {
+      seams.closeRequested.fire(4);
+      await Promise.resolve();
+    });
+    expect(seams.closeAcknowledged).toHaveBeenCalledWith(4);
+    expect(seams.quitConfirmed).not.toHaveBeenCalled();
+    expect(seams.closeWindow).not.toHaveBeenCalled();
+    await act(async () => {
+      seams.releaseAck();
+      await Promise.resolve();
+    });
+    expect(seams.quitConfirmed).toHaveBeenCalled();
+  });
+
+  it("trmx-268: nothing closes until the ack RESOLVES — tabs:action", async () => {
+    const seams = renderApp();
+    seams.deferAck();
+    await act(async () => {
+      seams.tabsAction.fire({ action: "window-close", gen: 5 });
+      await Promise.resolve();
+    });
+    expect(seams.closeAcknowledged).toHaveBeenCalledWith(5);
+    expect(seams.closeWindow).not.toHaveBeenCalled();
+    expect(seams.quitConfirmed).not.toHaveBeenCalled();
+  });
+
+  it("trmx-268: an invalid generation is ignored on BOTH channels", async () => {
+    const seams = renderApp();
+    await act(async () => {
+      // close:requested: previously coerced to 0 and SERVICED rather than ignored.
+      seams.closeRequested.fire(0);
+      seams.closeRequested.fire(-1);
+      seams.closeRequested.fire(1.5);
+      seams.closeRequested.fire(Number.NaN);
+      // tabs:action: a typeof-only check admitted all of these.
+      seams.tabsAction.fire({ action: "window-close", gen: 0 });
+      seams.tabsAction.fire({ action: "window-close", gen: -2 });
+      seams.tabsAction.fire({ action: "window-close", gen: 2.5 });
+      seams.tabsAction.fire({ action: "window-close", gen: Number.POSITIVE_INFINITY });
+      await Promise.resolve();
+    });
+    expect(seams.closeAcknowledged).not.toHaveBeenCalled();
+    expect(seams.quitConfirmed).not.toHaveBeenCalled();
+    expect(seams.closeWindow).not.toHaveBeenCalled();
   });
 });

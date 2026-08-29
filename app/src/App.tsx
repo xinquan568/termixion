@@ -387,14 +387,24 @@ const realObserveSessionNotice: SessionNoticeObservation = (onNotice) => {
 // trmx-144: observe the backend's `close:requested` broadcasts (the native window close / ⌘Q
 // intercepted Rust-side and round-tripped to the webview for the quit confirm) — the same
 // teardown-before-resolve pattern as realObserveControlRequest above.
+/**
+ * trmx-268: a wire ask generation. `AskTracker` starts at 0 and pre-increments, so the first ask on
+ * the wire is 1 — anything else (missing, non-numeric, 0, negative, fractional, NaN, Infinity) is a
+ * malformed payload and must be IGNORED, never coerced and serviced.
+ */
+export function isAskGeneration(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
 export type CloseRequestedObservation = (onRequest: (generation: number) => void) => () => void;
 const realObserveCloseRequested: CloseRequestedObservation = (onRequest) => {
   let live = true;
   let unlisten: (() => void) | undefined;
   realEventBus
     .listen("close:requested", (generation) => {
-      // trmx-268: the payload is the ask generation the ack must echo.
-      if (live) onRequest(typeof generation === "number" ? generation : 0);
+      // trmx-268: the payload is the ask generation the ack must echo. A malformed one is dropped
+      // rather than coerced — servicing a bogus generation would ack a streak that does not exist.
+      if (live && isAskGeneration(generation)) onRequest(generation);
     })
     .then((u) => {
       if (live) unlisten = u;
@@ -1534,11 +1544,16 @@ export function App({
       // showing a dialog is alive and must not look hung to the backend.
       if (typeof payload === "object" && payload !== null) {
         const ask = payload as { action?: unknown; gen?: unknown };
-        if (ask.action !== "window-close" || typeof ask.gen !== "number") return;
-        void seamsRef.current.closeAcknowledged(ask.gen);
-        if (pendingCloseRef.current !== null) return;
-        const commandId = VERB_TO_COMMAND["window-close"];
-        if (commandId) dispatcherRef.current?.dispatch(commandId);
+        if (ask.action !== "window-close" || !isAskGeneration(ask.gen)) return;
+        const generation = ask.gen;
+        // The dispatch is chained onto the ack's COMPLETION, not merely ordered after its call:
+        // starting the close before the backend has recorded liveness is the race that would let a
+        // slow-but-alive webview be torn down on the next gesture.
+        void seamsRef.current.closeAcknowledged(generation).then(() => {
+          if (pendingCloseRef.current !== null) return;
+          const commandId = VERB_TO_COMMAND["window-close"];
+          if (commandId) dispatcherRef.current?.dispatch(commandId);
+        });
         return;
       }
       // trmx-94 (FR-9.1): menu verbs are untrusted input — map the exact verb string to a command id
@@ -1678,6 +1693,9 @@ export function App({
   // busy report (per terminal.confirmClose, read fresh).
   useEffect(() => {
     return observeCloseRequested((generation) => {
+      // Validate at the seam too, not only in the real listener: `observeCloseRequested` is an
+      // injection point, so the consumer must not trust the generation it is handed.
+      if (!isAskGeneration(generation)) return;
       // trmx-268: prove liveness BEFORE answering, and do it even when a dialog is already up — a
       // webview showing the dialog is demonstrably alive and must not be read as hung by the next
       // gesture. The answer is chained onto the ack so it can never land first.

@@ -1451,8 +1451,9 @@ enum Outcome {
 /// trmx-268: the ONE delivery sequence, shared by every origin. Apply the ask state, THEN attempt
 /// delivery, and let the caller veto only on success. Vetoing first and emitting after would strand
 /// the process whenever the emit fails — the exact failure this issue exists to prevent.
+#[allow(clippy::too_many_arguments)]
 fn ask_and_apply<E>(
-    tracker: &mut AskTracker,
+    ask: &std::sync::Mutex<AskTracker>,
     origin: CloseOrigin,
     is_pty_owner: bool,
     quit_authorized: bool,
@@ -1463,8 +1464,13 @@ fn ask_and_apply<E>(
 where
     E: FnOnce(&'static str, u64) -> Result<(), String>,
 {
-    let (decision, generation) =
-        tracker.decide_and_apply(is_pty_owner, quit_authorized, now, grace);
+    // The guard covers the decision and NOTHING else. `emit` re-enters Tauri, and the terminal
+    // collaborators reach `teardown_once`, which joins the control-socket acceptor thread — holding
+    // the lock across either is a real re-entrancy deadlock, not a tidiness point (C1).
+    let (decision, generation) = {
+        let mut tracker = ask.lock().unwrap_or_else(|e| e.into_inner());
+        tracker.decide_and_apply(is_pty_owner, quit_authorized, now, grace)
+    };
     match decision {
         CloseDecision::Ignore => Outcome::Ignore,
         CloseDecision::TeardownAndExit => Outcome::TeardownAndProceed,
@@ -1486,7 +1492,7 @@ where
 /// the seam the test drives (same rationale as `run_acceptor`'s allowance in control.rs).
 #[allow(clippy::too_many_arguments)]
 fn webview_close_flow<E, A, T, R>(
-    tracker: &mut AskTracker,
+    ask: &std::sync::Mutex<AskTracker>,
     is_pty_owner: bool,
     now: Instant,
     grace: Duration,
@@ -1503,15 +1509,7 @@ fn webview_close_flow<E, A, T, R>(
     if !is_pty_owner {
         return; // the settings webview never drives the main window's close flow
     }
-    match ask_and_apply(
-        tracker,
-        CloseOrigin::WindowClose,
-        true,
-        false,
-        now,
-        grace,
-        emit,
-    ) {
+    match ask_and_apply(ask, CloseOrigin::WindowClose, true, false, now, grace, emit) {
         Outcome::Ignore | Outcome::Vetoed => {}
         Outcome::TeardownAndProceed => {
             // The latch FIRST: the `CloseRequested` this causes then takes rule 2 and is allowed
@@ -1562,9 +1560,8 @@ fn quit_confirmed(window: tauri::WebviewWindow) {
 #[tauri::command]
 fn webview_close_request(window: tauri::WebviewWindow) {
     let w = window.clone();
-    let mut tracker = ASK.lock().unwrap_or_else(|e| e.into_inner());
     webview_close_flow(
-        &mut tracker,
+        &ASK,
         window_manager::disposes_pty_for(window.label()),
         Instant::now(),
         ASK_GRACE,
@@ -1789,9 +1786,8 @@ fn main() -> ExitCode {
                     // gate ever ran. Every other verb keeps its plain-string payload untouched.
                     if action == "window-close" {
                         let outcome = {
-                            let mut tracker = ASK.lock().unwrap_or_else(|e| e.into_inner());
                             ask_and_apply(
-                                &mut tracker,
+                                &ASK,
                                 CloseOrigin::Menu,
                                 true,
                                 QUIT_AUTHORIZED.load(std::sync::atomic::Ordering::SeqCst),
@@ -1869,9 +1865,8 @@ fn main() -> ExitCode {
                 // trmx-268: one gate for every origin. Deliver FIRST and veto only on success —
                 // vetoing before the emit would strand the process whenever delivery fails.
                 let outcome = {
-                    let mut tracker = ASK.lock().unwrap_or_else(|e| e.into_inner());
                     ask_and_apply(
-                        &mut tracker,
+                        &ASK,
                         CloseOrigin::WindowClose,
                         window_manager::disposes_pty_for(window.label()),
                         QUIT_AUTHORIZED.load(std::sync::atomic::Ordering::SeqCst),
@@ -1920,9 +1915,8 @@ fn main() -> ExitCode {
                             .is_some();
                         if let Some(is_pty_owner) = exit_gate_input(code, alive) {
                             let outcome = {
-                                let mut tracker = ASK.lock().unwrap_or_else(|e| e.into_inner());
                                 ask_and_apply(
-                                    &mut tracker,
+                                    &ASK,
                                     CloseOrigin::AppExit,
                                     is_pty_owner,
                                     QUIT_AUTHORIZED.load(std::sync::atomic::Ordering::SeqCst),
@@ -2163,7 +2157,17 @@ mod tests {
                 restart_streak: false
             }
         );
+        // Assert the DEADLINE itself, here, before any restart can overwrite `started`. Checking
+        // only the generation would let an illicit rule-6 reset slip through the very test named as
+        // its proof.
         assert_eq!(gen_same, gen1, "rule 6 keeps the generation");
+        assert_eq!(tracker.generation, gen1, "rule 6 keeps the generation");
+        assert!(!tracker.acked, "rule 6 does not invent an ack");
+        assert_eq!(
+            tracker.started,
+            Some(t0),
+            "rule 6 must NOT move the deadline"
+        );
 
         // A stale ack from before a restart must be ignored.
         assert!(tracker.acknowledge(gen1), "the current generation acks");
@@ -2209,13 +2213,23 @@ mod tests {
 
         let run = |is_owner: bool, ok: bool| -> Vec<&'static str> {
             let log = RefCell::new(Vec::new());
-            let mut tracker = AskTracker::default();
+            let tracker = std::sync::Mutex::new(AskTracker::default());
+            // Every collaborator try_locks the tracker: that can only succeed if the guard was
+            // dropped first, which is exactly C1 — never re-enter Tauri (or `teardown_once`, which
+            // joins the acceptor thread) while holding the lock. Reinstate the guard and this fails.
+            let free = |what: &'static str| {
+                assert!(
+                    tracker.try_lock().is_ok(),
+                    "the ASK lock must be free during `{what}` (C1)"
+                );
+            };
             webview_close_flow(
-                &mut tracker,
+                &tracker,
                 is_owner,
                 Instant::now(),
                 grace,
                 |_e, _g| {
+                    free("emit");
                     log.borrow_mut().push("emit");
                     if ok {
                         Ok(())
@@ -2223,9 +2237,18 @@ mod tests {
                         Err("no listener".to_string())
                     }
                 },
-                || log.borrow_mut().push("authorize"),
-                || log.borrow_mut().push("teardown"),
-                || log.borrow_mut().push("redrive"),
+                || {
+                    free("authorize");
+                    log.borrow_mut().push("authorize");
+                },
+                || {
+                    free("teardown");
+                    log.borrow_mut().push("teardown");
+                },
+                || {
+                    free("redrive");
+                    log.borrow_mut().push("redrive");
+                },
             );
             log.into_inner()
         };
