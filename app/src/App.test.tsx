@@ -858,7 +858,8 @@ describe("App activity toggle (trmx-191)", () => {
 });
 
 // trmx-75 (FR-2.4): title routing — per-tab OSC callbacks, session:title-hint → process slot,
-// the native window title (ACTIVE tab only), and the core mirror (EFFECTIVE titles only).
+// and the native window title (ACTIVE tab only). The core title mirror these once also covered
+// was deleted in trmx-243 (grill L6); App.titleMirror.test.tsx pins its absence.
 describe("App tab titles (trmx-75)", () => {
   // Boot two attached tabs: tab 1 (session 11, "one") in the background, tab 2 (session 22,
   // "two") active — the canonical isolation fixture.

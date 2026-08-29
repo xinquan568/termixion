@@ -14,7 +14,8 @@
 #     actually names the file, the budget and the actual — an operator who cannot see all three
 #     cannot decide between splitting and raising;
 #   * the .rs fixture carries a `#[cfg(test)]` block far larger than its body, pinning that the gate
-#     counts NON-TEST lines only. A test-heavy PR must never be punished by this gate.
+#     counts NON-TEST lines only. A test-heavy PR must never be punished by this gate — and case (vi)
+#     pins the other side of that rule: code AFTER the test module is production code and still counts.
 #
 # Everything happens in a temp dir; the real tree is never touched.
 # Run: bash scripts/check-file-budgets.test.sh
@@ -91,8 +92,26 @@ new_repo "$tmp/advice" 5000 100
 check "the failure explains BOTH responses (split, or raise with a reason)" "$tmp/advice" fail \
   "split" "raise"
 
+# (vi) production code AFTER the inline test module must still count. A counter that stops at the
+# first `#[cfg(test)]` freezes at the pre-test count, so every handler added below the test module is
+# invisible and the gate stays green forever — a gate that went green because it stopped looking,
+# which is the exact failure this script exists to prevent one level up. Rust permits items after a
+# test module, so this is reachable, not theoretical.
+mkdir -p "$tmp/after/crates/termixion-tauri/src" "$tmp/after/app/src"
+{
+  printf '// SPDX-License-Identifier: ISC\n'
+  for _ in $(seq 2 100); do printf 'fn before() {}\n'; done
+  printf '#[cfg(test)]\nmod tests {\n'
+  for _ in $(seq 1 10); do printf '    // test filler\n'; done
+  printf '}\n'
+  for _ in $(seq 1 5000); do printf 'fn after_the_test_module() {}\n'; done
+} > "$tmp/after/crates/termixion-tauri/src/main.rs"
+printf 'const filler = 1;\n' > "$tmp/after/app/src/App.tsx"
+check "production code AFTER the test module still counts (no fail-open)" "$tmp/after" fail \
+  "crates/termixion-tauri/src/main.rs"
+
 if [ "$fails" -ne 0 ]; then
   echo "check-file-budgets.test: $fails case(s) failed." >&2
   exit 1
 fi
-echo "check-file-budgets.test: OK (5 cases)."
+echo "check-file-budgets.test: OK (6 cases)."

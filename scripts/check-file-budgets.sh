@@ -36,12 +36,35 @@ WATCHED=(
   "app/src/App.tsx:2670"
 )
 
-# Non-test line count. `.rs` stops at the inline test module; anything else counts every line.
+# Non-test line count. For `.rs` this SKIPS each top-level `#[cfg(test)] mod … { … }` block and
+# counts everything else; anything else counts every line.
+#
+# Not "stop at the first #[cfg(test)]": Rust permits ordinary items AFTER an inline test module, so
+# a stop-at-first counter freezes at the pre-test count and every handler added below the test module
+# is invisible. That is a gate going green because it stopped looking — the exact failure this whole
+# script exists to prevent, one level up. Case (vi) of the self-test pins it.
+#
+# A `#[cfg(test)]` that is NOT followed by a `mod` line (e.g. a cfg-gated `use` or `fn`) is counted
+# as ordinary content rather than opening a skip region: over-counting can only make the gate fire
+# early, which a human then reads; under-counting hides growth silently.
 nontest_lines() { # nontest_lines <file>
   case "$1" in
     *.rs)
-      awk '/^#\[cfg\(test\)\]/ && !found { print NR - 1; found = 1; exit }
-           END { if (!found) print NR }' "$1"
+      awk '
+        # A top-level test module opens a skip region; brace-matching closes it.
+        /^#\[cfg\(test\)\]/ { pending = 1; next }
+        pending && /^mod / { pending = 0; intest = 1; depth = 0; opened = 0 }
+        pending          { pending = 0 }            # cfg(test) on something else: count normally
+        intest {
+          o = gsub(/\{/, "{"); c = gsub(/\}/, "}")
+          depth += o - c
+          if (o > 0) opened = 1
+          if (opened && depth <= 0) intest = 0
+          next
+        }
+        { count++ }
+        END { print count + 0 }
+      ' "$1"
       ;;
     *) awk 'END { print NR }' "$1" ;;
   esac

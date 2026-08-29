@@ -5,7 +5,7 @@
 //! Everything between the webview and a live terminal session (ADR-0001): [`PtyState`] (the
 //! registry, the poller gate and the per-session flow-control cells), the spawn path with its cwd
 //! fallback notice, the natural-batching hand-off between the core reader pump and the IPC channel
-//! ([`next_batch`], [`run_batch_sender`]) with its credit window ([`CreditCell`]), and the six
+//! ([`next_batch`], [`run_batch_sender`]) with its credit window ([`CreditCell`]), and the five
 //! commands the frontend routes by session id.
 //!
 //! The transport invariants live in the doc comments beside the code that implements them: one
