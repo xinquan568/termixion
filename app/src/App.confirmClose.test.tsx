@@ -644,6 +644,14 @@ describe("service delivery during a pending close-confirm (trmx-224)", () => {
     expect(seams.closeAcknowledged).toHaveBeenCalledWith(5);
     expect(seams.closeWindow).not.toHaveBeenCalled();
     expect(seams.quitConfirmed).not.toHaveBeenCalled();
+    // …and it DOES proceed once the ack resolves. Asserting only the "not yet" half would pass even
+    // if the dispatch were dropped entirely.
+    await act(async () => {
+      seams.releaseAck();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(seams.closeWindow).toHaveBeenCalled();
   });
 
   it("trmx-268: an invalid generation is ignored on BOTH channels", async () => {
