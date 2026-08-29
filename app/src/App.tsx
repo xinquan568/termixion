@@ -226,11 +226,27 @@ export type InputObservation = (
  * CloseRequested handler kill_all's every session (trmx-74).
  */
 export function realCloseWindow(): void {
-  import("@tauri-apps/api/window")
-    .then(({ getCurrentWindow }) => getCurrentWindow().close())
-    .catch(() => {
-      // No Tauri runtime — a plain browser tab owns its own lifecycle.
-    });
+  // trmx-268: NO native close. This was the only non-test frontend path to a native close of the
+  // MAIN window, and it existed purely to trigger the backend's veto-and-ask round trip. Asking the
+  // backend directly means a native `CloseRequested` can now only be a genuine traffic-light gesture
+  // or `quit_confirmed`'s authorized re-drive — there is no third, uncorrelatable case to reason
+  // about. (`app/src/main.tsx`'s `closeThisWindow` still closes the SETTINGS window natively; the
+  // gate answers `Ignore` for it.)
+  realInvoke("webview_close_request").catch(() => {
+    // No Tauri runtime — a plain browser tab owns its own lifecycle.
+  });
+}
+
+/**
+ * trmx-268: the webview's proof of life. Carries the GENERATION being answered, so an ack for a
+ * streak the backend has since restarted is ignored — an acknowledged-then-hung webview still
+ * reaches the fallback in two gestures.
+ */
+export function realCloseAcknowledged(generation: number): Promise<void> {
+  return realInvoke("close_acknowledged", { generation }).then(
+    () => undefined,
+    () => undefined, // no Tauri runtime, or the window went away — nothing to prove liveness to
+  );
 }
 
 /**
@@ -371,13 +387,24 @@ const realObserveSessionNotice: SessionNoticeObservation = (onNotice) => {
 // trmx-144: observe the backend's `close:requested` broadcasts (the native window close / ⌘Q
 // intercepted Rust-side and round-tripped to the webview for the quit confirm) — the same
 // teardown-before-resolve pattern as realObserveControlRequest above.
-export type CloseRequestedObservation = (onRequest: () => void) => () => void;
+/**
+ * trmx-268: a wire ask generation. `AskTracker` starts at 0 and pre-increments, so the first ask on
+ * the wire is 1 — anything else (missing, non-numeric, 0, negative, fractional, NaN, Infinity) is a
+ * malformed payload and must be IGNORED, never coerced and serviced.
+ */
+export function isAskGeneration(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+export type CloseRequestedObservation = (onRequest: (generation: number) => void) => () => void;
 const realObserveCloseRequested: CloseRequestedObservation = (onRequest) => {
   let live = true;
   let unlisten: (() => void) | undefined;
   realEventBus
-    .listen("close:requested", () => {
-      if (live) onRequest();
+    .listen("close:requested", (generation) => {
+      // trmx-268: the payload is the ask generation the ack must echo. A malformed one is dropped
+      // rather than coerced — servicing a bogus generation would ack a streak that does not exist.
+      if (live && isAskGeneration(generation)) onRequest(generation);
     })
     .then((u) => {
       if (live) unlisten = u;
@@ -421,6 +448,8 @@ export interface AppProps {
   closeWindow?: () => void;
   /** Injection seam for tests; defaults to the real `quit_confirmed` invoke (trmx-144). */
   quitConfirmed?: () => void;
+  /** trmx-268: tell the backend the webview is alive, echoing the ask generation. */
+  closeAcknowledged?: (generation: number) => Promise<void>;
   /** Injection seam for tests; defaults to the real `close_pty` command. */
   closeSession?: (sessionId: number) => Promise<void>;
   /** Injection seam for tests; defaults to the real `tabs:action` event-bus subscription. */
@@ -467,6 +496,7 @@ export function App({
   attach,
   closeWindow = realCloseWindow,
   quitConfirmed = realQuitConfirmed,
+  closeAcknowledged = realCloseAcknowledged,
   closeSession = closePty,
   observeTabsAction = realObserveTabsAction,
   observePtyExited = onPtyExited,
@@ -667,6 +697,7 @@ export function App({
     attach: attachFn,
     closeWindow,
     quitConfirmed,
+    closeAcknowledged,
     closeSession,
     setWindowTitle,
     mirrorTitle,
@@ -676,6 +707,7 @@ export function App({
     attach: attachFn,
     closeWindow,
     quitConfirmed,
+    closeAcknowledged,
     closeSession,
     setWindowTitle,
     mirrorTitle,
@@ -1506,6 +1538,24 @@ export function App({
       }
     });
     const stopTabsAction = observeTabsAction((payload) => {
+      // trmx-268: the close verb now arrives as {action, gen} so the ack can echo the generation.
+      // Every OTHER verb keeps its plain-string payload and the validation below — the widening is
+      // strictly additive. The ack fires BEFORE the pending-dialog early return, because a webview
+      // showing a dialog is alive and must not look hung to the backend.
+      if (typeof payload === "object" && payload !== null) {
+        const ask = payload as { action?: unknown; gen?: unknown };
+        if (ask.action !== "window-close" || !isAskGeneration(ask.gen)) return;
+        const generation = ask.gen;
+        // The dispatch is chained onto the ack's COMPLETION, not merely ordered after its call:
+        // starting the close before the backend has recorded liveness is the race that would let a
+        // slow-but-alive webview be torn down on the next gesture.
+        void seamsRef.current.closeAcknowledged(generation).then(() => {
+          if (pendingCloseRef.current !== null) return;
+          const commandId = VERB_TO_COMMAND["window-close"];
+          if (commandId) dispatcherRef.current?.dispatch(commandId);
+        });
+        return;
+      }
       // trmx-94 (FR-9.1): menu verbs are untrusted input — map the exact verb string to a command id
       // and route it through the single `dispatch` spine (junk / unknown verbs are inert).
       if (typeof payload !== "string") return;
@@ -1642,18 +1692,26 @@ export function App({
   // confirm) goes straight back; an open dialog swallows the repeat; otherwise gate on the all-tabs
   // busy report (per terminal.confirmClose, read fresh).
   useEffect(() => {
-    return observeCloseRequested(() => {
-      if (quitAuthorizedRef.current) {
-        seamsRef.current.quitConfirmed();
-        return;
-      }
-      if (pendingCloseRef.current !== null) return;
-      const report = collectBusyTabs(stateRef.current.tabs, busyLookup);
-      if (shouldConfirmClose(makeSettingsStore().get("terminal.confirmClose"), report.busy, "user")) {
-        setPendingCloseSynced({ kind: "quit", names: report.names, busyTabCount: report.busyTabCount });
-      } else {
-        seamsRef.current.quitConfirmed();
-      }
+    return observeCloseRequested((generation) => {
+      // Validate at the seam too, not only in the real listener: `observeCloseRequested` is an
+      // injection point, so the consumer must not trust the generation it is handed.
+      if (!isAskGeneration(generation)) return;
+      // trmx-268: prove liveness BEFORE answering, and do it even when a dialog is already up — a
+      // webview showing the dialog is demonstrably alive and must not be read as hung by the next
+      // gesture. The answer is chained onto the ack so it can never land first.
+      void seamsRef.current.closeAcknowledged(generation).then(() => {
+        if (quitAuthorizedRef.current) {
+          seamsRef.current.quitConfirmed();
+          return;
+        }
+        if (pendingCloseRef.current !== null) return;
+        const report = collectBusyTabs(stateRef.current.tabs, busyLookup);
+        if (shouldConfirmClose(makeSettingsStore().get("terminal.confirmClose"), report.busy, "user")) {
+          setPendingCloseSynced({ kind: "quit", names: report.names, busyTabCount: report.busyTabCount });
+        } else {
+          seamsRef.current.quitConfirmed();
+        }
+      });
     });
   }, [observeCloseRequested]);
 
