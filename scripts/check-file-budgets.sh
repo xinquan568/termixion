@@ -31,11 +31,11 @@ cd "$ROOT"
 WATCHED=(
   # 439 non-test lines after the trmx-243 split (was 1969). +~9% headroom.
   "crates/termixion-tauri/src/main.rs:480"
-  # 2579 lines after trmx-248 collapsed the fifteen per-pane ref containers (14 Maps + 1 Set) into
-  # one PaneRuntime record (was 2582 -> budget 2640). Barely a reduction, and that is expected: the
-  # win here is one teardown contract instead of fifteen hand-kept deletes, not line count. The real
-  # drop comes in trmx-254, when the record moves out of App.tsx entirely.
-  "app/src/App.tsx:2632"
+  # 926 lines after trmx-254 decomposed App.tsx into orchestration hooks (was 2579 -> budget 2632).
+  # trmx-248 predicted this drop and it landed: 1653 lines moved into app/src/app/ plus the zone
+  # homes, against the issue's < 1000 acceptance. +54 headroom, the tightest ratio so far on purpose —
+  # App.tsx is now a composition root, and anything that grows it materially should be a decision.
+  "app/src/App.tsx:980"
 )
 
 # Non-test line count. For `.rs` this SKIPS each top-level `#[cfg(test)] mod … { … }` block and
