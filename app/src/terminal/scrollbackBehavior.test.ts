@@ -10,7 +10,7 @@ import { Terminal } from "@xterm/headless";
 import { scrollbackTerminalOptions, SCROLLBACK_LINES } from "./scrollbackSettings";
 import { emulationTerminalOptions } from "./emulationOptions";
 import { computeScrollbar } from "./scrollbar";
-import { makeSettingsStore, __resetSettingsForTest } from "../settings/settingsStore";
+import { makeSettingsStore, __resetSettingsForTest } from "../store/settingsStore";
 
 const ROWS = 24;
 

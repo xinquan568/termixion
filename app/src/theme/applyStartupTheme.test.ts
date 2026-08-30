@@ -19,7 +19,7 @@ import {
   type SettingKey,
   type SettingsStore,
   type SettingsValues,
-} from "../settings/settingsStore";
+} from "../store/settingsStore";
 
 /** A minimal store stub: the theme under test, registry defaults for everything else. */
 function stubSettings(theme: ThemeId): SettingsStore {

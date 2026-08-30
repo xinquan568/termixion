@@ -13,7 +13,7 @@ import {
   SMOOTH_SCROLL_DURATION_MS,
   type ScrollbackOptionsSink,
 } from "./scrollbackSettings";
-import { makeSettingsStore, SETTING_DEFAULTS, type KeyValueStore } from "../settings/settingsStore";
+import { makeSettingsStore, SETTING_DEFAULTS, type KeyValueStore } from "../store/settingsStore";
 
 function fakeStorage(initial: Record<string, string> = {}): KeyValueStore {
   const data = new Map(Object.entries(initial));

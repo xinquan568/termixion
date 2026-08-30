@@ -99,7 +99,7 @@ import {
   SETTINGS_CHANGED_EVENT,
   type LabelOrientation,
   type TabBarPosition,
-} from "./settings/settingsStore";
+} from "./store/settingsStore";
 import { describeTarget } from "./tabs/tabKeymap";
 import { normalizeLegacyThemeId } from "./theme/defaultTheme";
 import { isRegisteredThemeId, isUserThemeIdShape, resolveTheme } from "./theme/registry";

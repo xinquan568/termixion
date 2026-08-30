@@ -7,7 +7,7 @@
 // automatically. Total: garbage input degrades to a safe answer, never a throw. A lastCheckAt in
 // the future (clock skew) counts as "recent" — the periodic check stays suppressed until the
 // period genuinely passes; Check Now is always available.
-import type { CheckFrequency } from "../settings/settingsStore";
+import type { CheckFrequency } from "../store/settingsStore";
 
 export interface AutoCheckPrefs {
   autoCheck: boolean;

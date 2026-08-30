@@ -14,7 +14,7 @@ import {
   isBundledFamily,
 } from "./fontCatalog";
 import { ITERM2_FONT_FAMILY } from "./iterm2Theme";
-import { makeSettingsStore, type KeyValueStore } from "../settings/settingsStore";
+import { makeSettingsStore, type KeyValueStore } from "../store/settingsStore";
 
 function fakeStorage(initial: Record<string, string> = {}): KeyValueStore {
   const data = new Map(Object.entries(initial));

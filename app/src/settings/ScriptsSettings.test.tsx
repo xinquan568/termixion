@@ -8,7 +8,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ScriptsSettings } from "./ScriptsSettings";
-import { makeSettingsStore, type KeyValueStore } from "./settingsStore";
+import { makeSettingsStore, type KeyValueStore } from "../store/settingsStore";
 import type { InvokeFn } from "../ipc/backend";
 
 function memStore(): KeyValueStore {

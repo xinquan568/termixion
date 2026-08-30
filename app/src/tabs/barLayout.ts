@@ -17,7 +17,7 @@
 //   `.tab-strip--labels-vertical` rules consume ONLY the variables (no fallbacks). Every other
 //   strip layout (horizontal strips, the trmx-81 horizontal-label 180px rail) is a CSS-owned
 //   constant — no vars are written or consumed there.
-import type { LabelOrientation, TabBarPosition } from "../settings/settingsStore";
+import type { LabelOrientation, TabBarPosition } from "../store/settingsStore";
 
 /** How App's flex shell lays out for one bar position. */
 export interface BarLayout {

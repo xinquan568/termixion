@@ -22,7 +22,7 @@ vi.mock("./ipc/useBackend", () => ({ useBackend: () => ({ coreVersion: "0.0.2", 
 vi.mock("./update/UpdateAuthorityHost", () => ({ UpdateAuthorityHost: () => <div data-testid="uah" /> }));
 
 import { App, type AppProps } from "./App";
-import { __resetSettingsForTest } from "./settings/settingsStore";
+import { __resetSettingsForTest } from "./store/settingsStore";
 import type { SessionInfo } from "./ipc/backend";
 
 interface AttachCall {

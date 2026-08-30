@@ -11,7 +11,7 @@ import { buildXtermTheme } from "../theme/buildXtermTheme";
 import { normalizeLegacyThemeId } from "../theme/defaultTheme";
 import { isRegisteredThemeId } from "../theme/registry";
 import type { ThemeId } from "../theme/themes";
-import type { SettingsStore } from "../settings/settingsStore";
+import type { SettingsStore } from "../store/settingsStore";
 
 /** The persisted (or first-run-derived) theme's xterm options for construction. */
 export function themeTerminalOptions(settings: SettingsStore): { theme: ITheme } {

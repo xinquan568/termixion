@@ -10,7 +10,7 @@ import { realInvoke, takePendingOpenPaths } from "./ipc/backend";
 import { log } from "./ipc/logSink";
 import { runPerf, runPerfMultipane, realPerfDeps, type PerfLaunchConfig } from "./perf/runPerf";
 import { runSmoke, realSmokeDeps } from "./smoke/runSmoke";
-import { hydrateSettings, makeSettingsStore } from "./settings/settingsStore";
+import { hydrateSettings, makeSettingsStore } from "./store/settingsStore";
 import { hydrateUserThemes } from "./theme/themesBackend";
 import { applyStartupTheme } from "./theme/applyStartupTheme";
 import { ensureStartupFontLoaded } from "./terminal/fontCatalog";

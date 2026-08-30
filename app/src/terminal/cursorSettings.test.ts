@@ -4,7 +4,7 @@
 // trmx-51: the cursor options overlay + the live settings:changed application (R8: tests first).
 import { describe, expect, it } from "vitest";
 import { applyCursorSettingsChange, cursorTerminalOptions, type CursorOptionsSink } from "./cursorSettings";
-import { makeSettingsStore, type KeyValueStore } from "../settings/settingsStore";
+import { makeSettingsStore, type KeyValueStore } from "../store/settingsStore";
 
 function fakeStorage(initial: Record<string, string> = {}): KeyValueStore {
   const data = new Map(Object.entries(initial));

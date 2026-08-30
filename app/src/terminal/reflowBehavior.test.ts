@@ -18,7 +18,7 @@ import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import { Terminal } from "@xterm/headless";
 import { scrollbackTerminalOptions, SCROLLBACK_LINES } from "./scrollbackSettings";
 import { emulationTerminalOptions } from "./emulationOptions";
-import { makeSettingsStore, __resetSettingsForTest } from "../settings/settingsStore";
+import { makeSettingsStore, __resetSettingsForTest } from "../store/settingsStore";
 
 const ROWS = 24;
 const WIDE = 80;

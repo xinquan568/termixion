@@ -9,8 +9,8 @@
 // behavior tests still build from these same exports (a test-added option would hide a production
 // divergence — the trmx-64 round-2 lesson).
 import type { ITerminalOptions } from "@xterm/xterm";
-import type { SettingsStore } from "../settings/settingsStore";
-import { clampNumberSetting, SETTING_DEFAULTS } from "../settings/settingsStore";
+import type { SettingsStore } from "../store/settingsStore";
+import { clampNumberSetting, SETTING_DEFAULTS } from "../store/settingsStore";
 
 /**
  * The DEFAULT scrollback cap — the registry's value (one source of truth), re-exported for the

@@ -36,7 +36,7 @@ vi.mock("./update/UpdateAuthorityHost", () => ({
 }));
 
 import { App, type AppProps, type ControlRequest } from "./App";
-import { makeSettingsStore, __resetSettingsForTest } from "./settings/settingsStore";
+import { makeSettingsStore, __resetSettingsForTest } from "./store/settingsStore";
 
 interface AttachCall {
   resolve: (info: SessionInfo) => void;

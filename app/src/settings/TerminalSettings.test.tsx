@@ -17,7 +17,7 @@ import {
   SETTINGS_CHANGED_EVENT,
   type KeyValueStore,
   type SettingsBus,
-} from "./settingsStore";
+} from "../store/settingsStore";
 
 function fakeStorage(initial: Record<string, string> = {}): KeyValueStore {
   const data = new Map(Object.entries(initial));

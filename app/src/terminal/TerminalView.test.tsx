@@ -19,7 +19,7 @@ import type { MountDeps, TerminalHandle } from "./mountTerminal";
 import type { AttachScrollbarHandle } from "./scrollbar";
 import { buildXtermTheme } from "../theme/buildXtermTheme";
 import { currentCwd, makeCwdStore } from "./osc7";
-import { __resetSettingsForTest, makeSettingsStore } from "../settings/settingsStore";
+import { __resetSettingsForTest, makeSettingsStore } from "../store/settingsStore";
 
 // A no-op resize seam for tests that don't care about the resize path.
 const noopObserve: ResizeObservation = () => () => {};

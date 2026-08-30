@@ -22,7 +22,7 @@ import {
 } from "./registry";
 import type { ThemeSpec } from "./themeDerive";
 import type { AnsiPalette } from "./tokens";
-import { SETTINGS_CHANGED_EVENT, type SettingsStore } from "../settings/settingsStore";
+import { SETTINGS_CHANGED_EVENT, type SettingsStore } from "../store/settingsStore";
 import type { EventBus } from "../ipc/eventBus";
 
 // -------------------------------------------------------------------------------------------------

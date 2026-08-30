@@ -8,7 +8,7 @@
 // in the settings window. Runtime wiring only; the behavior is tested in useUpdateAuthority.
 import { useUpdateAuthority } from "./useUpdateAuthority";
 import { realUpdateClient } from "./realUpdateClient";
-import { makeSettingsStore } from "../settings/settingsStore";
+import { makeSettingsStore } from "../store/settingsStore";
 import { realEventBus } from "../ipc/eventBus";
 
 // Stable across renders (module scope): one store, tagged as the main window on broadcasts.

@@ -8,7 +8,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { makeFakeUpdateClient } from "./updateClient";
-import { makeSettingsStore, type KeyValueStore } from "../settings/settingsStore";
+import { makeSettingsStore, type KeyValueStore } from "../store/settingsStore";
 import { useUpdateAuthority } from "./useUpdateAuthority";
 import {
   UPDATE_COMMAND_EVENT,

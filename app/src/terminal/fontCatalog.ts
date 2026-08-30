@@ -10,7 +10,7 @@
 // (fontSettings.resolveFontFamily → fontStackFor): a bundled family gets the platform stack
 // appended so a failed face degrades gracefully instead of falling to the renderer's default.
 import { ITERM2_FONT_FAMILY } from "./iterm2Theme";
-import type { SettingsStore } from "../settings/settingsStore";
+import type { SettingsStore } from "../store/settingsStore";
 
 export interface BundledFont {
   /** Stable id = the asset directory under app/public/fonts/. */

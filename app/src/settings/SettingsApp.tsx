@@ -57,7 +57,7 @@ import {
   type ConfigWarningItem,
   type SettingsStore,
   type TabBarPosition,
-} from "./settingsStore";
+} from "../store/settingsStore";
 import { normalizeLegacyThemeId } from "../theme/defaultTheme";
 import { isRegisteredThemeId } from "../theme/registry";
 import { hydrateUserThemes, onThemesChanged } from "../theme/themesBackend";

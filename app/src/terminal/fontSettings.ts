@@ -10,8 +10,8 @@
 // a font change alters the grid METRICS, so the caller must re-fit and recompute the scrollbar
 // after an applied change (TerminalView does). Pure + payload-guarded: events are untrusted
 // input, junk must be inert.
-import type { SettingsStore } from "../settings/settingsStore";
-import { clampNumberSetting } from "../settings/settingsStore";
+import type { SettingsStore } from "../store/settingsStore";
+import { clampNumberSetting } from "../store/settingsStore";
 import { fontStackFor } from "./fontCatalog";
 
 export interface FontTerminalOptions {

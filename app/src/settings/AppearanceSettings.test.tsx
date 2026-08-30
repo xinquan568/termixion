@@ -22,7 +22,7 @@ import {
   SETTINGS_CHANGED_EVENT,
   type KeyValueStore,
   type SettingsBus,
-} from "./settingsStore";
+} from "../store/settingsStore";
 import { themes } from "../theme/themes";
 import { clearUserThemes, registerUserThemes, type UserThemeEntry } from "../theme/registry";
 import type { ThemeSpec } from "../theme/themeDerive";

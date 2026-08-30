@@ -34,7 +34,7 @@ import {
   CONFIG_WARNINGS_EVENT,
   __resetSettingsForTest,
   hydrateSettings,
-} from "./settings/settingsStore";
+} from "./store/settingsStore";
 import type { SessionInfo } from "./ipc/backend";
 
 function obs<T>() {

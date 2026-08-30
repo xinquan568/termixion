@@ -19,7 +19,7 @@ import { defaultThemeId } from "./defaultTheme";
 import { isUserThemeIdShape, listThemes, type ThemeListEntry } from "./registry";
 import { hydrateUserThemes, onThemesChanged } from "./themesBackend";
 import { realEventBus, type EventBus } from "../ipc/eventBus";
-import { SETTINGS_CHANGED_EVENT, type SettingsStore } from "../settings/settingsStore";
+import { SETTINGS_CHANGED_EVENT, type SettingsStore } from "../store/settingsStore";
 import { log } from "../ipc/logSink";
 
 /**

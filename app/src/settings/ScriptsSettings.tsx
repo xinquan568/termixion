@@ -10,7 +10,7 @@
 import { useEffect, useState } from "react";
 import { SettingRow, SettingsGroup } from "./components";
 import { Select } from "./components";
-import type { SettingsStore } from "./settingsStore";
+import type { SettingsStore } from "../store/settingsStore";
 import { realInvoke, type InvokeFn } from "../ipc/backend";
 import { listScripts, onScriptsChanged, openScriptsDir, type ScriptEntry } from "../scripts/scriptsBackend";
 import { log } from "../ipc/logSink";

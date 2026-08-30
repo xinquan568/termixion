@@ -38,7 +38,7 @@
 import { useState, type MouseEvent as ReactMouseEvent } from "react";
 import { SegmentedControl, SettingRow, SettingsGroup, Toggle } from "./components";
 import { ThemeContextMenu } from "./ThemeContextMenu";
-import type { LabelOrientation, SettingsStore, TabBarPosition } from "./settingsStore";
+import type { LabelOrientation, SettingsStore, TabBarPosition } from "../store/settingsStore";
 import { barLayoutFor } from "../tabs/barLayout";
 import type { ThemeId } from "../theme/themes";
 import {

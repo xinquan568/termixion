@@ -12,7 +12,7 @@
 // its non-vertical-label returns are the CSS status quo, kept as reference data for these tests.
 import { describe, it, expect } from "vitest";
 import { barLayoutFor, labelOrientationFor, railGeometryFor } from "./barLayout";
-import type { LabelOrientation, TabBarPosition } from "../settings/settingsStore";
+import type { LabelOrientation, TabBarPosition } from "../store/settingsStore";
 
 describe("barLayoutFor", () => {
   it("bottom → column + horizontal (the LAST flex child lands on the bottom edge)", () => {

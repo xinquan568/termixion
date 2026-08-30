@@ -19,7 +19,7 @@ import {
   hydrateSettings,
   makeSettingsStore,
   type KeyValueStore,
-} from "./settingsStore";
+} from "../store/settingsStore";
 import { initialUpdateState } from "../update/updateState";
 import type { UseUpdate } from "../update/useUpdate";
 import { clearUserThemes, type UserThemeEntry } from "../theme/registry";

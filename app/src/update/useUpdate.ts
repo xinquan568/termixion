@@ -7,7 +7,7 @@
 // window's useUpdateAuthority owns startup/scheduled checks (shouldAutoCheck) and wraps this hook.
 import { useCallback, useReducer, useRef } from "react";
 import type { PendingUpdate, UpdateClient } from "./updateClient";
-import type { SettingsStore } from "../settings/settingsStore";
+import type { SettingsStore } from "../store/settingsStore";
 import { initialUpdateState, updateReducer, type UpdateState } from "./updateState";
 
 /** Where the persisted auto-check flag lives (the trmx-48 store shape, now registry-backed). */

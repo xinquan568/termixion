@@ -26,7 +26,7 @@ import {
   SETTING_DEFAULTS,
   type CheckFrequency,
   type SettingsStore,
-} from "./settingsStore";
+} from "../store/settingsStore";
 import appIcon from "../assets/app-icon.png";
 
 // For now the website and the repository are the same address (the issue): both link to the GitHub repo.
