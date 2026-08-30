@@ -123,6 +123,54 @@ impl From<PtyError> for IpcError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// True when the return type is exactly `Result<_, IpcError>`.
+    ///
+    /// Checks the OUTER type is `Result` (so `CommandOutcome<T, IpcError>` does not count) and
+    /// that its error argument's final path segment is `IpcError` (so a fully-qualified
+    /// `crate::ipc_error::IpcError` does count).
+    fn rejects_with_ipc_error(function: &syn::ItemFn) -> bool {
+        let syn::ReturnType::Type(_, ty) = &function.sig.output else {
+            return false;
+        };
+        let syn::Type::Path(path) = ty.as_ref() else {
+            return false;
+        };
+        let Some(last) = path.path.segments.last() else {
+            return false;
+        };
+        if last.ident != "Result" {
+            return false;
+        }
+        let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+            return false;
+        };
+        let Some(syn::GenericArgument::Type(syn::Type::Path(err))) = args.args.iter().nth(1) else {
+            return false;
+        };
+        err.path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "IpcError")
+    }
+
+    /// True when the return type's outer type is `Result`, whatever its error type.
+    ///
+    /// Separates "has an error channel we did not type" from "has no error channel at all".
+    /// An `IpcResult<T>` alias also lands here only if it is literally spelled `Result`;
+    /// see the scope note on this test.
+    fn returns_result(function: &syn::ItemFn) -> bool {
+        let syn::ReturnType::Type(_, ty) = &function.sig.output else {
+            return false;
+        };
+        let syn::Type::Path(path) = ty.as_ref() else {
+            return false;
+        };
+        path.path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "Result")
+    }
     use termixion_core::PtySize;
 
     #[test]
@@ -212,6 +260,16 @@ mod tests {
     /// `CommandOutcome<T, IpcError>` read as fallible, and `pub mod x;` escaped the module
     /// self-check. A heuristic over source text keeps finding new ways to be wrong; the parse
     /// answers the actual question: is the return type `Result<_, IpcError>`?
+    ///
+    /// **What this guarantees, stated honestly.** It reconciles the registration list against
+    /// top-level `#[tauri::command]` functions whose return type is written as `Result<..>` in the
+    /// censused files, and it partitions them three ways: `IpcError`, some other error type (which
+    /// must be empty), and no error channel. It does NOT resolve type aliases, follow re-exports,
+    /// or recurse into inline modules; a command hidden behind `type IpcResult<T> = ..` or defined
+    /// inside a nested module is outside its reach. Those are all unusual in this crate — every
+    /// command today is a top-level fn with a spelled-out `Result` — and the exact-name sets plus
+    /// the 33-registration count catch ordinary additions and moves. Recorded so the guarantee is
+    /// not read as stronger than it is.
     #[test]
     fn exactly_the_expected_commands_reject_with_ipc_error() {
         const EXPECTED_FALLIBLE: [&str; 15] = [
@@ -309,37 +367,6 @@ mod tests {
             }
         }
 
-        /// True when the return type is exactly `Result<_, IpcError>`.
-        ///
-        /// Checks the OUTER type is `Result` (so `CommandOutcome<T, IpcError>` does not count) and
-        /// that its error argument's final path segment is `IpcError` (so a fully-qualified
-        /// `crate::ipc_error::IpcError` does count).
-        fn rejects_with_ipc_error(function: &syn::ItemFn) -> bool {
-            let syn::ReturnType::Type(_, ty) = &function.sig.output else {
-                return false;
-            };
-            let syn::Type::Path(path) = ty.as_ref() else {
-                return false;
-            };
-            let Some(last) = path.path.segments.last() else {
-                return false;
-            };
-            if last.ident != "Result" {
-                return false;
-            }
-            let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
-                return false;
-            };
-            let Some(syn::GenericArgument::Type(syn::Type::Path(err))) = args.args.iter().nth(1)
-            else {
-                return false;
-            };
-            err.path
-                .segments
-                .last()
-                .is_some_and(|segment| segment.ident == "IpcError")
-        }
-
         let is_command = |function: &syn::ItemFn| {
             function.attrs.iter().any(|attr| {
                 attr.path()
@@ -349,8 +376,12 @@ mod tests {
             })
         };
 
+        // THREE buckets, not two. "Not `Result<_, IpcError>`" is not the same as "no error
+        // channel": a command returning `Result<T, String>` — the very shape this issue removed —
+        // would otherwise sit quietly in the infallible set and pass. `other_error` must stay empty.
         let mut fallible: Vec<String> = Vec::new();
         let mut infallible: Vec<String> = Vec::new();
+        let mut other_error: Vec<String> = Vec::new();
         for (_, file) in &parsed {
             for item in &file.items {
                 if let syn::Item::Fn(function) = item {
@@ -360,6 +391,8 @@ mod tests {
                     let name = function.sig.ident.to_string();
                     if rejects_with_ipc_error(function) {
                         fallible.push(name);
+                    } else if returns_result(function) {
+                        other_error.push(name);
                     } else {
                         infallible.push(name);
                     }
@@ -412,6 +445,12 @@ mod tests {
             expected_infallible,
             "the set of commands with NO error channel drifted from the 18 this issue leaves alone"
         );
+        assert!(
+            sorted(other_error).is_empty(),
+            "a registered command returns Result with an error type that is NOT IpcError — the \
+             boundary is meant to be uniform, and such a command would otherwise be miscounted \
+             as having no error channel at all"
+        );
     }
 
     #[test]
@@ -422,5 +461,48 @@ mod tests {
             value,
             serde_json::json!({ "kind": "io", "message": "could not create /x" })
         );
+    }
+
+    /// The classifier's three-way partition, exercised directly.
+    ///
+    /// It cannot be probed by editing a real command — changing only a signature does not compile,
+    /// and the crate must build for the test binary to exist. So the cases are parsed from source
+    /// text here, which is exactly what the census does with the real files.
+    #[test]
+    fn the_classifier_partitions_three_ways() {
+        let source = r#"
+            #[tauri::command]
+            pub fn typed() -> Result<(), IpcError> { Ok(()) }
+            #[tauri::command]
+            pub fn typed_qualified() -> Result<u8, crate::ipc_error::IpcError> { Ok(0) }
+            #[tauri::command]
+            pub fn stringly() -> Result<(), String> { Ok(()) }
+            #[tauri::command]
+            pub fn infallible() -> u8 { 0 }
+            #[tauri::command]
+            pub fn not_a_result() -> CommandOutcome<u8, IpcError> { todo!() }
+        "#;
+        let file = syn::parse_file(source).expect("the probe source parses");
+        let classify = |name: &str| {
+            let function = file
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    syn::Item::Fn(f) if f.sig.ident == name => Some(f),
+                    _ => None,
+                })
+                .expect("the probe fn exists");
+            (rejects_with_ipc_error(function), returns_result(function))
+        };
+
+        assert_eq!(classify("typed"), (true, true));
+        // A fully-qualified error path must still count — the string version read this as infallible.
+        assert_eq!(classify("typed_qualified"), (true, true));
+        // The case that mattered: an error channel we did NOT type. Not IpcError, but emphatically
+        // not "no error channel" either, which is how the two-bucket version would have filed it.
+        assert_eq!(classify("stringly"), (false, true));
+        assert_eq!(classify("infallible"), (false, false));
+        // The outer type is checked, so this is not mistaken for a Result.
+        assert_eq!(classify("not_a_result"), (false, false));
     }
 }
