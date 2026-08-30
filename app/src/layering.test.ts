@@ -14,23 +14,20 @@
 // zones and asserts the rule agrees with the level ordering in both directions. A missing row or a
 // stray ban fails here rather than years later.
 import { ESLint } from "eslint";
-import { describe, expect, it } from "vitest";
-
-import config from "../eslint.config.js";
+import { beforeAll, describe, expect, it } from "vitest";
 
 type Zone = { target: string; from: string };
 
-/** The flat-config block that carries the layering rule. */
-const rule = (() => {
-  for (const block of config as Array<Record<string, unknown>>) {
-    const rules = block?.rules as Record<string, unknown> | undefined;
-    const entry = rules?.["import-x/no-restricted-paths"];
-    if (Array.isArray(entry)) return entry[1] as { zones: Zone[] };
-  }
-  throw new Error("import-x/no-restricted-paths is not configured");
-})();
-
-const zones = rule.zones;
+// Read the EFFECTIVE config through ESLint rather than importing eslint.config.js directly. Two
+// reasons: the config is untyped JS (a direct import fails the production `tsc` build), and this
+// asserts against what ESLint actually resolves for a real file — which is what enforces the rule.
+let zones: Zone[] = [];
+beforeAll(async () => {
+  const resolved = await new ESLint().calculateConfigForFile("src/ipc/backend.ts");
+  const entry = (resolved.rules as Record<string, unknown>)["import-x/no-restricted-paths"];
+  if (!Array.isArray(entry)) throw new Error("import-x/no-restricted-paths is not configured");
+  zones = (entry[1] as { zones: Zone[] }).zones;
+});
 const dirOf = (p: string) => p.replace("./src/", "");
 /** Is `from -> to` banned by the configured zones? */
 const banned = (from: string, to: string) =>
