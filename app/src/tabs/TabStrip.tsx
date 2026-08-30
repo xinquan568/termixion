@@ -67,7 +67,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { formatAriaKeyshortcuts, formatChordGlyphs } from "../commands/chordGlyphs";
+import { formatAriaKeyshortcuts, formatChordGlyphs } from "../keys/chordGlyphs";
 import { railGeometryFor } from "./barLayout";
 import { tabHintChordFor } from "./tabHints";
 import type { Tab } from "./tabState";

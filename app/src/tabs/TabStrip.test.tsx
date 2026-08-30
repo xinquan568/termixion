@@ -12,7 +12,7 @@ import { dirname, resolve } from "node:path";
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { TabStrip, hoverIndexFromPoint, hoverSlotFor, DRAG_SLOP_PX } from "./TabStrip";
-import { FULL_DEFAULT_KEYS } from "../commands/keymapDispatch";
+import { FULL_DEFAULT_KEYS } from "../keys/keymapDefaults";
 import type { Tab } from "./tabState";
 import { leafNode } from "../panes/layoutTree";
 
