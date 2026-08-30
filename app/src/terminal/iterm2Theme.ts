@@ -19,7 +19,11 @@
 import type { ITheme, ITerminalOptions } from "@xterm/xterm";
 
 /** Which iTerm2 color mode to render — selected from the system appearance. */
-export type Appearance = "dark" | "light";
+// trmx-247: Appearance / prefersDarkToMode / initialAppearanceFromWindow live in
+// `theme/appearance.ts` — see the note there. Re-exported so existing consumers keep their path.
+export { prefersDarkToMode, initialAppearanceFromWindow } from "../theme/appearance";
+export type { Appearance } from "../theme/appearance";
+import type { Appearance } from "../theme/appearance";
 
 // iTerm2's 16 ANSI colors (DefaultBookmark.plist "Ansi N Color"), identical in dark and light mode.
 export const ITERM2_ANSI = {
@@ -67,21 +71,6 @@ export function iterm2Theme(mode: Appearance): ITheme {
   return { ...ITERM2_PRIMARIES[mode], ...ITERM2_ANSI };
 }
 
-/** Map the OS `prefers-color-scheme: dark` boolean to an iTerm2 mode. */
-export function prefersDarkToMode(prefersDark: boolean): Appearance {
-  return prefersDark ? "dark" : "light";
-}
-
-/**
- * Read the current system appearance from a window-like object. Defensive: if `matchMedia` is unavailable
- * (e.g. a non-DOM/headless context), default to dark — Termixion's historical look.
- */
-export function initialAppearanceFromWindow(
-  win: Pick<Window, "matchMedia"> | undefined = typeof window !== "undefined" ? window : undefined,
-): Appearance {
-  if (!win || typeof win.matchMedia !== "function") return "dark";
-  return prefersDarkToMode(win.matchMedia("(prefers-color-scheme: dark)").matches);
-}
 
 // trmx-46: the default font is the current macOS system monospaced font (SF Mono) at 12 pt, rather than
 // iTerm2's own default of Monaco 12 (DefaultBookmark.plist "Normal Font" = "Monaco 12"). `ui-monospace` is

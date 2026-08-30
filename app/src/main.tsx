@@ -12,7 +12,7 @@ import { runPerf, runPerfMultipane, realPerfDeps, type PerfLaunchConfig } from "
 import { runSmoke, realSmokeDeps } from "./smoke/runSmoke";
 import { hydrateSettings, makeSettingsStore } from "./store/settingsStore";
 import { hydrateUserThemes } from "./theme/themesBackend";
-import { applyStartupTheme } from "./theme/applyStartupTheme";
+import { applyStartupTheme } from "./startup/applyStartupTheme";
 import { ensureStartupFontLoaded } from "./terminal/fontCatalog";
 import "./index.css";
 import "./fonts.css";

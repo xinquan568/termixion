@@ -137,7 +137,7 @@ import { listThemes } from "./theme/registry";
 import { realEventBus } from "./ipc/eventBus";
 import { routeControlRequest, buildLsSnapshot, type ControlDeps } from "./control/controlBridge";
 import { isControlRequest } from "./control/controlRequestGuard";
-import { installThemeHotReload } from "./theme/themeHotReload";
+import { installThemeHotReload } from "./startup/themeHotReload";
 import { makeCwdStore, type CwdStore } from "./terminal/osc7";
 import { realSetWindowTitle } from "./terminal/windowTitle";
 import type { TerminalHandle } from "./terminal/mountTerminal";

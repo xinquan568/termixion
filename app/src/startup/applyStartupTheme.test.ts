@@ -11,7 +11,7 @@
 // covers the paint only.
 import { beforeEach, describe, expect, it } from "vitest";
 import { applyStartupTheme } from "./applyStartupTheme";
-import { themes, type ThemeId } from "./themes";
+import { themes, type ThemeId } from "../theme/themes";
 import {
   __resetSettingsForTest,
   hydrateSettings,
