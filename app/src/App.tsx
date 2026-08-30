@@ -53,15 +53,11 @@ import { type DropZone } from "./panes/dropZone";
 import { collectBusyTabs, shouldConfirmClose } from "./panes/closeGuard";
 import { type FrameSchedule } from "./terminal/resizeCoalescer";
 import {
-  isLabelOrientation,
-  isTabBarPosition,
   makeSettingsStore,
   type LabelOrientation,
   type TabBarPosition,
 } from "./store/settingsStore";
-import { normalizeLegacyThemeId } from "./theme/defaultTheme";
-import { isRegisteredThemeId, isUserThemeIdShape, resolveTheme } from "./theme/registry";
-import { applyTxTheme } from "./theme/txCssVars";
+import { resolveTheme } from "./theme/registry";
 import { useBackend } from "./ipc/useBackend";
 import {
   closePty,
@@ -70,17 +66,13 @@ import {
   onTitleHint,
   realInvoke,
   sendPtyInput,
-  takePendingOpenPaths,
   type InvokeFn,
 } from "./ipc/backend";
 import { realObserveServiceNudge, type ServiceNudgeObservation } from "./ipc/serviceNudge";
 import { makeIdReservation, type IdReservation } from "./tabs/idReservation";
-import { listScripts } from "./scripts/scriptsBackend";
 import { buildCommands, type Command, type CommandContext } from "./commands/registry";
 import { createDispatcher, type Dispatcher } from "./commands/dispatch";
 import { FULL_DEFAULT_KEYS, mergeKeymap } from "./commands/keymapDispatch";
-import { realEventBus } from "./ipc/eventBus";
-import { routeControlRequest, buildLsSnapshot, type ControlDeps } from "./control/controlBridge";
 import { installThemeHotReload } from "./startup/themeHotReload";
 import { makeCwdStore } from "./terminal/osc7";
 import { createPaneRuntimes, type PaneRuntime } from "./app/paneRuntime";
@@ -91,8 +83,8 @@ import { useCommandContext } from "./app/useCommandContext";
 import { usePaneOps } from "./app/usePaneOps";
 import { usePaneDrag } from "./app/usePaneDrag";
 import { AppView } from "./app/AppView";
+import { useAppServices } from "./app/useAppServices";
 import { realSetWindowTitle } from "./terminal/windowTitle";
-import { log } from "./ipc/logSink";
 
 
 // trmx-247: realCloseWindow / realCloseAcknowledged / realQuitConfirmed moved to ipc/window.ts.
@@ -124,7 +116,6 @@ import type { PendingClose } from "./app/closeContracts";
 import {
   realFrameSchedule,
   realObserveAppSettings,
-  writePaneNotice,
   type AttachFn,
 } from "./terminal/appSeams";
 import { realObserveControlRequest, type ControlRequestObservation } from "./control/controlRequestSeam";
@@ -438,53 +429,13 @@ export function App({
   // attach send-step awaits it, so the async listScripts resolution never loses the race (finding 3).
   // Smoke/perf are already excluded: main.tsx boot() returns before App renders on those launches.
   useEffect(() => {
-    if (bootedRef.current) return;
-    bootedRef.current = true;
-    if (stateRef.current.tabs.length === 0) {
-      // trmx-224: a service-triggered cold launch (main.tsx pre-fetched the queued dirs
-      // BEFORE mount) opens the requested dirs as the initial tabs — no default $HOME tab,
-      // no startup script. Plain boot (the empty default) is byte-identical to before.
-      if (serviceBootPaths.length > 0) {
-        deliverServicePathsRef.current(serviceBootPaths);
-        return;
-      }
-      const startupPath = makeSettingsStore().get("scripts.startup");
-      // The boot default tab goes through the shared creation primitive (one reservation
-      // per dispatch; at boot there is no active tab, so the inherited cwd is undefined —
-      // identical to the pre-trmx-224 unseeded open), and the startup script keys off the
-      // RETURNED pane id like every other wrapper.
-      const opened = createTabRef.current();
-      if (startupPath && !startupFiredRef.current) {
-        startupFiredRef.current = true;
-        seedPaneField(
-          opened.paneId, "pendingScript", listScripts(invoke).then((scripts) => {
-            const match = scripts.find((entry) => entry.relPath === startupPath);
-            if (!match) {
-              log.warn(
-                `startup script "${startupPath}" not found in ~/.config/termixion/scripts/; starting a plain shell`,
-              );
-              return null;
-            }
-            return { sourceLine: match.sourceLine };
-          }),
-        );
-      }
-    }
+    return services.boot();
   }, [invoke]);
 
   // trmx-84: measure the pane content area for solveRects. Guarded for jsdom (no ResizeObserver) and
   // 0×0 readings, so tests keep the usable default bounds and real runtime tracks the window size.
   useEffect(() => {
-    const el = contentRef.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver((entries) => {
-      const r = entries[entries.length - 1]?.contentRect;
-      if (r && r.width > 0 && r.height > 0) {
-        setBounds({ x: 0, y: 0, width: Math.round(r.width), height: Math.round(r.height) });
-      }
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
+    return services.observeContentSize();
   }, []);
   // trmx-254 (T3a): the per-pane callback caches. Pure logic — the root still owns every ref and
   // every piece of state; the hook is handed exactly what the compiler says it reads.
@@ -634,11 +585,7 @@ export function App({
   // delivery during a pending close-confirm simply appends behind the dialog (the v1
   // contract; PTY exits already mutate tab state during modals by design).
   useEffect(() => {
-    return observeServiceNudge(() => {
-      void takePendingOpenPaths(invoke).then((paths) => {
-        if (paths.length > 0) deliverServicePathsRef.current(paths);
-      });
-    });
+    return services.drainServicePaths();
   }, [observeServiceNudge, invoke]);
 
   // trmx-91: subscribe to session:activity — route each busy<->idle transition by sessionId into the
@@ -664,49 +611,11 @@ export function App({
   // honor. Routed to the owning pane's terminal, which is the surface the user is already looking at
   // when the thing goes wrong. A notice for an unknown session (closed in the meantime) is dropped.
   useEffect(() => {
-    return observeSessionNotice(({ session_id, text }) => {
-      const hit = paneBySessionId(stateRef.current, session_id);
-      if (!hit) return;
-      const handle = runtimesRef.current.get(hit.paneId)?.handle;
-      if (handle) writePaneNotice(handle, text);
-    });
+    return services.onSessionNotice();
   }, [observeSessionNotice]);
 
   useEffect(() => {
-    const paneBusy = (paneId: PaneId): boolean => {
-      for (const tab of stateRef.current.tabs) {
-        const pane = tab.panes[paneId];
-        if (pane) return pane.activityVisible === true;
-      }
-      return false;
-    };
-    return observeControlRequest(({ id, request }) => {
-      const deps: ControlDeps = {
-        // trmx-144: forward the router's "remote" source so close commands skip the confirm gate.
-        dispatch: (cmd, arg, source) => dispatcherRef.current?.dispatch(cmd, arg, source) ?? false,
-        hasCommand: (cmd) => dispatcherRef.current?.get(cmd) !== undefined,
-        // trmx-235: the `commands` query lists every registry id (the documented callable set).
-        listCommands: () => commandsRef.current.map((c) => c.id),
-        buildLs: () =>
-          buildLsSnapshot(
-            stateRef.current.tabs,
-            stateRef.current.activeTabId,
-            (paneId) => runtimesRef.current.get(paneId)?.cwd?.get() ?? null,
-            paneBusy,
-          ),
-        sendText: (pane, text) => {
-          const active = getActiveTab();
-          const paneId = pane === "focused" ? active?.focusedPaneId : Number(pane);
-          if (paneId === undefined || Number.isNaN(paneId)) return false;
-          const sessionId = runtimesRef.current.get(paneId)?.sessionId;
-          if (sessionId === undefined) return false;
-          seamsRef.current.sendInput(sessionId, text).catch(() => {});
-          return true;
-        },
-      };
-      const payload = routeControlRequest(request, deps);
-      invoke("control_response", { id, payload }).catch(() => {});
-    });
+    return services.installControlBridge();
   }, [observeControlRequest, invoke]);
 
   // trmx-144: the quit gate. The backend intercepts the native window close (red button / ⌘Q) and
@@ -746,54 +655,7 @@ export function App({
   // effect, dep'd only on the stable observation seam — payloads are untrusted (only a well-formed
   // key with a registry-valid value updates state).
   useEffect(() => {
-    const stopSettings = observeSettings((payload) => {
-      if (typeof payload !== "object" || payload === null) return;
-      const { key, value } = payload as { key?: unknown; value?: unknown };
-      if (key === "tabs.barPosition" && isTabBarPosition(value)) setBarPosition(value);
-      else if (key === "tabs.sideLabelOrientation" && isLabelOrientation(value)) {
-        setSideLabelOrientation(value);
-      }
-      // trmx-91: keep the activity-indicator toggle live (boolean-guarded, the untrusted-payload
-      // discipline). Off hides the line without touching the backend poller (titles keep flowing).
-      // trmx-225: keep the FFM gate live — a ref (not state): the hover handler reads it per
-      // event and nothing needs a re-render on toggle.
-      else if (key === "terminal.focusFollowsMouse" && typeof value === "boolean") {
-        ffmRef.current = value;
-      } else if (key === "terminal.activityIndicator" && typeof value === "boolean") {
-        setActivityIndicatorOn(value);
-      }
-      // trmx-151: keep the ⌘N hint toggle live (same boolean guard). Off strips the prefixes
-      // without touching the keymap — the chords stay bound either way.
-      else if (key === "tabs.showShortcutHints" && typeof value === "boolean") {
-        setShortcutHintsOn(value);
-      }
-      // trmx-190: keep the AI-session-counter toggle live (same boolean guard). A pure render
-      // gate — foreground tracking keeps running so re-enabling shows correct counts at once.
-      else if (key === "titleBar.aiCounter" && typeof value === "boolean") {
-        setAiCounterOn(value);
-      }
-      // trmx-90/91: recompute the badge watermark AND the activity-line color on every theme event so
-      // both repaint on a theme switch AND on a trmx-89 same-id hot-reload (the token changed under the
-      // same id, review-1). Same untrusted-payload discipline as barPosition; resolveTheme is total.
-      else if (key === "appearance.theme") {
-        // trmx-202: a REMOVED built-in (live config edit / the watcher's default "white")
-        // normalizes to the derived default before the guard; user-shape ids pass untouched.
-        const themeId = normalizeLegacyThemeId(value) ?? value;
-        if (isRegisteredThemeId(themeId) || isUserThemeIdShape(themeId)) {
-          // trmx-173: re-apply the --tx-* CSS vars on documentElement so the main window's chrome (tab
-          // bar, borders, …) recolors with the terminal. On EVERY theme event — including a trmx-89
-          // same-id hot-reload where the tokens changed under the same id — matching the color-state
-          // refreshes below; applyTxTheme is idempotent, so a bus echo is harmless.
-          applyTxTheme(themeId, document);
-          setBadgeColor(resolveTheme(themeId).terminal.badge);
-          setBadgeOutlineColor(resolveTheme(themeId).color.bg.primary); // trmx-149: re-tint the stroke
-          setActivityIsDark(activityIsDarkFor(themeId)); // trmx-160: re-key the progress bar's mode
-          setActivityErrorColor(activityErrorColorFor(themeId)); // trmx-99: re-tint the exit-code flash
-          setSearchColors(resolveTheme(themeId).terminal.search); // trmx-98: re-tint the find highlights
-        }
-      }
-    });
-    return stopSettings;
+    return services.onSettingsChanged();
   }, [observeSettings]);
 
   // trmx-89 (FR-6): the main window owns the theme HOT-RELOAD machine. A `themes:changed` signal
@@ -805,9 +667,7 @@ export function App({
   // without a Tauri runtime. The store carries the real bus so a fallback's settings.set broadcasts
   // settings:changed to the live terminals (source "themes-reload").
   useEffect(() => {
-    return installHotReload({
-      settings: makeSettingsStore(undefined, realEventBus, "themes-reload"),
-    });
+    return services.installThemeHotReload();
   }, [installHotReload]);
 
   // ⌘1..⌘9 select a tab; ⌘D / ⇧⌘D split (trmx-84); ⌥⌘-arrows / ⌘]/⌘[ navigate panes (trmx-86). Capture
@@ -831,8 +691,7 @@ export function App({
   // it. Undefined = no tabs yet (boot) — leave the window alone.
   const activeTitle = activeTab?.title;
   useEffect(() => {
-    if (activeTitle === undefined) return;
-    seamsRef.current.setWindowTitle(activeTitle);
+    services.mirrorWindowTitle();
   }, [activeTitle]);
 
   // trmx-243 (grill L6): the core title mirror used to live here — every attached pane's effective
@@ -897,6 +756,17 @@ export function App({
 
   // trmx-254 (T7): the divider drag + Cmd-drag re-dock. Every drag ref and every piece of drag state
   // stays declared above; only the logic moves. E17 stays inline (frameCancelRef + clearAllTimers).
+  // trmx-254 (T11): the app-level services. Its outward set is empty — nothing declared there is read
+  // anywhere else, which is what makes it a service module rather than another shared surface.
+  const services = useAppServices({
+    invoke, stateRef, runtimesRef, bootedRef, startupFiredRef, deliverServicePathsRef, createTabRef,
+    contentRef, ffmRef, seamsRef, dispatcherRef, commandsRef, serviceBootPaths,
+    activeTitle, getActiveTab, seedPaneField,
+    observeServiceNudge, observeSessionNotice, observeControlRequest, observeSettings,
+    installHotReload, setBounds, setBarPosition, setSideLabelOrientation, setActivityIndicatorOn,
+    setShortcutHintsOn, setAiCounterOn, setBadgeColor, setBadgeOutlineColor, setActivityIsDark,
+    setActivityErrorColor, setSearchColors,
+  });
   const drag = usePaneDrag({
     stateRef, runtimesRef, boundsRef, contentRef, dispatch,
     dragScheduleRef, dragRef, pendingRatioRef, frameCancelRef,
