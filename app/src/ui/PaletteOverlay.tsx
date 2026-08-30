@@ -7,7 +7,7 @@
 // supplies the items, the fuzzy key, the React key, how to render a row, and the class prefix / a11y
 // strings. Data loading (scripts, commands, themes) stays in the caller.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { fuzzyFilter } from "../scripts/fuzzy";
+import { fuzzyFilter } from "./fuzzy";
 
 export interface PaletteOverlayProps<T> {
   items: T[];

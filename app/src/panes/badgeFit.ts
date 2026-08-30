@@ -16,14 +16,10 @@
 /** Measures the badge label at a candidate font size → its rendered box (px). Injectable seam. */
 export type BadgeMeasure = (text: string, fontPx: number) => { width: number; height: number };
 
-/**
- * The badge font stack — Helvetica first (iTerm2's default badgeFont, rendered bold per
- * badgeFontIsBold), with metric-compatible fallbacks for non-mac platforms. The SINGLE source for
- * both the canvas measurer's font string and the `.tx-badge` CSS rule (index.css mirrors this
- * token list verbatim — the CSS contract test in BadgeOverlay.test.tsx pins the mirror), so the
- * measured font is always the painted font.
- */
-export const BADGE_FONT_FAMILY = 'Helvetica, "Helvetica Neue", Arial, "Liberation Sans", sans-serif';
+// trmx-247: BADGE_FONT_FAMILY lives in the leaf `ui/` zone (shared with theme/ and the CSS
+// contract tests); re-exported here so the badge code reads as one unit.
+export { BADGE_FONT_FAMILY } from "../ui/badgeFont";
+import { BADGE_FONT_FAMILY } from "../ui/badgeFont";
 
 /** Font size (px) when the fit cannot run (no measurer / unknown geometry / empty label). */
 export const FALLBACK_FONT_PX = 28;
