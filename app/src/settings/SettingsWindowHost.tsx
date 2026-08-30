@@ -15,7 +15,7 @@ import { useUpdateMirror } from "../update/useUpdateMirror";
 import { realUpdateClient } from "../update/realUpdateClient";
 import { realAppInfo } from "../update/appInfo";
 import { realOpener } from "../update/opener";
-import type { SettingsSection } from "../surface";
+import type { SettingsSection } from "../ipc/surface";
 
 // Stable across renders (module scope): one store, tagged as this window on broadcasts.
 const settingsStore = makeSettingsStore(undefined, realEventBus, "settings");

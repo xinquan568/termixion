@@ -6,17 +6,16 @@
 // — the main window, `pnpm dev`, jsdom — is the terminal. Pure so it behaves identically in all
 // three contexts and never throws on junk.
 
-/** The pages the settings window knows; must match the SettingsApp nav. */
-export type SettingsSection = "appearance" | "terminal" | "scripts" | "about";
+// trmx-247: SettingsSection / isSection live in `ipc/surface` so `settings/` reads them without
+// importing the root. Re-exported here so every existing consumer keeps its path.
+export type { SettingsSection } from "./ipc/surface";
+export { isSection } from "./ipc/surface";
+import type { SettingsSection } from "./ipc/surface";
+import { isSection } from "./ipc/surface";
 
 export type Surface =
   | { kind: "terminal" }
   | { kind: "settings"; section: SettingsSection | null };
-
-/** Section guard — exported (trmx-53) so the settings:navigate path shares one source of truth. */
-export function isSection(v: unknown): v is SettingsSection {
-  return v === "appearance" || v === "terminal" || v === "scripts" || v === "about";
-}
 
 /** Resolve the surface from a `window.location.search` string. */
 export function resolveSurface(search: string): Surface {

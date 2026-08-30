@@ -23,7 +23,7 @@ import {
   type PtyBytesHandler,
   type SessionInfo,
 } from "./backend";
-import type { TerminalHandle } from "../terminal/mountTerminal";
+import type { TerminalPort } from "./terminalPort";
 import { log } from "./logSink";
 
 export interface UseBackendOptions {
@@ -60,7 +60,7 @@ export interface BackendApi {
    * may ignore the promise).
    */
   attachTerminal: (
-    handle: TerminalHandle,
+    handle: TerminalPort,
     opts?: { cwd?: string },
   ) => Promise<SessionInfo>;
 }
@@ -97,7 +97,7 @@ export function useBackend({
 
   const attachTerminal = useCallback(
     async (
-      handle: TerminalHandle,
+      handle: TerminalPort,
       opts?: { cwd?: string },
     ): Promise<SessionInfo> => {
       const term = handle.terminal;
@@ -107,7 +107,7 @@ export function useBackend({
       // child process at 24x80 while the screen renders e.g. 30x100. TerminalLike deliberately stays
       // narrow, so read the real xterm Terminal's rows/cols via a localized adapter cast; the 24x80
       // fallback covers bare fakes in tests.
-      const t = handle.terminal as unknown as { rows?: number; cols?: number };
+      const t = handle.terminal;
       let session: SessionInfo;
       // trmx-78 round 2b: ack every chunk on xterm PARSE COMPLETION so the backend's
       // flow-control window tracks the real parse rate. The session id resolves only after the
