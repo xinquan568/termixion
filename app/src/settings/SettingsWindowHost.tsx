@@ -8,14 +8,14 @@
 // link opener. It holds no logic of its own; like the other hosts it is exercised by the app while
 // the tested pieces live behind the seams.
 import { SettingsApp } from "./SettingsApp";
-import { getLogDir, makeSettingsStore, openConfigFile, openLogDir } from "./settingsStore";
+import { getLogDir, makeSettingsStore, openConfigFile, openLogDir } from "../store/settingsStore";
 import { realEventBus } from "../ipc/eventBus";
 import { autoCheckSourceFrom, useUpdate } from "../update/useUpdate";
 import { useUpdateMirror } from "../update/useUpdateMirror";
 import { realUpdateClient } from "../update/realUpdateClient";
 import { realAppInfo } from "../update/appInfo";
 import { realOpener } from "../update/opener";
-import type { SettingsSection } from "../surface";
+import type { SettingsSection } from "../ipc/surface";
 
 // Stable across renders (module scope): one store, tagged as this window on broadcasts.
 const settingsStore = makeSettingsStore(undefined, realEventBus, "settings");

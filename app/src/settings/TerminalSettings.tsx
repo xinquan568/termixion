@@ -36,7 +36,7 @@ import {
   type ConfirmClose,
   type CursorStyle,
   type SettingsStore,
-} from "./settingsStore";
+} from "../store/settingsStore";
 import { realInvoke, type InvokeFn } from "../ipc/backend";
 import { realEventBus } from "../ipc/eventBus";
 import { log } from "../ipc/logSink";

@@ -7,3 +7,8 @@ packages:
 # build/lint gates (A-3) and Tauri's `beforeBuildCommand` (B-3), in dev and CI alike.
 allowBuilds:
   esbuild: true
+  # trmx-247: a native resolver that ships with eslint-plugin-import-x. We do NOT use it — the
+  # layering gate resolves through import-x's own createNodeResolver — so its build script is
+  # declined rather than granted. Declared explicitly because pnpm requires a decision either way,
+  # and silently ignoring it fails `pnpm install --frozen-lockfile` in CI.
+  unrs-resolver: false

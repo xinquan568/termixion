@@ -7,7 +7,7 @@
 // `update:command`. When the bus has no runtime (plain browser/jsdom), `connected` stays false and
 // the host falls back to a local useUpdate instance.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { SettingsStore } from "../settings/settingsStore";
+import type { SettingsStore } from "../store/settingsStore";
 import type { EventBus } from "../ipc/eventBus";
 import type { UseUpdate } from "./useUpdate";
 import { initialUpdateState, type UpdateState } from "./updateState";

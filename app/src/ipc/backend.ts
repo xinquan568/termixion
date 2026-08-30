@@ -15,7 +15,7 @@
 // `{ channel, rows, cols }` / `{ data }` args.
 import { invoke as tauriInvoke, Channel } from "@tauri-apps/api/core";
 import { realEventBus, type EventBus } from "./eventBus";
-import { parseActivityPayload, type ActivityMeta } from "../panes/activityLine";
+import { parseActivityPayload, type ActivityMeta } from "./payloads";
 
 /** The `invoke` signature this module depends on — injectable so callers can fake the backend. */
 export type InvokeFn = (

@@ -6,7 +6,7 @@
 // untrusted input: junk must be inert (same discipline as cursorSettings).
 import { describe, expect, it } from "vitest";
 import { buildXtermTheme } from "../theme/buildXtermTheme";
-import { makeSettingsStore, type KeyValueStore } from "../settings/settingsStore";
+import { makeSettingsStore, type KeyValueStore } from "../store/settingsStore";
 import { applyThemeSettingsChange, themeTerminalOptions, type ThemeOptionsSink } from "./themeSettings";
 
 function fakeStorage(initial: Record<string, string> = {}): KeyValueStore {

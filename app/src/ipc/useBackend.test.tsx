@@ -10,7 +10,7 @@ import { afterEach, describe, it, expect, vi } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import { useBackend } from "./useBackend";
 import type { InvokeFn, PtyBytesHandler, SessionInfo } from "./backend";
-import type { TerminalHandle, TerminalLike } from "../terminal/mountTerminal";
+import type { TerminalPort } from "./terminalPort";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -27,16 +27,15 @@ type OpenPty = (
 const SESSION: SessionInfo = { sessionId: 42, title: "zsh" };
 
 // A fake terminal capturing the wired handlers so the test can simulate input/output/resize.
-// `size` mimics the real xterm Terminal's live `rows`/`cols` (already set by mountTerminal's initial
-// fit() before attach) that TerminalLike deliberately doesn't declare; omit it for a bare fake.
+// trmx-247: the fake now implements TerminalPort — the slice ipc/ actually drives — instead of the
+// full TerminalHandle. `size` mimics the real xterm Terminal's live rows/cols (set by mountTerminal's
+// initial fit() before attach); omit it for a bare fake that exercises the 24x80 fallback.
 function fakeHandle(size?: { rows: number; cols: number }) {
   const writes: Uint8Array[] = [];
   const writeCallbacks: Array<() => void> = [];
   let dataHandler: ((d: string) => void) | undefined;
   let resizeHandler: ((s: { rows: number; cols: number }) => void) | undefined;
-  const terminal: TerminalLike & { rows?: number; cols?: number } = {
-    open() {},
-    loadAddon() {},
+  const terminal: TerminalPort["terminal"] = {
     write(d, callback) {
       writes.push(d);
       if (callback) writeCallbacks.push(callback);
@@ -47,15 +46,9 @@ function fakeHandle(size?: { rows: number; cols: number }) {
     onResize(h) {
       resizeHandler = h;
     },
-    dispose() {},
     ...size,
   };
-  const handle: TerminalHandle = {
-    terminal,
-    renderer: "dom", search: {} as never,
-    fit() {},
-    dispose() {},
-  };
+  const handle: TerminalPort = { terminal };
   return {
     handle,
     writes,

@@ -19,10 +19,10 @@ import {
   registerUserThemes,
   type ThemeListEntry,
   type UserThemeEntry,
-} from "./registry";
-import type { ThemeSpec } from "./themeDerive";
-import type { AnsiPalette } from "./tokens";
-import { SETTINGS_CHANGED_EVENT, type SettingsStore } from "../settings/settingsStore";
+} from "../theme/registry";
+import type { ThemeSpec } from "../theme/themeDerive";
+import type { AnsiPalette } from "../theme/tokens";
+import { SETTINGS_CHANGED_EVENT, type SettingsStore } from "../store/settingsStore";
 import type { EventBus } from "../ipc/eventBus";
 
 // -------------------------------------------------------------------------------------------------
@@ -133,7 +133,7 @@ function makeSubscribe() {
   const subscribe = vi.fn((h: () => void) => {
     handler = h;
     return teardown;
-  }) as unknown as typeof import("./themesBackend").onThemesChanged;
+  }) as unknown as typeof import("../theme/themesBackend").onThemesChanged;
   return { subscribe, teardown, fire: () => handler?.() };
 }
 

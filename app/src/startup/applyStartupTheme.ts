@@ -11,8 +11,8 @@
 // just the body) — the main/terminal window's chrome is themed only via them, so painting just the
 // body left it on the static `:root` fallback. Defensive on every edge: no document (headless) →
 // no-op; an unhydrated snapshot (plain browser) → the derived default.
-import { makeSettingsStore, type SettingsStore } from "../settings/settingsStore";
-import { applyTxTheme } from "./txCssVars";
+import { makeSettingsStore, type SettingsStore } from "../store/settingsStore";
+import { applyTxTheme } from "../theme/txCssVars";
 
 export interface StartupThemeOptions {
   /** Injection seam for tests; defaults to the real `document` (trmx-173: the location/search seam

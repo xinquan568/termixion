@@ -31,9 +31,9 @@ cd "$ROOT"
 WATCHED=(
   # 439 non-test lines after the trmx-243 split (was 1969). +~9% headroom.
   "crates/termixion-tauri/src/main.rs:480"
-  # 2616 lines today. +~2% only — trmx-248 and trmx-254 are about to cut this file, and the budget
-  # should follow them DOWN rather than leave them room to grow into.
-  "app/src/App.tsx:2670"
+  # 2582 lines after trmx-247 moved the window-lifecycle helpers into ipc/ (was 2616 -> budget 2670).
+  # Lowered with the file, per the ratchet's own rule; trmx-248 and trmx-254 will cut it further.
+  "app/src/App.tsx:2640"
 )
 
 # Non-test line count. For `.rs` this SKIPS each top-level `#[cfg(test)] mod … { … }` block and

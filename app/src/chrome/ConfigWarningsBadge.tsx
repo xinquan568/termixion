@@ -21,7 +21,7 @@ import {
   getConfigWarnings,
   onConfigWarningsChanged,
   type ConfigWarningItem,
-} from "../settings/settingsStore";
+} from "../store/settingsStore";
 
 export interface ConfigWarningsBadgeProps {
   /** Open the settings window (App wires this to the `open_settings_window` command). */

@@ -15,7 +15,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { BADGE_FONT_FAMILY } from "../panes/badgeFit";
+import { BADGE_FONT_FAMILY } from "../ui/badgeFont";
 
 /** The shipped chrome stylesheets (main window + settings surface) — one Vite bundle. */
 const CSS_FILES = ["src/index.css", "src/settings/settings.css"] as const;

@@ -9,7 +9,7 @@
 // runs (through `dispatch`, the single spine); Esc backs out of a param page, else closes.
 import { useEffect, useState } from "react";
 import { realInvoke, type InvokeFn } from "../ipc/backend";
-import { PaletteOverlay } from "./PaletteOverlay";
+import { PaletteOverlay } from "../ui/PaletteOverlay";
 import type { Command, CommandContext } from "./registry";
 import { listScripts, type ScriptEntry } from "../scripts/scriptsBackend";
 

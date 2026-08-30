@@ -6,7 +6,7 @@
 // (assigned onto the live terminal), copy-on-select ATTACHES/DETACHES a listener set, so TerminalView
 // consumes these as a boolean gate rather than an ITerminalOptions slice. Pure + payload-guarded
 // (events are untrusted input — junk is inert).
-import type { SettingsStore } from "../settings/settingsStore";
+import type { SettingsStore } from "../store/settingsStore";
 
 /** The persisted copy-on-select gate (default on — iTerm2 parity). */
 export function copyOnSelectEnabled(settings: SettingsStore): boolean {

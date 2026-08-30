@@ -12,7 +12,7 @@ import {
   CONFIG_WARNINGS_EVENT,
   __resetSettingsForTest,
   hydrateSettings,
-} from "../settings/settingsStore";
+} from "../store/settingsStore";
 
 /** A listen-capable bus whose `fire` delivers synchronously, like the store's other tests use. */
 function fakeListenBus() {

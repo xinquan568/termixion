@@ -38,7 +38,7 @@ import { scrollbackTerminalOptions } from "./scrollbackSettings";
 import { fontTerminalOptions } from "./fontSettings";
 import { clipboardTerminalOptions } from "./clipboard";
 import { buildXtermTheme } from "../theme/buildXtermTheme";
-import { hydrateSettings, makeSettingsStore, __resetSettingsForTest } from "../settings/settingsStore";
+import { hydrateSettings, makeSettingsStore, __resetSettingsForTest } from "../store/settingsStore";
 
 // The registry cursor defaults: trmx-51's underline, with blink turned off by trmx-55 (iTerm2
 // parity — only the style still supersedes the iTerm2 block cursor).

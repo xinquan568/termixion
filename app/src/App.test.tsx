@@ -82,7 +82,7 @@ vi.mock("./update/UpdateAuthorityHost", () => ({
 }));
 
 import { App, type AppProps } from "./App";
-import { makeSettingsStore, __resetSettingsForTest } from "./settings/settingsStore";
+import { makeSettingsStore, __resetSettingsForTest } from "./store/settingsStore";
 import { clearUserThemes, registerUserThemes } from "./theme/registry";
 import { night } from "./theme/themes/night";
 import type { ThemeSpec } from "./theme/themeDerive";

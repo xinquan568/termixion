@@ -10,7 +10,7 @@
 // The bus is optional — with no runtime (plain dev) the authority still works locally.
 import { useCallback, useEffect, useRef } from "react";
 import type { UpdateClient } from "./updateClient";
-import type { SettingsStore } from "../settings/settingsStore";
+import type { SettingsStore } from "../store/settingsStore";
 import type { EventBus } from "../ipc/eventBus";
 import { autoCheckSourceFrom, useUpdate, type UseUpdate } from "./useUpdate";
 import { shouldAutoCheck } from "./shouldAutoCheck";

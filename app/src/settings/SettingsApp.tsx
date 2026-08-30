@@ -45,7 +45,7 @@ import { AppearanceSettings } from "./AppearanceSettings";
 import { ScriptsSettings } from "./ScriptsSettings";
 import { TerminalSettings } from "./TerminalSettings";
 import { InfoIcon, PaletteIcon, ScriptIcon, SearchIcon, TerminalIcon } from "./icons";
-import { isSection, type SettingsSection } from "../surface";
+import { isSection, type SettingsSection } from "../ipc/surface";
 import type { AppInfo } from "../update/appInfo";
 import type { Opener } from "../update/opener";
 import type { UseUpdate } from "../update/useUpdate";
@@ -57,7 +57,7 @@ import {
   type ConfigWarningItem,
   type SettingsStore,
   type TabBarPosition,
-} from "./settingsStore";
+} from "../store/settingsStore";
 import { normalizeLegacyThemeId } from "../theme/defaultTheme";
 import { isRegisteredThemeId } from "../theme/registry";
 import { hydrateUserThemes, onThemesChanged } from "../theme/themesBackend";

@@ -8,7 +8,7 @@
 // (realDeps.createTerminal). The same module applies `settings:changed` broadcasts to a live
 // terminal, so a change made in the settings window (or a reset's default-value broadcast) takes
 // effect immediately. Pure + payload-guarded: events are untrusted input, junk must be inert.
-import type { CursorStyle, SettingsStore } from "../settings/settingsStore";
+import type { CursorStyle, SettingsStore } from "../store/settingsStore";
 
 export interface CursorTerminalOptions {
   cursorStyle: CursorStyle;

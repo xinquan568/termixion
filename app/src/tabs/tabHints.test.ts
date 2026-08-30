@@ -7,7 +7,7 @@
 // smallest chord bound to `tab.select-N` (rebind case); unbound → null. Positional: index is the
 // RENDER slot 0..8, so only integer 0..8 is ever hintable.
 import { describe, expect, it } from "vitest";
-import { FULL_DEFAULT_KEYS } from "../commands/keymapDispatch";
+import { FULL_DEFAULT_KEYS } from "../keys/keymapDefaults";
 import { tabHintChordFor } from "./tabHints";
 
 describe("tabHintChordFor", () => {

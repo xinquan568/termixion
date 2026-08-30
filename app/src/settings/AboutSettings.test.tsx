@@ -23,7 +23,7 @@ import {
   makeSettingsStore,
   type KeyValueStore,
   type SettingsStore,
-} from "./settingsStore";
+} from "../store/settingsStore";
 
 const GITHUB_URL = "https://github.com/xinquan568/termixion";
 

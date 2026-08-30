@@ -30,7 +30,7 @@ vi.mock("./update/UpdateAuthorityHost", () => ({
 }));
 
 import { App, type AppProps } from "./App";
-import { makeSettingsStore, __resetSettingsForTest } from "./settings/settingsStore";
+import { makeSettingsStore, __resetSettingsForTest } from "./store/settingsStore";
 import type { InvokeFn, SessionInfo } from "./ipc/backend";
 
 const ENTRY = {

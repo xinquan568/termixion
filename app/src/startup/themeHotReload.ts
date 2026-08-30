@@ -15,11 +15,11 @@
 // `installThemeHotReload`'s every edge (subscribe / hydrate / bus / settings / window) is injectable
 // so the App wiring stays backend-free. Inert without a Tauri runtime: onThemesChanged's listen
 // rejects and is swallowed, and hydrateUserThemes no-ops.
-import { defaultThemeId } from "./defaultTheme";
-import { isUserThemeIdShape, listThemes, type ThemeListEntry } from "./registry";
-import { hydrateUserThemes, onThemesChanged } from "./themesBackend";
+import { defaultThemeId } from "../theme/defaultTheme";
+import { isUserThemeIdShape, listThemes, type ThemeListEntry } from "../theme/registry";
+import { hydrateUserThemes, onThemesChanged } from "../theme/themesBackend";
 import { realEventBus, type EventBus } from "../ipc/eventBus";
-import { SETTINGS_CHANGED_EVENT, type SettingsStore } from "../settings/settingsStore";
+import { SETTINGS_CHANGED_EVENT, type SettingsStore } from "../store/settingsStore";
 import { log } from "../ipc/logSink";
 
 /**

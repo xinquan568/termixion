@@ -9,7 +9,7 @@
 // preserved so the trmx-93 tests stay green.
 import { useEffect, useState } from "react";
 import { realInvoke, type InvokeFn } from "../ipc/backend";
-import { PaletteOverlay } from "../commands/PaletteOverlay";
+import { PaletteOverlay } from "../ui/PaletteOverlay";
 import { listScripts, onScriptsChanged, type ScriptEntry } from "./scriptsBackend";
 
 export interface ScriptPickerProps {

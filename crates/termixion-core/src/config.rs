@@ -4,7 +4,7 @@
 //! parse that **never panics and never hard-fails** (defaults + warnings instead), and the
 //! mapping between TOML paths (`terminal.font_size`, what the user edits) and registry keys
 //! (`terminal.fontSize`, what the frontend settings registry consumes — see
-//! `app/src/settings/settingsStore.ts`).
+//! `app/src/store/settingsStore.ts`).
 //!
 //! Pure by design: no filesystem, no environment, no paths — the shell owns I/O and hands
 //! text in. Warnings carry the TOML path in their `key` (that is the spelling the user can

@@ -9,7 +9,7 @@
 // consulted again. Reuses iterm2Theme's defensive appearance reader (no matchMedia → dark, the
 // historical Termixion look → Night). No settings-store import here (the store depends on this
 // module, never the reverse — vmark's no-back-edge rule).
-import { initialAppearanceFromWindow } from "../terminal/iterm2Theme";
+import { initialAppearanceFromWindow } from "./appearance";
 import { isRemovedBuiltinThemeId, type ThemeId } from "./themes";
 
 /** The theme a fresh (or freshly-reset) install starts with, from the OS appearance. */

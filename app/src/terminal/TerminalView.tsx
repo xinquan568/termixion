@@ -66,7 +66,7 @@ import {
   themeTerminalOptions,
   type ThemeOptionsSink,
 } from "./themeSettings";
-import { makeSettingsStore, SETTINGS_CHANGED_EVENT } from "../settings/settingsStore";
+import { makeSettingsStore, SETTINGS_CHANGED_EVENT } from "../store/settingsStore";
 import { realEventBus } from "../ipc/eventBus";
 
 // Is a WebGL2 context actually obtainable? Preflighting here means we throw *before* constructing

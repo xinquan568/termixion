@@ -52,7 +52,7 @@ const invokeSpy = vi.hoisted(() =>
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeSpy, Channel: class {} }));
 
 import { App, type AppProps } from "./App";
-import { __resetSettingsForTest } from "./settings/settingsStore";
+import { __resetSettingsForTest } from "./store/settingsStore";
 import type { SessionInfo } from "./ipc/backend";
 
 function obs<T>() {

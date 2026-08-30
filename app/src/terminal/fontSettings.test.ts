@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { applyFontSettingsChange, fontTerminalOptions, type FontOptionsSink } from "./fontSettings";
 import { ITERM2_FONT_FAMILY } from "./iterm2Theme";
 import { DEFAULT_FONT_FAMILY } from "./fontCatalog";
-import { makeSettingsStore, type KeyValueStore } from "../settings/settingsStore";
+import { makeSettingsStore, type KeyValueStore } from "../store/settingsStore";
 
 function fakeStorage(initial: Record<string, string> = {}): KeyValueStore {
   const data = new Map(Object.entries(initial));
