@@ -14,13 +14,37 @@
 use serde::Serialize;
 use termixion_core::PtyError;
 
-/// The machine-readable class of an [`IpcError`]. Serialized in `snake_case` as the wire `kind`.
+/// Declares the kind enum and its complete variant list from ONE list of variants.
 ///
-/// The frontend mirrors this as a `IPC_ERROR_KINDS` tuple and compares the two against a golden
-/// fixture, so a variant added here without updating that tuple fails the TypeScript suite.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum IpcErrorKind {
+/// trmx-249: an earlier version hand-wrote `ALL` beside the enum and guarded it with a
+/// wildcard-free `match`. That is not enough, and the gap is quiet: the match forces you to HANDLE
+/// a new variant, not to LIST it. Add a variant plus its match arm and forget `ALL`, and everything
+/// compiles, every test passes, and the wire vocabulary silently loses a kind — verified by doing
+/// exactly that and watching six tests stay green. Generating both from one list is what actually
+/// makes membership indivisible.
+macro_rules! ipc_error_kinds {
+    ($($(#[$doc:meta])* $variant:ident),+ $(,)?) => {
+        /// The machine-readable class of an [`IpcError`]. Serialized in `snake_case` as the wire
+        /// `kind`. The frontend mirrors this as `IPC_ERROR_KINDS` and compares the two against the
+        /// shared golden fixture, so a variant added here fails the TypeScript suite until mirrored.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+        #[serde(rename_all = "snake_case")]
+        pub enum IpcErrorKind {
+            $($(#[$doc])* $variant),+
+        }
+
+        impl IpcErrorKind {
+            /// Every variant, in declaration order.
+            ///
+            /// Generated from the same list as the enum, so it cannot omit one. Not called by
+            /// production code — it exists so the wire vocabulary is DERIVED rather than listed.
+            #[allow(dead_code)]
+            pub const ALL: &'static [IpcErrorKind] = &[$(IpcErrorKind::$variant),+];
+        }
+    };
+}
+
+ipc_error_kinds! {
     /// A PTY session id the registry has never seen or has already removed.
     NotFound,
     /// The session exists but its child has exited.
@@ -37,44 +61,6 @@ pub enum IpcErrorKind {
     /// An invariant we control was violated: a poisoned mutex, a constructed path with no parent
     /// or no file name, a window that would not open. Never the caller's fault.
     Internal,
-}
-
-impl IpcErrorKind {
-    /// Every variant, in wire order.
-    ///
-    /// Not called by production code — it exists so the WIRE VOCABULARY is derived from the enum
-    /// rather than hand-listed. The golden test serializes it into the shared fixture, and the
-    /// TypeScript suite compares its own tuple against that. Deleting it would silently reduce the
-    /// contract to the one kind the sample happens to carry.
-    #[allow(dead_code)]
-    ///
-    /// Exhaustiveness is the compiler's job, not the author's: [`Self::assert_exhaustive`] matches
-    /// on every variant with no wildcard arm, so adding a variant without extending `ALL` fails to
-    /// build. A hand-maintained list cannot guard against a hand-maintenance mistake.
-    pub const ALL: [IpcErrorKind; 7] = [
-        IpcErrorKind::NotFound,
-        IpcErrorKind::NotRunning,
-        IpcErrorKind::Spawn,
-        IpcErrorKind::InvalidSize,
-        IpcErrorKind::Io,
-        IpcErrorKind::Invalid,
-        IpcErrorKind::Internal,
-    ];
-
-    #[allow(dead_code)]
-    /// A wildcard-free match binding each variant to its index in [`Self::ALL`]. Adding a variant
-    /// breaks this match (non-exhaustive pattern) *and* the length assertion below it.
-    const fn assert_exhaustive(self) -> usize {
-        match self {
-            IpcErrorKind::NotFound => 0,
-            IpcErrorKind::NotRunning => 1,
-            IpcErrorKind::Spawn => 2,
-            IpcErrorKind::InvalidSize => 3,
-            IpcErrorKind::Io => 4,
-            IpcErrorKind::Invalid => 5,
-            IpcErrorKind::Internal => 6,
-        }
-    }
 }
 
 /// The rejection payload: a machine-readable [`IpcErrorKind`] plus the message that was always
@@ -138,19 +124,6 @@ impl From<PtyError> for IpcError {
 mod tests {
     use super::*;
     use termixion_core::PtySize;
-
-    #[test]
-    fn all_is_exhaustive_and_ordered() {
-        // If a variant is added without extending ALL, `assert_exhaustive` fails to compile.
-        // This asserts the two agree on ORDER and LENGTH, which the compiler cannot.
-        for (index, kind) in IpcErrorKind::ALL.iter().enumerate() {
-            assert_eq!(
-                kind.assert_exhaustive(),
-                index,
-                "ALL is out of order at {index}"
-            );
-        }
-    }
 
     #[test]
     fn kinds_serialize_as_snake_case() {
@@ -290,12 +263,17 @@ mod tests {
             include_str!("window_manager.rs"),
         ];
 
+        // Inspect the Result's ERROR SLOT, not the whole signature: `fn f(x: IpcError) ->
+        // Result<(), String>` must not count. An alias like `IpcResult<T>` would read as
+        // infallible here, which fails the assertion loudly rather than passing quietly — the safe
+        // direction for a heuristic.
         let rejects_with_ipc_error = |name: &str| {
             sources.iter().any(|src| {
                 src.split(&format!("fn {name}(")).skip(1).any(|tail| {
-                    // The signature ends at the opening brace of the body.
                     let head = tail.split_once(" {").map_or(tail, |(h, _)| h);
-                    head.contains("IpcError")
+                    head.rsplit_once("->").is_some_and(|(_, ret)| {
+                        ret.trim().trim_end_matches(',').ends_with("IpcError>")
+                    })
                 })
             })
         };
@@ -315,8 +293,41 @@ mod tests {
             "the set of commands rejecting with IpcError drifted from the 15 this issue covers"
         );
 
-        // And the other 18 keep no error channel at all — the scope line, asserted rather than assumed.
-        assert_eq!(registered.len() - actual.len(), 18);
+        // And the other 18 keep no error channel at all. Asserted by NAME, not by count: a count
+        // cannot notice one command entering the infallible set as another leaves it, which is the
+        // whole reason Acceptance 4 asks for two exact sets.
+        const EXPECTED_INFALLIBLE: [&str; 18] = [
+            "core_version",
+            "take_pending_open_paths",
+            "pty_ack",
+            "smoke_config",
+            "smoke_done",
+            "perf_config",
+            "perf_done",
+            "config_read",
+            "shells_list",
+            "effective_shell",
+            "keys_read",
+            "themes_read",
+            "scripts_list",
+            "control_response",
+            "enhancements_status",
+            "quit_confirmed",
+            "webview_close_request",
+            "close_acknowledged",
+        ];
+        let mut infallible: Vec<&str> = registered
+            .iter()
+            .copied()
+            .filter(|name| !rejects_with_ipc_error(name))
+            .collect();
+        let mut expected_infallible = EXPECTED_INFALLIBLE.to_vec();
+        infallible.sort_unstable();
+        expected_infallible.sort_unstable();
+        assert_eq!(
+            infallible, expected_infallible,
+            "the set of commands with NO error channel drifted from the 18 this issue leaves alone"
+        );
     }
 
     #[test]
