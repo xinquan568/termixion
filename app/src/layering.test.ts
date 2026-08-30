@@ -13,6 +13,7 @@
 // So the matrix is now GENERATED from the LEVELS map, and this test walks EVERY ordered pair of
 // zones and asserts the rule agrees with the level ordering in both directions. A missing row or a
 // stray ban fails here rather than years later.
+import { ESLint } from "eslint";
 import { describe, expect, it } from "vitest";
 
 import config from "../eslint.config.js";
@@ -78,5 +79,40 @@ describe("frontend layering gate (trmx-247)", () => {
       zones.filter((z) => z.from === "./src/*.ts?(x)").map((z) => dirOf(z.target)),
     );
     expect(DIRS.filter((d) => !rootBans.has(d))).toEqual([]);
+  });
+
+  // The three cases above check the CONFIGURATION. These run ESLint for real, because a correct
+  // matrix is still worthless if the rule does not fire on the file kinds we care about — and
+  // "test files are in scope" was the whole reason ipc/useBackend.test.tsx could reach into
+  // terminal/ before trmx-247.
+  const lintAs = async (filePath: string, code: string) => {
+    // vitest runs with cwd = app/, where eslint.config.js lives, so the default lookup finds it.
+    const eslint = new ESLint();
+    const [result] = await eslint.lintText(code, { filePath });
+    return result.messages.filter((m) => m.ruleId === "import-x/no-restricted-paths");
+  };
+
+  it("fires inside a TEST file, not just production source", async () => {
+    const found = await lintAs(
+      "src/ipc/probe.test.ts",
+      'import { activityTransition } from "../panes/activityLine";\nvoid activityTransition;\n',
+    );
+    expect(found).toHaveLength(1);
+  });
+
+  it("fires on a TYPE-ONLY import", async () => {
+    const found = await lintAs(
+      "src/ipc/probe.ts",
+      'import type { TerminalHandle } from "../terminal/mountTerminal";\nexport type P = TerminalHandle;\n',
+    );
+    expect(found).toHaveLength(1);
+  });
+
+  it("does NOT fire on a legal downward import", async () => {
+    const found = await lintAs(
+      "src/store/probe.ts",
+      'import { fuzzyFilter } from "../ui/fuzzy";\nvoid fuzzyFilter;\n',
+    );
+    expect(found).toHaveLength(0);
   });
 });
