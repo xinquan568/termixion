@@ -58,6 +58,19 @@ export function makeThing() { return useState(0); }
 '
 expect_fail "(ix) default-DENY: a module not named use* is still constrained" "calls useState"
 
+fixture useProbe.ts 'import React from "react";
+const { useState: mine } = React;
+export function useProbe() { return mine(0); }
+'
+expect_fail "(xi) ALIASED DESTRUCTURING off a React namespace is rejected" "calls useState"
+
+fixture useProbe.ts 'import { useState } from "../store/settingsStore";
+export function useProbe() { return useState(); }
+'
+if ! run; then echo "FAIL: (xii) a same-named import from a NON-React module must NOT be flagged"; cat "$TMP/out"; exit 1; fi
+echo "ok: (xii) a same-named helper from a non-React module is NOT a false positive"
+rm -rf "$TMP/zone"
+
 fixture useProbe.ts 'const RATE = 3;
 import type { PaneId } from "../panes/layoutTree";
 export function useProbe(deps: { paneId: PaneId }) { return deps.paneId * RATE; }
@@ -65,4 +78,4 @@ export function useProbe(deps: { paneId: PaneId }) { return deps.paneId * RATE; 
 if ! run; then echo "FAIL: (vii) the CLEAN case must pass"; cat "$TMP/out"; exit 1; fi
 echo "ok: (x) a pure hook over injected values, a const and a type-only import passes"
 
-echo "verify-contracts.test: OK (10 cases)."
+echo "verify-contracts.test: OK (12 cases)."

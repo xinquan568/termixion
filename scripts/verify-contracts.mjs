@@ -28,7 +28,7 @@
 import { createRequire } from "node:module";
 const require_ = createRequire(new URL("../app/package.json", import.meta.url));
 const ts = require_("typescript");
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const DIR = process.env.VERIFY_CONTRACTS_DIR ?? "app/src/app";
@@ -48,19 +48,18 @@ const isOrchestration = (f) => !VIEW_MODULES.has(f);
 // and it makes a fixture directory behave identically to the real one, which is what lets the
 // self-test exercise this script rather than a different code path.
 const files = readdirSync(DIR).filter((f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f));
-const program = ts.createProgram(files.map((f) => resolve(DIR, f)), {
-  jsx: ts.JsxEmit.ReactJSX,
-  target: ts.ScriptTarget.ES2022,
-  moduleResolution: ts.ModuleResolutionKind.Bundler,
-  module: ts.ModuleKind.ESNext,
-  skipLibCheck: true,
-  noEmit: true,
-});
-const checker = program.getTypeChecker();
+// Parsed, not type-checked. The analysis below is purely syntactic and says so — an earlier version
+// created a TypeChecker, never used it, and described itself as "compiler-resolved". Worse, symbol
+// resolution actively MISLED here: with `react` unresolvable, `getAliasedSymbol` returns a symbol
+// named "unknown", so a resolution-based check silently passed every aliased violation.
+const sources = new Map(
+  files.map((f) => [f, ts.createSourceFile(
+    resolve(DIR, f), readFileSync(resolve(DIR, f), "utf8"), ts.ScriptTarget.ES2022, true,
+    f.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS)]));
 const errors = [];
 
 for (const f of files) {
-  const sf = program.getSourceFile(resolve(DIR, f));
+  const sf = sources.get(f);
   if (!sf) { errors.push(`${f}  could not be loaded into the program`); continue; }
   const at = (n) => `${f}:${sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1}`;
 
@@ -103,6 +102,8 @@ for (const f of files) {
   for (const st of sf.statements) {
     // Re-exporting an ownership API hands it to someone else — the module is still the source.
     if (ts.isExportDeclaration(st) && st.exportClause && ts.isNamedExports(st.exportClause)) {
+      const from = st.moduleSpecifier && ts.isStringLiteral(st.moduleSpecifier) ? st.moduleSpecifier.text : "";
+      if (!/^react(\/|$)/.test(from)) continue;
       for (const e of st.exportClause.elements) {
         const orig = (e.propertyName ?? e.name).text;
         if (OWNERSHIP.has(orig)) {
@@ -111,6 +112,9 @@ for (const f of files) {
       }
     }
     if (!ts.isImportDeclaration(st) || !st.importClause) continue;
+    // Only React is an ownership source. Without this, `import { useState } from "../store/x"` —
+    // a same-named helper from another module — was reported as a violation.
+    if (!ts.isStringLiteral(st.moduleSpecifier) || !/^react(\/|$)/.test(st.moduleSpecifier.text)) continue;
     const nb = st.importClause.namedBindings;
     if (nb && ts.isNamedImports(nb)) {
       for (const e of nb.elements) localToOriginal.set(e.name.text, (e.propertyName ?? e.name).text);
@@ -119,12 +123,31 @@ for (const f of files) {
     if (st.importClause.name) reactNamespaces.add(st.importClause.name.text);
   }
 
+  // `const { useState } = React` and `const { useState: mine } = React` — bind the LOCAL name to the
+  // original so the call site below resolves either form.
+  for (const st of sf.statements) {
+    if (!ts.isVariableStatement(st)) continue;
+    for (const d of st.declarationList.declarations) {
+      if (!d.initializer || !ts.isIdentifier(d.initializer)) continue;
+      if (!reactNamespaces.has(d.initializer.text)) continue;
+      if (!ts.isObjectBindingPattern(d.name)) continue;
+      for (const el of d.name.elements) {
+        if (!ts.isIdentifier(el.name)) continue;
+        const orig = el.propertyName && ts.isIdentifier(el.propertyName) ? el.propertyName.text : el.name.text;
+        localToOriginal.set(el.name.text, orig);
+      }
+    }
+  }
+
   (function walk(n) {
     if (ts.isCallExpression(n)) {
       const callee = n.expression;
       let name = null;
       if (ts.isIdentifier(callee)) {
-        name = localToOriginal.get(callee.text) ?? callee.text;
+        // ONLY names traced back to a react import count. Falling back to the raw callee text made
+        // `import { useState } from "../store/settingsStore"` a violation — a same-named helper from
+        // another module is not React ownership, and a gate with false positives gets disabled.
+        name = localToOriginal.get(callee.text) ?? null;
       } else if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)) {
         // `React.useRef(...)` — a namespace or default import used as an object.
         if (reactNamespaces.has(callee.expression.text)) name = callee.name.text;

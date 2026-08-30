@@ -14,3 +14,6 @@ cd "$ROOT"
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --quiet
 pnpm --filter app test
+# trmx-254: the app/ orchestration contract gate. Cheap (a parse, no type-check), and it catches
+# the one class the suite cannot: a hook that grows its own state or reaches back into a root file.
+node scripts/verify-contracts.mjs

@@ -45,6 +45,22 @@ jobs:
       # exist — the ungated-claim failure trmx-239 closed.
       - name: no committed zsh wordcode (trmx-240)
         run: bash scripts/check-no-zwc.sh
+      # trmx-254: same reasoning as trmx-240 above. This gate enforces that the app/ orchestration
+      # modules own no React state, refs or effects and import only downward — the invariant the
+      # App.tsx decomposition rests on and the one the type checker cannot see. It was briefly in the
+      # ADVISORY shell-integration job, which would have made the PR claim enforcement that did not
+      # exist. The self-test runs beside it: a gate nobody has watched FAIL is a gate that may be
+      # checking nothing.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6.0.0
+        with:
+          node-version-file: .nvmrc
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v4.2.0
+      - name: Install deps (typescript is a devDependency the gate parses with)
+        run: pnpm install --frozen-lockfile
+      - name: app/ orchestration contract gate (trmx-254)
+        run: node scripts/verify-contracts.mjs
+      - name: app/ contract gate self-test (trmx-254)
+        run: bash scripts/verify-contracts.test.sh
 
   # R5 (trmx-234): the same secret scan the pre-commit hook runs, over the PR diff (or the pushed range)
   # so a `--no-verify` bypass or a hook-less clone still fails here. Full history so the base ref resolves —
@@ -126,10 +142,6 @@ jobs:
         run: bash scripts/check-file-budgets.sh
       - name: file line-budget gate self-test (trmx-243)
         run: bash scripts/check-file-budgets.test.sh
-      - name: app/ orchestration contract gate (trmx-254)
-        run: node scripts/verify-contracts.mjs
-      - name: app/ contract gate self-test (trmx-254)
-        run: bash scripts/verify-contracts.test.sh
 
   # trmx-234: dependency audit — cargo-deny (advisories / bans / licenses / sources per deny.toml) and
   # pnpm audit (prod, high+). cargo-deny is provisioned from crates.io at a pinned version (no extra
