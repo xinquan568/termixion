@@ -45,6 +45,29 @@ jobs:
       # exist — the ungated-claim failure trmx-239 closed.
       - name: no committed zsh wordcode (trmx-240)
         run: bash scripts/check-no-zwc.sh
+      # trmx-254: same reasoning as trmx-240 above. This gate enforces that the app/ orchestration
+      # modules own no React state, refs or effects and import only downward — the invariant the
+      # App.tsx decomposition rests on and the one the type checker cannot see. It was briefly in the
+      # ADVISORY shell-integration job, which would have made the PR claim enforcement that did not
+      # exist. The self-test runs beside it: a gate nobody has watched FAIL is a gate that may be
+      # checking nothing.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6.0.0
+        with:
+          node-version-file: .nvmrc
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v4.2.0
+      - name: Install deps (typescript is a devDependency the gate parses with)
+        run: pnpm install --frozen-lockfile
+      - name: app/ orchestration contract gate (trmx-254)
+        run: node scripts/verify-contracts.mjs
+      - name: app/ contract gate self-test (trmx-254)
+        run: bash scripts/verify-contracts.test.sh
+      # trmx-254: generated prop types once carried absolute `import("/Users/...")` references. They
+      # typechecked on the machine that produced them and failed on every other. Local tsc cannot
+      # catch that — the paths exist locally — so it needs its own gate.
+      - name: no absolute module specifiers (trmx-254)
+        run: bash scripts/check-no-abs-paths.sh
+      - name: absolute-path gate self-test (trmx-254)
+        run: bash scripts/check-no-abs-paths.test.sh
 
   # R5 (trmx-234): the same secret scan the pre-commit hook runs, over the PR diff (or the pushed range)
   # so a `--no-verify` bypass or a hook-less clone still fails here. Full history so the base ref resolves —
@@ -101,7 +124,7 @@ jobs:
       - name: Install zsh (for the zsh half of the source-and-assert test)
         run: sudo apt-get update && sudo apt-get install -y zsh
       - name: shellcheck the bash snippet, the test, and the secret-scan / control-protocol / issue-link scripts
-        run: shellcheck -s bash resources/shell-integration/termixion.bash resources/shell-integration/integration_test.sh scripts/secret-scan.sh scripts/secret-scan.test.sh scripts/check-control-protocol.sh scripts/check-control-protocol.test.sh scripts/check-issue-link.sh scripts/check-issue-link.test.sh scripts/check-core-seam.sh scripts/check-core-seam.test.sh .claude/hooks/hooks.test.sh .claude/hooks/pre-commit .claude/hooks/pre-push scripts/check-no-zwc.sh scripts/check-no-zwc.test.sh scripts/check-release-app-resolution.test.sh scripts/resolve-release-app.sh scripts/check-main-ci-green.sh scripts/check-main-ci-green.test.sh scripts/check-file-budgets.sh scripts/check-file-budgets.test.sh
+        run: shellcheck -s bash resources/shell-integration/termixion.bash resources/shell-integration/integration_test.sh scripts/secret-scan.sh scripts/secret-scan.test.sh scripts/check-control-protocol.sh scripts/check-control-protocol.test.sh scripts/check-issue-link.sh scripts/check-issue-link.test.sh scripts/check-core-seam.sh scripts/check-core-seam.test.sh .claude/hooks/hooks.test.sh .claude/hooks/pre-commit .claude/hooks/pre-push scripts/check-no-zwc.sh scripts/check-no-zwc.test.sh scripts/check-release-app-resolution.test.sh scripts/resolve-release-app.sh scripts/check-main-ci-green.sh scripts/check-main-ci-green.test.sh scripts/check-file-budgets.sh scripts/check-file-budgets.test.sh scripts/verify-contracts.test.sh scripts/check-no-abs-paths.sh scripts/check-no-abs-paths.test.sh
       - name: source-and-assert (idempotency, hook preservation, $?-capture)
         run: bash resources/shell-integration/integration_test.sh
       - name: secret-scan self-test (range mode detects a planted token; bad range fails loudly)

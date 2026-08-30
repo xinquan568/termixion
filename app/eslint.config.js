@@ -44,6 +44,11 @@ const LEVELS = {
   chrome: 4, commands: 4, conformance: 4, perf: 4, search: 4, settings: 4,
   // L5 — the control bridge drives commands.
   control: 5,
+  // L6 — trmx-254: orchestration hooks extracted from App.tsx. Above every feature zone because it
+  // composes them. PEER with the root files, deliberately: `__root__` is NOT shifted to 7, because
+  // the directory-to-root ban below is unconditional over DIRS and already forbids app/ -> App.tsx.
+  // What makes `app` constrained at all is simply BEING in this map; a zone absent from it is free.
+  app: 6,
   // L6 — app/src/*.tsx entry points (App.tsx, main.tsx, surface.ts). Expressed as a glob, since
   // they are files rather than a directory.
   __root__: 6,

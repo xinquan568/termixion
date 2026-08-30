@@ -95,7 +95,7 @@ async function boot() {
         </ErrorBoundary>
       ) : (
         <ErrorBoundary surface="main" onReload={reloadWebview} onQuit={quitApp} onError={reportFatal}>
-          <App serviceBootPaths={serviceBootPaths} />
+          <App deps={{ serviceBootPaths }} />
         </ErrorBoundary>
       )}
     </React.StrictMode>,

@@ -34,77 +34,32 @@ import {
   useReducer,
   useRef,
   useState,
-  type MouseEvent as ReactMouseEvent,
-  type PointerEvent as ReactPointerEvent,
 } from "react";
-import { TerminalView, type SettingsObservation } from "./terminal/TerminalView";
-import { TitleBar } from "./chrome/TitleBar";
-import { ConfigWarningsBadge } from "./chrome/ConfigWarningsBadge";
-import { AiSessionCounter } from "./chrome/AiSessionCounter";
-import { NAMED_BUCKETS, sessionsFrom, type AiSession } from "./chrome/aiSessionBuckets";
-import { TabStrip } from "./tabs/TabStrip";
+import { type SettingsObservation } from "./terminal/TerminalView";
+import { sessionsFrom, type AiSession } from "./chrome/aiSessionBuckets";
+// trmx-254: the fixture parser now lives in chrome/ so BOTH App.tsx and app/AppView.tsx can reach
+// it — app/ may not import a root file, so a copy in each was the only alternative.
+export { parseAiCounterFixture } from "./chrome/aiCounterFixture";
+import { parseAiCounterFixture } from "./chrome/aiCounterFixture";
 import { barLayoutFor, labelOrientationFor } from "./tabs/barLayout";
 import {
-  canSplitFocused,
   initialTabsState,
-  paneBySessionId,
   reduceTabs,
-  tabPaneIds,
 } from "./tabs/tabState";
 import {
-  canDropEdge,
-  MIN_PANE_PX,
-  setRatio as setRatioTree,
-  solveRects,
   type DividerRect,
   type PaneId,
   type Rect,
   type SplitDir,
 } from "./panes/layoutTree";
-import { grabOffsetOf, ratioForDrag, RESET_RATIO } from "./panes/dividerDrag";
-import { dropZone, type DropZone } from "./panes/dropZone";
-import { nextPane, paneInDirection, type Direction } from "./panes/paneNav";
-import { activeDividerSegments, dividerKey } from "./panes/paneChrome";
-import { BadgeOverlay } from "./panes/BadgeOverlay";
-import { ActivityLineOverlay } from "./panes/ActivityLineOverlay";
-import {
-  classDeadline,
-  initialActivity,
-  lightActive,
-  onBusyChange,
-  onClassifyMetadata,
-  onDeadline,
-  onInput as onActivityInput,
-  onManualToggle,
-  onOutput as onActivityOutput,
-  type ActivityMeta,
-  type ActivityTransition,
-} from "./panes/activityLine";
-import { shouldFlash, FLASH_MS } from "./panes/activityFlash";
-import {
-  collectBusyPanes,
-  collectBusyTabs,
-  paneIsBusy,
-  shouldConfirmClose,
-  type BusyLookup,
-} from "./panes/closeGuard";
-import { ConfirmCloseDialog } from "./panes/ConfirmCloseDialog";
-import { type PromptTransition } from "./terminal/osc133";
+import { type DropZone } from "./panes/dropZone";
 import { type FrameSchedule } from "./terminal/resizeCoalescer";
 import {
-  isLabelOrientation,
-  isTabBarPosition,
   makeSettingsStore,
-  SETTINGS_CHANGED_EVENT,
   type LabelOrientation,
   type TabBarPosition,
 } from "./store/settingsStore";
-import { describeTarget } from "./tabs/tabKeymap";
-import { normalizeLegacyThemeId } from "./theme/defaultTheme";
-import { isRegisteredThemeId, isUserThemeIdShape, resolveTheme } from "./theme/registry";
-import { applyTxTheme } from "./theme/txCssVars";
-import { FindBar } from "./search/FindBar";
-import { withAlpha } from "./theme/colorMath";
+import { resolveTheme } from "./theme/registry";
 import { useBackend } from "./ipc/useBackend";
 import {
   closePty,
@@ -113,110 +68,26 @@ import {
   onTitleHint,
   realInvoke,
   sendPtyInput,
-  takePendingOpenPaths,
   type InvokeFn,
-  type SessionInfo,
 } from "./ipc/backend";
 import { realObserveServiceNudge, type ServiceNudgeObservation } from "./ipc/serviceNudge";
 import { makeIdReservation, type IdReservation } from "./tabs/idReservation";
-import { shouldFocusOnHover } from "./panes/focusFollowsMouse";
-import { ScriptPicker } from "./scripts/ScriptPicker";
-import { listScripts, type ScriptEntry } from "./scripts/scriptsBackend";
 import { buildCommands, type Command, type CommandContext } from "./commands/registry";
 import { createDispatcher, type Dispatcher } from "./commands/dispatch";
-import {
-  FULL_DEFAULT_KEYS,
-  mergeKeymap,
-  resolve as resolveKeymap,
-} from "./commands/keymapDispatch";
-import { onKeysChanged, readKeys } from "./commands/keysBackend";
-import { CommandPalette } from "./commands/CommandPalette";
-import { growTarget } from "./commands/growPane";
-import { listThemes } from "./theme/registry";
-import { realEventBus } from "./ipc/eventBus";
-import { routeControlRequest, buildLsSnapshot, type ControlDeps } from "./control/controlBridge";
-import { isControlRequest } from "./control/controlRequestGuard";
+import { FULL_DEFAULT_KEYS, mergeKeymap } from "./commands/keymapDispatch";
 import { installThemeHotReload } from "./startup/themeHotReload";
-import { makeCwdStore, type CwdStore } from "./terminal/osc7";
-import { createPaneRuntimes, type PaneRuntime } from "./paneRuntime";
+import { makeCwdStore } from "./terminal/osc7";
+import { createPaneRuntimes, type PaneRuntime } from "./app/paneRuntime";
+import { usePaneCallbacks } from "./app/usePaneCallbacks";
+import { usePaneActivity } from "./app/usePaneActivity";
+import { useCloseGuard } from "./app/useCloseGuard";
+import { useCommandContext } from "./app/useCommandContext";
+import { usePaneOps } from "./app/usePaneOps";
+import { usePaneDrag } from "./app/usePaneDrag";
+import { AppView } from "./app/AppView";
+import { useAppServices } from "./app/useAppServices";
 import { realSetWindowTitle } from "./terminal/windowTitle";
-import type { TerminalHandle } from "./terminal/mountTerminal";
-import { UpdateAuthorityHost } from "./update/UpdateAuthorityHost";
-import { log } from "./ipc/logSink";
 
-/** The menu's tab-intent broadcast (main.rs emits "new"/"close"/"next"/"prev"/split verbs). */
-export const TABS_ACTION_EVENT = "tabs:action";
-
-// trmx-85: the drag rAF schedule (one setPaneRatio per frame, the trmx-67 coalescer idiom). A
-// module-level const — NOT an inline arrow — and injectable via AppProps for deterministic tests.
-const realFrameSchedule: FrameSchedule = (cb) => {
-  if (typeof requestAnimationFrame === "undefined") {
-    const t = setTimeout(cb, 16);
-    return () => clearTimeout(t);
-  }
-  const id = requestAnimationFrame(cb);
-  return () => cancelAnimationFrame(id);
-};
-
-/** The default content bounds before the real ResizeObserver measures the pane area (px). */
-const DEFAULT_BOUNDS: Rect = { x: 0, y: 0, width: 800, height: 600 };
-
-// trmx-90: cols fallback for the badge's narrow-pane threshold before the terminal has fit (or
-// under a headless test stub with no metrics) — a sane wide default so a freshly-set badge still shows
-// (a badge is only ever set once a live terminal exists, so this window is effectively pre-mount only).
-// trmx-149 dropped the rows twin: font sizing now fits the pane RECT (iTerm2's box), not cell metrics.
-const FALLBACK_BADGE_COLS = 80;
-
-// trmx-99: the alpha over the theme's semantic-error tint for the exit-code FLASH — faint enough to
-// sit quietly at a pane's top edge, strong enough to read. (trmx-160: the BUSY line is no longer a
-// theme tint — it is the iTerm2 progress-bar clone, a theme-independent green keyed only on the mode.)
-const ACTIVITY_LINE_ALPHA = 0.8;
-
-/** trmx-99: the exit-code flash color — `color.semantic.error` at {@link ACTIVITY_LINE_ALPHA}. */
-function activityErrorColorFor(themeId: string): string {
-  return withAlpha(resolveTheme(themeId).color.semantic.error, ACTIVITY_LINE_ALPHA);
-}
-
-/** trmx-160: the active theme's mode — selects the progress bar's track color (black/white) + period. */
-function activityIsDarkFor(themeId: string): boolean {
-  return resolveTheme(themeId).isDark;
-}
-
-/** Wire a mounted terminal to a live PTY session; resolves the session's identity (useBackend). */
-export type AttachFn = (
-  handle: TerminalHandle,
-  opts?: { cwd?: string },
-) => Promise<SessionInfo>;
-
-/** Observe the menu's `tabs:action` broadcasts; returns a teardown. */
-export type TabsActionObservation = (onAction: (payload: unknown) => void) => () => void;
-
-
-/** Observe `pty:exited` sessionIds; returns a teardown. */
-export type PtyExitedObservation = (onExit: (sessionId: number) => void) => () => void;
-
-/** Observe `session:title-hint` broadcasts (trmx-75); returns a teardown. */
-export type TitleHintObservation = (
-  onHint: (sessionId: number, name: string) => void,
-) => () => void;
-
-/**
- * Observe `session:activity` busy<->idle transitions (trmx-91); returns a teardown. trmx-159: a busy
- * rise also carries optional classification metadata (foreground name / argv tail / stdin-tty).
- */
-export type ActivityObservation = (
-  onActivity: (sessionId: number, busy: boolean, meta?: ActivityMeta) => void,
-) => () => void;
-
-/** trmx-159: injection seam for tests — observe a session's PTY output byte length. */
-export type OutputObservation = (
-  onOutput: (sessionId: number, byteLength: number) => void,
-) => () => void;
-
-/** trmx-159: injection seam for tests — observe a session's keystroke input. */
-export type InputObservation = (
-  onInput: (sessionId: number, data: string) => void,
-) => () => void;
 
 // trmx-247: realCloseWindow / realCloseAcknowledged / realQuitConfirmed moved to ipc/window.ts.
 import {
@@ -225,260 +96,148 @@ import {
   realQuitConfirmed,
 } from "./ipc/window";
 
-// Observe the menu's tabs:action broadcasts over the event bus, with the teardown-before-resolve
-// pattern from TerminalView's realObserveSettings: a teardown called before the async listen
-// resolves unlistens the late subscription instead of leaking it, and the `live` guard keeps a
-// torn-down handler silent. In a plain browser/jsdom the listen rejects and the seam is inert.
-const realObserveTabsAction: TabsActionObservation = (onAction) => {
-  let live = true;
-  let unlisten: (() => void) | undefined;
-  realEventBus
-    .listen(TABS_ACTION_EVENT, (payload) => {
-      if (live) onAction(payload);
-    })
-    .then((u) => {
-      if (live) unlisten = u;
-      else u();
-    })
-    .catch(() => {
-      // No Tauri runtime — there is no menu to announce tab intents.
-    });
-  return () => {
-    live = false;
-    unlisten?.();
-  };
-};
+// trmx-254: App.tsx's old module head, relocated by dependency (see the LEVELS map). The split is
+// not cosmetic: `ipc/` is L0 and may not import theme/, terminal/ or control/, so the seams that
+// reach into those zones live with them instead.
+import {
+  isAskGeneration,
+  realObserveCloseRequested,
+  realObserveSessionNotice,
+  realObserveTabsAction,
+  type CloseRequestedObservation,
+  type InputObservation,
+  type OutputObservation,
+  type PtyExitedObservation,
+  type SessionNoticeObservation,
+  type TabsActionObservation,
+  type TitleHintObservation,
+} from "./ipc/appEvents";
+import { activityErrorColorFor, activityIsDarkFor } from "./theme/activityColors";
+import { DEFAULT_BOUNDS, type ActivityObservation } from "./panes/appConstants";
+import type { PendingClose } from "./app/closeContracts";
+import {
+  realFrameSchedule,
+  realObserveAppSettings,
+  type AttachFn,
+} from "./terminal/appSeams";
+import { realObserveControlRequest, type ControlRequestObservation } from "./control/controlRequestSeam";
 
-// trmx-81: observe settings:changed for the tab-bar position — the same teardown-before-resolve
-// pattern as realObserveTabsAction above (TerminalView's realObserveSettings). A module-level
-// const, NOT an inline arrow: it is an effect dep, and a fresh identity every render would
-// re-subscribe on every App re-render.
-const realObserveAppSettings: SettingsObservation = (onChange) => {
-  let live = true;
-  let unlisten: (() => void) | undefined;
-  realEventBus
-    .listen(SETTINGS_CHANGED_EVENT, (payload) => {
-      if (live) onChange(payload);
-    })
-    .then((u) => {
-      if (live) unlisten = u;
-      else u();
-    })
-    .catch(() => {
-      // No Tauri runtime — the bar stays where hydration seeded it for this session.
-    });
-  return () => {
-    live = false;
-    unlisten?.();
-  };
-};
-
-// trmx-101 (FR-9.4): observe the Rust control socket's requests over `control:request` — same
-// teardown-before-resolve pattern. Each payload is `{ id, request }`; App routes it through the command
-// dispatcher / builds the snapshot / sends text, then replies via `invoke("control_response")`.
+// trmx-254: the `ControlRequest` facade stays exported from App.tsx so existing importers
+// (App.confirmClose.test.tsx) keep working; the seam itself now lives in control/.
 export type { ControlRequest } from "./control/controlRequestGuard";
-export type ControlRequestObservation = (
-  onRequest: (req: import("./control/controlRequestGuard").ControlRequest) => void,
-) => () => void;
-const realObserveControlRequest: ControlRequestObservation = (onRequest) => {
-  let live = true;
-  let unlisten: (() => void) | undefined;
-  realEventBus
-    .listen("control:request", (payload) => {
-      // trmx-237 (H3): validate before destructuring. A malformed payload from a local `ctl` caller
-      // used to throw inside this listener and escape into React; now it is dropped with a record.
-      if (!live) return;
-      if (!isControlRequest(payload)) {
-        log.warn("control: malformed request payload dropped", payload);
-        return;
-      }
-      onRequest(payload);
-    })
-    .then((u) => {
-      if (live) unlisten = u;
-      else u();
-    })
-    .catch(() => {
-      // No Tauri runtime — there is no control socket in a plain browser tab.
-    });
-  return () => {
-    live = false;
-    unlisten?.();
-  };
+
+export type AppDeps = {
+  attach?: AttachFn;
+  closeWindow?: () => void;
+  quitConfirmed?: () => void;
+  closeAcknowledged?: (generation: number) => Promise<void>;
+  closeSession?: (sessionId: number) => Promise<void>;
+  observeTabsAction?: TabsActionObservation;
+  observePtyExited?: PtyExitedObservation;
+  observeTitleHint?: TitleHintObservation;
+  observeActivity?: ActivityObservation;
+  observeOutput?: OutputObservation;
+  observeInput?: InputObservation;
+  observeSettings?: SettingsObservation;
+  observeControlRequest?: ControlRequestObservation;
+  observeSessionNotice?: SessionNoticeObservation;
+  observeCloseRequested?: CloseRequestedObservation;
+  setWindowTitle?: (title: string) => void;
+  dragSchedule?: FrameSchedule;
+  installHotReload?: typeof installThemeHotReload;
+  sendInput?: (sessionId: number, data: string) => Promise<void>;
+  invoke?: InvokeFn;
+  serviceBootPaths?: string[];
+  observeServiceNudge?: ServiceNudgeObservation;
 };
 
-// trmx-237 (grill H4): the pane's own error channel. A backend notice (a cwd that could not be honored)
-// and a failed attach both end up as one dim-red line in the terminal the user is already looking at —
-// the only surface that is guaranteed to be visible for the thing that just went wrong.
-export function writePaneNotice(handle: TerminalHandle, text: string): void {
-  // The terminal seam takes BYTES (the PTY contract), so encode rather than passing a string.
-  // \x1b[31m … \x1b[0m: red, then reset. On its own lines so it never mangles shell output.
-  const line = `\r\n\x1b[31m[termixion] ${text}\x1b[0m\r\n`;
-  handle.terminal.write(new TextEncoder().encode(line));
-}
-
-/** A rejection reason rendered for a terminal line: an Error's message, else a compact string. */
-export function formatAttachError(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return typeof err === "string" ? err : "unknown error";
-}
-
-/** Payload of the backend's `session:notice` event (trmx-237): a line for one session's pane. */
-export type SessionNotice = { session_id: number; text: string };
-export type SessionNoticeObservation = (onNotice: (notice: SessionNotice) => void) => () => void;
-const realObserveSessionNotice: SessionNoticeObservation = (onNotice) => {
-  let live = true;
-  let unlisten: (() => void) | undefined;
-  realEventBus
-    .listen("session:notice", (payload) => {
-      if (!live) return;
-      const n = payload as Partial<SessionNotice> | null;
-      if (!n || typeof n.session_id !== "number" || typeof n.text !== "string") return;
-      onNotice({ session_id: n.session_id, text: n.text });
-    })
-    .then((u) => {
-      if (live) unlisten = u;
-      else u();
-    })
-    .catch(() => {
-      // No Tauri runtime — nothing emits pane notices in a plain browser.
-    });
-  return () => {
-    live = false;
-    unlisten?.();
-  };
-};
-
-// trmx-144: observe the backend's `close:requested` broadcasts (the native window close / ⌘Q
-// intercepted Rust-side and round-tripped to the webview for the quit confirm) — the same
-// teardown-before-resolve pattern as realObserveControlRequest above.
-/**
- * trmx-268: a wire ask generation. `AskTracker` starts at 0 and pre-increments, so the first ask on
- * the wire is 1 — anything else (missing, non-numeric, 0, negative, fractional, NaN, Infinity) is a
- * malformed payload and must be IGNORED, never coerced and serviced.
- */
-export function isAskGeneration(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-}
-
-export type CloseRequestedObservation = (onRequest: (generation: number) => void) => () => void;
-const realObserveCloseRequested: CloseRequestedObservation = (onRequest) => {
-  let live = true;
-  let unlisten: (() => void) | undefined;
-  realEventBus
-    .listen("close:requested", (generation) => {
-      // trmx-268: the payload is the ask generation the ack must echo. A malformed one is dropped
-      // rather than coerced — servicing a bogus generation would ack a streak that does not exist.
-      if (live && isAskGeneration(generation)) onRequest(generation);
-    })
-    .then((u) => {
-      if (live) unlisten = u;
-      else u();
-    })
-    .catch(() => {
-      // No Tauri runtime — the OS never routes a window close through the webview.
-    });
-  return () => {
-    live = false;
-    unlisten?.();
-  };
-};
-
-// trmx-144: one close's options, threaded pane → tab so a close that already passed (or bypassed)
-// the confirm gate is never re-gated downstream.
-type CloseOpts = {
-  /** The session already exited on its own (pty:exited) — nothing left to protect, no close_pty. */
-  alreadyExited?: boolean;
-  /** Who asked: "remote" (control channel) never prompts — a dialog would deadlock a headless caller. */
-  origin?: "user" | "remote";
-  /** The user just confirmed THIS close in the dialog — proceed without re-prompting. */
-  confirmed?: boolean;
-};
-
-// trmx-144: the pending confirm-before-close dialog's target (null = no dialog). `tabId`/`paneId`
-// pin the target by id so a confirm re-resolves it (a dead target makes confirm a safe no-op).
-type PendingClose = {
-  kind: "pane" | "tab" | "quit";
-  tabId?: number;
-  paneId?: PaneId;
-  names: string[];
-  /** Quit only: how many tabs have running programs — the dialog's summary line. */
-  busyTabCount?: number;
+/** trmx-254: the 22 seams are now one object; `deps` replaces the flat prop list. */
+// trmx-254: a pure constant map, so it lives at MODULE scope. E05's tabs-action adapter reads it
+// from the root; it closes over no App state, so component scope bought nothing.
+// trmx-94: the menu verb → command-id map. Menu clicks (and the trmx-74/84/86/90/93 verbs) route
+// through `dispatch` so every action goes through the one spine (FR-9.1).
+const VERB_TO_COMMAND: Record<string, string> = {
+  new: "tab.new",
+  close: "pane.close", // the ⌘W "Close Tab" menu item closes the focused pane (pane precedence)
+  next: "tab.next",
+  prev: "tab.prev",
+  "split-right": "pane.split-right",
+  "split-below": "pane.split-below",
+  "new-with-script": "tab.new-with-script",
+  "split-right-with-script": "pane.split-right-with-script",
+  "split-below-with-script": "pane.split-below-with-script",
+  "pane-left": "pane.focus-left",
+  "pane-right": "pane.focus-right",
+  "pane-up": "pane.focus-up",
+  "pane-down": "pane.focus-down",
+  "pane-next": "pane.next",
+  "pane-prev": "pane.prev",
+  rename: "tab.rename",
+  "set-badge": "pane.set-badge",
+  palette: "app.command-palette",
+  "clear-scrollback": "terminal.clear-scrollback",
+  // trmx-94 (review finding 7): Settings + Close Window route through dispatch too (not the Rust
+  // ShowSettings/CloseMainWindow shortcuts), so every command-backed menu action is on the spine.
+  "app-settings": "app.settings",
+  "window-close": "window.close",
 };
 
 export interface AppProps {
-  /** Injection seam for tests; defaults to useBackend's attachTerminal (the live PTY wiring). */
-  attach?: AttachFn;
-  /** Injection seam for tests; defaults to closing the native window (last-tab close). */
-  closeWindow?: () => void;
-  /** Injection seam for tests; defaults to the real `quit_confirmed` invoke (trmx-144). */
-  quitConfirmed?: () => void;
-  /** trmx-268: tell the backend the webview is alive, echoing the ask generation. */
-  closeAcknowledged?: (generation: number) => Promise<void>;
-  /** Injection seam for tests; defaults to the real `close_pty` command. */
-  closeSession?: (sessionId: number) => Promise<void>;
-  /** Injection seam for tests; defaults to the real `tabs:action` event-bus subscription. */
-  observeTabsAction?: TabsActionObservation;
-  /** Injection seam for tests; defaults to the real `pty:exited` event-bus subscription. */
-  observePtyExited?: PtyExitedObservation;
-  /** Injection seam for tests; defaults to the real `session:title-hint` subscription (trmx-75). */
-  observeTitleHint?: TitleHintObservation;
-  /** Injection seam for tests; defaults to the real `session:activity` subscription (trmx-91). */
-  observeActivity?: ActivityObservation;
-  /** Injection seam for tests (trmx-159); production observes PTY output via useBackend directly. */
-  observeOutput?: OutputObservation;
-  /** Injection seam for tests (trmx-159); production observes keystroke input via useBackend directly. */
-  observeInput?: InputObservation;
-  /** Injection seam for tests; defaults to the real `settings:changed` subscription (trmx-81). */
-  observeSettings?: SettingsObservation;
-  /** Injection seam for tests; the control socket's request stream (trmx-101). */
-  observeControlRequest?: ControlRequestObservation;
-  /** Injection seam for tests; the backend's per-session notice stream (trmx-237 H4). */
-  observeSessionNotice?: SessionNoticeObservation;
-  /** Injection seam for tests; the backend's `close:requested` stream (trmx-144). */
-  observeCloseRequested?: CloseRequestedObservation;
-  /** Injection seam for tests; defaults to retitling the native window (trmx-75). */
-  setWindowTitle?: (title: string) => void;
-  /** Injection seam for tests; the frame schedule that throttles divider-drag dispatches (trmx-85). */
-  dragSchedule?: FrameSchedule;
-  /** Injection seam for tests; defaults to the real themes hot-reload installer (trmx-89). */
-  installHotReload?: typeof installThemeHotReload;
-  /** Injection seam for tests; defaults to the real `pty_write` (trmx-93 — sends a sourced script). */
-  sendInput?: (sessionId: number, data: string) => Promise<void>;
-  /** Injection seam for tests; the backend `invoke` for the script picker + startup resolution (trmx-93). */
-  invoke?: InvokeFn;
-  /** trmx-224: cold-launch service dirs, pre-fetched by main.tsx BEFORE mount (so plain boot
-   * stays synchronous). Non-empty ⇒ these become the initial tabs (first focused) and the
-   * default tab + startup script are skipped. */
-  serviceBootPaths?: string[];
-  /** Injection seam for tests; defaults to the real `services:open-paths` subscription (trmx-224). */
-  observeServiceNudge?: ServiceNudgeObservation;
+  deps?: AppDeps;
 }
 
-export function App({
-  attach,
-  closeWindow = realCloseWindow,
-  quitConfirmed = realQuitConfirmed,
-  closeAcknowledged = realCloseAcknowledged,
-  closeSession = closePty,
-  observeTabsAction = realObserveTabsAction,
-  observePtyExited = onPtyExited,
-  observeTitleHint = onTitleHint,
-  observeActivity = onSessionActivity,
-  observeOutput,
-  observeInput,
-  observeSettings = realObserveAppSettings,
-  observeControlRequest = realObserveControlRequest,
-  observeSessionNotice = realObserveSessionNotice,
-  observeCloseRequested = realObserveCloseRequested,
-  setWindowTitle = realSetWindowTitle,
-  dragSchedule = realFrameSchedule,
-  installHotReload = installThemeHotReload,
-  sendInput = (sessionId, data) => sendPtyInput(sessionId, data),
-  invoke = realInvoke,
-  serviceBootPaths = [],
-  observeServiceNudge = realObserveServiceNudge,
-}: AppProps = {}) {
+// trmx-254 (T12): the 22 injection seams become ONE `deps` object. Defaults live at MODULE scope so
+// their identity is stable across renders, and each field resolves with `??` — never a spread merge.
+// That distinction is behavioural, not stylistic: `{...DEFAULTS, ...deps}` RETAINS an explicitly
+// passed `undefined`, so a test that writes `invoke: opts.invoke` (with `opts.invoke` undefined)
+// would silently get `undefined` instead of the production default. Several tests do exactly that.
+const DEPS_DEFAULTS = {
+  closeWindow: realCloseWindow,
+  quitConfirmed: realQuitConfirmed,
+  closeAcknowledged: realCloseAcknowledged,
+  closeSession: closePty,
+  observeTabsAction: realObserveTabsAction,
+  observePtyExited: onPtyExited,
+  observeTitleHint: onTitleHint,
+  observeActivity: onSessionActivity,
+  observeSettings: realObserveAppSettings,
+  observeControlRequest: realObserveControlRequest,
+  observeSessionNotice: realObserveSessionNotice,
+  observeCloseRequested: realObserveCloseRequested,
+  observeServiceNudge: realObserveServiceNudge,
+  setWindowTitle: realSetWindowTitle,
+  dragSchedule: realFrameSchedule,
+  installHotReload: installThemeHotReload,
+  invoke: realInvoke,
+  sendInput: (sessionId: number, data: string) => sendPtyInput(sessionId, data),
+} as const;
+
+export function App({ deps }: AppProps = {}) {
+  // 18 defaulted seams — `??` per field, so an explicit `undefined` still resolves to the default.
+  const closeWindow = deps?.closeWindow ?? DEPS_DEFAULTS.closeWindow;
+  const quitConfirmed = deps?.quitConfirmed ?? DEPS_DEFAULTS.quitConfirmed;
+  const closeAcknowledged = deps?.closeAcknowledged ?? DEPS_DEFAULTS.closeAcknowledged;
+  const closeSession = deps?.closeSession ?? DEPS_DEFAULTS.closeSession;
+  const observeTabsAction = deps?.observeTabsAction ?? DEPS_DEFAULTS.observeTabsAction;
+  const observePtyExited = deps?.observePtyExited ?? DEPS_DEFAULTS.observePtyExited;
+  const observeTitleHint = deps?.observeTitleHint ?? DEPS_DEFAULTS.observeTitleHint;
+  const observeActivity = deps?.observeActivity ?? DEPS_DEFAULTS.observeActivity;
+  const observeSettings = deps?.observeSettings ?? DEPS_DEFAULTS.observeSettings;
+  const observeControlRequest = deps?.observeControlRequest ?? DEPS_DEFAULTS.observeControlRequest;
+  const observeSessionNotice = deps?.observeSessionNotice ?? DEPS_DEFAULTS.observeSessionNotice;
+  const observeCloseRequested = deps?.observeCloseRequested ?? DEPS_DEFAULTS.observeCloseRequested;
+  const observeServiceNudge = deps?.observeServiceNudge ?? DEPS_DEFAULTS.observeServiceNudge;
+  const setWindowTitle = deps?.setWindowTitle ?? DEPS_DEFAULTS.setWindowTitle;
+  const dragSchedule = deps?.dragSchedule ?? DEPS_DEFAULTS.dragSchedule;
+  const installHotReload = deps?.installHotReload ?? DEPS_DEFAULTS.installHotReload;
+  const invoke = deps?.invoke ?? DEPS_DEFAULTS.invoke;
+  const sendInput = deps?.sendInput ?? DEPS_DEFAULTS.sendInput;
+  // 3 seams with NO production default — `undefined` is meaningful and must stay undefined.
+  const attach = deps?.attach;
+  const observeOutput = deps?.observeOutput;
+  const observeInput = deps?.observeInput;
+  // 1 array default.
+  const serviceBootPaths = deps?.serviceBootPaths ?? [];
   // trmx-159: the per-pane I/O observers route PTY output/input into the activity classifier. They are
   // set (below, once applyActivityTransition exists) into this ref, which the stable useBackend wiring
   // and the test-only observeOutput/observeInput seams both read — so production observes I/O through
@@ -702,18 +461,7 @@ export function App({
   // trmx-94 (FR-9.3): load the user [keys] overrides + rebuild the effective keymap; re-read on a
   // keys:changed watcher signal (live rebind). Inert without a Tauri runtime (readKeys resolves {}).
   useEffect(() => {
-    let live = true;
-    const rebuild = () => {
-      readKeys(invoke).then((userKeys) => {
-        if (live) setKeymap(mergeKeymap(FULL_DEFAULT_KEYS, Object.entries(userKeys)).keymap);
-      });
-    };
-    rebuild();
-    const teardown = onKeysChanged(rebuild);
-    return () => {
-      live = false;
-      teardown();
-    };
+    return commands.rebuildKeymap();
   }, [invoke]);
 
   // Boot: exactly ONE initial tab (one pane). The ref guards StrictMode's double effect-invocation.
@@ -722,667 +470,70 @@ export function App({
   // attach send-step awaits it, so the async listScripts resolution never loses the race (finding 3).
   // Smoke/perf are already excluded: main.tsx boot() returns before App renders on those launches.
   useEffect(() => {
-    if (bootedRef.current) return;
-    bootedRef.current = true;
-    if (stateRef.current.tabs.length === 0) {
-      // trmx-224: a service-triggered cold launch (main.tsx pre-fetched the queued dirs
-      // BEFORE mount) opens the requested dirs as the initial tabs — no default $HOME tab,
-      // no startup script. Plain boot (the empty default) is byte-identical to before.
-      if (serviceBootPaths.length > 0) {
-        deliverServicePathsRef.current(serviceBootPaths);
-        return;
-      }
-      const startupPath = makeSettingsStore().get("scripts.startup");
-      // The boot default tab goes through the shared creation primitive (one reservation
-      // per dispatch; at boot there is no active tab, so the inherited cwd is undefined —
-      // identical to the pre-trmx-224 unseeded open), and the startup script keys off the
-      // RETURNED pane id like every other wrapper.
-      const opened = createTabRef.current();
-      if (startupPath && !startupFiredRef.current) {
-        startupFiredRef.current = true;
-        seedPaneField(
-          opened.paneId, "pendingScript", listScripts(invoke).then((scripts) => {
-            const match = scripts.find((entry) => entry.relPath === startupPath);
-            if (!match) {
-              log.warn(
-                `startup script "${startupPath}" not found in ~/.config/termixion/scripts/; starting a plain shell`,
-              );
-              return null;
-            }
-            return { sourceLine: match.sourceLine };
-          }),
-        );
-      }
-    }
+    return services.boot();
   }, [invoke]);
 
   // trmx-84: measure the pane content area for solveRects. Guarded for jsdom (no ResizeObserver) and
   // 0×0 readings, so tests keep the usable default bounds and real runtime tracks the window size.
   useEffect(() => {
-    const el = contentRef.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver((entries) => {
-      const r = entries[entries.length - 1]?.contentRect;
-      if (r && r.width > 0 && r.height > 0) {
-        setBounds({ x: 0, y: 0, width: Math.round(r.width), height: Math.round(r.height) });
-      }
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
+    return services.observeContentSize();
   }, []);
-
-  // This pane's cwd store, created lazily at RENDER time — so it exists from the terminal's mount
-  // and an OSC 7 report (or a cwd-inheritance capture) can land before the session attaches.
-  // trmx-248: this is the ONE place a pane's runtime record is created. Everywhere else reads with
-  // `.get()` and handles `undefined` exactly as the old Maps' `.get()` did — so "no pane" stays
-  // distinguishable from "pane with an unset field".
-  const storeFor = (paneId: PaneId): CwdStore => paneOf(paneId).cwd;
-
-  // Whether (tabId, paneId) is still live — the orphan guard's test at attach-resolution time.
-  const paneAlive = (tabId: number, paneId: PaneId): boolean => {
-    const tab = stateRef.current.tabs.find((t) => t.tabId === tabId);
-    return tab !== undefined && tab.panes[paneId] !== undefined;
-  };
-
-  // This pane's onReady, cached so its identity never changes across App re-renders (keep-alive:
-  // TerminalView's effect must not re-run on a tab switch or a sibling re-layout). It wires the
-  // mounted terminal to a live session; if the pane/tab died while open_pty was in flight (OR a
-  // StrictMode remount superseded this mount's epoch), the resolved session is an ORPHAN — dispose
-  // it. A freshly-mounted pane that IS the active tab's focused pane grabs the keyboard (so a split
-  // focuses its new pane the moment it mounts).
-  const readyFor = (tabId: number, paneId: PaneId): ((handle: TerminalHandle) => void) => {
-    let cb = paneOf(paneId).onReady;
-    if (!cb) {
-      cb = (handle) => {
-        setPaneField(paneId, "handle", handle);
-        const s = stateRef.current;
-        const activeTab = s.tabs.find((t) => t.tabId === s.activeTabId);
-        if (
-          activeTab &&
-          activeTab.focusedPaneId === paneId &&
-          renamingRef.current === null &&
-          badgingRef.current === null &&
-          !openSearchRef.current.has(paneId) // trmx-98: an open find bar owns the keyboard
-        ) {
-          (handle.terminal as unknown as { focus?: () => void } | undefined)?.focus?.();
-        }
-        const epoch = (runtimesRef.current.get(paneId)?.attachEpoch ?? 0) + 1;
-        setPaneField(paneId, "attachEpoch", epoch);
-        seamsRef.current
-          .attach(handle, { cwd: runtimesRef.current.get(paneId)?.pendingCwd })
-          .then((info) => {
-            const epochCurrent = runtimesRef.current.get(paneId)?.attachEpoch === epoch;
-            if (paneAlive(tabId, paneId) && epochCurrent) {
-              setPaneField(paneId, "sessionId", info.sessionId);
-              dispatch({ kind: "attachSession", tabId, paneId, sessionId: info.sessionId, title: info.title });
-              // trmx-93 (FR-5): if a script is pending for this pane (a picker run, or the startup
-              // script), source it now that the session is live. Consumed ONLY on the current epoch so
-              // a superseded StrictMode attach can't steal it; awaits the stored promise (startup's
-              // async resolution), then sends `source '<abs>'` + CR through the sendInput seam.
-              const pendingScript = runtimesRef.current.get(paneId)?.pendingScript;
-              if (pendingScript) {
-                setPaneField(paneId, "pendingScript", undefined);
-                void pendingScript.then((resolved) => {
-                  if (resolved && paneAlive(tabId, paneId)) {
-                    seamsRef.current.sendInput(info.sessionId, `${resolved.sourceLine}\r`).catch(
-                      (err: unknown) => {
-                        log.error("sourcing the script failed", err);
-                      },
-                    );
-                  }
-                });
-              }
-            } else {
-              // ORPHAN GUARD: the pane/tab closed mid-attach, OR this is a superseded (StrictMode)
-              // mount — kill the session it will never show.
-              seamsRef.current.closeSession(info.sessionId).catch((err: unknown) => {
-                log.error("orphan session close failed", err);
-              });
-              // trmx-93: if the pane is truly DEAD (not merely a stale epoch on a still-live pane),
-              // drop its pending script — no later attach will consume it. A stale-epoch-but-alive
-              // pane keeps it so the current-epoch attach still sources it.
-              if (!paneAlive(tabId, paneId)) setPaneField(paneId, "pendingScript", undefined);
-            }
-          })
-          .catch((err: unknown) => {
-            // Open failed (no backend in `pnpm dev`, or a real spawn error).
-            log.error("pane attach failed", err);
-            setPaneField(paneId, "pendingScript", undefined); // trmx-93: no session → the script never sources
-            // trmx-237 (grill H4): the pane used to keep its placeholder title with a dead session and
-            // say NOTHING — keystrokes went nowhere and nothing explained why. Write the reason into the
-            // terminal the user is looking at. The SAME epoch + liveness guard as the success path above:
-            // without it a superseded StrictMode rejection could scribble an error into a pane whose
-            // later attach succeeded.
-            const epochCurrent = runtimesRef.current.get(paneId)?.attachEpoch === epoch;
-            if (!paneAlive(tabId, paneId) || !epochCurrent) return;
-            writePaneNotice(handle, `could not start a shell: ${formatAttachError(err)}`);
-          });
-      };
-      paneOf(paneId).onReady = cb;
-    }
-    return cb;
-  };
-
-  // This pane's onOscTitle, cached like `readyFor`. A program's OSC 0/2 title lands in the pane's
-  // `osc` slot; the EMPTY string is the escape's reset (printf '\e]2;\a') and clears the slot.
-  const oscTitleFor = (tabId: number, paneId: PaneId): ((title: string) => void) => {
-    let cb = paneOf(paneId).onOscTitle;
-    if (!cb) {
-      cb = (title) => {
-        dispatch({
-          kind: "setTitleSource",
-          tabId,
-          paneId,
-          source: "osc",
-          value: title === "" ? null : title,
-        });
-      };
-      paneOf(paneId).onOscTitle = cb;
-    }
-    return cb;
-  };
-
-  // trmx-90: this pane's onBadge, cached like readyFor/oscTitleFor (a stable identity — an inline
-  // arrow would remount the terminal via TerminalView's effect deps). An OSC 1337 SetBadgeFormat
-  // lands in THIS pane's `badge` slot (last-write-wins); null (empty/undecodable/cleared) removes it.
-  // The per-pane closure is the load-bearing SCOPING — a `printf` in a BACKGROUND pane badges that
-  // pane, never the focused one (the badge is orthogonal to the tab label by construction).
-  const badgeFor = (tabId: number, paneId: PaneId): ((badge: string | null) => void) => {
-    let cb = paneOf(paneId).onBadge;
-    if (!cb) {
-      cb = (badge) => {
-        dispatch({ kind: "setBadge", tabId, paneId, badge });
-      };
-      paneOf(paneId).onBadge = cb;
-    }
-    return cb;
-  };
-
-  // trmx-91: apply ONE activity transition for a pane — persist the new debounce phase, (re)arm its
-  // single timer to the returned deadline (clearing any prior), and dispatch the resolved visibility.
-  // Shared by the session:activity event AND the timer's own fire, so both go through one arm+dispatch
-  // path. The timer fire re-reads the pane's CURRENT phase (a stale fire is inert per onDeadline) and
-  // recurses here. `tabId` is captured at arm time (a pane never migrates tabs); if the pane died
-  // meanwhile the setActivity reducer no-ops on the unknown id, and disposePaneResources cleared the
-  // timer, so a fire into a dead pane can't happen anyway.
-  const applyActivityTransition = (
-    tabId: number,
-    paneId: PaneId,
-    { state, deadline }: ActivityTransition,
-  ) => {
-    setPaneField(paneId, "activity", state);
-    const prior = runtimesRef.current.get(paneId)?.activityTimer;
-    if (prior !== undefined) {
-      clearTimeout(prior);
-      setPaneField(paneId, "activityTimer", undefined);
-    }
-    const now = Date.now();
-    // trmx-159: fold the class-layer deadline (unknown-fallback / light-off / window-close) with the
-    // phase deadline into the single per-pane timer — arm to whichever fires first.
-    const classAt = classDeadline(state, now);
-    const armAt =
-      deadline === null ? classAt : classAt === null ? deadline : Math.min(deadline, classAt);
-    if (armAt !== null) {
-      const timer = setTimeout(() => {
-        setPaneField(paneId, "activityTimer", undefined);
-        const current = runtimesRef.current.get(paneId)?.activity ?? initialActivity();
-        applyActivityTransition(tabId, paneId, onDeadline(current, Date.now()));
-      }, Math.max(0, armAt - now));
-      setPaneField(paneId, "activityTimer", timer);
-    }
-    // trmx-159: the visible line/dot follow `lightActive` (executing-user-work), not raw visibility;
-    // the close guard still reads isBusy(state) (rawBusy) via busyLookup, unchanged.
-    dispatch({ kind: "setActivity", tabId, paneId, visible: lightActive(state, now) });
-  };
-
-  // trmx-159: the per-pane I/O observers — route PTY output / keystroke input into the activity
-  // classifier through the same single-writer applyActivityTransition. Repointed each render so they
-  // always close over the live refs; useBackend (production) and the test seams both call these.
-  ioObserversRef.current = {
-    output: (sessionId, byteLength) => {
-      const hit = paneBySessionId(stateRef.current, sessionId);
-      if (!hit) return;
-      const current = runtimesRef.current.get(hit.paneId)?.activity ?? initialActivity();
-      applyActivityTransition(hit.tab.tabId, hit.paneId, onActivityOutput(current, byteLength, Date.now()));
-    },
-    input: (sessionId, data) => {
-      const hit = paneBySessionId(stateRef.current, sessionId);
-      if (!hit) return;
-      const current = runtimesRef.current.get(hit.paneId)?.activity ?? initialActivity();
-      applyActivityTransition(hit.tab.tabId, hit.paneId, onActivityInput(current, data, Date.now()));
-    },
-  };
-
-  // trmx-99 (FR-7b): start / cancel a pane's exit-code flash. The flashing set drives the overlay
-  // re-render; the timer clears it after FLASH_MS. A new command (C) cancels a stale flash.
-  const startFlash = (paneId: PaneId) => {
-    const prior = runtimesRef.current.get(paneId)?.flashTimer;
-    if (prior !== undefined) clearTimeout(prior);
-    setFlashingPanes((prev) => new Set(prev).add(paneId));
-    const timer = setTimeout(() => {
-      setPaneField(paneId, "flashTimer", undefined);
-      setFlashingPanes((prev) => {
-        if (!prev.has(paneId)) return prev;
-        const next = new Set(prev);
-        next.delete(paneId);
-        return next;
-      });
-    }, FLASH_MS);
-    setPaneField(paneId, "flashTimer", timer);
-  };
-  const clearFlashFor = (paneId: PaneId) => {
-    const prior = runtimesRef.current.get(paneId)?.flashTimer;
-    if (prior !== undefined) {
-      clearTimeout(prior);
-      setPaneField(paneId, "flashTimer", undefined);
-    }
-    setFlashingPanes((prev) => {
-      if (!prev.has(paneId)) return prev;
-      const next = new Set(prev);
-      next.delete(paneId);
-      return next;
-    });
-  };
-
-  // trmx-99: this pane's OSC 133 marker sink, cached like badgeFor (a stable identity — an inline arrow
-  // would remount the terminal via the effect deps). ANY valid marker latches the pane to the osc133
-  // source (sticky — the poller is ignored for it thereafter); App applies the activity change from the
-  // machine's `busyChanged` (so an `A`-while-running clears the line), a `C` cancels a stale flash, and a
-  // failed command's exit code flashes the error color.
-  const promptMarkerFor = (tabId: number, paneId: PaneId): ((t: PromptTransition) => void) => {
-    let cb = paneOf(paneId).onPromptMarker;
-    if (!cb) {
-      cb = (transition) => {
-        setPaneField(paneId, "osc133", true);
-        if (transition.busy) clearFlashFor(paneId); // a new command wins over a leftover flash
-        if (transition.busyChanged) {
-          const current = runtimesRef.current.get(paneId)?.activity ?? initialActivity();
-          applyActivityTransition(tabId, paneId, onBusyChange(current, transition.busy, Date.now()));
-        }
-        if (shouldFlash(transition.exitCode)) startFlash(paneId);
-      };
-      paneOf(paneId).onPromptMarker = cb;
-    }
-    return cb;
-  };
-
-  // Dispose one pane's resources: drop all its paneId-keyed maps and close its PTY (unless the
-  // shell already exited). Shared by pane-close, pty:exited, and whole-tab close — one path, no leak.
-  const disposePaneResources = (paneId: PaneId, opts?: { alreadyExited?: boolean }) => {
-    // trmx-248: one call drops the record and clears BOTH timers (activity + exit-flash), and hands
-    // back the session id captured before the drop. What it deliberately does not do is the two
-    // halves a ref-held store cannot own — the React state removals below — and the backend close.
-    const { sessionId } = runtimesRef.current.dispose(paneId);
-    setFlashingPanes((prev) => {
-      if (!prev.has(paneId)) return prev;
-      const next = new Set(prev);
-      next.delete(paneId);
-      return next;
-    });
-    // trmx-98: drop this pane's find-bar state so a closed pane leaves no open bar. Load-bearing:
-    // `openSearchRef.current.size` gates focus-follows-mouse GLOBALLY, so a stale entry would
-    // suppress it for every pane.
-    setOpenSearchPanes((prev) => {
-      if (!prev.has(paneId)) return prev;
-      const next = new Set(prev);
-      next.delete(paneId);
-      return next;
-    });
-    if (sessionId !== undefined && !opts?.alreadyExited) {
-      seamsRef.current.closeSession(sessionId).catch((err: unknown) => {
-        log.error("close pty failed", err);
-      });
-    }
-  };
-
-  // trmx-144: set the pending confirm dialog through ONE path so the render state and its
-  // out-of-render mirror can never drift.
-  const setPendingCloseSynced = (next: PendingClose | null) => {
-    pendingCloseRef.current = next;
-    setPendingClose(next);
-  };
-
-  // trmx-144: the per-pane reads the closeGuard aggregators need — the RAW debounce state (an
-  // in-flight job counts even before the cosmetic line shows) and a display name (the foreground-
-  // process hint, falling back to the pane's effective title). PaneIds are global-unique, so the
-  // cross-tab scan can't alias.
-  const busyLookup: BusyLookup = {
-    activityState: (paneId) => runtimesRef.current.get(paneId)?.activity,
-    displayName: (paneId) => {
-      for (const tab of stateRef.current.tabs) {
-        const pane = tab.panes[paneId];
-        if (pane) return pane.titleSources.process ?? pane.title;
-      }
-      return undefined;
-    },
-  };
-
-  // trmx-144: whether a close skips the confirm gate outright — the session already exited (nothing
-  // left to protect), a remote controller asked (a dialog would deadlock a headless caller), or the
-  // user just confirmed this very close in the dialog.
-  const bypassesConfirm = (opts?: CloseOpts): boolean =>
-    opts?.alreadyExited === true || opts?.origin === "remote" || opts?.confirmed === true;
-
-  // Close a whole tab (all its panes) — the tab-strip × and the last-pane fallthrough. The LAST tab
-  // closes the WINDOW instead (no dispatch, no per-session close — the backend's CloseRequested
-  // kill_all owns cleanup). Otherwise drop the tab and dispose every pane's resources.
-  const closeTabInternal = (tabId: number, opts?: CloseOpts) => {
-    const s = stateRef.current;
-    const tab = s.tabs.find((t) => t.tabId === tabId);
-    if (!tab) return;
-    // trmx-144: the confirm gate — a user-initiated close of a tab holding a busy pane prompts
-    // instead of closing (per terminal.confirmClose, read fresh at close time).
-    if (!bypassesConfirm(opts)) {
-      if (pendingCloseRef.current !== null) return; // a confirm is already up — swallow the repeat
-      const report = collectBusyPanes(tab, busyLookup);
-      if (shouldConfirmClose(makeSettingsStore().get("terminal.confirmClose"), report.busy, "user")) {
-        setPendingCloseSynced({ kind: "tab", tabId, names: report.names });
-        return; // the dialog's onConfirm re-enters with { confirmed: true }
-      }
-    }
-    if (s.tabs.length <= 1) {
-      // trmx-144: the last tab closing the window IS the quit, and this gesture was already gated
-      // (or bypassed) above — authorize it so the backend's close:requested round-trip for this
-      // very close never prompts a second time.
-      quitAuthorizedRef.current = true;
-      seamsRef.current.closeWindow();
-      return;
-    }
-    const paneIds = tabPaneIds(tab);
-    dispatch({ kind: "closeTab", tabId });
-    for (const paneId of paneIds) disposePaneResources(paneId, opts);
-    // A tab dying MID-RENAME must clear the rename state, or a stuck renamingTabId would suppress
-    // focus-follows-activation forever.
-    setRenamingTabId((current) => (current === tabId ? null : current));
-    // trmx-90: same for a tab dying MID-BADGE-EDIT — clear the editor if the badging pane was in it.
-    setBadgingPaneId((current) => (current !== null && paneIds.includes(current) ? null : current));
-  };
-
-  // Close one pane with the ⌘W precedence: pane → tab → window. More than one pane → drop just that
-  // pane (its sibling re-lays out, sessions untouched). The LAST pane of a tab closes the whole tab
-  // (which may be the last tab → the window).
-  const closePaneInternal = (tabId: number, paneId: PaneId, opts?: CloseOpts) => {
-    const s = stateRef.current;
-    const tab = s.tabs.find((t) => t.tabId === tabId);
-    if (!tab || tab.panes[paneId] === undefined) return;
-    // trmx-144: the confirm gate — a user-initiated close of a RAW-busy pane prompts instead of
-    // closing. The name is included only when busy (the "always" dialog on an idle pane asks the
-    // bare question — nothing is "still running").
-    if (!bypassesConfirm(opts)) {
-      if (pendingCloseRef.current !== null) return; // a confirm is already up — swallow the repeat
-      const busy = paneIsBusy(runtimesRef.current.get(paneId)?.activity, tab.panes[paneId].activityVisible);
-      if (shouldConfirmClose(makeSettingsStore().get("terminal.confirmClose"), busy, "user")) {
-        const name = busy ? busyLookup.displayName(paneId)?.trim() : undefined;
-        setPendingCloseSynced({ kind: "pane", tabId, paneId, names: name ? [name] : [] });
-        return; // the dialog's onConfirm re-enters with { confirmed: true }
-      }
-    }
-    if (tabPaneIds(tab).length > 1) {
-      // A pane dying mid-rename (it is the focused/renamed pane) must clear the rename, or the input
-      // would survive and re-target the NEW focused pane on commit. The whole-tab branch clears it
-      // in closeTabInternal; the pane branch must do the same for the focused pane.
-      const wasRenamedPane = tab.focusedPaneId === paneId;
-      dispatch({ kind: "closePane", tabId, paneId });
-      disposePaneResources(paneId, opts);
-      if (wasRenamedPane) setRenamingTabId((current) => (current === tabId ? null : current));
-      // trmx-90: a pane dying MID-BADGE-EDIT clears the editor so it can't re-target the new focus.
-      setBadgingPaneId((current) => (current === paneId ? null : current));
-    } else {
-      closeTabInternal(tabId, opts);
-    }
-  };
-
-  // Open a new tab inheriting the ACTIVE tab's FOCUSED pane cwd (or `cwdOverride` when given —
-  // trmx-224 service tabs open at the requested dir). The cwd is keyed by the pane id RESERVED
-  // for this dispatch (idReservation — never read from commit-lagged stateRef), and the
-  // allocated ids are returned so callers can key further metadata / activate the tab.
-  const createTab = (cwdOverride?: string): { tabId: number; paneId: number } => {
-    const s = stateRef.current;
-    const { tabId, paneId } = reservation.reserveTab();
-    const activeTab =
-      s.activeTabId !== null ? s.tabs.find((t) => t.tabId === s.activeTabId) : undefined;
-    const activeStore = activeTab ? runtimesRef.current.get(activeTab.focusedPaneId)?.cwd : undefined;
-    seedPaneField(paneId, "pendingCwd", cwdOverride ?? activeStore?.get() ?? undefined);
-    dispatch({ kind: "openTab" });
-    return { tabId, paneId };
-  };
-  createTabRef.current = createTab;
-  // The public creator stays PARAMETERLESS: it is wired as an event handler (the tab strip's
-  // "+" onClick), and a parameter would receive the click event (trmx-224 regression).
-  const requestNewTab = () => createTab();
-
-  // trmx-84: split the active tab's focused pane. `right` → a row split (side by side), `below` → a
-  // column split (stacked). Refused (soft no-op) when the result would go below the min pane size.
-  // The new pane inherits the focused pane's cwd and takes focus (readyFor focuses it on mount).
-  const requestSplit = (dir: "right" | "below"): { paneId: number } | null => {
-    const s = stateRef.current;
-    if (s.activeTabId === null) return null;
-    const tab = s.tabs.find((t) => t.tabId === s.activeTabId);
-    if (!tab) return null;
-    const treeDir: SplitDir = dir === "right" ? "row" : "column";
-    if (!canSplitFocused(tab, treeDir, boundsRef.current, MIN_PANE_PX)) return null; // won't fit — no-op
-    // trmx-224: reserve AFTER the refusal checks — a refused split reserves nothing (the
-    // 1:1 reservation-per-dispatch pairing; splitPane advances only the pane counter).
-    const { paneId } = reservation.reservePane();
-    const focusedStore = runtimesRef.current.get(tab.focusedPaneId)?.cwd;
-    seedPaneField(paneId, "pendingCwd", focusedStore?.get() ?? undefined);
-    dispatch({ kind: "splitPane", tabId: tab.tabId, dir: treeDir });
-    return { paneId };
-  };
-
-  // trmx-93 (FR-5): run `entry` in a fresh surface. The chosen script is stored in pendingScriptRef
-  // keyed by the upcoming pane's (predictable) id SYNCHRONOUSLY before the creating dispatch — the
-  // same nextPaneId requestNewTab/requestSplit seed pendingCwdRef with, so cwd inheritance survives
-  // and the new pane's attach sources the script. For a split that won't fit we bail WITHOUT setting
-  // the pending script, so a no-op split can't leave a stale entry for the next pane to pick up.
-  const runScriptInSurface = (entry: ScriptEntry, surface: "tab" | "right" | "below") => {
-    // trmx-224: creators return their RESERVED ids — the wrapper never predicts (a delegating
-    // read would double-reserve). Keying happens right after the call, in the same synchronous
-    // section, well before any attach; a refused split returns null and nothing is keyed, so
-    // the old bail-before-set stale-entry dance is now structural.
-    const pending = Promise.resolve<{ sourceLine: string } | null>({ sourceLine: entry.sourceLine });
-    const opened = surface === "tab" ? requestNewTab() : requestSplit(surface);
-    if (opened) seedPaneField(opened.paneId, "pendingScript", pending);
-  };
-
-  // trmx-224: deliver one service batch — ONE synchronous block (reserve→seed→dispatch per
-  // path via requestNewTab), then focus the FIRST delivered tab (each openTab activates the
-  // appended tab, so without this the LAST path would win). Any `await` inside this block
-  // would reopen the prediction-interleaving race class — keep it unbroken.
-  const deliverServicePaths = (paths: string[]) => {
-    let firstTabId: number | null = null;
-    for (const path of paths) {
-      const opened = createTab(path);
-      if (firstTabId === null) firstTabId = opened.tabId;
-    }
-    if (firstTabId !== null) dispatch({ kind: "activateTab", tabId: firstTabId });
-  };
-  deliverServicePathsRef.current = deliverServicePaths;
-
-  // trmx-86 (FR-3.5): move focus between panes of the ACTIVE tab. `nav-dir` picks the geometrically
-  // nearest pane via paneInDirection over the current solved rects; `nav-cycle` steps the leaves order.
-  // A null / same-as-current target is a no-op. Shared by the keymap AND the Window-menu verbs, and kept
-  // action-shaped so FR-9's command registry can lift it directly.
-  const requestPaneNav = (
-    action: { kind: "nav-dir"; dir: Direction } | { kind: "nav-cycle"; delta: 1 | -1 },
-  ) => {
-    const s = stateRef.current;
-    if (s.activeTabId === null) return;
-    const tab = s.tabs.find((t) => t.tabId === s.activeTabId);
-    if (!tab) return;
-    const target =
-      action.kind === "nav-dir"
-        ? paneInDirection(solveRects(tab.tree, boundsRef.current).panes, tab.focusedPaneId, action.dir)
-        : nextPane(tab.tree, tab.focusedPaneId, action.delta);
-    if (target !== null && target !== tab.focusedPaneId) {
-      dispatch({ kind: "focusPane", tabId: tab.tabId, paneId: target });
-    }
-  };
-
-  // ⌘W / menu "close": close the active tab's FOCUSED pane (pane → tab → window). `origin`
-  // (trmx-144) tags who asked — the dispatcher injects "remote" for control-channel requests, so
-  // those skip the confirm gate; everything else defaults to "user".
-  const requestCloseActive = (origin?: "user" | "remote") => {
-    const s = stateRef.current;
-    if (s.activeTabId === null) return;
-    const tab = s.tabs.find((t) => t.tabId === s.activeTabId);
-    if (!tab) return;
-    closePaneInternal(tab.tabId, tab.focusedPaneId, { origin: origin ?? "user" });
-  };
-
-  // The tab-strip × closes the WHOLE tab (all its panes), distinct from the ⌘W pane precedence.
-  const requestCloseTab = (tabId: number) => closeTabInternal(tabId);
-
-  // trmx-94 (FR-9.1): the command platform. The CommandContext maps each command's `run` onto the
-  // existing request* funcs + a few new capabilities; menu verbs, keymap hits, and palette picks ALL
-  // route through `dispatch` (the single spine). The dispatcher is created ONCE (MRU persists) with a
-  // forwarding ctx that always calls the CURRENT request funcs via a ref.
-  const getActiveTab = () => {
-    const s = stateRef.current;
-    return s.activeTabId !== null ? s.tabs.find((t) => t.tabId === s.activeTabId) : undefined;
-  };
-  const commandCtx: CommandContext = {
-    newTab: requestNewTab,
-    // trmx-94: tab.close closes the WHOLE active tab; pane.close (⌘W) closes the focused pane
-    // (pane precedence — the last pane closing takes the tab). Distinct commands (review finding 4).
-    closeActiveTab: (origin) => {
-      const a = stateRef.current.activeTabId;
-      if (a !== null) closeTabInternal(a, { origin: origin ?? "user" });
-    },
-    nextTab: () => dispatch({ kind: "nextTab" }),
-    prevTab: () => dispatch({ kind: "prevTab" }),
-    selectTab: (index) => dispatch({ kind: "selectIndex", index }),
-    renameActiveTab: () => {
-      const a = stateRef.current.activeTabId;
-      if (a !== null) setRenamingTabId(a);
-    },
-    newTabWithScript: () => setScriptPickerRequest("tab"),
-    splitRight: () => requestSplit("right"),
-    splitBelow: () => requestSplit("below"),
-    splitRightWithScript: () => setScriptPickerRequest("right"),
-    splitBelowWithScript: () => setScriptPickerRequest("below"),
-    closePane: requestCloseActive,
-    focusPane: (dir) => requestPaneNav({ kind: "nav-dir", dir }),
-    nextPane: () => requestPaneNav({ kind: "nav-cycle", delta: 1 }),
-    prevPane: () => requestPaneNav({ kind: "nav-cycle", delta: -1 }),
-    setBadge: () => {
-      const tab = getActiveTab();
-      if (tab) setBadgingPaneId(tab.focusedPaneId);
-    },
-    toggleActivity: () => {
-      // trmx-191: the ⌘⇧A one-shot override on the FOCUSED pane. The direction derives from the
-      // RENDERED state — lightActive OR the trmx-99 flash, the exact disjunction the overlay draws
-      // from — so a flash-only stuck bar forces OFF (and its flash clears) instead of stacking a
-      // force-on under it. The setActivity dispatch inside applyActivityTransition flips
-      // activityVisible, so the trmx-190 counter numerator moves in the same interaction (the
-      // shared invariant), with zero counter wiring here.
-      const tab = getActiveTab();
-      if (!tab) return;
-      const paneId = tab.focusedPaneId;
-      const now = Date.now();
-      const current = runtimesRef.current.get(paneId)?.activity ?? initialActivity();
-      const renderedActive = lightActive(current, now) || flashingPanes.has(paneId);
-      if (renderedActive) clearFlashFor(paneId);
-      applyActivityTransition(
-        tab.tabId,
-        paneId,
-        onManualToggle(current, renderedActive ? "off" : "on", now),
-      );
-    },
-    growPane: (dir) => {
-      const tab = getActiveTab();
-      if (!tab) return;
-      const target = growTarget(tab.tree, tab.focusedPaneId, dir);
-      if (!target) return;
-      // trmx-94 (review finding 6): reject a grow that would push a sibling below MIN_PANE_PX — the
-      // same pixel floor the divider drag enforces (the reducer only clamps the numeric MIN_RATIO).
-      const solved = solveRects(setRatioTree(tab.tree, target.path, target.ratio), boundsRef.current);
-      const tooSmall = solved.panes.some(
-        (pane) => pane.rect.width < MIN_PANE_PX.width || pane.rect.height < MIN_PANE_PX.height,
-      );
-      if (tooSmall) return;
-      dispatch({ kind: "setPaneRatio", tabId: tab.tabId, path: target.path, ratio: target.ratio });
-    },
-    movePane: (dir) => {
-      // trmx-100 (FR-3.4): re-dock the focused pane onto its neighbor's far edge in `dir` (a flip). The
-      // reducer no-ops when there is no neighbor / the result is structurally identical.
-      const tab = getActiveTab();
-      if (!tab) return;
-      dispatch({
-        kind: "movePaneDir",
-        tabId: tab.tabId,
-        paneId: tab.focusedPaneId,
-        dir,
-        bounds: boundsRef.current,
-      });
-    },
-    clearScrollback: () => {
-      const tab = getActiveTab();
-      if (!tab) return;
-      const handle = runtimesRef.current.get(tab.focusedPaneId)?.handle;
-      (handle?.terminal as unknown as { clear?: () => void } | undefined)?.clear?.();
-    },
-    // trmx-98 (FR-1.5): open the focused pane's find bar (or focus it if already open). The bar renders
-    // as a pane-host child and registers its controller into searchControllersRef on mount.
-    openSearch: () => {
-      const tab = getActiveTab();
-      if (!tab) return;
-      const paneId = tab.focusedPaneId;
-      const controller = runtimesRef.current.get(paneId)?.search;
-      if (controller) controller.focus();
-      else setOpenSearchPanes((prev) => new Set(prev).add(paneId));
-    },
-    searchNext: () => {
-      const tab = getActiveTab();
-      if (tab) runtimesRef.current.get(tab.focusedPaneId)?.search?.next();
-    },
-    searchPrev: () => {
-      const tab = getActiveTab();
-      if (tab) runtimesRef.current.get(tab.focusedPaneId)?.search?.prev();
-    },
-    closeSearch: () => {
-      const tab = getActiveTab();
-      if (tab) runtimesRef.current.get(tab.focusedPaneId)?.search?.close();
-    },
-    openSettings: () => {
-      invoke("open_settings_window", { section: null }).catch((err: unknown) =>
-        log.error("open settings failed", err),
-      );
-    },
-    checkForUpdates: () => {
-      invoke("open_settings_window", { section: "about" }).catch((err: unknown) =>
-        log.error("open settings (updates) failed", err),
-      );
-    },
-    // trmx-144: a REMOTE window.close confirms the quit directly (never gates, never re-enters the
-    // native close → close:requested loop); a user one takes the native path, which round-trips
-    // through close:requested where the quit gate lives.
-    closeWindow: (origin) => {
-      if (origin === "remote") seamsRef.current.quitConfirmed();
-      else seamsRef.current.closeWindow();
-    },
-    openCommandPalette: () => setShowPalette(true),
-    selectTheme: (id) => makeSettingsStore().set("appearance.theme", id),
-    runScript: (sourceLine) => {
-      const tab = getActiveTab();
-      const sessionId = tab ? runtimesRef.current.get(tab.focusedPaneId)?.sessionId : undefined;
-      if (sessionId !== undefined) {
-        seamsRef.current.sendInput(sessionId, `${sourceLine}\r`).catch((err: unknown) =>
-          log.error("run script failed", err),
-        );
-      }
-    },
-    tabCount: () => stateRef.current.tabs.length,
-    paneCount: () => {
-      const tab = getActiveTab();
-      return tab ? tabPaneIds(tab).length : 0;
-    },
-  };
-  const commandCtxRef = useRef(commandCtx);
-  commandCtxRef.current = commandCtx;
+  // trmx-254 (T3a): the per-pane callback caches. Pure logic — the root still owns every ref and
+  // every piece of state; the hook is handed exactly what the compiler says it reads.
+  const { storeFor, readyFor, oscTitleFor, badgeFor, focusFocusedPane } = usePaneCallbacks({
+    paneOf, setPaneField, runtimesRef, seamsRef, dispatch, stateRef,
+    renamingRef, badgingRef, openSearchRef,
+  });
+  // trmx-254 (T3b): the activity concern. E07/E08 and E05's title-hint subscription keep their
+  // registrations and dependency arrays at the root; only their bodies live here.
+  const activity = usePaneActivity({
+    paneOf, setPaneField, runtimesRef, ioObserversRef, stateRef, dispatch,
+    setFlashingPanes, observeActivity, observeOutput, observeInput, observeTitleHint,
+  });
+  const { applyActivityTransition, clearFlashFor, promptMarkerFor } = activity;
+  // trmx-254 (T4): the close concern. E11 and E05's pty-exited subscription keep their registrations
+  // and dependency arrays at the root; only their bodies live in the hook. Close-time cleanup is
+  // composed here: `clearForPane` (flash) comes from the activity concern, search/rename/badge
+  // setters are passed in — no hook reaches into another hook's state.
+  const close = useCloseGuard({
+    runtimesRef, stateRef, seamsRef, pendingCloseRef, quitAuthorizedRef, dispatch,
+    setPendingClose, setFlashingPanes, setOpenSearchPanes, setRenamingTabId, setBadgingPaneId,
+    observeCloseRequested, observePtyExited,
+  });
+  const {
+    closeTabInternal, closePaneInternal, confirmPendingClose, cancelPendingClose,
+  } = close;
+  // trmx-254 (T6): the pane/tab operations. `createTab` stays internal to the hook — a symbol walk
+  // shows it never escapes; `runScriptInSurface` is returned because the JSX reads it.
+  const paneOps = usePaneOps({
+    stateRef, runtimesRef, boundsRef, createTabRef, deliverServicePathsRef,
+    dispatch, setRenamingTabId, setBadgingPaneId, seedPaneField, reservation,
+    close: { closePaneInternal, closeTabInternal },
+  });
+  const {
+    getActiveTab, requestNewTab, requestSplit, requestPaneNav,
+    requestCloseActive, requestCloseTab, runScriptInSurface,
+    startRename, commitRename, cancelRename, commitBadge, cancelBadge,
+  } = paneOps;
+  // trmx-254 (T5): commandCtxRef / keymapRef / dispatcherRef / commandsRef stay ROOT-owned. The
+  // dispatcher is a SINGLETON closing over a Proxy that reads `commandCtxRef.current`, which the root
+  // reassigns during render — that indirection is what lets E05/E10/E14 read it out-of-render and
+  // still see current state. These refs are declared BEFORE the hook call because the hook receives
+  // them; `commandCtxRef` and the dispatcher body come after, since they need `commandCtx` itself.
   const keymapRef = useRef(keymap);
   keymapRef.current = keymap;
   const dispatcherRef = useRef<Dispatcher | null>(null);
+  const commands = useCommandContext({
+    runtimesRef, stateRef, seamsRef, boundsRef, pendingCloseRef, keymapRef, dispatcherRef,
+    dispatch, getActiveTab, invoke, flashingPanes, setKeymap, setRenamingTabId, setBadgingPaneId,
+    setOpenSearchPanes, setScriptPickerRequest, setShowPalette,
+    close: { closeTabInternal },
+    activity: { applyActivityTransition, clearFlashFor },
+    paneOps: { requestNewTab, requestSplit, requestPaneNav, requestCloseActive },
+  });
+  const { commandCtx } = commands;
+  const commandCtxRef = useRef(commandCtx);
+  commandCtxRef.current = commandCtx;
   if (dispatcherRef.current === null) {
     // Forward every command-ctx call to the CURRENT implementation (which reads fresh state/refs).
     const forwarding = new Proxy({} as CommandContext, {
@@ -1397,103 +548,12 @@ export function App({
   }
   const commandsRef = useRef<Command[]>(buildCommands());
 
-  // trmx-94: the menu verb → command-id map. Menu clicks (and the trmx-74/84/86/90/93 verbs) route
-  // through `dispatch` so every action goes through the one spine (FR-9.1).
-  const VERB_TO_COMMAND: Record<string, string> = {
-    new: "tab.new",
-    close: "pane.close", // the ⌘W "Close Tab" menu item closes the focused pane (pane precedence)
-    next: "tab.next",
-    prev: "tab.prev",
-    "split-right": "pane.split-right",
-    "split-below": "pane.split-below",
-    "new-with-script": "tab.new-with-script",
-    "split-right-with-script": "pane.split-right-with-script",
-    "split-below-with-script": "pane.split-below-with-script",
-    "pane-left": "pane.focus-left",
-    "pane-right": "pane.focus-right",
-    "pane-up": "pane.focus-up",
-    "pane-down": "pane.focus-down",
-    "pane-next": "pane.next",
-    "pane-prev": "pane.prev",
-    rename: "tab.rename",
-    "set-badge": "pane.set-badge",
-    palette: "app.command-palette",
-    "clear-scrollback": "terminal.clear-scrollback",
-    // trmx-94 (review finding 7): Settings + Close Window route through dispatch too (not the Rust
-    // ShowSettings/CloseMainWindow shortcuts), so every command-backed menu action is on the spine.
-    "app-settings": "app.settings",
-    "window-close": "window.close",
-  };
-
-  // trmx-75/166: the rename intents. Start = activate + flip into rename; commit sets the TAB's
-  // manual title PIN (empty → clear-to-auto); cancel drops the edit. Commit/cancel clearing
-  // `renamingTabId` re-runs the focus effect, handing the keyboard back to the focused pane.
-  const startRename = (tabId: number) => {
-    dispatch({ kind: "activateTab", tabId });
-    setRenamingTabId(tabId);
-  };
-  const commitRename = (tabId: number, value: string) => {
-    // trmx-166: the rename is a TAB-scoped pin (setTabTitle), not a per-pane manual source — so it
-    // survives pane splits and focus changes. The reducer no-ops on an unknown tab.
-    dispatch({ kind: "setTabTitle", tabId, value: value.trim() === "" ? null : value });
-    setRenamingTabId(null);
-  };
-  const cancelRename = () => setRenamingTabId(null);
-
-  // trmx-90: the ⇧⌘B badge editor intents. Commit writes the FOCUSED pane's badge (empty/whitespace →
-  // clear to null); cancel (Esc/blur) drops the edit with no dispatch. Clearing badgingPaneId re-runs
-  // the focus effect, handing the keyboard back to that pane's terminal. The tab is found by paneId
-  // (global-unique) so a commit lands on the right pane even if focus/activation moved meanwhile.
-  const commitBadge = (paneId: PaneId, value: string) => {
-    const tab = stateRef.current.tabs.find((t) => t.panes[paneId] !== undefined);
-    if (tab) {
-      dispatch({
-        kind: "setBadge",
-        tabId: tab.tabId,
-        paneId,
-        badge: value.trim() === "" ? null : value,
-      });
-    }
-    setBadgingPaneId(null);
-  };
-  const cancelBadge = () => setBadgingPaneId(null);
 
   // Subscriptions: pty:exited (a pane's shell exited → close just that pane), session:title-hint
   // (route by sessionId into the owning PANE's `process` slot), and the menu's tabs:action intents.
   useEffect(() => {
-    const stopExited = observePtyExited((sessionId) => {
-      const hit = paneBySessionId(stateRef.current, sessionId);
-      if (hit) closePaneInternal(hit.tab.tabId, hit.paneId, { alreadyExited: true });
-    });
-    const stopTitleHints = observeTitleHint((sessionId, name) => {
-      const hit = paneBySessionId(stateRef.current, sessionId);
-      if (hit) {
-        dispatch({
-          kind: "setTitleSource",
-          tabId: hit.tab.tabId,
-          paneId: hit.paneId,
-          source: "process",
-          value: name,
-        });
-        // trmx-190: the 1 Hz hint also CORRECTS the foreground counting slot (a missed rise or an
-        // in-session program takeover). Non-AI names simply bucket to null downstream; the
-        // reducer's === no-op absorbs the steady-state stream. An empty name clears the slot.
-        dispatch({
-          kind: "setForeground",
-          tabId: hit.tab.tabId,
-          paneId: hit.paneId,
-          name: name === "" ? null : name,
-        });
-        // trmx-159: the 1 Hz name hint also reclassifies the current epoch — recovering a still-unknown
-        // epoch and catching an in-epoch program takeover (name-only ⇒ partial-metadata fail-safe).
-        const current = runtimesRef.current.get(hit.paneId)?.activity ?? initialActivity();
-        applyActivityTransition(
-          hit.tab.tabId,
-          hit.paneId,
-          onClassifyMetadata(current, { name }, Date.now()),
-        );
-      }
-    });
+    const stopExited = close.closePaneOnPtyExit();
+    const stopTitleHints = activity.onTitleHint();
     const stopTabsAction = observeTabsAction((payload) => {
       // trmx-268: the close verb now arrives as {action, gen} so the ack can echo the generation.
       // Every OTHER verb keeps its plain-string payload and the validation below — the widening is
@@ -1535,11 +595,7 @@ export function App({
   // delivery during a pending close-confirm simply appends behind the dialog (the v1
   // contract; PTY exits already mutate tab state during modals by design).
   useEffect(() => {
-    return observeServiceNudge(() => {
-      void takePendingOpenPaths(invoke).then((paths) => {
-        if (paths.length > 0) deliverServicePathsRef.current(paths);
-      });
-    });
+    return services.drainServicePaths();
   }, [observeServiceNudge, invoke]);
 
   // trmx-91: subscribe to session:activity — route each busy<->idle transition by sessionId into the
@@ -1549,46 +605,13 @@ export function App({
   // (activityIndicatorOn) alone decides whether the resolved line paints, so toggling the setting
   // never desyncs the phase.
   useEffect(() => {
-    return observeActivity((sessionId, busy, meta) => {
-      const hit = paneBySessionId(stateRef.current, sessionId);
-      if (!hit) return; // no pane owns this session (session-less/closed) — inert
-      // trmx-190: the FOREGROUND counting slot — set from the metadata-bearing rise (the 250 ms
-      // path the counter's freshness rides on), cleared on the fall (the AI exited/suspended).
-      // Deliberately BEFORE the OSC-133 carve-out: that latch owns rawBusy, not foreground
-      // tracking, so a latched pane still counts. The reducer's === no-op absorbs redundancy.
-      if (busy && meta?.name !== undefined) {
-        dispatch({ kind: "setForeground", tabId: hit.tab.tabId, paneId: hit.paneId, name: meta.name });
-      } else if (!busy) {
-        dispatch({ kind: "setForeground", tabId: hit.tab.tabId, paneId: hit.paneId, name: null });
-      }
-      const current = runtimesRef.current.get(hit.paneId)?.activity ?? initialActivity();
-      // trmx-159 (weakens the trmx-99 latch): once a pane is OSC-133-owned, the OSC 133 machine OWNS
-      // rawBusy — so IGNORE the poller's `busy` field (do not feed it to onBusyChange). But still
-      // CONSUME its classification metadata: the poller's name-bearing rise classifies the epoch that
-      // the `C` marker opened `unknown`. rawBusy stays provably with OSC 133; only the class is adopted.
-      if ((runtimesRef.current.get(hit.paneId)?.osc133 ?? false)) {
-        if (meta) {
-          applyActivityTransition(hit.tab.tabId, hit.paneId, onClassifyMetadata(current, meta, Date.now()));
-        }
-        return;
-      }
-      // Poller-owned pane: the rise is born classified from the metadata (no ordering window).
-      applyActivityTransition(hit.tab.tabId, hit.paneId, onBusyChange(current, busy, Date.now(), meta));
-    });
+    return activity.onSessionActivity();
   }, [observeActivity]);
 
   // trmx-159: the test-only I/O injection seams (production observes through useBackend directly).
   // Each drives the same ioObserversRef handlers as the live terminal wiring.
   useEffect(() => {
-    if (!observeOutput && !observeInput) return;
-    const stops: Array<() => void> = [];
-    if (observeOutput) {
-      stops.push(observeOutput((sessionId, byteLength) => ioObserversRef.current.output(sessionId, byteLength)));
-    }
-    if (observeInput) {
-      stops.push(observeInput((sessionId, data) => ioObserversRef.current.input(sessionId, data)));
-    }
-    return () => stops.forEach((stop) => stop());
+    return activity.installIoObservers();
   }, [observeOutput, observeInput]);
 
   // trmx-101 (FR-9.4): the control-channel bridge. A request from the Rust socket routes through the SAME
@@ -1598,49 +621,11 @@ export function App({
   // honor. Routed to the owning pane's terminal, which is the surface the user is already looking at
   // when the thing goes wrong. A notice for an unknown session (closed in the meantime) is dropped.
   useEffect(() => {
-    return observeSessionNotice(({ session_id, text }) => {
-      const hit = paneBySessionId(stateRef.current, session_id);
-      if (!hit) return;
-      const handle = runtimesRef.current.get(hit.paneId)?.handle;
-      if (handle) writePaneNotice(handle, text);
-    });
+    return services.onSessionNotice();
   }, [observeSessionNotice]);
 
   useEffect(() => {
-    const paneBusy = (paneId: PaneId): boolean => {
-      for (const tab of stateRef.current.tabs) {
-        const pane = tab.panes[paneId];
-        if (pane) return pane.activityVisible === true;
-      }
-      return false;
-    };
-    return observeControlRequest(({ id, request }) => {
-      const deps: ControlDeps = {
-        // trmx-144: forward the router's "remote" source so close commands skip the confirm gate.
-        dispatch: (cmd, arg, source) => dispatcherRef.current?.dispatch(cmd, arg, source) ?? false,
-        hasCommand: (cmd) => dispatcherRef.current?.get(cmd) !== undefined,
-        // trmx-235: the `commands` query lists every registry id (the documented callable set).
-        listCommands: () => commandsRef.current.map((c) => c.id),
-        buildLs: () =>
-          buildLsSnapshot(
-            stateRef.current.tabs,
-            stateRef.current.activeTabId,
-            (paneId) => runtimesRef.current.get(paneId)?.cwd?.get() ?? null,
-            paneBusy,
-          ),
-        sendText: (pane, text) => {
-          const active = getActiveTab();
-          const paneId = pane === "focused" ? active?.focusedPaneId : Number(pane);
-          if (paneId === undefined || Number.isNaN(paneId)) return false;
-          const sessionId = runtimesRef.current.get(paneId)?.sessionId;
-          if (sessionId === undefined) return false;
-          seamsRef.current.sendInput(sessionId, text).catch(() => {});
-          return true;
-        },
-      };
-      const payload = routeControlRequest(request, deps);
-      invoke("control_response", { id, payload }).catch(() => {});
-    });
+    return services.installControlBridge();
   }, [observeControlRequest, invoke]);
 
   // trmx-144: the quit gate. The backend intercepts the native window close (red button / ⌘Q) and
@@ -1649,106 +634,18 @@ export function App({
   // confirm) goes straight back; an open dialog swallows the repeat; otherwise gate on the all-tabs
   // busy report (per terminal.confirmClose, read fresh).
   useEffect(() => {
-    return observeCloseRequested((generation) => {
-      // Validate at the seam too, not only in the real listener: `observeCloseRequested` is an
-      // injection point, so the consumer must not trust the generation it is handed.
-      if (!isAskGeneration(generation)) return;
-      // trmx-268: prove liveness BEFORE answering, and do it even when a dialog is already up — a
-      // webview showing the dialog is demonstrably alive and must not be read as hung by the next
-      // gesture. The answer is chained onto the ack so it can never land first.
-      void seamsRef.current.closeAcknowledged(generation).then(() => {
-        if (quitAuthorizedRef.current) {
-          seamsRef.current.quitConfirmed();
-          return;
-        }
-        if (pendingCloseRef.current !== null) return;
-        const report = collectBusyTabs(stateRef.current.tabs, busyLookup);
-        if (shouldConfirmClose(makeSettingsStore().get("terminal.confirmClose"), report.busy, "user")) {
-          setPendingCloseSynced({ kind: "quit", names: report.names, busyTabCount: report.busyTabCount });
-        } else {
-          seamsRef.current.quitConfirmed();
-        }
-      });
-    });
+    return close.onCloseRequested();
   }, [observeCloseRequested]);
 
   // trmx-144: the dialog's resolutions. Confirm re-enters the SAME close path with {confirmed:true},
   // re-resolving the target by id first — a pane/tab that died while the dialog was up makes confirm
   // a safe no-op (never a wrong-target close). "Don't ask again" persists the setting before closing.
-  const confirmPendingClose = (dontAskAgain: boolean) => {
-    const pending = pendingCloseRef.current;
-    if (pending === null) return;
-    if (dontAskAgain) makeSettingsStore().set("terminal.confirmClose", "never");
-    setPendingCloseSynced(null);
-    if (pending.kind === "quit") {
-      quitAuthorizedRef.current = true;
-      seamsRef.current.quitConfirmed();
-      return;
-    }
-    if (pending.tabId === undefined) return;
-    const tab = stateRef.current.tabs.find((t) => t.tabId === pending.tabId);
-    if (!tab) return;
-    if (pending.kind === "pane") {
-      if (pending.paneId === undefined || tab.panes[pending.paneId] === undefined) return;
-      closePaneInternal(pending.tabId, pending.paneId, { confirmed: true });
-    } else {
-      closeTabInternal(pending.tabId, { confirmed: true });
-    }
-  };
-  const cancelPendingClose = () => setPendingCloseSynced(null);
 
   // trmx-81/82: keep the bar position + side-label orientation live over settings:changed. Its OWN
   // effect, dep'd only on the stable observation seam — payloads are untrusted (only a well-formed
   // key with a registry-valid value updates state).
   useEffect(() => {
-    const stopSettings = observeSettings((payload) => {
-      if (typeof payload !== "object" || payload === null) return;
-      const { key, value } = payload as { key?: unknown; value?: unknown };
-      if (key === "tabs.barPosition" && isTabBarPosition(value)) setBarPosition(value);
-      else if (key === "tabs.sideLabelOrientation" && isLabelOrientation(value)) {
-        setSideLabelOrientation(value);
-      }
-      // trmx-91: keep the activity-indicator toggle live (boolean-guarded, the untrusted-payload
-      // discipline). Off hides the line without touching the backend poller (titles keep flowing).
-      // trmx-225: keep the FFM gate live — a ref (not state): the hover handler reads it per
-      // event and nothing needs a re-render on toggle.
-      else if (key === "terminal.focusFollowsMouse" && typeof value === "boolean") {
-        ffmRef.current = value;
-      } else if (key === "terminal.activityIndicator" && typeof value === "boolean") {
-        setActivityIndicatorOn(value);
-      }
-      // trmx-151: keep the ⌘N hint toggle live (same boolean guard). Off strips the prefixes
-      // without touching the keymap — the chords stay bound either way.
-      else if (key === "tabs.showShortcutHints" && typeof value === "boolean") {
-        setShortcutHintsOn(value);
-      }
-      // trmx-190: keep the AI-session-counter toggle live (same boolean guard). A pure render
-      // gate — foreground tracking keeps running so re-enabling shows correct counts at once.
-      else if (key === "titleBar.aiCounter" && typeof value === "boolean") {
-        setAiCounterOn(value);
-      }
-      // trmx-90/91: recompute the badge watermark AND the activity-line color on every theme event so
-      // both repaint on a theme switch AND on a trmx-89 same-id hot-reload (the token changed under the
-      // same id, review-1). Same untrusted-payload discipline as barPosition; resolveTheme is total.
-      else if (key === "appearance.theme") {
-        // trmx-202: a REMOVED built-in (live config edit / the watcher's default "white")
-        // normalizes to the derived default before the guard; user-shape ids pass untouched.
-        const themeId = normalizeLegacyThemeId(value) ?? value;
-        if (isRegisteredThemeId(themeId) || isUserThemeIdShape(themeId)) {
-          // trmx-173: re-apply the --tx-* CSS vars on documentElement so the main window's chrome (tab
-          // bar, borders, …) recolors with the terminal. On EVERY theme event — including a trmx-89
-          // same-id hot-reload where the tokens changed under the same id — matching the color-state
-          // refreshes below; applyTxTheme is idempotent, so a bus echo is harmless.
-          applyTxTheme(themeId, document);
-          setBadgeColor(resolveTheme(themeId).terminal.badge);
-          setBadgeOutlineColor(resolveTheme(themeId).color.bg.primary); // trmx-149: re-tint the stroke
-          setActivityIsDark(activityIsDarkFor(themeId)); // trmx-160: re-key the progress bar's mode
-          setActivityErrorColor(activityErrorColorFor(themeId)); // trmx-99: re-tint the exit-code flash
-          setSearchColors(resolveTheme(themeId).terminal.search); // trmx-98: re-tint the find highlights
-        }
-      }
-    });
-    return stopSettings;
+    return services.onSettingsChanged();
   }, [observeSettings]);
 
   // trmx-89 (FR-6): the main window owns the theme HOT-RELOAD machine. A `themes:changed` signal
@@ -1760,31 +657,14 @@ export function App({
   // without a Tauri runtime. The store carries the real bus so a fallback's settings.set broadcasts
   // settings:changed to the live terminals (source "themes-reload").
   useEffect(() => {
-    return installHotReload({
-      settings: makeSettingsStore(undefined, realEventBus, "themes-reload"),
-    });
+    return services.installThemeHotReload();
   }, [installHotReload]);
 
   // ⌘1..⌘9 select a tab; ⌘D / ⇧⌘D split (trmx-84); ⌥⌘-arrows / ⌘]/⌘[ navigate panes (trmx-86). Capture
   // phase on window so the chord wins even while xterm's helper textarea has focus; tabKeymap vetoes
   // non-terminal editables and foreign chords, so nothing else is intercepted.
   useEffect(() => {
-    const onKeyDown = (ev: KeyboardEvent) => {
-      // trmx-144: while the confirm-close dialog is up it owns the keyboard — its own onKeyDown is
-      // the only keyboard surface; no chord may dispatch under a modal question.
-      if (pendingCloseRef.current !== null) return;
-      // trmx-94 (FR-9.3): resolve the chord to a WEBVIEW-owned command via the effective keymap
-      // (defaults ⊕ user [keys]); native-menu chords (⌘T/⌘W/…) and ⌘C/⌘V resolve null here. A
-      // resolved command is fully owned by the app: preventDefault + stopImmediatePropagation so the
-      // chord never leaks a byte to xterm / the PTY (the trmx-86 pane-nav discipline, now uniform).
-      const commandId = resolveKeymap(ev, describeTarget(ev.target), keymapRef.current);
-      if (!commandId) return;
-      ev.preventDefault();
-      ev.stopImmediatePropagation();
-      dispatcherRef.current?.dispatch(commandId);
-    };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
+    return commands.installKeyDown();
   }, []);
 
   // Focus follows activation / focus change: the active tab's FOCUSED pane's terminal takes the
@@ -1793,14 +673,7 @@ export function App({
   const activeTab = state.tabs.find((t) => t.tabId === state.activeTabId);
   const activeFocusedPaneId = activeTab?.focusedPaneId ?? null;
   useEffect(() => {
-    // trmx-90: the badge editor (like a rename) owns the keyboard while open — suppress the terminal
-    // grab so the ⇧⌘B input keeps focus; commit/cancel clears badgingPaneId → this re-runs.
-    if (renamingTabId !== null || badgingPaneId !== null) return;
-    if (activeFocusedPaneId === null) return;
-    // trmx-98: an open find bar on the focused pane owns the keyboard — don't grab it back to the terminal.
-    if (openSearchPanes.has(activeFocusedPaneId)) return;
-    const terminal = runtimesRef.current.get(activeFocusedPaneId)?.handle?.terminal;
-    (terminal as unknown as { focus?: () => void } | undefined)?.focus?.();
+    focusFocusedPane(activeFocusedPaneId);
   }, [state.activeTabId, activeFocusedPaneId, renamingTabId, badgingPaneId, openSearchPanes]);
 
   // trmx-75/166: the NATIVE window title is the ACTIVE tab's title — the manual pin when set, else
@@ -1808,8 +681,7 @@ export function App({
   // it. Undefined = no tabs yet (boot) — leave the window alone.
   const activeTitle = activeTab?.title;
   useEffect(() => {
-    if (activeTitle === undefined) return;
-    seamsRef.current.setWindowTitle(activeTitle);
+    services.mirrorWindowTitle();
   }, [activeTitle]);
 
   // trmx-243 (grill L6): the core title mirror used to live here — every attached pane's effective
@@ -1843,90 +715,6 @@ export function App({
   const pendingRatioRef = useRef<number | null>(null);
   const frameCancelRef = useRef<(() => void) | null>(null);
 
-  // Dispatch the latest dragged ratio at most once per frame (coalesce raw pointermoves).
-  const scheduleRatioFlush = () => {
-    if (frameCancelRef.current) return; // a frame is already pending — coalesce into it
-    frameCancelRef.current = dragScheduleRef.current(() => {
-      frameCancelRef.current = null;
-      const d = dragRef.current;
-      const ratio = pendingRatioRef.current;
-      if (d && ratio !== null) dispatch({ kind: "setPaneRatio", tabId: d.tabId, path: d.path, ratio });
-    });
-  };
-
-  // End the drag. `commit` (pointerup) APPLIES the latest pending ratio synchronously first — a quick
-  // drag-and-release within a single animation frame must not be lost — whereas the abort paths
-  // (pointercancel / lostpointercapture / unmount) skip the commit. Either way the pending frame is
-  // cancelled and state cleared, so no dispatch ever lands after the drag has ended.
-  const endDrag = (commit: boolean) => {
-    if (commit) {
-      const d = dragRef.current;
-      const ratio = pendingRatioRef.current;
-      if (d && ratio !== null) dispatch({ kind: "setPaneRatio", tabId: d.tabId, path: d.path, ratio });
-    }
-    if (frameCancelRef.current) {
-      frameCancelRef.current();
-      frameCancelRef.current = null;
-    }
-    pendingRatioRef.current = null;
-    dragRef.current = null;
-    setDragDir(null);
-  };
-
-  const pointerMainOf = (e: ReactPointerEvent, dir: SplitDir, left: number, top: number) =>
-    dir === "row" ? e.clientX - left : e.clientY - top;
-
-  // pointerdown records the grab offset (pointer − the visual line's leading edge) so the divider does
-  // not jump to the cursor when the grab landed beside the 1px line inside the widened hit area.
-  const onDividerPointerDown = (tabId: number, d: DividerRect) => (e: ReactPointerEvent) => {
-    if (e.button !== 0) return;
-    e.stopPropagation(); // a divider grab must never focus a pane
-    const contentRect = contentRef.current?.getBoundingClientRect();
-    const contentLeft = contentRect?.left ?? 0;
-    const contentTop = contentRect?.top ?? 0;
-    const pointerMain = pointerMainOf(e, d.dir, contentLeft, contentTop);
-    const leadingEdge = d.dir === "row" ? d.rect.x : d.rect.y;
-    dragRef.current = {
-      pointerId: e.pointerId,
-      tabId,
-      path: d.path,
-      dir: d.dir,
-      bounds: d.bounds,
-      grabOffset: grabOffsetOf(pointerMain, leadingEdge),
-      contentLeft,
-      contentTop,
-    };
-    (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
-    setDragDir(d.dir);
-  };
-
-  const onDividerPointerMove = (e: ReactPointerEvent) => {
-    const d = dragRef.current;
-    if (!d || d.pointerId !== e.pointerId) return;
-    e.stopPropagation();
-    const pointerMain = pointerMainOf(e, d.dir, d.contentLeft, d.contentTop);
-    pendingRatioRef.current = ratioForDrag({ pointerMain, grabOffset: d.grabOffset, bounds: d.bounds, dir: d.dir });
-    scheduleRatioFlush();
-  };
-
-  const onDividerPointerUp = (e: ReactPointerEvent) => {
-    const d = dragRef.current;
-    if (!d || d.pointerId !== e.pointerId) return;
-    e.stopPropagation();
-    (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
-    endDrag(true); // commit the final drag position
-  };
-
-  // pointercancel / lostpointercapture ABORT the drag (no commit) — no stuck overlay / stale frame.
-  const onDividerPointerCancel = () => endDrag(false);
-
-  const onDividerDoubleClick = (tabId: number, path: DividerRect["path"]) => (e: ReactMouseEvent) => {
-    e.stopPropagation();
-    dispatch({ kind: "setPaneRatio", tabId, path, ratio: RESET_RATIO });
-  };
-
-  // Cleanup on unmount: a mid-drag unmount must not leave a queued frame to dispatch into a dead
-  // reducer, and (trmx-91/99) no pending activity OR flash timer may fire a setState after unmount.
   useEffect(() => {
     const runtimes = runtimesRef.current;
     return () => {
@@ -1942,7 +730,6 @@ export function App({
   // BEFORE xterm starts a selection/link click; a sub-slop ⌘-press falls through so a plain ⌘-click still
   // opens a link. `endPaneDrag` is the SINGLE termination path (pointerup / Esc / outside / pointercancel /
   // lostpointercapture / unmount), clearing the pending frame + preview + shield.
-  const PANE_DRAG_SLOP = 4;
   const [paneDragging, setPaneDragging] = useState(false);
   const [dropPreview, setDropPreview] = useState<{ paneId: PaneId; zone: DropZone } | null>(null);
   const pickupRef = useRef<{
@@ -1957,150 +744,37 @@ export function App({
   const pendingPointerRef = useRef<{ x: number; y: number } | null>(null);
   const suppressClickRef = useRef(false);
 
-  // Which pane + zone the pointer is over (content-relative coords, solveRects space). Null when outside
-  // any pane, over the SOURCE pane itself, or on an edge whose 50/50 insert would under-size a pane.
-  const computeDropTarget = (clientX: number, clientY: number): { paneId: PaneId; zone: DropZone } | null => {
-    const p = pickupRef.current;
-    if (!p) return null;
-    const tab = stateRef.current.tabs.find((t) => t.tabId === p.tabId);
-    if (!tab) return null;
-    const contentRect = contentRef.current?.getBoundingClientRect();
-    const cx = clientX - (contentRect?.left ?? 0);
-    const cy = clientY - (contentRect?.top ?? 0);
-    const solved = solveRects(tab.tree, boundsRef.current);
-    const hit = solved.panes.find(
-      (pr) =>
-        cx >= pr.rect.x &&
-        cx < pr.rect.x + pr.rect.width &&
-        cy >= pr.rect.y &&
-        cy < pr.rect.y + pr.rect.height,
-    );
-    if (!hit || hit.paneId === p.paneId) return null; // outside, or the source pane itself
-    const zone = dropZone(hit.rect, { x: cx, y: cy });
-    if (zone !== "center" && !canDropEdge(tab.tree, hit.paneId, zone, boundsRef.current)) return null;
-    return { paneId: hit.paneId, zone };
-  };
-
-  const schedulePaneHoverFlush = () => {
-    if (paneDragFrameRef.current) return; // coalesce into the pending frame
-    paneDragFrameRef.current = dragScheduleRef.current(() => {
-      paneDragFrameRef.current = null;
-      const pt = pendingPointerRef.current;
-      if (pt) setDropPreview(computeDropTarget(pt.x, pt.y));
-    });
-  };
-
-  const endPaneDrag = (commit: boolean, target?: { paneId: PaneId; zone: DropZone } | null) => {
-    const p = pickupRef.current;
-    if (paneDragFrameRef.current) {
-      paneDragFrameRef.current();
-      paneDragFrameRef.current = null;
-    }
-    if (commit && p && target) {
-      dispatch({
-        kind: "redockPane",
-        tabId: p.tabId,
-        paneId: p.paneId,
-        targetPaneId: target.paneId,
-        zone: target.zone,
-      });
-    }
-    // An abort path (pointercancel / lostpointercapture / Esc / unmount) produces NO trailing click, so the
-    // click-swallow must be disarmed here or it would eat the next unrelated pane click. On a `commit`
-    // (pointerup) the synthetic click DOES follow and onPaneClickCapture clears the flag itself.
-    if (!commit) suppressClickRef.current = false;
-    pickupRef.current = null;
-    pendingPointerRef.current = null;
-    setDropPreview(null);
-    setPaneDragging(false);
-  };
-
-  const onPanePointerDownCapture = (tabId: number, paneId: PaneId) => (e: ReactPointerEvent) => {
-    if (e.button !== 0 || !e.metaKey) return; // only ⌘ + primary starts a pickup candidate
-    suppressClickRef.current = false; // clear any stale swallow from a prior gesture that never clicked
-    // Record the origin but do NOT preventDefault yet — a sub-slop ⌘-click must still open an OSC 8 link.
-    pickupRef.current = { pointerId: e.pointerId, tabId, paneId, originX: e.clientX, originY: e.clientY, active: false };
-  };
-
-  const onPanePointerMoveCapture = (e: ReactPointerEvent) => {
-    const p = pickupRef.current;
-    if (!p || p.pointerId !== e.pointerId) return;
-    if (!p.active) {
-      if (Math.abs(e.clientX - p.originX) < PANE_DRAG_SLOP && Math.abs(e.clientY - p.originY) < PANE_DRAG_SLOP) {
-        return; // still under the slop threshold — could be a click
-      }
-      // Crossed slop → commit to a pickup: capture the pointer, raise the shield, drop any nascent xterm
-      // selection the initial mousedown started, and arm the click swallow so xterm's link never fires.
-      p.active = true;
-      // setPointerCapture throws (InvalidStateError) if the pointer isn't active — guard so a synthetic
-      // event sequence (tests) never breaks the gesture.
-      try {
-        (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
-      } catch {
-        /* no active pointer to capture — the shield still isolates xterm */
-      }
-      (runtimesRef.current.get(p.paneId)?.handle?.terminal as unknown as { clearSelection?: () => void } | undefined)?.clearSelection?.();
-      suppressClickRef.current = true;
-      setPaneDragging(true);
-    }
-    e.preventDefault();
-    e.stopPropagation();
-    pendingPointerRef.current = { x: e.clientX, y: e.clientY };
-    schedulePaneHoverFlush();
-  };
-
-  const onPanePointerUpCapture = (e: ReactPointerEvent) => {
-    const p = pickupRef.current;
-    if (!p || p.pointerId !== e.pointerId) return;
-    if (!p.active) {
-      pickupRef.current = null; // a sub-slop ⌘-click — let it through (the link opens)
-      return;
-    }
-    e.preventDefault();
-    e.stopPropagation();
-    try {
-      (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
-    } catch {
-      /* not captured — nothing to release */
-    }
-    // Synchronously compute the FINAL zone from the release coords — a quick release before the rAF frame
-    // fired must not commit a stale/null preview (the divider-drag guarantee).
-    endPaneDrag(true, computeDropTarget(e.clientX, e.clientY));
-  };
-
-  const onPanePointerCancel = () => {
-    if (pickupRef.current?.active) endPaneDrag(false);
-    else pickupRef.current = null;
-  };
-
-  // Swallow the one synthetic click after a real pickup so xterm's OSC 8 link `activate` never fires.
-  const onPaneClickCapture = (e: ReactMouseEvent) => {
-    if (suppressClickRef.current) {
-      e.preventDefault();
-      e.stopPropagation();
-      suppressClickRef.current = false;
-    }
-  };
-
-  // Esc cancels an in-flight pane drag (tree + focus unchanged). Only while dragging.
+  // trmx-254 (T7): the divider drag + Cmd-drag re-dock. Every drag ref and every piece of drag state
+  // stays declared above; only the logic moves. E17 stays inline (frameCancelRef + clearAllTimers).
+  // trmx-254 (T11): the app-level services. Its outward set is empty — nothing declared there is read
+  // anywhere else, which is what makes it a service module rather than another shared surface.
+  const services = useAppServices({
+    invoke, stateRef, runtimesRef, bootedRef, startupFiredRef, deliverServicePathsRef, createTabRef,
+    contentRef, ffmRef, seamsRef, dispatcherRef, commandsRef, serviceBootPaths,
+    activeTitle, getActiveTab, seedPaneField,
+    observeServiceNudge, observeSessionNotice, observeControlRequest, observeSettings,
+    installHotReload, setBounds, setBarPosition, setSideLabelOrientation, setActivityIndicatorOn,
+    setShortcutHintsOn, setAiCounterOn, setBadgeColor, setBadgeOutlineColor, setActivityIsDark,
+    setActivityErrorColor, setSearchColors,
+  });
+  const drag = usePaneDrag({
+    stateRef, runtimesRef, boundsRef, contentRef, dispatch,
+    dragScheduleRef, dragRef, pendingRatioRef, frameCancelRef,
+    pickupRef, paneDragFrameRef, pendingPointerRef, suppressClickRef,
+    setDragDir, setPaneDragging, setDropPreview,
+  });
+  const {
+    onDividerPointerDown, onDividerPointerMove, onDividerPointerUp, onDividerPointerCancel,
+    onDividerDoubleClick, onPanePointerDownCapture, onPanePointerMoveCapture,
+    onPanePointerUpCapture, onPanePointerCancel, onPaneClickCapture,
+  } = drag;
   useEffect(() => {
-    if (!paneDragging) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        endPaneDrag(false);
-      }
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
+    return drag.onDragKey(paneDragging);
   }, [paneDragging]);
 
   // Cancel a pending pane-drag frame on unmount (no dispatch into a dead reducer).
   useEffect(() => {
-    return () => {
-      if (paneDragFrameRef.current) paneDragFrameRef.current();
-    };
+    return drag.cancelPendingFrame;
   }, []);
 
   // trmx-190: the AI sessions the counter renders — the e2e fixture (dev-server only) or the live
@@ -2115,465 +789,89 @@ export function App({
   // hot-reload), not a per-render derive — see the useState above.
 
   return (
-    <main className={`app app--bar-${barPosition}`}>
-      {/* trmx-188: the app-drawn title bar — FIRST child, OUTSIDE the direction-flipping app-body,
-          so it tops the window for every barPosition. It consumes the same active-tab derived
-          title the native-title effect pushes (the component never re-derives). The right slot is
-          trmx-190's mount point; the ?e2e.titleBarSlot= fixture (the trmx-81 D1 query-seam
-          precedent — the packaged app never navigates with a query) lets e2e prove the slot wins
-          against real content. */}
-      <TitleBar
-        title={activeTitle ?? ""}
-        rightSlot={
-          <>
-            {titleBarSlotFixture !== null ? <span>{titleBarSlotFixture}</span> : null}
-            {/* trmx-238 (M19): config-file warnings were visible ONLY in the settings window, so a
-                hand-edited typo in termixion.toml said nothing here. Placed before the AI counter:
-                a degraded config is more urgent than a session count, and the badge is narrow. */}
-            <ConfigWarningsBadge
-              onOpenSettings={() => {
-                invoke("open_settings_window", { section: null }).catch((err: unknown) =>
-                  log.error("open settings (config warnings) failed", err),
-                );
-              }}
-            />
-            {/* trmx-190: the AI-session counter — gated by titleBar.aiCounter, absent with no AI
-                sessions. The fixture (dev-server e2e only) substitutes synthetic sessions. */}
-            {aiCounterOn && aiSessions.length > 0 && (
-              <AiSessionCounter
-                sessions={aiSessions}
-                onFocusSession={({ tabId, paneId }) => {
-                  dispatch({ kind: "activateTab", tabId });
-                  dispatch({ kind: "focusPane", tabId, paneId });
-                }}
-              />
-            )}
-          </>
-        }
-      />
-      <div className="app-body">
-      <div className="tab-hosts" ref={contentRef}>
-        {state.tabs.map((tab) => {
-          // KEEP-ALIVE: every tab's host stays mounted (keyed by the never-reused tabId); switching
-          // only toggles visibility. trmx-84: within it, each pane is an absolutely-positioned
-          // sibling keyed by paneId, laid out from solveRects — a re-layout mutates only style.
-          const solved = solveRects(tab.tree, bounds);
-          // trmx-87 (FR-3.6) + trmx-175: each divider is drawn active ONLY over the segment where it
-          // borders the focused pane (its perpendicular overlap), not along its whole length. A pure
-          // style flip — no re-layout, no terminal touch.
-          const activeSegments = activeDividerSegments(solved.panes, solved.dividers, tab.focusedPaneId);
-          return (
-            <div
-              key={tab.tabId}
-              className="tab-host"
-              data-testid={`tab-host-${tab.tabId}`}
-              style={{ display: tab.tabId === state.activeTabId ? undefined : "none" }}
-            >
-              {solved.panes.map(({ paneId, rect }) => {
-                const pane = tab.panes[paneId];
-                // trmx-90: the badge's narrow-pane threshold reads cols off the mounted terminal (a
-                // localized cast, like the scrollbar's ScrollbarTerminalLike) with a sane fallback
-                // before the first fit / under a headless stub. Reactive enough: a resize/split/badge
-                // change re-renders App and re-reads it, and a badge only ever lands on a live
-                // terminal. trmx-149: font SIZING no longer needs cell metrics — the iTerm2 fit-to-box
-                // model runs on the pane rect itself (BadgeOverlay gets rect.width/height below).
-                const metrics = runtimesRef.current.get(paneId)?.handle?.terminal as unknown as
-                  | { cols?: number }
-                  | undefined;
-                const cellsWide = metrics?.cols ?? FALLBACK_BADGE_COLS;
-                return (
-                  <div
-                    key={paneId}
-                    className={
-                      `pane-host${paneId === tab.focusedPaneId ? " pane-host--focused" : ""}` +
-                      (paneDragging && pickupRef.current?.paneId === paneId ? " pane-host--lifted" : "")
-                    }
-                    data-testid={`pane-host-${paneId}`}
-                    style={{
-                      position: "absolute",
-                      left: rect.x,
-                      top: rect.y,
-                      width: rect.width,
-                      height: rect.height,
-                    }}
-                    // Click-to-focus: capture phase so a click anywhere in the pane focuses it, WITHOUT
-                    // preventDefault — xterm still starts its text selection on the same mousedown.
-                    onMouseDownCapture={() => {
-                      if (tab.focusedPaneId !== paneId) {
-                        dispatch({ kind: "focusPane", tabId: tab.tabId, paneId });
-                      }
-                    }}
-                    // trmx-225: focus-follows-mouse (opt-in). Bubble phase, passive (no
-                    // preventDefault), cheap early-outs via the pure decision; the last-position
-                    // ref updates unconditionally so the real-movement guard sees every event.
-                    onMouseMove={(e) => {
-                      const last = lastPointerRef.current;
-                      const moved =
-                        last === null || last.x !== e.clientX || last.y !== e.clientY;
-                      // Allocate only on actual movement (the stationary case leaves the
-                      // last position untouched by definition) — the event-cadence budget.
-                      if (moved) lastPointerRef.current = { x: e.clientX, y: e.clientY };
-                      if (
-                        !shouldFocusOnHover(
-                          ffmRef.current,
-                          moved,
-                          tab.focusedPaneId === paneId,
-                          renamingRef.current !== null ||
-                            badgingRef.current !== null ||
-                            openSearchRef.current.size > 0 ||
-                            pendingCloseRef.current !== null ||
-                            scriptPickerRef.current !== null ||
-                            paneDragging ||
-                            pickupRef.current !== null ||
-                            dragRef.current !== null,
-                        )
-                      ) {
-                        return;
-                      }
-                      dispatch({ kind: "focusPane", tabId: tab.tabId, paneId });
-                      // Mirror the click path: the hovered pane's terminal takes the keyboard
-                      // (the suspension set above already covers every onReady-guard condition).
-                      const handle = runtimesRef.current.get(paneId)?.handle;
-                      (
-                        handle?.terminal as unknown as { focus?: () => void } | undefined
-                      )?.focus?.();
-                    }}
-                    // trmx-100: ⌘-drag to re-dock (capture phase — intercept before xterm selects/links).
-                    onPointerDownCapture={onPanePointerDownCapture(tab.tabId, paneId)}
-                    onPointerMoveCapture={onPanePointerMoveCapture}
-                    onPointerUpCapture={onPanePointerUpCapture}
-                    onPointerCancel={onPanePointerCancel}
-                    onLostPointerCapture={onPanePointerCancel}
-                    onClickCapture={onPaneClickCapture}
-                  >
-                    <TerminalView
-                      onReady={readyFor(tab.tabId, paneId)}
-                      cwdStore={storeFor(paneId)}
-                      onOscTitle={oscTitleFor(tab.tabId, paneId)}
-                      onBadge={badgeFor(tab.tabId, paneId)}
-                      onPromptMarker={promptMarkerFor(tab.tabId, paneId)}
-                    />
-                    {/* trmx-91/160: the top-edge activity line (click-through, below the badge). Shown while
-                        this pane is busy (its lightActive-derived activityVisible) OR flashing a failed
-                        command's exit code (trmx-99), AND the setting is on. A busy pane renders the
-                        iTerm2 progress-bar clone keyed on the theme mode; a flash renders the trmx-99
-                        error-color look (flashing overrides, and a new command clears the flash first). */}
-                    <ActivityLineOverlay
-                      visible={
-                        activityIndicatorOn && (pane.activityVisible === true || flashingPanes.has(paneId))
-                      }
-                      color={activityErrorColor}
-                      isDark={activityIsDark}
-                      flashing={flashingPanes.has(paneId)}
-                    />
-                    {/* trmx-90: the translucent badge watermark (top-right, click-through). Hidden by
-                        BadgeOverlay itself when the pane has no badge or is too narrow. trmx-149: it
-                        fits iTerm2's box (0.5 × width, 0.2 × height) over THIS pane's rect, with the
-                        glyph stroke in the theme background. */}
-                    <BadgeOverlay
-                      badge={pane.badge}
-                      cellsWide={cellsWide}
-                      paneWidthPx={rect.width}
-                      paneHeightPx={rect.height}
-                      color={badgeColor}
-                      outlineColor={badgeOutlineColor}
-                    />
-                    {/* trmx-90: the ⇧⌘B inline editor, over this pane while it is being badged. */}
-                    {paneId === badgingPaneId && (
-                      <PaneBadgeInput
-                        key={`badge-input-${paneId}`}
-                        initial={pane.badge ?? ""}
-                        onCommit={(value) => commitBadge(paneId, value)}
-                        onCancel={cancelBadge}
-                      />
-                    )}
-                    {/* trmx-98 (FR-1.5): the per-pane find bar. Rendered only when open AND the pane's
-                        terminal handle (with its search addon) is ready. */}
-                    {openSearchPanes.has(paneId) &&
-                      runtimesRef.current.get(paneId)?.handle?.search &&
-                      (() => {
-                        const search = runtimesRef.current.get(paneId)!.handle!.search;
-                        return (
-                          <FindBar
-                            key={`find-bar-${paneId}`}
-                            search={search}
-                            colors={searchColors}
-                            onClose={() => {
-                              search.clearDecorations();
-                              setOpenSearchPanes((prev) => {
-                                const next = new Set(prev);
-                                next.delete(paneId);
-                                return next;
-                              });
-                              (
-                                runtimesRef.current.get(paneId)?.handle?.terminal as unknown as
-                                  | { focus?: () => void }
-                                  | undefined
-                              )?.focus?.();
-                            }}
-                            onRegister={(c) => {
-                              if (c) setPaneField(paneId, "search", c);
-                              else setPaneField(paneId, "search", undefined);
-                            }}
-                          />
-                        );
-                      })()}
-                  </div>
-                );
-              })}
-              {solved.dividers.map((d) => {
-                // trmx-85: 1px visual line + a widened (~7px) hit area (index.css) that drag-resizes the
-                // split. Pointer handlers stopPropagation so a grab never focuses a pane; double-click
-                // resets to 50/50. Chrome/styling is FR-3.6.
-                // trmx-175: the base line stays INACTIVE; when this divider borders the focused pane, an
-                // active-colored overlay (pointer-events: none) covers only that segment — a full-height
-                // divider next to a bottom pane is blue only over the bottom half, not the whole line.
-                const key = d.path.join("-") || "root";
-                const seg = activeSegments.get(dividerKey(d.path));
-                return (
-                  <div
-                    key={`divider-${key}`}
-                    className={`pane-divider pane-divider--${d.dir} pane-divider--inactive`}
-                    data-testid={`pane-divider-${key}`}
-                    style={{
-                      position: "absolute",
-                      left: d.rect.x,
-                      top: d.rect.y,
-                      width: d.rect.width,
-                      height: d.rect.height,
-                    }}
-                    onPointerDown={onDividerPointerDown(tab.tabId, d)}
-                    onPointerMove={onDividerPointerMove}
-                    onPointerUp={onDividerPointerUp}
-                    onPointerCancel={onDividerPointerCancel}
-                    onLostPointerCapture={onDividerPointerCancel}
-                    onDoubleClick={onDividerDoubleClick(tab.tabId, d.path)}
-                  >
-                    {seg && (
-                      <div
-                        className="pane-divider__active"
-                        data-testid={`pane-divider-active-${key}`}
-                        style={
-                          d.dir === "row"
-                            ? { left: 0, width: "100%", top: seg.offset, height: seg.length }
-                            : { top: 0, height: "100%", left: seg.offset, width: seg.length }
-                        }
-                      />
-                    )}
-                  </div>
-                );
-              })}
-              {/* trmx-100: the drop-zone preview — the highlighted half (edge) or whole pane (center-swap)
-                  of the hovered target, in the accent color at low alpha. Active tab + live drag only. */}
-              {tab.tabId === state.activeTabId &&
-                dropPreview &&
-                (() => {
-                  const target = solved.panes.find((p) => p.paneId === dropPreview.paneId);
-                  if (!target) return null;
-                  const r = target.rect;
-                  const z = dropPreview.zone;
-                  const pr =
-                    z === "center"
-                      ? r
-                      : z === "left"
-                        ? { ...r, width: r.width / 2 }
-                        : z === "right"
-                          ? { ...r, x: r.x + r.width / 2, width: r.width / 2 }
-                          : z === "top"
-                            ? { ...r, height: r.height / 2 }
-                            : { ...r, y: r.y + r.height / 2, height: r.height / 2 };
-                  return (
-                    <div
-                      className="pane-drop-preview"
-                      data-testid="pane-drop-preview"
-                      data-zone={z}
-                      style={{ position: "absolute", left: pr.x, top: pr.y, width: pr.width, height: pr.height }}
-                    />
-                  );
-                })()}
-            </div>
-          );
-        })}
-        {/* trmx-85: while dragging a divider, a transparent overlay owns the pointer (with the resize
-            cursor) so xterm receives no stray mouse events. Removed on every drag-end path (endDrag). */}
-        {dragDir !== null && (
-          <div
-            className={`pane-drag-overlay pane-drag-overlay--${dragDir}`}
-            data-testid="pane-drag-overlay"
-          />
-        )}
-        {/* trmx-100: while ⌘-dragging a pane, a transparent shield owns the pointer so xterm (and any
-            mouse-mode app like htop) sees no stray events. Cleared on every endPaneDrag path. */}
-        {paneDragging && <div className="pane-redock-overlay" data-testid="pane-redock-overlay" />}
-      </div>
-      <TabStrip
-        tabs={state.tabs}
-        activeTabId={state.activeTabId}
-        renamingTabId={renamingTabId}
-        activityIndicatorOn={activityIndicatorOn}
-        // trmx-151: the ⌘N hints — the live EFFECTIVE keymap (rebuilt on keys:changed) plus the
-        // tabs.showShortcutHints render gate; the strip does the positional reverse lookup.
-        keymap={keymap}
-        shortcutHintsOn={shortcutHintsOn}
-        orientation={barLayout.orientation}
-        labelOrientation={labelOrientation}
-        onActivate={(tabId) => dispatch({ kind: "activateTab", tabId })}
-        onClose={requestCloseTab}
-        onNew={requestNewTab}
-        onMove={(from, to) => dispatch({ kind: "moveTab", from, to })}
-        onRenameStart={startRename}
-        onRenameCommit={commitRename}
-        onRenameCancel={cancelRename}
-      />
-      <UpdateAuthorityHost />
-      {scriptPickerRequest !== null && (
-        <ScriptPicker
-          invoke={invoke}
-          onRun={(entry) => {
-            const surface = scriptPickerRequest;
-            setScriptPickerRequest(null);
-            runScriptInSurface(entry, surface);
-          }}
-          onCancel={() => setScriptPickerRequest(null)}
-        />
-      )}
-      {showPalette && (
-        <CommandPalette
-          commands={commandsRef.current}
-          dispatch={(id, arg) => {
-            dispatcherRef.current?.dispatch(id, arg);
-          }}
-          recentCommandIds={dispatcherRef.current?.recentCommandIds() ?? []}
-          ctx={commandCtxRef.current}
-          keymap={keymap}
-          themes={listThemes().map((entry) => ({ id: entry.id, title: entry.label }))}
-          invoke={invoke}
-          onClose={() => setShowPalette(false)}
-        />
-      )}
-      {/* trmx-144: the confirm-before-close dialog (pane / tab / quit) — mounted by the close
-          gates instead of closing; confirm re-enters the close with { confirmed: true }. */}
-      {pendingClose !== null && (
-        <ConfirmCloseDialog
-          kind={pendingClose.kind}
-          names={pendingClose.names}
-          busyTabCount={pendingClose.busyTabCount}
-          onConfirm={confirmPendingClose}
-          onCancel={cancelPendingClose}
-        />
-      )}
-      </div>
-    </main>
+    <AppView
+      activeTitle={activeTitle}
+      activityErrorColor={activityErrorColor}
+      activityIndicatorOn={activityIndicatorOn}
+      activityIsDark={activityIsDark}
+      aiCounterOn={aiCounterOn}
+      aiSessions={aiSessions}
+      badgeColor={badgeColor}
+      badgeFor={badgeFor}
+      badgeOutlineColor={badgeOutlineColor}
+      badgingPaneId={badgingPaneId}
+      badgingRef={badgingRef}
+      barLayout={barLayout}
+      barPosition={barPosition}
+      bounds={bounds}
+      cancelBadge={cancelBadge}
+      cancelPendingClose={cancelPendingClose}
+      cancelRename={cancelRename}
+      commandCtxRef={commandCtxRef}
+      commandsRef={commandsRef}
+      commitBadge={commitBadge}
+      commitRename={commitRename}
+      confirmPendingClose={confirmPendingClose}
+      contentRef={contentRef}
+      dispatch={dispatch}
+      dispatcherRef={dispatcherRef}
+      dragDir={dragDir}
+      dragRef={dragRef}
+      dropPreview={dropPreview}
+      ffmRef={ffmRef}
+      flashingPanes={flashingPanes}
+      invoke={invoke}
+      keymap={keymap}
+      labelOrientation={labelOrientation}
+      lastPointerRef={lastPointerRef}
+      onDividerDoubleClick={onDividerDoubleClick}
+      onDividerPointerCancel={onDividerPointerCancel}
+      onDividerPointerDown={onDividerPointerDown}
+      onDividerPointerMove={onDividerPointerMove}
+      onDividerPointerUp={onDividerPointerUp}
+      onPaneClickCapture={onPaneClickCapture}
+      onPanePointerCancel={onPanePointerCancel}
+      onPanePointerDownCapture={onPanePointerDownCapture}
+      onPanePointerMoveCapture={onPanePointerMoveCapture}
+      onPanePointerUpCapture={onPanePointerUpCapture}
+      openSearchPanes={openSearchPanes}
+      openSearchRef={openSearchRef}
+      oscTitleFor={oscTitleFor}
+      paneDragging={paneDragging}
+      pendingClose={pendingClose}
+      pendingCloseRef={pendingCloseRef}
+      pickupRef={pickupRef}
+      promptMarkerFor={promptMarkerFor}
+      readyFor={readyFor}
+      renamingRef={renamingRef}
+      renamingTabId={renamingTabId}
+      requestCloseTab={requestCloseTab}
+      requestNewTab={requestNewTab}
+      runScriptInSurface={runScriptInSurface}
+      runtimesRef={runtimesRef}
+      scriptPickerRef={scriptPickerRef}
+      scriptPickerRequest={scriptPickerRequest}
+      searchColors={searchColors}
+      setOpenSearchPanes={setOpenSearchPanes}
+      setPaneField={setPaneField}
+      setScriptPickerRequest={setScriptPickerRequest}
+      setShowPalette={setShowPalette}
+      shortcutHintsOn={shortcutHintsOn}
+      showPalette={showPalette}
+      startRename={startRename}
+      state={state}
+      storeFor={storeFor}
+    />
   );
 }
+
 
 /**
  * trmx-188: the e2e right-slot fixture, read ONCE at module load (the slot's real content is the
  * trmx-190 counter). Guarded like every browser-global read in a module that jsdom also imports.
  */
-const titleBarSlotFixture: string | null =
-  typeof window === "undefined"
-    ? null
-    : new URLSearchParams(window.location.search).get("e2e.titleBarSlot");
-
-/**
- * trmx-190: the counter's e2e fixture — `?e2e.aiCounter=claude:2/3,codex:0/2,Other:1/1` becomes
- * synthetic sessions (one per counted total, `active` for the first `active` of each bucket,
- * titles `fixture-<bucket>-<i>`), letting the runtime-less Playwright tier drive the CSS contract.
- * Junk-tolerant: any malformed part (or an unknown bucket, or active > total) → no fixture.
- */
-export function parseAiCounterFixture(raw: string | null): AiSession[] | null {
-  if (raw === null) return null;
-  const buckets = new Set<string>([...NAMED_BUCKETS, "Other"]);
-  const sessions: AiSession[] = [];
-  let paneId = 1;
-  for (const part of raw.split(",")) {
-    const match = /^([A-Za-z-]+):(\d+)\/(\d+)$/.exec(part.trim());
-    if (!match || !buckets.has(match[1])) return null;
-    const active = Number(match[2]);
-    const total = Number(match[3]);
-    if (active > total) return null;
-    for (let i = 1; i <= total; i += 1) {
-      sessions.push({
-        tabId: 1,
-        paneId: paneId++,
-        bucket: match[1] as AiSession["bucket"],
-        name: match[1] === "Other" ? "gemini" : match[1],
-        title: `fixture-${match[1]}-${i}`,
-        active: i <= active,
-      });
-    }
-  }
-  return sessions;
-}
 
 const titleBarCounterFixture: AiSession[] | null =
   typeof window === "undefined"
     ? null
     : parseAiCounterFixture(new URLSearchParams(window.location.search).get("e2e.aiCounter"));
-
-/**
- * trmx-90: the ⇧⌘B inline BADGE EDITOR — a small centered input over the focused pane. Mirrors
- * TabStrip's TabRenameInput discipline: local `value` seeded ONCE from the pane's current badge (a
- * re-render mid-edit must not clobber the user's typing — useState ignores later `initial` values),
- * autofocus + select-all on mount (so it is keyboard-operable the instant ⇧⌘B opens it), and a
- * `done` latch so commit/cancel fires exactly once (Enter commits and the input unmounts; the
- * resulting blur must not then cancel). Enter commits; Esc AND blur cancel (no dispatch). Every
- * keydown stopPropagation's so Enter/Esc are TRAPPED here — they never reach xterm or the window-
- * capture tab keymap (the ⇧⌘B chord itself is swallowed by the menu accelerator upstream).
- */
-function PaneBadgeInput({
-  initial,
-  onCommit,
-  onCancel,
-}: {
-  initial: string;
-  onCommit: (value: string) => void;
-  onCancel: () => void;
-}) {
-  const [value, setValue] = useState(initial);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const doneRef = useRef(false);
-
-  useEffect(() => {
-    inputRef.current?.focus();
-    inputRef.current?.select();
-  }, []);
-
-  const commit = () => {
-    if (doneRef.current) return;
-    doneRef.current = true;
-    onCommit(value);
-  };
-  const cancel = () => {
-    if (doneRef.current) return;
-    doneRef.current = true;
-    onCancel();
-  };
-
-  return (
-    <input
-      ref={inputRef}
-      data-testid="pane-badge-input"
-      className="tx-badge-input"
-      aria-label="Set pane badge"
-      value={value}
-      onChange={(e) => setValue(e.target.value)}
-      onKeyDown={(e) => {
-        // Trap Enter/Esc so they commit/cancel HERE and never leak to xterm or the tab keymap.
-        e.stopPropagation();
-        if (e.key === "Enter") {
-          e.preventDefault();
-          commit();
-        } else if (e.key === "Escape") {
-          e.preventDefault();
-          cancel();
-        }
-      }}
-      onBlur={cancel}
-      // Isolate pointer gestures from the pane's click-to-focus / xterm selection.
-      onPointerDown={(e) => e.stopPropagation()}
-      onClick={(e) => e.stopPropagation()}
-    />
-  );
-}

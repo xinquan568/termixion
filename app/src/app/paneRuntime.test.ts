@@ -8,7 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createPaneRuntimes, type PaneRuntime } from "./paneRuntime";
-import type { CwdStore } from "./terminal/osc7";
+import type { CwdStore } from "../terminal/osc7";
 
 const fakeCwd = () => ({}) as CwdStore;
 

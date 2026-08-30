@@ -33,7 +33,13 @@ cat > "$tmp/bin/cargo" <<'STUB'
 if [ "${1-}" = metadata ]; then printf '{"packages":[]}\n'; fi
 exit 0
 STUB
-chmod +x "$tmp/bin/cargo" "$tmp/bin/pnpm"
+# trmx-254: `node` joins the stub set for the same reason as the other two. This test asserts that
+# the hooks INVOKE the documented commands, not that the tools succeed — and the shell-integration
+# job that runs it never does `pnpm install`, so a real `node scripts/verify-contracts.mjs` cannot
+# resolve the TypeScript it parses with and exits 1. That is a missing dependency in the harness, not
+# a hook defect, and it is exactly the class the exit-status check above exists to surface.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$tmp/bin/node"
+chmod +x "$tmp/bin/cargo" "$tmp/bin/pnpm" "$tmp/bin/node"
 
 trace=""
 run_hook() { # run_hook <name>
@@ -75,6 +81,7 @@ run_hook pre-push
 expect pre-push "cargo test --workspace --quiet"
 expect pre-push "pnpm --filter app test"             # trmx-239: frontend regressions reached only CI
 expect pre-push "cargo clippy --workspace --all-targets -- -D warnings"
+expect pre-push "node scripts/verify-contracts.mjs"
 
 if [ "$fails" -ne 0 ]; then
   echo "hooks.test: $fails expectation(s) failed." >&2
