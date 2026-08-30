@@ -207,9 +207,11 @@ mod tests {
     /// Acceptance "reach" (trmx-249): serializing a standalone `IpcError` proves nothing about the
     /// COMMANDS — all 15 could still be `Result<_, String>` and every other test here would pass.
     ///
-    /// This reads the authoritative registration list in `main.rs` and the command modules, and
-    /// asserts the EXACT name sets rather than counts. A count cannot notice that one command
-    /// entered the fallible set as another left it.
+    /// trmx-300: this PARSES the signatures. Two string-matching versions leaked — a
+    /// fully-qualified `crate::ipc_error::IpcError` read as infallible, a
+    /// `CommandOutcome<T, IpcError>` read as fallible, and `pub mod x;` escaped the module
+    /// self-check. A heuristic over source text keeps finding new ways to be wrong; the parse
+    /// answers the actual question: is the return type `Result<_, IpcError>`?
     #[test]
     fn exactly_the_expected_commands_reject_with_ipc_error() {
         const EXPECTED_FALLIBLE: [&str; 15] = [
@@ -229,109 +231,6 @@ mod tests {
             "shell_integration_reveal",
             "open_settings_window",
         ];
-
-        // The registration list is the boundary: a command not in it is not reachable from the
-        // webview, whatever its signature says.
-        let main_rs = include_str!("main.rs");
-        let block = main_rs
-            .split_once("tauri::generate_handler![")
-            .expect("main.rs registers commands")
-            .1
-            .split_once("])")
-            .expect("the handler list closes")
-            .0;
-        let registered: Vec<&str> = block
-            .split(',')
-            .map(|entry| entry.trim())
-            .filter(|entry| !entry.is_empty() && !entry.starts_with("//"))
-            .map(|entry| entry.rsplit("::").next().expect("a command name"))
-            .collect();
-        assert_eq!(
-            registered.len(),
-            33,
-            "the registered command count changed: {registered:?}"
-        );
-
-        // EVERY module in the crate, paired with its name so the coverage is SELF-CHECKING.
-        // An earlier version listed only the seven modules that host a fallible command today,
-        // which meant a command defined elsewhere (`core_version`, `smoke_config`, `shells_list`,
-        // ...) could gain an `IpcError` return and still be classified infallible — the census
-        // would pass while the sets had drifted. The assertion below makes omitting a module a
-        // test failure rather than a silent blind spot.
-        const SOURCES: [(&str, &str); 17] = [
-            ("close_gate", include_str!("close_gate.rs")),
-            ("config_io", include_str!("config_io.rs")),
-            ("control", include_str!("control.rs")),
-            ("enhancements_io", include_str!("enhancements_io.rs")),
-            ("fs_watch", include_str!("fs_watch.rs")),
-            ("launch", include_str!("launch.rs")),
-            ("logging", include_str!("logging.rs")),
-            ("menu", include_str!("menu.rs")),
-            ("poller", include_str!("poller.rs")),
-            ("pty_io", include_str!("pty_io.rs")),
-            ("scripts_io", include_str!("scripts_io.rs")),
-            ("services_io", include_str!("services_io.rs")),
-            (
-                "shell_integration_io",
-                include_str!("shell_integration_io.rs"),
-            ),
-            ("shells_io", include_str!("shells_io.rs")),
-            ("themes_io", include_str!("themes_io.rs")),
-            ("window_manager", include_str!("window_manager.rs")),
-            ("ipc_error", include_str!("ipc_error.rs")),
-        ];
-
-        // Every `mod x;` in main.rs must be censused. Adding a module without adding it here fails.
-        let declared: Vec<&str> = main_rs
-            .lines()
-            .filter_map(|line| line.trim().strip_prefix("mod "))
-            .filter_map(|rest| rest.strip_suffix(';'))
-            .collect();
-        for module in &declared {
-            assert!(
-                SOURCES.iter().any(|(name, _)| name == module),
-                "module `{module}` is not in the census SOURCES — it could host an unnoticed command"
-            );
-        }
-        // main.rs itself hosts commands (core_version, smoke_config, quit_confirmed, ...).
-        let sources: Vec<&str> = SOURCES
-            .iter()
-            .map(|(_, src)| *src)
-            .chain(std::iter::once(main_rs))
-            .collect();
-
-        let rejects_with_ipc_error = |name: &str| {
-            sources.iter().any(|src| {
-                src.split(&format!("fn {name}(")).skip(1).any(|tail| {
-                    let head = tail.split_once(" {").map_or(tail, |(h, _)| h);
-                    head.rsplit_once("->").is_some_and(|(_, ret)| {
-                        let ret = ret.trim().trim_end_matches(',');
-                        // The error slot must be EXACTLY IpcError — requiring the separator keeps
-                        // a different type merely ENDING in `IpcError` from matching.
-                        ret.ends_with(", IpcError>") || ret.ends_with(",IpcError>")
-                    })
-                })
-            })
-        };
-
-        let actual: Vec<&str> = registered
-            .iter()
-            .copied()
-            .filter(|name| rejects_with_ipc_error(name))
-            .collect();
-
-        let mut expected = EXPECTED_FALLIBLE.to_vec();
-        let mut got = actual.clone();
-        expected.sort_unstable();
-        got.sort_unstable();
-        assert_eq!(
-            got, expected,
-            "the set of commands rejecting with IpcError drifted from the 15 this issue covers"
-        );
-
-        // And the other 18 keep no error channel at all. Asserted by NAME, not by count: a count
-        // cannot notice one command entering the infallible set as another leaves it, which is the
-        // whole reason Acceptance 4 asks for two exact sets.
         const EXPECTED_INFALLIBLE: [&str; 18] = [
             "core_version",
             "take_pending_open_paths",
@@ -352,16 +251,165 @@ mod tests {
             "webview_close_request",
             "close_acknowledged",
         ];
-        let mut infallible: Vec<&str> = registered
+
+        const SOURCES: [(&str, &str); 18] = [
+            ("main", include_str!("main.rs")),
+            ("close_gate", include_str!("close_gate.rs")),
+            ("config_io", include_str!("config_io.rs")),
+            ("control", include_str!("control.rs")),
+            ("enhancements_io", include_str!("enhancements_io.rs")),
+            ("fs_watch", include_str!("fs_watch.rs")),
+            ("ipc_error", include_str!("ipc_error.rs")),
+            ("launch", include_str!("launch.rs")),
+            ("logging", include_str!("logging.rs")),
+            ("menu", include_str!("menu.rs")),
+            ("poller", include_str!("poller.rs")),
+            ("pty_io", include_str!("pty_io.rs")),
+            ("scripts_io", include_str!("scripts_io.rs")),
+            ("services_io", include_str!("services_io.rs")),
+            (
+                "shell_integration_io",
+                include_str!("shell_integration_io.rs"),
+            ),
+            ("shells_io", include_str!("shells_io.rs")),
+            ("themes_io", include_str!("themes_io.rs")),
+            ("window_manager", include_str!("window_manager.rs")),
+        ];
+
+        let main_rs = include_str!("main.rs");
+        let parsed: Vec<(&str, syn::File)> = SOURCES
             .iter()
-            .copied()
-            .filter(|name| !rejects_with_ipc_error(name))
+            .map(|(name, src)| {
+                (
+                    *name,
+                    syn::parse_file(src).unwrap_or_else(|e| panic!("{name}.rs parses: {e}")),
+                )
+            })
             .collect();
-        let mut expected_infallible = EXPECTED_INFALLIBLE.to_vec();
-        infallible.sort_unstable();
-        expected_infallible.sort_unstable();
+
+        // COVERAGE SELF-CHECK. Every `mod x;` declared in main.rs must be censused — at ANY
+        // visibility, which is where the previous `strip_prefix("mod ")` version failed.
+        let main_ast = &parsed
+            .iter()
+            .find(|(name, _)| *name == "main")
+            .expect("main.rs is censused")
+            .1;
+        for item in &main_ast.items {
+            if let syn::Item::Mod(module) = item {
+                // Only FILE modules (`mod x;`). An inline `mod x { .. }` — main.rs's own
+                // `#[cfg(test)] mod tests` — carries its body here and needs no separate source.
+                if module.content.is_some() {
+                    continue;
+                }
+                let name = module.ident.to_string();
+                assert!(
+                    SOURCES.iter().any(|(known, _)| *known == name),
+                    "module `{name}` is not in the census SOURCES — it could host an unnoticed command"
+                );
+            }
+        }
+
+        /// True when the return type is exactly `Result<_, IpcError>`.
+        ///
+        /// Checks the OUTER type is `Result` (so `CommandOutcome<T, IpcError>` does not count) and
+        /// that its error argument's final path segment is `IpcError` (so a fully-qualified
+        /// `crate::ipc_error::IpcError` does count).
+        fn rejects_with_ipc_error(function: &syn::ItemFn) -> bool {
+            let syn::ReturnType::Type(_, ty) = &function.sig.output else {
+                return false;
+            };
+            let syn::Type::Path(path) = ty.as_ref() else {
+                return false;
+            };
+            let Some(last) = path.path.segments.last() else {
+                return false;
+            };
+            if last.ident != "Result" {
+                return false;
+            }
+            let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+                return false;
+            };
+            let Some(syn::GenericArgument::Type(syn::Type::Path(err))) = args.args.iter().nth(1)
+            else {
+                return false;
+            };
+            err.path
+                .segments
+                .last()
+                .is_some_and(|segment| segment.ident == "IpcError")
+        }
+
+        let is_command = |function: &syn::ItemFn| {
+            function.attrs.iter().any(|attr| {
+                attr.path()
+                    .segments
+                    .last()
+                    .is_some_and(|s| s.ident == "command")
+            })
+        };
+
+        let mut fallible: Vec<String> = Vec::new();
+        let mut infallible: Vec<String> = Vec::new();
+        for (_, file) in &parsed {
+            for item in &file.items {
+                if let syn::Item::Fn(function) = item {
+                    if !is_command(function) {
+                        continue;
+                    }
+                    let name = function.sig.ident.to_string();
+                    if rejects_with_ipc_error(function) {
+                        fallible.push(name);
+                    } else {
+                        infallible.push(name);
+                    }
+                }
+            }
+        }
+
+        // The registration list is the boundary: a command not in it is unreachable from the
+        // webview, whatever its signature says.
+        let block = main_rs
+            .split_once("tauri::generate_handler![")
+            .expect("main.rs registers commands")
+            .1
+            .split_once("])")
+            .expect("the handler list closes")
+            .0;
+        let registered: Vec<&str> = block
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty() && !entry.starts_with("//"))
+            .map(|entry| entry.rsplit("::").next().expect("a command name"))
+            .collect();
         assert_eq!(
-            infallible, expected_infallible,
+            registered.len(),
+            33,
+            "the registered command count changed: {registered:?}"
+        );
+
+        let sorted = |mut names: Vec<String>| {
+            names.retain(|name| registered.contains(&name.as_str()));
+            names.sort();
+            names
+        };
+        let mut expected_fallible: Vec<String> =
+            EXPECTED_FALLIBLE.iter().map(|s| (*s).to_string()).collect();
+        let mut expected_infallible: Vec<String> = EXPECTED_INFALLIBLE
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        expected_fallible.sort();
+        expected_infallible.sort();
+
+        assert_eq!(
+            sorted(fallible),
+            expected_fallible,
+            "the set of commands rejecting with IpcError drifted from the 15 this issue covers"
+        );
+        assert_eq!(
+            sorted(infallible),
+            expected_infallible,
             "the set of commands with NO error channel drifted from the 18 this issue leaves alone"
         );
     }

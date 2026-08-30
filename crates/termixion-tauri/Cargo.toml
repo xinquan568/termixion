@@ -39,6 +39,11 @@ notify = "8.2.0"
 libc = "0.2"
 # trmx-224: parse the authored Info.plist in the NSServices shape test (lockfile-aligned 1.x).
 plist = "1"
+# trmx-300: TEST-only — the command census parses real signatures instead of grepping source text.
+# Two string-matching versions both leaked (a fully-qualified `crate::ipc_error::IpcError`, a
+# `CommandOutcome<T, IpcError>`, a `pub mod`), which is what a syntax-keyed heuristic does.
+# Already in the lockfile via proc-macros, so this adds no new supply-chain surface.
+syn = { version = "2", features = ["full", "parsing"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
