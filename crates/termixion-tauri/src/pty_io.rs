@@ -20,8 +20,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::ipc_error::IpcError;
 use tauri::ipc::Channel;
 use tauri::{Emitter, Manager, State};
+use termixion_core::PtyError;
 use termixion_core::flow::{
     CreditCell, PTY_BATCH_MAX_BYTES, PTY_BATCH_WINDOW_MS, PTY_CREDIT_BYTES, PTY_CREDIT_FLOOR,
     PTY_CREDIT_WAIT, PTY_HANDOFF_CHUNKS, run_batch_sender,
@@ -191,13 +193,14 @@ fn open_session_with<N>(
     size: PtySize,
     fallback: Option<&CwdFallback>,
     notify: N,
-) -> Result<(SessionId, Box<dyn PtyReader>), String>
+) -> Result<(SessionId, Box<dyn PtyReader>), PtyError>
 where
     N: FnOnce(SessionId, &str),
 {
-    let (id, reader) = registry
-        .spawn(factory, spec, size)
-        .map_err(|e| e.to_string())?;
+    // trmx-249: `registry.spawn` yields Spawn / Io / InvalidSize. Stringifying here discarded all
+    // of them before the boundary could classify anything, so this helper returns the domain error
+    // and `open_pty` applies `From<PtyError>`. PtyError stays in core; IpcError never comes here.
+    let (id, reader) = registry.spawn(factory, spec, size)?;
     if let Some(fallback) = fallback {
         notify(id, &cwd_fallback_notice(fallback));
     }
@@ -213,7 +216,7 @@ pub(crate) fn open_pty(
     cwd: Option<String>,
     state: State<'_, PtyState>,
     launch: State<'_, SpecialLaunch>,
-) -> Result<SessionInfo, String> {
+) -> Result<SessionInfo, IpcError> {
     // trmx-205: resolve the configured shell from the cached config; when it is present but no
     // longer valid (uninstalled after hydration — no file change, no watcher wake), surface the
     // condition on the existing warnings channel; the spec below independently falls back.
@@ -258,7 +261,7 @@ pub(crate) fn open_pty(
         &mut *state
             .registry
             .lock()
-            .map_err(|_| "pty state poisoned".to_string())?,
+            .map_err(|_| IpcError::internal("pty state poisoned"))?,
         &PlatformPtyFactory,
         &spec,
         PtySize::new(rows, cols),
@@ -342,14 +345,14 @@ pub(crate) fn pty_write(
     session_id: u64,
     data: Vec<u8>,
     state: State<'_, PtyState>,
-) -> Result<(), String> {
+) -> Result<(), IpcError> {
     state
         .registry
         .lock()
-        .map_err(|_| "pty state poisoned".to_string())?
+        .map_err(|_| IpcError::internal("pty state poisoned"))?
         .write(session_id, &data)
         .map(|_| ())
-        .map_err(|e| e.to_string())
+        .map_err(IpcError::from)
 }
 
 /// Resize the session's PTY character grid (from xterm `onResize`).
@@ -359,13 +362,13 @@ pub(crate) fn pty_resize(
     rows: u16,
     cols: u16,
     state: State<'_, PtyState>,
-) -> Result<(), String> {
+) -> Result<(), IpcError> {
     state
         .registry
         .lock()
-        .map_err(|_| "pty state poisoned".to_string())?
+        .map_err(|_| IpcError::internal("pty state poisoned"))?
         .resize(session_id, PtySize::new(rows, cols))
-        .map_err(|e| e.to_string())
+        .map_err(IpcError::from)
 }
 
 /// The webview acks parsed PTY bytes (trmx-78 round 2b): refill the session's flow-control
@@ -385,13 +388,13 @@ pub(crate) fn pty_ack(session_id: u64, bytes: u32, state: State<'_, PtyState>) {
 /// Close a session (tab closed by the user, trmx-74). Idempotent: closing an id that already
 /// exited (e.g. the reader thread reaped it first) is `Ok(())`.
 #[tauri::command]
-pub(crate) fn close_pty(session_id: u64, state: State<'_, PtyState>) -> Result<(), String> {
+pub(crate) fn close_pty(session_id: u64, state: State<'_, PtyState>) -> Result<(), IpcError> {
     state
         .registry
         .lock()
-        .map_err(|_| "pty state poisoned".to_string())?
+        .map_err(|_| IpcError::internal("pty state poisoned"))?
         .close(session_id)
-        .map_err(|e| e.to_string())
+        .map_err(IpcError::from)
 }
 
 #[cfg(test)]
@@ -488,7 +491,9 @@ mod tests {
             |_id, text| notices.borrow_mut().push(text.to_string()),
         );
         (
-            result.map(|(id, _reader)| id),
+            // trmx-249: open_session_with now returns PtyError. These cases assert on the message
+            // text, so render it here rather than weakening the assertions.
+            result.map(|(id, _reader)| id).map_err(|e| e.to_string()),
             factory.last_cwd(),
             notices.into_inner(),
         )

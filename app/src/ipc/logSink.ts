@@ -25,6 +25,15 @@ export interface LogSink {
   error(context: string, detail?: unknown): void;
   warn(context: string, detail?: unknown): void;
   info(context: string, detail?: unknown): void;
+  /**
+   * LOCAL ONLY — written to the console, never forwarded to the backend log file (trmx-249).
+   *
+   * Deliberately absent from {@link LogLevel}: that type is the set of levels that GO TO THE FILE,
+   * and the trmx-236 policy keeps debug in the webview. Used for outcomes that are expected rather
+   * than wrong — a PTY write to a session that has already closed — where `error` was a false alarm
+   * and silence would lose the trail.
+   */
+  debug(context: string, detail?: unknown): void;
 }
 
 /** Render a detail value compactly: an Error's message, a string as-is, anything else as JSON. */
@@ -49,7 +58,7 @@ export function formatRecord(context: string, detail?: unknown): string {
   return d ? `[termixion] ${context}: ${d}` : `[termixion] ${context}`;
 }
 
-type ConsoleLike = Pick<Console, "error" | "warn" | "info">;
+type ConsoleLike = Pick<Console, "error" | "warn" | "info" | "debug">;
 
 /** Build a sink over an invoke seam and a console (both injectable for tests). */
 export function makeLogSink(invoke: LogInvoke, console_: ConsoleLike = console): LogSink {
@@ -80,6 +89,10 @@ export function makeLogSink(invoke: LogInvoke, console_: ConsoleLike = console):
       const line = formatRecord(context, detail);
       console_.info(line);
       forward("info", line);
+    },
+    debug(context, detail) {
+      // No `forward` call, and that is the whole point — see the LogSink.debug doc comment.
+      console_.debug(formatRecord(context, detail));
     },
   };
 }

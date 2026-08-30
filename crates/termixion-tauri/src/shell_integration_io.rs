@@ -10,6 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::ipc_error::IpcError;
 use tauri_plugin_opener::OpenerExt;
 
 /// The embedded snippet sources (the single source of truth is `resources/shell-integration/`).
@@ -40,24 +41,24 @@ pub fn shell_integration_dir() -> PathBuf {
 
 /// Write the two snippets into `dir` (overwriting — the binary is the source of truth). Pure over the
 /// path so it is unit-testable with a tempdir.
-pub fn write_snippets(dir: &Path) -> Result<(), String> {
+pub fn write_snippets(dir: &Path) -> Result<(), IpcError> {
     std::fs::create_dir_all(dir)
-        .map_err(|error| format!("could not create {}: {error}", dir.display()))?;
+        .map_err(|error| IpcError::io(format!("could not create {}: {error}", dir.display())))?;
     std::fs::write(dir.join("termixion.zsh"), ZSH_SNIPPET)
-        .map_err(|error| format!("could not write termixion.zsh: {error}"))?;
+        .map_err(|error| IpcError::io(format!("could not write termixion.zsh: {error}")))?;
     std::fs::write(dir.join("termixion.bash"), BASH_SNIPPET)
-        .map_err(|error| format!("could not write termixion.bash: {error}"))?;
+        .map_err(|error| IpcError::io(format!("could not write termixion.bash: {error}")))?;
     Ok(())
 }
 
 /// Write the snippets to the user's config dir and reveal the folder in Finder.
 #[tauri::command]
-pub fn shell_integration_reveal(app: tauri::AppHandle) -> Result<(), String> {
+pub fn shell_integration_reveal(app: tauri::AppHandle) -> Result<(), IpcError> {
     let dir = shell_integration_dir();
     write_snippets(&dir)?;
     app.opener()
         .open_path(dir.display().to_string(), None::<&str>)
-        .map_err(|error| format!("could not open {}: {error}", dir.display()))
+        .map_err(|error| IpcError::io(format!("could not open {}: {error}", dir.display())))
 }
 
 #[cfg(test)]

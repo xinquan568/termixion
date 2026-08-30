@@ -17,6 +17,7 @@ use notify::RecursiveMode;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::ipc_error::IpcError;
 use tauri::Emitter;
 use tauri_plugin_opener::OpenerExt;
 use termixion_core::{shape_scripts, source_command};
@@ -145,13 +146,13 @@ pub fn scripts_list() -> Vec<ScriptListEntry> {
 /// Create the scripts directory if absent, then open it in the OS file manager (Finder) via the
 /// opener plugin — the "Open scripts folder" affordance so a user can drop in / edit script files.
 #[tauri::command]
-pub fn scripts_open_dir(app: tauri::AppHandle) -> Result<(), String> {
+pub fn scripts_open_dir(app: tauri::AppHandle) -> Result<(), IpcError> {
     let dir = scripts_dir();
     std::fs::create_dir_all(&dir)
-        .map_err(|error| format!("could not create {}: {error}", dir.display()))?;
+        .map_err(|error| IpcError::io(format!("could not create {}: {error}", dir.display())))?;
     app.opener()
         .open_path(dir.display().to_string(), None::<&str>)
-        .map_err(|error| format!("could not open {}: {error}", dir.display()))
+        .map_err(|error| IpcError::io(format!("could not open {}: {error}", dir.display())))
 }
 
 // ---------------------------------------------------------------------------

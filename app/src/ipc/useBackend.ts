@@ -25,6 +25,26 @@ import {
 } from "./backend";
 import type { TerminalPort } from "./terminalPort";
 import { log } from "./logSink";
+import { decodeIpcError } from "./ipcError";
+
+/**
+ * trmx-249: a write or resize aimed at a session that is already gone is EXPECTED, not a fault.
+ *
+ * xterm's `onData`/`onResize` can fire after the PTY has closed — a keystroke in flight while the
+ * tab is closing, a resize from the layout settling after a pane exits. Those land as
+ * `not_found` (the registry never saw the id, or has already removed it) or `not_running` (the
+ * child exited). Logging them at error level cried wolf on every tab close; dropping them entirely
+ * would lose the trail. So they go to `debug`, which is console-local by trmx-236 policy, and
+ * everything else — an `io` failure, a poisoned lock — stays at error.
+ */
+export function logSessionGone(context: string, err: unknown): void {
+  const decoded = decodeIpcError(err);
+  if (decoded.kind === "not_found" || decoded.kind === "not_running") {
+    log.debug(context, decoded);
+    return;
+  }
+  log.error(context, decoded);
+}
 
 export interface UseBackendOptions {
   invoke?: InvokeFn;
@@ -140,13 +160,13 @@ export function useBackend({
         // trmx-159: observe input (for the \r/\n submit signal) alongside routing the keystroke.
         observersRef.current.onInput?.(session.sessionId, data);
         sendPtyInput(session.sessionId, data, invoke).catch((err: unknown) =>
-          log.error("pty write failed", err),
+          logSessionGone("pty write failed", err),
         );
       });
       // Resizes → the PTY's grid.
       term.onResize(({ rows, cols }) => {
         sendPtyResize(session.sessionId, rows, cols, invoke).catch((err: unknown) =>
-          log.error("pty resize failed", err),
+          logSessionGone("pty resize failed", err),
         );
       });
       return session;

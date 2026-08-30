@@ -29,6 +29,7 @@
 //! `println!`/`eprintln!` inside functions that carry an explicit clippy allowance — the crate denies
 //! `clippy::print_stdout`/`print_stderr` everywhere else.
 
+use crate::ipc_error::IpcError;
 use std::path::{Path, PathBuf};
 
 use log::LevelFilter;
@@ -76,7 +77,11 @@ pub fn no_file_requested(value: Option<&str>) -> bool {
 /// open the log file for append. The plugin's own failure would abort the launch; this one just
 /// drops the file sink.
 pub fn probe_log_dir(dir: &Path) -> Result<(), String> {
-    ensure_log_dir(dir)?;
+    // trmx-249: `ensure_log_dir` is shared with the `log_open_dir` COMMAND, which needs a kind.
+    // This is the startup path — it has no IPC boundary and its outcome becomes a plain
+    // `file_disabled_reason` string — so the kind is dropped here rather than leaking IPC types
+    // into `install`.
+    ensure_log_dir(dir).map_err(|e| e.message)?;
     let file = dir.join(format!("{LOG_FILE_STEM}.log"));
     std::fs::OpenOptions::new()
         .append(true)
@@ -87,11 +92,15 @@ pub fn probe_log_dir(dir: &Path) -> Result<(), String> {
 }
 
 /// Create the log directory if absent (a regular file in its place is an error, never replaced).
-pub fn ensure_log_dir(dir: &Path) -> Result<(), String> {
+pub fn ensure_log_dir(dir: &Path) -> Result<(), IpcError> {
     if dir.exists() && !dir.is_dir() {
-        return Err(format!("{} is not a directory", dir.display()));
+        return Err(IpcError::io(format!(
+            "{} is not a directory",
+            dir.display()
+        )));
     }
-    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))
+    std::fs::create_dir_all(dir)
+        .map_err(|e| IpcError::io(format!("cannot create {}: {e}", dir.display())))
 }
 
 fn to_target(kind: SinkKind) -> Target {
@@ -155,16 +164,16 @@ where
     }
 }
 
-fn resolve_log_dir(app: &AppHandle) -> Result<PathBuf, String> {
+fn resolve_log_dir(app: &AppHandle) -> Result<PathBuf, IpcError> {
     app.path()
         .app_log_dir()
-        .map_err(|e| format!("could not resolve the log directory: {e}"))
+        .map_err(|e| IpcError::io(format!("could not resolve the log directory: {e}")))
 }
 
 /// Install the sink at the top of `setup` (the thin wrapper over [`install_with`]).
 pub fn install(app: &AppHandle) -> Installed {
     let no_file = no_file_requested(std::env::var(NO_FILE_ENV).ok().as_deref());
-    let dir = resolve_log_dir(app);
+    let dir = resolve_log_dir(app).map_err(|e| e.message);
     let probe = dir.clone().and_then(|d| probe_log_dir(&d));
     let installed = install_with(probe, no_file, |sinks| {
         app.plugin(build_plugin(sinks)).map_err(|e| e.to_string())
@@ -189,27 +198,27 @@ pub fn install(app: &AppHandle) -> Installed {
 pub fn forward_webview_record<'m>(
     level: &str,
     message: &'m str,
-) -> Result<(log::Level, &'m str), String> {
+) -> Result<(log::Level, &'m str), IpcError> {
     let lvl = match level {
         "error" => log::Level::Error,
         "warn" => log::Level::Warn,
         "info" => log::Level::Info,
         "debug" => log::Level::Debug,
         "trace" => log::Level::Trace,
-        other => return Err(format!("unknown log level '{other}'")),
+        other => return Err(IpcError::invalid(format!("unknown log level '{other}'"))),
     };
     if message.len() > MAX_WEBVIEW_LOG_BYTES {
-        return Err(format!(
+        return Err(IpcError::invalid(format!(
             "log message too large ({} bytes > {MAX_WEBVIEW_LOG_BYTES})",
             message.len()
-        ));
+        )));
     }
     Ok((lvl, message))
 }
 
 /// The webview's forwarding boundary (trmx-236; the error boundary of trmx-237 uses it too).
 #[tauri::command]
-pub fn log_message(level: String, message: String) -> Result<(), String> {
+pub fn log_message(level: String, message: String) -> Result<(), IpcError> {
     let (lvl, msg) = forward_webview_record(&level, &message)?;
     log::log!(target: WEBVIEW_TARGET, lvl, "{msg}");
     Ok(())
@@ -217,15 +226,15 @@ pub fn log_message(level: String, message: String) -> Result<(), String> {
 
 /// The log directory, for the About row's description.
 #[tauri::command]
-pub fn log_dir(app: AppHandle) -> Result<String, String> {
+pub fn log_dir(app: AppHandle) -> Result<String, IpcError> {
     resolve_log_dir(&app).map(|p| p.display().to_string())
 }
 
 /// Ensure the directory exists, THEN hand its path to the opener. An error from either step
 /// propagates verbatim (the About row shows it in its pill).
-pub fn open_log_dir_with<F>(dir: &Path, open: F) -> Result<(), String>
+pub fn open_log_dir_with<F>(dir: &Path, open: F) -> Result<(), IpcError>
 where
-    F: FnOnce(&str) -> Result<(), String>,
+    F: FnOnce(&str) -> Result<(), IpcError>,
 {
     ensure_log_dir(dir)?;
     open(&dir.display().to_string())
@@ -234,12 +243,12 @@ where
 /// The About row's "Open log folder": backend-side open (the webview opener command is
 /// capability-denied in the packaged app — the `config_open_file` precedent).
 #[tauri::command]
-pub fn log_open_dir(app: AppHandle) -> Result<(), String> {
+pub fn log_open_dir(app: AppHandle) -> Result<(), IpcError> {
     let dir = resolve_log_dir(&app)?;
     open_log_dir_with(&dir, |path| {
         app.opener()
             .open_path(path, None::<&str>)
-            .map_err(|e| format!("could not open {path}: {e}"))
+            .map_err(|e| IpcError::io(format!("could not open {path}: {e}")))
     })
 }
 
@@ -433,7 +442,7 @@ mod tests {
             Ok(())
         })
         .unwrap_err();
-        assert!(err.contains("not a directory"), "{err}");
+        assert!(err.message.contains("not a directory"), "{err}");
         assert!(!*called.borrow(), "the opener must not run");
         std::fs::remove_dir_all(&base).ok();
     }
@@ -441,8 +450,9 @@ mod tests {
     #[test]
     fn open_log_dir_propagates_the_opener_error() {
         let dir = tmp("openerr").join("logs");
-        let err = open_log_dir_with(&dir, |_| Err("opener denied".to_string())).unwrap_err();
-        assert_eq!(err, "opener denied");
+        let err = open_log_dir_with(&dir, |_| Err(IpcError::io("opener denied"))).unwrap_err();
+        assert_eq!(err.message, "opener denied");
+        assert_eq!(err.kind, crate::ipc_error::IpcErrorKind::Io);
         std::fs::remove_dir_all(dir.parent().unwrap()).ok();
     }
 
@@ -455,10 +465,11 @@ mod tests {
         );
         let over = "m".repeat(MAX_WEBVIEW_LOG_BYTES + 1);
         let err = log_message("error".into(), over).unwrap_err();
-        assert!(err.contains("too large"), "{err}");
+        assert!(err.message.contains("too large"), "{err}");
         assert!(
             log_message("bogus".into(), "x".into())
                 .unwrap_err()
+                .message
                 .contains("unknown log level")
         );
         for lvl in ["error", "warn", "info", "debug", "trace"] {

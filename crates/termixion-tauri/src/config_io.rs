@@ -21,6 +21,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::enhancements_io::EnhancementsStatus;
+use crate::ipc_error::IpcError;
 use serde_json::{Map, Value as JsonValue};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
@@ -143,13 +144,18 @@ fn describe_json(value: &JsonValue) -> String {
 
 /// The `toml_edit` item for `value` if it matches the key's expected class; the typed
 /// rejection otherwise (fractional/overflowing JSON numbers are NOT integers).
-fn toml_item_for(key: &str, kind: ValueKind, value: &JsonValue) -> Result<toml_edit::Item, String> {
+fn toml_item_for(
+    key: &str,
+    kind: ValueKind,
+    value: &JsonValue,
+) -> Result<toml_edit::Item, IpcError> {
+    // trmx-249: a caller-supplied value we reject on inspection — `invalid`, not `io`.
     let mismatch = || {
-        format!(
+        IpcError::invalid(format!(
             "wrong value type for `{key}`: expected {}, got {}",
             kind.expected(),
             describe_json(value)
-        )
+        ))
     };
     match (kind, value) {
         (ValueKind::Bool, JsonValue::Bool(flag)) => Ok(toml_edit::value(*flag)),
@@ -165,23 +171,24 @@ fn toml_item_for(key: &str, kind: ValueKind, value: &JsonValue) -> Result<toml_e
 /// Comment-preserving single-key edit (pure): parse `text` with `toml_edit`, set the mapped
 /// `(table, key)` to `value` (creating a missing table), and render the document back.
 /// Unknown registry key or a JSON value of the wrong type for the key → `Err`, nothing written.
-fn edit_document(text: &str, key: &str, value: &JsonValue) -> Result<String, String> {
-    let (table_name, toml_key) =
-        toml_path_for(key).ok_or_else(|| format!("unknown settings key `{key}`"))?;
-    let kind = value_kind_for(key).ok_or_else(|| format!("unknown settings key `{key}`"))?;
+fn edit_document(text: &str, key: &str, value: &JsonValue) -> Result<String, IpcError> {
+    let (table_name, toml_key) = toml_path_for(key)
+        .ok_or_else(|| IpcError::invalid(format!("unknown settings key `{key}`")))?;
+    let kind = value_kind_for(key)
+        .ok_or_else(|| IpcError::invalid(format!("unknown settings key `{key}`")))?;
     let item = toml_item_for(key, kind, value)?;
 
     // Refuse to clobber a file we cannot parse losslessly: a broken file is the user's to fix
     // (config_read surfaces the SyntaxError warning), not ours to silently rewrite.
     let mut doc: toml_edit::DocumentMut = text
         .parse()
-        .map_err(|error| format!("config file is not editable TOML: {error}"))?;
+        .map_err(|error| IpcError::invalid(format!("config file is not editable TOML: {error}")))?;
 
     let table_existed = doc.get(table_name).is_some();
     let table_item = doc.entry(table_name).or_insert(toml_edit::table());
     let table = table_item
         .as_table_mut()
-        .ok_or_else(|| format!("config: `{table_name}` is not a table"))?;
+        .ok_or_else(|| IpcError::invalid(format!("config: `{table_name}` is not a table")))?;
     match table.get_mut(toml_key) {
         // In-place value swap keeps the line's decor (inline `# comment`, spacing) — replacing
         // the whole Item would drop it.
@@ -419,20 +426,29 @@ fn read_response_from(read: FileRead, path: &Path) -> ConfigReadResponse {
 /// Write `contents` ATOMICALLY: temp file in the SAME directory, then `rename` over the target
 /// (a reader/watcher can never observe a torn file). Creates the parent directory. Returns the
 /// hash of the written text for the self-echo latch.
-fn write_atomic(path: &Path, contents: &str) -> Result<u64, String> {
+fn write_atomic(path: &Path, contents: &str) -> Result<u64, IpcError> {
     let parent = path
         .parent()
-        .ok_or_else(|| format!("config path has no parent directory: {}", path.display()))?;
+        // A path WE construct having no parent is our invariant, not the caller's mistake.
+        .ok_or_else(|| {
+            IpcError::internal(format!(
+                "config path has no parent directory: {}",
+                path.display()
+            ))
+        })?;
     std::fs::create_dir_all(parent)
-        .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
+        .map_err(|error| IpcError::io(format!("could not create {}: {error}", parent.display())))?;
     // Same directory as the target so the rename is same-filesystem (atomic); pid-suffixed so
     // two Termixion processes can never collide on it.
     let temp = parent.join(format!(".{CONFIG_FILE_NAME}.tmp-{}", std::process::id()));
     std::fs::write(&temp, contents)
-        .map_err(|error| format!("could not write {}: {error}", temp.display()))?;
+        .map_err(|error| IpcError::io(format!("could not write {}: {error}", temp.display())))?;
     if let Err(error) = std::fs::rename(&temp, path) {
         let _ = std::fs::remove_file(&temp); // best-effort: never leave residue behind
-        return Err(format!("could not replace {}: {error}", path.display()));
+        return Err(IpcError::io(format!(
+            "could not replace {}: {error}",
+            path.display()
+        )));
     }
     Ok(text_hash(contents))
 }
@@ -444,11 +460,16 @@ fn write_key_at(
     path: &Path,
     key: &str,
     value: &JsonValue,
-) -> Result<(u64, Config, Vec<ConfigWarning>), String> {
+) -> Result<(u64, Config, Vec<ConfigWarning>), IpcError> {
     let current = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => DEFAULT_TEMPLATE.to_string(),
-        Err(error) => return Err(format!("could not read {}: {error}", path.display())),
+        Err(error) => {
+            return Err(IpcError::io(format!(
+                "could not read {}: {error}",
+                path.display()
+            )));
+        }
     };
     let edited = edit_document(&current, key, value)?;
     let hash = write_atomic(path, &edited)?;
@@ -457,7 +478,7 @@ fn write_key_at(
 }
 
 /// Reset the file to the pristine [`DEFAULT_TEMPLATE`], atomically. Returns the written hash.
-fn reset_all_at(path: &Path) -> Result<u64, String> {
+fn reset_all_at(path: &Path) -> Result<u64, IpcError> {
     write_atomic(path, DEFAULT_TEMPLATE)
 }
 
@@ -465,14 +486,17 @@ fn reset_all_at(path: &Path) -> Result<u64, String> {
 /// bytes untouched; absent → materialize the fully-commented [`DEFAULT_TEMPLATE`] atomically →
 /// `Ok(true)`. The write's hash is deliberately dropped (never latched) — see
 /// [`config_open_file`] for why.
-fn ensure_config_file_at(path: &Path) -> Result<bool, String> {
+fn ensure_config_file_at(path: &Path) -> Result<bool, IpcError> {
     match std::fs::metadata(path) {
         Ok(_) => Ok(false),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             write_atomic(path, DEFAULT_TEMPLATE)?;
             Ok(true)
         }
-        Err(error) => Err(format!("could not read {}: {error}", path.display())),
+        Err(error) => Err(IpcError::io(format!(
+            "could not read {}: {error}",
+            path.display()
+        ))),
     }
 }
 
@@ -665,14 +689,14 @@ pub fn config_write(
     control_state: State<'_, crate::control::ControlState>,
     key: String,
     value: JsonValue,
-) -> Result<(), String> {
+) -> Result<(), IpcError> {
     let (hash, config, parse_warnings) = write_key_at(&config_path(), &key, &value)?;
     // trmx-101: an app-originated write suppresses the watcher's self-echo, so apply remote_control here.
     let new_remote_control = config.remote_control.clone();
     let mut inner = state
         .0
         .lock()
-        .map_err(|_| "config state poisoned".to_string())?;
+        .map_err(|_| IpcError::internal("config state poisoned"))?;
     inner.last_write_hash = Some(hash);
     inner.last = config;
     // trmx-205: keep the parse-only warnings cache fresh across local writes, so a later
@@ -689,12 +713,12 @@ pub fn config_reset_all(
     app: tauri::AppHandle,
     state: State<'_, ConfigState>,
     control_state: State<'_, crate::control::ControlState>,
-) -> Result<(), String> {
+) -> Result<(), IpcError> {
     let hash = reset_all_at(&config_path())?;
     let mut inner = state
         .0
         .lock()
-        .map_err(|_| "config state poisoned".to_string())?;
+        .map_err(|_| IpcError::internal("config state poisoned"))?;
     inner.last_write_hash = Some(hash);
     inner.last = Config::default();
     inner.last_warnings = Vec::new(); // trmx-205: pristine template ⇒ no stale warning base
@@ -709,7 +733,7 @@ pub fn config_reset_all(
 /// backend-side like [`crate::themes_io::themes_open_dir`] (the webview's own `openPath` command
 /// is capability-denied).
 #[tauri::command]
-pub fn config_open_file(app: tauri::AppHandle) -> Result<(), String> {
+pub fn config_open_file(app: tauri::AppHandle) -> Result<(), IpcError> {
     let path = config_path();
     // Deliberately NO ConfigState touch (no last_write_hash latch, no diff-base update): the
     // watcher must observe the materialization write and apply it normally — the template parses
@@ -718,7 +742,7 @@ pub fn config_open_file(app: tauri::AppHandle) -> Result<(), String> {
     ensure_config_file_at(&path)?;
     app.opener()
         .open_path(path.display().to_string(), None::<&str>)
-        .map_err(|error| format!("could not open {}: {error}", path.display()))
+        .map_err(|error| IpcError::io(format!("could not open {}: {error}", path.display())))
 }
 
 // ---------------------------------------------------------------------------
@@ -834,6 +858,7 @@ fn on_config_file_event(app: &tauri::AppHandle, path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ipc_error::IpcErrorKind;
     use serde_json::json;
     // trmx-244: diff_configs moved out of this module's production path with apply_file_text; only
     // this suite's keys-map test still needs it, so it is imported here rather than crate-wide.
@@ -1117,7 +1142,7 @@ mod tests {
         ] {
             let result = edit_document(FIXTURE, key, &value);
             let err = result.expect_err(&format!("{key} = {value} must be rejected"));
-            assert!(err.contains(key), "error must name the key: {err}");
+            assert!(err.message.contains(key), "error must name the key: {err}");
         }
     }
 
@@ -1125,16 +1150,19 @@ mod tests {
     fn edit_document_rejects_a_float_for_an_integer_key() {
         let err = edit_document(FIXTURE, "terminal.fontSize", &json!(12.5))
             .expect_err("a fractional font size must be rejected");
-        assert!(err.contains("terminal.fontSize"), "{err}");
+        assert!(err.message.contains("terminal.fontSize"), "{err}");
     }
 
     #[test]
     fn edit_document_rejects_an_unknown_key() {
         let err = edit_document(FIXTURE, "nope.key", &json!(1)).expect_err("unknown key");
-        assert!(err.contains("nope.key"), "error must name the key: {err}");
+        assert!(
+            err.message.contains("nope.key"),
+            "error must name the key: {err}"
+        );
         let err = edit_document(FIXTURE, "terminal.font_size", &json!(14))
             .expect_err("TOML spelling is not a registry key");
-        assert!(err.contains("terminal.font_size"), "{err}");
+        assert!(err.message.contains("terminal.font_size"), "{err}");
     }
 
     #[test]
@@ -1143,7 +1171,7 @@ mod tests {
         // silently rewriting (and losing) whatever the user had.
         let err = edit_document("[terminal\nfont_size=", "terminal.fontSize", &json!(14))
             .expect_err("broken TOML must not be clobbered");
-        assert!(!err.is_empty());
+        assert!(!err.message.is_empty());
     }
 
     #[test]
@@ -1485,6 +1513,58 @@ mod tests {
             settings_changed_payload("appearance.theme", &RegistryValue::Str("night".into())),
             json!({ "key": "appearance.theme", "value": "night", "source": "config-file" })
         );
+    }
+
+    // --- trmx-249: kind fidelity -------------------------------------------------------------
+    //
+    // `write_key_at` is the busiest fallible path in the app AND the one that mixes the most
+    // classes: validation from `edit_document`, filesystem from `write_atomic`, and an invariant
+    // from `write_atomic`'s parentless-path branch. Asserting the kinds DIFFER would pass with the
+    // labels swapped, so each case asserts its EXACT kind.
+
+    #[test]
+    fn write_key_at_rejects_an_unknown_key_as_invalid() {
+        let dir = test_dir("kind-invalid");
+        let path = dir.join("termixion.toml");
+        let err = write_key_at(&path, "nope.key", &json!(1)).expect_err("unknown key is rejected");
+        assert_eq!(err.kind, IpcErrorKind::Invalid);
+        assert!(err.message.contains("nope.key"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_key_at_rejects_a_wrong_value_type_as_invalid() {
+        let dir = test_dir("kind-invalid-type");
+        let path = dir.join("termixion.toml");
+        let err = write_key_at(&path, "terminal.fontSize", &json!("big"))
+            .expect_err("a string for an int key is rejected");
+        assert_eq!(err.kind, IpcErrorKind::Invalid);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_key_at_reports_a_filesystem_failure_as_io() {
+        let dir = test_dir("kind-io");
+        // A FILE where the config's parent directory should be: every read/write below it fails.
+        let blocker = dir.join("blocker");
+        std::fs::write(&blocker, b"not a directory").expect("seed blocker");
+        let err = write_key_at(
+            &blocker.join("termixion.toml"),
+            "terminal.fontSize",
+            &json!(16),
+        )
+        .expect_err("a path under a file cannot be written");
+        assert_eq!(err.kind, IpcErrorKind::Io, "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_atomic_reports_a_parentless_path_as_internal() {
+        // Not reachable through write_key_at (the read fails first), so the invariant branch is
+        // asserted directly — a path we construct having no parent is our bug, not the caller's.
+        let err = write_atomic(Path::new("/"), "x").expect_err("`/` has no parent");
+        assert_eq!(err.kind, IpcErrorKind::Internal, "{err}");
+        assert!(err.message.contains("no parent directory"), "{err}");
     }
 
     // --- filesystem glue (deterministic: private temp dirs, no watcher, no races) -------------

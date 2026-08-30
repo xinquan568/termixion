@@ -1,0 +1,16 @@
+{
+  "_comment": "trmx-249. The IPC rejection contract, shared by Rust and TypeScript. Rust asserts this file in crates/termixion-tauri/src/ipc_error.rs; app/src/ipc/ipcErrorGolden.test.ts reads THIS FILE (never a copy) so a shape or vocabulary change breaks both suites. Do not regenerate from code — assert against it.",
+  "sample": {
+    "kind": "not_found",
+    "message": "no session with id 7"
+  },
+  "vocabulary": [
+    "not_found",
+    "not_running",
+    "spawn",
+    "invalid_size",
+    "io",
+    "invalid",
+    "internal"
+  ]
+}
