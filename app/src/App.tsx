@@ -138,7 +138,7 @@ import { routeControlRequest, buildLsSnapshot, type ControlDeps } from "./contro
 import { isControlRequest } from "./control/controlRequestGuard";
 import { installThemeHotReload } from "./startup/themeHotReload";
 import { makeCwdStore, type CwdStore } from "./terminal/osc7";
-import { createPaneRuntimes, type PaneRuntime } from "./paneRuntime";
+import { createPaneRuntimes, type PaneRuntime } from "./app/paneRuntime";
 import { realSetWindowTitle } from "./terminal/windowTitle";
 import type { TerminalHandle } from "./terminal/mountTerminal";
 import { UpdateAuthorityHost } from "./update/UpdateAuthorityHost";

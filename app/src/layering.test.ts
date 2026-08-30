@@ -42,6 +42,7 @@ const LEVELS: Record<string, number> = {
   startup: 3, tabs: 3, terminal: 3, update: 3,
   chrome: 4, commands: 4, conformance: 4, perf: 4, search: 4, settings: 4,
   control: 5,
+  app: 6, // trmx-254: orchestration hooks. Peer with the root files by design — see eslint.config.js.
 };
 const DIRS = Object.keys(LEVELS);
 
@@ -111,5 +112,33 @@ describe("frontend layering gate (trmx-247)", () => {
       'import { fuzzyFilter } from "../ui/fuzzy";\nvoid fuzzyFilter;\n',
     );
     expect(found).toHaveLength(0);
+  });
+
+  // trmx-254: the new orchestration zone. `app/` sits at L6, PEER with the root files, so the
+  // level comparison never bans app -> root. What does is the unconditional directory-to-root rule,
+  // which applies to `app` purely because `app` is in the LEVELS map. Delete the `app: 6` entry and
+  // this probe stops firing — that is the mutation that proves the gate is not decorative.
+  it("bans app/ from importing an app/src ROOT file (trmx-254)", async () => {
+    const found = await lintAs(
+      "src/app/probe.ts",
+      'import { App } from "../App";\nvoid App;\n',
+    );
+    expect(found).toHaveLength(1);
+  });
+
+  it("permits app/ importing DOWN into a feature zone (trmx-254)", async () => {
+    const found = await lintAs(
+      "src/app/probe.ts",
+      'import type { PaneId } from "../panes/layoutTree";\nexport type P = PaneId;\n',
+    );
+    expect(found).toHaveLength(0);
+  });
+
+  it("bans a feature zone from importing UP into app/ (trmx-254)", async () => {
+    const found = await lintAs(
+      "src/terminal/probe.ts",
+      'import type { PaneRuntime } from "../app/paneRuntime";\nexport type P = PaneRuntime;\n',
+    );
+    expect(found).toHaveLength(1);
   });
 });

@@ -21,12 +21,12 @@
 //   * call the backend — transport does not belong in a state container;
 //   * touch React state — this lives in a ref, so `setOpenSearchPanes` / `setFlashingPanes` stay
 //     App's to perform. `dispose` returns what App still has to do rather than doing it.
-import type { ActivityState } from "./panes/activityLine";
-import type { PaneId } from "./panes/layoutTree";
-import type { SearchController } from "./search/FindBar";
-import type { TerminalHandle } from "./terminal/mountTerminal";
-import type { PromptTransition } from "./terminal/osc133";
-import type { CwdStore } from "./terminal/osc7";
+import type { ActivityState } from "../panes/activityLine";
+import type { PaneId } from "../panes/layoutTree";
+import type { SearchController } from "../search/FindBar";
+import type { TerminalHandle } from "../terminal/mountTerminal";
+import type { PromptTransition } from "../terminal/osc133";
+import type { CwdStore } from "../terminal/osc7";
 
 /**
  * A pending timer's id. The DOM lib types `setTimeout` as returning `number` and `@types/node`
