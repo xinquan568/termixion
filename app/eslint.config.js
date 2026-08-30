@@ -22,23 +22,39 @@ import tseslint from "typescript-eslint";
 //
 // eslint-plugin-import (not -x) is unusable here: its newest release (2.32.0) peers eslint ^2..^9
 // and this repo runs 10.x.
-const ZONES = [
-  // [zone, may NOT import from these]
-  ["ipc", ["panes", "terminal", "tabs", "commands", "scripts", "settings", "theme", "store", "startup", "update", "chrome", "control", "search", "perf", "conformance", "smoke", "keys", "ui"]],
-  ["keys", ["panes", "terminal", "tabs", "commands", "scripts", "settings", "theme", "store", "startup", "update", "chrome", "control", "search", "ipc", "ui"]],
-  ["ui", ["panes", "terminal", "tabs", "commands", "scripts", "settings", "theme", "store", "startup", "update", "chrome", "control", "search"]],
-  ["panes", ["terminal", "tabs", "commands", "scripts", "settings", "theme", "store", "startup", "update", "chrome", "control", "search"]],
-  ["scripts", ["terminal", "tabs", "commands", "settings", "theme", "store", "startup", "update", "chrome", "control", "search"]],
-  ["theme", ["terminal", "tabs", "commands", "scripts", "settings", "store", "startup", "update", "chrome", "control", "search", "panes"]],
-  ["store", ["terminal", "tabs", "commands", "scripts", "settings", "startup", "update", "chrome", "control", "search", "panes"]],
-  ["startup", ["tabs", "commands", "settings", "chrome", "control", "search"]],
-  ["tabs", ["commands", "settings", "chrome", "control", "search"]],
-  ["terminal", ["tabs", "commands", "settings", "chrome", "control", "search"]],
-  ["update", ["tabs", "commands", "settings", "chrome", "control", "search"]],
-  ["commands", ["settings", "control"]],
-  ["chrome", ["settings", "control", "commands"]],
-  ["settings", ["control"]],
-];
+// The LEVEL MAP is the single source of truth: every top-level directory under app/src, plus the
+// root files, gets exactly one level. The forbidden matrix below is GENERATED from it — a
+// hand-written matrix is how the first version of this gate shipped with seven zones missing a
+// source row and one legal edge wrongly banned.
+//
+// Rule: a module may import from a STRICTLY LOWER level, or from its own level. Peer imports are
+// allowed on purpose — `commands -> scripts` and `chrome -> tabs` are legitimate, and forbidding
+// them would ban the whole feature layer from talking to itself. What is banned is importing UP,
+// which is what creates a cycle.
+const LEVELS = {
+  // L0 — leaves. Import nothing but each other and node_modules.
+  assets: 0, ipc: 0, keys: 0, ui: 0, test: 0,
+  // L1 — primitives over the transport.
+  panes: 1, scripts: 1, smoke: 1, theme: 1,
+  // L2 — the settings store: a primitive that terminal/, update/ and startup/ all read.
+  store: 2,
+  // L3 — feature runtime.
+  startup: 3, tabs: 3, terminal: 3, update: 3,
+  // L4 — composed surfaces.
+  chrome: 4, commands: 4, conformance: 4, perf: 4, search: 4, settings: 4,
+  // L5 — the control bridge drives commands.
+  control: 5,
+  // L6 — app/src/*.tsx entry points (App.tsx, main.tsx, surface.ts). Expressed as a glob, since
+  // they are files rather than a directory.
+  __root__: 6,
+};
+
+const DIRS = Object.keys(LEVELS).filter((z) => z !== "__root__");
+
+/** Every (from, to) pair where `from` sits strictly BELOW `to` — i.e. an upward import. */
+const ZONES = DIRS.flatMap((from) =>
+  DIRS.filter((to) => LEVELS[from] < LEVELS[to]).map((to) => [from, to]),
+);
 
 export default tseslint.config(
   { ignores: ["dist", "playwright-report", "test-results"] },
@@ -63,13 +79,21 @@ export default tseslint.config(
       "import-x/no-restricted-paths": [
         "error",
         {
-          zones: ZONES.flatMap(([from, forbidden]) =>
-            forbidden.map((target) => ({
+          zones: [
+            ...ZONES.map(([from, to]) => ({
               target: `./src/${from}`,
-              from: `./src/${target}`,
-              message: `${from}/ may not import ${target}/ — see the zone table in eslint.config.js (trmx-247).`,
+              from: `./src/${to}`,
+              message: `${from}/ (L${LEVELS[from]}) may not import ${to}/ (L${LEVELS[to]}) — imports point DOWN. See the LEVELS map in eslint.config.js (trmx-247).`,
             })),
-          ),
+            // The root files are L6, so nothing may import them. Expressed as a glob because they
+            // are files, not a directory — the omission that let `ipc -> ../surface` through and
+            // could have recreated the root<->ipc cycle this rule exists to prevent.
+            ...DIRS.map((from) => ({
+              target: `./src/${from}`,
+              from: "./src/*.ts?(x)",
+              message: `${from}/ may not import an app/src root file (L6) — imports point DOWN. See the LEVELS map in eslint.config.js (trmx-247).`,
+            })),
+          ],
         },
       ],
     },
