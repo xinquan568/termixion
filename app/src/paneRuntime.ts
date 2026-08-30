@@ -74,7 +74,6 @@ export interface PaneRuntimes {
   get(paneId: PaneId): PaneRuntime | undefined;
   /** Create the record for a NEW pane. Idempotent: an existing record is returned untouched. */
   ensure(paneId: PaneId, cwd: CwdStore): PaneRuntime;
-  entries(): IterableIterator<[PaneId, PaneRuntime]>;
   /** Clear both timers, drop the record, and report the session the caller must close. */
   dispose(paneId: PaneId): DisposeOutcome;
   /**
@@ -107,7 +106,6 @@ export function createPaneRuntimes(): PaneRuntimes {
       byPane.set(paneId, created);
       return created;
     },
-    entries: () => byPane.entries(),
     dispose(paneId) {
       const runtime = byPane.get(paneId);
       if (!runtime) return {};

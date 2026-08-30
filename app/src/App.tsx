@@ -639,16 +639,39 @@ export function App({
   // caches below, whose whole point is a STABLE callback identity: a write that silently no-opped
   // because no record existed yet would hand TerminalView a fresh callback every render, remounting
   // the terminal and re-attaching the session.
+  // Get-or-create. `makeCwdStore()` is built only on the miss: `paneOf` is called several times per
+  // pane on every render (the callback caches, `storeFor`), and eagerly passing a fresh store to
+  // `ensure` allocated one plus its closures per call just to throw it away.
   const paneOf = (paneId: PaneId): PaneRuntime =>
-    runtimesRef.current.ensure(paneId, makeCwdStore());
+    runtimesRef.current.get(paneId) ?? runtimesRef.current.ensure(paneId, makeCwdStore());
 
+  // Update an EXISTING record; a write for an unknown pane is dropped.
+  //
+  // Deliberately non-creating. Most of the writes this replaced were `Map.delete(paneId)` clears —
+  // deregistering a find bar, dropping a pending script for a pane that closed mid-attach — and a
+  // creating writer turns each of those into a resurrection: closing a pane with an open FindBar
+  // disposes its record, then FindBar cleanup calls `onRegister(null)` and immediately rebuilds an
+  // empty one. Nothing ever removes it, so every closed pane leaks a record. Panes that are alive
+  // always have a record already (`readyFor`/`storeFor` create it at render), so dropping the write
+  // costs nothing. The genuine before-first-render writes use `seedPaneField`.
   const setPaneField = <K extends keyof PaneRuntime>(
     paneId: PaneId,
     field: K,
     value: PaneRuntime[K],
   ) => {
-    // Mirrors the plain-Map `.set()` this replaced: a write always materialises the record, so
-    // seeding writes that land before the pane first renders (pendingCwd/pendingScript) stick.
+    const runtime = runtimesRef.current.get(paneId);
+    if (runtime) runtime[field] = value;
+  };
+
+  // Create-if-absent, then write. For the four writes aimed at a pane that has NOT rendered yet:
+  // `pendingCwd` and `pendingScript` are both stored against the id of a pane that is about to be
+  // opened. Routing these through `setPaneField` silently drops them — it typechecks and the
+  // startup script simply never sources.
+  const seedPaneField = <K extends keyof PaneRuntime>(
+    paneId: PaneId,
+    field: K,
+    value: PaneRuntime[K],
+  ) => {
     paneOf(paneId)[field] = value;
   };
 
@@ -735,7 +758,7 @@ export function App({
       const opened = createTabRef.current();
       if (startupPath && !startupFiredRef.current) {
         startupFiredRef.current = true;
-        setPaneField(
+        seedPaneField(
           opened.paneId, "pendingScript", listScripts(invoke).then((scripts) => {
             const match = scripts.find((entry) => entry.relPath === startupPath);
             if (!match) {
@@ -1137,7 +1160,7 @@ export function App({
     const activeTab =
       s.activeTabId !== null ? s.tabs.find((t) => t.tabId === s.activeTabId) : undefined;
     const activeStore = activeTab ? runtimesRef.current.get(activeTab.focusedPaneId)?.cwd : undefined;
-    setPaneField(paneId, "pendingCwd", cwdOverride ?? activeStore?.get() ?? undefined);
+    seedPaneField(paneId, "pendingCwd", cwdOverride ?? activeStore?.get() ?? undefined);
     dispatch({ kind: "openTab" });
     return { tabId, paneId };
   };
@@ -1160,7 +1183,7 @@ export function App({
     // 1:1 reservation-per-dispatch pairing; splitPane advances only the pane counter).
     const { paneId } = reservation.reservePane();
     const focusedStore = runtimesRef.current.get(tab.focusedPaneId)?.cwd;
-    setPaneField(paneId, "pendingCwd", focusedStore?.get() ?? undefined);
+    seedPaneField(paneId, "pendingCwd", focusedStore?.get() ?? undefined);
     dispatch({ kind: "splitPane", tabId: tab.tabId, dir: treeDir });
     return { paneId };
   };
@@ -1177,7 +1200,7 @@ export function App({
     // the old bail-before-set stale-entry dance is now structural.
     const pending = Promise.resolve<{ sourceLine: string } | null>({ sourceLine: entry.sourceLine });
     const opened = surface === "tab" ? requestNewTab() : requestSplit(surface);
-    if (opened) setPaneField(opened.paneId, "pendingScript", pending);
+    if (opened) seedPaneField(opened.paneId, "pendingScript", pending);
   };
 
   // trmx-224: deliver one service batch — ONE synchronous block (reserve→seed→dispatch per
