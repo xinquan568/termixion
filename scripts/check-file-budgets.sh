@@ -31,11 +31,11 @@ cd "$ROOT"
 WATCHED=(
   # 439 non-test lines after the trmx-243 split (was 1969). +~9% headroom.
   "crates/termixion-tauri/src/main.rs:480"
-  # 926 lines after trmx-254 decomposed App.tsx into orchestration hooks (was 2579 -> budget 2632).
+  # 877 lines after trmx-254 decomposed App.tsx into orchestration hooks (was 2579 -> budget 2632).
   # trmx-248 predicted this drop and it landed: 1653 lines moved into app/src/app/ plus the zone
   # homes, against the issue's < 1000 acceptance. +54 headroom, the tightest ratio so far on purpose —
   # App.tsx is now a composition root, and anything that grows it materially should be a decision.
-  "app/src/App.tsx:980"
+  "app/src/App.tsx:930"
 )
 
 # Non-test line count. For `.rs` this SKIPS each top-level `#[cfg(test)] mod … { … }` block and

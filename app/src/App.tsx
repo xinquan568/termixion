@@ -36,11 +36,14 @@ import {
   useState,
 } from "react";
 import { type SettingsObservation } from "./terminal/TerminalView";
-import { NAMED_BUCKETS, sessionsFrom, type AiSession } from "./chrome/aiSessionBuckets";
+import { sessionsFrom, type AiSession } from "./chrome/aiSessionBuckets";
+// trmx-254: the fixture parser now lives in chrome/ so BOTH App.tsx and app/AppView.tsx can reach
+// it — app/ may not import a root file, so a copy in each was the only alternative.
+export { parseAiCounterFixture } from "./chrome/aiCounterFixture";
+import { parseAiCounterFixture } from "./chrome/aiCounterFixture";
 import { barLayoutFor, labelOrientationFor } from "./tabs/barLayout";
 import {
   initialTabsState,
-  paneBySessionId,
   reduceTabs,
 } from "./tabs/tabState";
 import {
@@ -50,7 +53,6 @@ import {
   type SplitDir,
 } from "./panes/layoutTree";
 import { type DropZone } from "./panes/dropZone";
-import { collectBusyTabs, shouldConfirmClose } from "./panes/closeGuard";
 import { type FrameSchedule } from "./terminal/resizeCoalescer";
 import {
   makeSettingsStore,
@@ -150,6 +152,36 @@ export type AppDeps = {
 };
 
 /** trmx-254: the 22 seams are now one object; `deps` replaces the flat prop list. */
+// trmx-254: a pure constant map, so it lives at MODULE scope. E05's tabs-action adapter reads it
+// from the root; it closes over no App state, so component scope bought nothing.
+// trmx-94: the menu verb → command-id map. Menu clicks (and the trmx-74/84/86/90/93 verbs) route
+// through `dispatch` so every action goes through the one spine (FR-9.1).
+const VERB_TO_COMMAND: Record<string, string> = {
+  new: "tab.new",
+  close: "pane.close", // the ⌘W "Close Tab" menu item closes the focused pane (pane precedence)
+  next: "tab.next",
+  prev: "tab.prev",
+  "split-right": "pane.split-right",
+  "split-below": "pane.split-below",
+  "new-with-script": "tab.new-with-script",
+  "split-right-with-script": "pane.split-right-with-script",
+  "split-below-with-script": "pane.split-below-with-script",
+  "pane-left": "pane.focus-left",
+  "pane-right": "pane.focus-right",
+  "pane-up": "pane.focus-up",
+  "pane-down": "pane.focus-down",
+  "pane-next": "pane.next",
+  "pane-prev": "pane.prev",
+  rename: "tab.rename",
+  "set-badge": "pane.set-badge",
+  palette: "app.command-palette",
+  "clear-scrollback": "terminal.clear-scrollback",
+  // trmx-94 (review finding 7): Settings + Close Window route through dispatch too (not the Rust
+  // ShowSettings/CloseMainWindow shortcuts), so every command-backed menu action is on the spine.
+  "app-settings": "app.settings",
+  "window-close": "window.close",
+};
+
 export interface AppProps {
   deps?: AppDeps;
 }
@@ -469,8 +501,7 @@ export function App({ deps }: AppProps = {}) {
     observeCloseRequested, observePtyExited,
   });
   const {
-    setPendingCloseSynced,
-    closeTabInternal, closePaneInternal, confirmPendingClose, cancelPendingClose, busyLookup,
+    closeTabInternal, closePaneInternal, confirmPendingClose, cancelPendingClose,
   } = close;
   // trmx-254 (T6): the pane/tab operations. `createTab` stays internal to the hook — a symbol walk
   // shows it never escapes; `runScriptInSurface` is returned because the JSX reads it.
@@ -517,41 +548,11 @@ export function App({ deps }: AppProps = {}) {
   }
   const commandsRef = useRef<Command[]>(buildCommands());
 
-  // trmx-94: the menu verb → command-id map. Menu clicks (and the trmx-74/84/86/90/93 verbs) route
-  // through `dispatch` so every action goes through the one spine (FR-9.1).
-  const VERB_TO_COMMAND: Record<string, string> = {
-    new: "tab.new",
-    close: "pane.close", // the ⌘W "Close Tab" menu item closes the focused pane (pane precedence)
-    next: "tab.next",
-    prev: "tab.prev",
-    "split-right": "pane.split-right",
-    "split-below": "pane.split-below",
-    "new-with-script": "tab.new-with-script",
-    "split-right-with-script": "pane.split-right-with-script",
-    "split-below-with-script": "pane.split-below-with-script",
-    "pane-left": "pane.focus-left",
-    "pane-right": "pane.focus-right",
-    "pane-up": "pane.focus-up",
-    "pane-down": "pane.focus-down",
-    "pane-next": "pane.next",
-    "pane-prev": "pane.prev",
-    rename: "tab.rename",
-    "set-badge": "pane.set-badge",
-    palette: "app.command-palette",
-    "clear-scrollback": "terminal.clear-scrollback",
-    // trmx-94 (review finding 7): Settings + Close Window route through dispatch too (not the Rust
-    // ShowSettings/CloseMainWindow shortcuts), so every command-backed menu action is on the spine.
-    "app-settings": "app.settings",
-    "window-close": "window.close",
-  };
 
   // Subscriptions: pty:exited (a pane's shell exited → close just that pane), session:title-hint
   // (route by sessionId into the owning PANE's `process` slot), and the menu's tabs:action intents.
   useEffect(() => {
-    const stopExited = observePtyExited((sessionId) => {
-      const hit = paneBySessionId(stateRef.current, sessionId);
-      if (hit) closePaneInternal(hit.tab.tabId, hit.paneId, { alreadyExited: true });
-    });
+    const stopExited = close.closePaneOnPtyExit();
     const stopTitleHints = activity.onTitleHint();
     const stopTabsAction = observeTabsAction((payload) => {
       // trmx-268: the close verb now arrives as {action, gen} so the ack can echo the generation.
@@ -633,27 +634,7 @@ export function App({ deps }: AppProps = {}) {
   // confirm) goes straight back; an open dialog swallows the repeat; otherwise gate on the all-tabs
   // busy report (per terminal.confirmClose, read fresh).
   useEffect(() => {
-    return observeCloseRequested((generation) => {
-      // Validate at the seam too, not only in the real listener: `observeCloseRequested` is an
-      // injection point, so the consumer must not trust the generation it is handed.
-      if (!isAskGeneration(generation)) return;
-      // trmx-268: prove liveness BEFORE answering, and do it even when a dialog is already up — a
-      // webview showing the dialog is demonstrably alive and must not be read as hung by the next
-      // gesture. The answer is chained onto the ack so it can never land first.
-      void seamsRef.current.closeAcknowledged(generation).then(() => {
-        if (quitAuthorizedRef.current) {
-          seamsRef.current.quitConfirmed();
-          return;
-        }
-        if (pendingCloseRef.current !== null) return;
-        const report = collectBusyTabs(stateRef.current.tabs, busyLookup);
-        if (shouldConfirmClose(makeSettingsStore().get("terminal.confirmClose"), report.busy, "user")) {
-          setPendingCloseSynced({ kind: "quit", names: report.names, busyTabCount: report.busyTabCount });
-        } else {
-          seamsRef.current.quitConfirmed();
-        }
-      });
-    });
+    return close.onCloseRequested();
   }, [observeCloseRequested]);
 
   // trmx-144: the dialog's resolutions. Confirm re-enters the SAME close path with {confirmed:true},
@@ -889,36 +870,6 @@ export function App({ deps }: AppProps = {}) {
  * trmx-188: the e2e right-slot fixture, read ONCE at module load (the slot's real content is the
  * trmx-190 counter). Guarded like every browser-global read in a module that jsdom also imports.
  */
-/**
- * trmx-190: the counter's e2e fixture — `?e2e.aiCounter=claude:2/3,codex:0/2,Other:1/1` becomes
- * synthetic sessions (one per counted total, `active` for the first `active` of each bucket,
- * titles `fixture-<bucket>-<i>`), letting the runtime-less Playwright tier drive the CSS contract.
- * Junk-tolerant: any malformed part (or an unknown bucket, or active > total) → no fixture.
- */
-export function parseAiCounterFixture(raw: string | null): AiSession[] | null {
-  if (raw === null) return null;
-  const buckets = new Set<string>([...NAMED_BUCKETS, "Other"]);
-  const sessions: AiSession[] = [];
-  let paneId = 1;
-  for (const part of raw.split(",")) {
-    const match = /^([A-Za-z-]+):(\d+)\/(\d+)$/.exec(part.trim());
-    if (!match || !buckets.has(match[1])) return null;
-    const active = Number(match[2]);
-    const total = Number(match[3]);
-    if (active > total) return null;
-    for (let i = 1; i <= total; i += 1) {
-      sessions.push({
-        tabId: 1,
-        paneId: paneId++,
-        bucket: match[1] as AiSession["bucket"],
-        name: match[1] === "Other" ? "gemini" : match[1],
-        title: `fixture-${match[1]}-${i}`,
-        active: i <= active,
-      });
-    }
-  }
-  return sessions;
-}
 
 const titleBarCounterFixture: AiSession[] | null =
   typeof window === "undefined"
