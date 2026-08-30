@@ -16,6 +16,7 @@
 import { invoke as tauriInvoke, Channel } from "@tauri-apps/api/core";
 import { realEventBus, type EventBus } from "./eventBus";
 import { parseActivityPayload, type ActivityMeta } from "./payloads";
+import { decodeIpcError } from "./ipcError";
 
 /** The `invoke` signature this module depends on — injectable so callers can fake the backend. */
 export type InvokeFn = (
@@ -87,8 +88,23 @@ export function encodePtyInput(data: string): number[] {
   return Array.from(new TextEncoder().encode(data));
 }
 
-/** The real Tauri `invoke`. In a plain browser (`pnpm dev`) there is no backend, so it rejects. */
-export const realInvoke: InvokeFn = tauriInvoke as InvokeFn;
+/**
+ * The real Tauri `invoke`. In a plain browser (`pnpm dev`) there is no backend, so it rejects.
+ *
+ * trmx-249: every rejection is decoded here, at the ONE shared edge, rather than at each call site.
+ * The backend's fallible commands now reject with `{ kind, message }`, and an undecoded object
+ * rejection renders `[object Object]` through `String(err)` — so wrapping this is what keeps the
+ * wire-shape change non-regressive for `main.tsx`, `App.tsx`, `runSmoke.ts` and `ScriptsSettings`.
+ *
+ * NOT universal: `logSink.ts` calls `tauriInvoke` directly for `log_message` (its module comment
+ * records `ipc/` as the sanctioned Tauri edge). That bypass is safe only because `makeLogSink`
+ * swallows the rejection outright — logging must never throw — so nothing renders it. `logSink`'s
+ * own test pins that swallow, which is what keeps this exclusion true.
+ */
+export const realInvoke: InvokeFn = (cmd, args) =>
+  (tauriInvoke as InvokeFn)(cmd, args).catch((error: unknown) => {
+    throw decodeIpcError(error);
+  });
 
 // The backend contract for a session id: Rust allocates positive u64s starting at 1, so anything
 // non-integral, non-positive, or beyond JS's safe-integer range is junk (a fractional or unsafe id
