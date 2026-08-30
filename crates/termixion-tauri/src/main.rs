@@ -28,6 +28,7 @@ mod config_io;
 mod control;
 mod enhancements_io;
 mod fs_watch;
+mod ipc_error;
 mod launch;
 mod logging;
 mod menu;
