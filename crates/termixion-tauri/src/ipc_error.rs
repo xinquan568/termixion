@@ -267,7 +267,8 @@ mod tests {
     /// must be empty), and no error channel. It does NOT resolve type aliases, follow re-exports,
     /// or recurse into inline modules; a command hidden behind `type IpcResult<T> = ..` or defined
     /// inside a nested module is outside its reach. Those are all unusual in this crate — every
-    /// command today is a top-level fn with a spelled-out `Result` — and the exact-name sets plus
+    /// FALLIBLE command today is a top-level fn with a spelled-out `Result`, and the other 18 are
+    /// deliberately not `Result` at all — and the exact-name sets plus
     /// the 33-registration count catch ordinary additions and moves. Recorded so the guarantee is
     /// not read as stronger than it is.
     #[test]
