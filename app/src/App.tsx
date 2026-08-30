@@ -78,7 +78,6 @@ import {
   onManualToggle,
   onOutput as onActivityOutput,
   type ActivityMeta,
-  type ActivityState,
   type ActivityTransition,
 } from "./panes/activityLine";
 import { shouldFlash, FLASH_MS } from "./panes/activityFlash";
@@ -104,7 +103,7 @@ import { describeTarget } from "./tabs/tabKeymap";
 import { normalizeLegacyThemeId } from "./theme/defaultTheme";
 import { isRegisteredThemeId, isUserThemeIdShape, resolveTheme } from "./theme/registry";
 import { applyTxTheme } from "./theme/txCssVars";
-import { FindBar, type SearchController } from "./search/FindBar";
+import { FindBar } from "./search/FindBar";
 import { withAlpha } from "./theme/colorMath";
 import { useBackend } from "./ipc/useBackend";
 import {
@@ -139,6 +138,7 @@ import { routeControlRequest, buildLsSnapshot, type ControlDeps } from "./contro
 import { isControlRequest } from "./control/controlRequestGuard";
 import { installThemeHotReload } from "./startup/themeHotReload";
 import { makeCwdStore, type CwdStore } from "./terminal/osc7";
+import { createPaneRuntimes, type PaneRuntime } from "./paneRuntime";
 import { realSetWindowTitle } from "./terminal/windowTitle";
 import type { TerminalHandle } from "./terminal/mountTerminal";
 import { UpdateAuthorityHost } from "./update/UpdateAuthorityHost";
@@ -600,10 +600,6 @@ export function App({
   // trmx-84: per-PANE plumbing, all keyed by the never-reused, GLOBAL paneId:
   const contentRef = useRef<HTMLDivElement | null>(null); // the measured pane content area
   const boundsRef = useRef(bounds); // latest bounds for out-of-render split guards
-  const storesRef = useRef(new Map<PaneId, CwdStore>()); // OSC 7 cwd, one store per pane
-  const handlesRef = useRef(new Map<PaneId, TerminalHandle>()); // mounted terminals
-  const sessionsRef = useRef(new Map<PaneId, number>()); // attached backend sessionIds
-  const pendingCwdRef = useRef(new Map<PaneId, string | undefined>()); // cwd to seed the open with
   // trmx-224: the service-delivery entry point and the tab-creation primitive, ref-indirected
   // because the boot effect is defined above the creators it composes; assigned every render
   // right after their definitions.
@@ -618,32 +614,50 @@ export function App({
   const createTabRef = useRef<(cwdOverride?: string) => { tabId: number; paneId: number }>(
     () => ({ tabId: 0, paneId: 0 }),
   );
-  // trmx-93 (FR-5): a script to source once its pane's session attaches, keyed by the pane's
-  // (predictable) nextPaneId and set SYNCHRONOUSLY before the creating dispatch — so the async
-  // startup resolution can never lose the race with attach (the send-step awaits the promise).
-  const pendingScriptRef = useRef(new Map<PaneId, Promise<{ sourceLine: string } | null>>());
   const startupFiredRef = useRef(false); // trmx-93: the startup script fires at most once
-  const readyCbsRef = useRef(new Map<PaneId, (handle: TerminalHandle) => void>()); // stable onReady per pane
-  const oscTitleCbsRef = useRef(new Map<PaneId, (title: string) => void>()); // stable onOscTitle per pane
-  const badgeCbsRef = useRef(new Map<PaneId, (badge: string | null) => void>()); // stable onBadge per pane (trmx-90)
-  // Attach epoch per pane: each onReady bumps it; a resolution whose epoch is no longer current is
-  // STALE (StrictMode's dev remount opens two PTYs — only the current epoch keeps its session).
-  const attachEpochRef = useRef(new Map<PaneId, number>());
-  // trmx-91: per-pane activity DEBOUNCE state + its single timer, both keyed by the global paneId. App
-  // owns the debounce (panes/activityLine.ts is pure/time-injected): each pane holds an ActivityState
-  // and at most ONE pending timer, armed to the current transition's deadline (cleared + re-armed on
-  // every transition, disposed on pane close / unmount).
-  const activityStatesRef = useRef(new Map<PaneId, ActivityState>());
-  const activityTimersRef = useRef(new Map<PaneId, ReturnType<typeof setTimeout>>());
-  // trmx-99 (FR-7b): panes whose activity is OSC-133-owned (the poller's session:activity is ignored for
-  // them, sticky per session); their stable onPromptMarker callbacks; and the per-pane exit-flash timers.
-  const osc133PanesRef = useRef(new Set<PaneId>());
-  const promptMarkerCbsRef = useRef(new Map<PaneId, (t: PromptTransition) => void>());
-  const activityFlashTimersRef = useRef(new Map<PaneId, ReturnType<typeof setTimeout>>());
   const renamingRef = useRef(renamingTabId); // out-of-render read for the onReady focus guard
   const badgingRef = useRef(badgingPaneId); // out-of-render read for the onReady focus guard (trmx-90)
+  // trmx-248 (grill H6): ONE record per pane, replacing the fifteen parallel per-pane Maps/Sets
+  // this component used to carry. `paneRuntime.ts` owns the teardown contract; App keeps the two
+  // halves a ref cannot own — the React state removals and the backend close.
+  const runtimesRef = useRef(createPaneRuntimes());
+  // Get-or-create. `makeCwdStore()` is built only on the miss: `paneOf` is called several times per
+  // pane on every render (the callback caches, `storeFor`), and eagerly passing a fresh store to
+  // `ensure` allocated one plus its closures per call just to throw it away.
+  const paneOf = (paneId: PaneId): PaneRuntime =>
+    runtimesRef.current.get(paneId) ?? runtimesRef.current.ensure(paneId, makeCwdStore());
+
+  // Update an EXISTING record; a write for an unknown pane is dropped.
+  //
+  // Deliberately non-creating. Most of the writes this replaced were `Map.delete(paneId)` clears —
+  // deregistering a find bar, dropping a pending script for a pane that closed mid-attach — and a
+  // creating writer turns each of those into a resurrection: closing a pane with an open FindBar
+  // disposes its record, then FindBar cleanup calls `onRegister(null)` and immediately rebuilds an
+  // empty one. Nothing ever removes it, so every closed pane leaks a record. Panes that are alive
+  // always have a record already (`readyFor`/`storeFor` create it at render), so dropping the write
+  // costs nothing. The genuine before-first-render writes use `seedPaneField`.
+  const setPaneField = <K extends keyof PaneRuntime>(
+    paneId: PaneId,
+    field: K,
+    value: PaneRuntime[K],
+  ) => {
+    const runtime = runtimesRef.current.get(paneId);
+    if (runtime) runtime[field] = value;
+  };
+
+  // Create-if-absent, then write. For the four writes aimed at a pane that has NOT rendered yet:
+  // `pendingCwd` and `pendingScript` are both stored against the id of a pane that is about to be
+  // opened. Routing these through `setPaneField` silently drops them — it typechecks and the
+  // startup script simply never sources.
+  const seedPaneField = <K extends keyof PaneRuntime>(
+    paneId: PaneId,
+    field: K,
+    value: PaneRuntime[K],
+  ) => {
+    paneOf(paneId)[field] = value;
+  };
+
   const openSearchRef = useRef(openSearchPanes); // out-of-render read for the onReady focus guard (trmx-98)
-  const searchControllersRef = useRef(new Map<PaneId, SearchController>()); // trmx-98: per-pane find bars
   // trmx-144: pendingClose's mirror (the gates and the keydown handler run out-of-render), kept in
   // sync by setPendingCloseSynced; and whether a quit is already authorized — set the moment a gated
   // (or bypassed) gesture reaches closeWindow, so the backend's close:requested round-trip for that
@@ -726,9 +740,8 @@ export function App({
       const opened = createTabRef.current();
       if (startupPath && !startupFiredRef.current) {
         startupFiredRef.current = true;
-        pendingScriptRef.current.set(
-          opened.paneId,
-          listScripts(invoke).then((scripts) => {
+        seedPaneField(
+          opened.paneId, "pendingScript", listScripts(invoke).then((scripts) => {
             const match = scripts.find((entry) => entry.relPath === startupPath);
             if (!match) {
               log.warn(
@@ -760,14 +773,10 @@ export function App({
 
   // This pane's cwd store, created lazily at RENDER time — so it exists from the terminal's mount
   // and an OSC 7 report (or a cwd-inheritance capture) can land before the session attaches.
-  const storeFor = (paneId: PaneId): CwdStore => {
-    let store = storesRef.current.get(paneId);
-    if (!store) {
-      store = makeCwdStore();
-      storesRef.current.set(paneId, store);
-    }
-    return store;
-  };
+  // trmx-248: this is the ONE place a pane's runtime record is created. Everywhere else reads with
+  // `.get()` and handles `undefined` exactly as the old Maps' `.get()` did — so "no pane" stays
+  // distinguishable from "pane with an unset field".
+  const storeFor = (paneId: PaneId): CwdStore => paneOf(paneId).cwd;
 
   // Whether (tabId, paneId) is still live — the orphan guard's test at attach-resolution time.
   const paneAlive = (tabId: number, paneId: PaneId): boolean => {
@@ -782,10 +791,10 @@ export function App({
   // it. A freshly-mounted pane that IS the active tab's focused pane grabs the keyboard (so a split
   // focuses its new pane the moment it mounts).
   const readyFor = (tabId: number, paneId: PaneId): ((handle: TerminalHandle) => void) => {
-    let cb = readyCbsRef.current.get(paneId);
+    let cb = paneOf(paneId).onReady;
     if (!cb) {
       cb = (handle) => {
-        handlesRef.current.set(paneId, handle);
+        setPaneField(paneId, "handle", handle);
         const s = stateRef.current;
         const activeTab = s.tabs.find((t) => t.tabId === s.activeTabId);
         if (
@@ -797,22 +806,22 @@ export function App({
         ) {
           (handle.terminal as unknown as { focus?: () => void } | undefined)?.focus?.();
         }
-        const epoch = (attachEpochRef.current.get(paneId) ?? 0) + 1;
-        attachEpochRef.current.set(paneId, epoch);
+        const epoch = (runtimesRef.current.get(paneId)?.attachEpoch ?? 0) + 1;
+        setPaneField(paneId, "attachEpoch", epoch);
         seamsRef.current
-          .attach(handle, { cwd: pendingCwdRef.current.get(paneId) })
+          .attach(handle, { cwd: runtimesRef.current.get(paneId)?.pendingCwd })
           .then((info) => {
-            const epochCurrent = attachEpochRef.current.get(paneId) === epoch;
+            const epochCurrent = runtimesRef.current.get(paneId)?.attachEpoch === epoch;
             if (paneAlive(tabId, paneId) && epochCurrent) {
-              sessionsRef.current.set(paneId, info.sessionId);
+              setPaneField(paneId, "sessionId", info.sessionId);
               dispatch({ kind: "attachSession", tabId, paneId, sessionId: info.sessionId, title: info.title });
               // trmx-93 (FR-5): if a script is pending for this pane (a picker run, or the startup
               // script), source it now that the session is live. Consumed ONLY on the current epoch so
               // a superseded StrictMode attach can't steal it; awaits the stored promise (startup's
               // async resolution), then sends `source '<abs>'` + CR through the sendInput seam.
-              const pendingScript = pendingScriptRef.current.get(paneId);
+              const pendingScript = runtimesRef.current.get(paneId)?.pendingScript;
               if (pendingScript) {
-                pendingScriptRef.current.delete(paneId);
+                setPaneField(paneId, "pendingScript", undefined);
                 void pendingScript.then((resolved) => {
                   if (resolved && paneAlive(tabId, paneId)) {
                     seamsRef.current.sendInput(info.sessionId, `${resolved.sourceLine}\r`).catch(
@@ -832,24 +841,24 @@ export function App({
               // trmx-93: if the pane is truly DEAD (not merely a stale epoch on a still-live pane),
               // drop its pending script — no later attach will consume it. A stale-epoch-but-alive
               // pane keeps it so the current-epoch attach still sources it.
-              if (!paneAlive(tabId, paneId)) pendingScriptRef.current.delete(paneId);
+              if (!paneAlive(tabId, paneId)) setPaneField(paneId, "pendingScript", undefined);
             }
           })
           .catch((err: unknown) => {
             // Open failed (no backend in `pnpm dev`, or a real spawn error).
             log.error("pane attach failed", err);
-            pendingScriptRef.current.delete(paneId); // trmx-93: no session → the script never sources
+            setPaneField(paneId, "pendingScript", undefined); // trmx-93: no session → the script never sources
             // trmx-237 (grill H4): the pane used to keep its placeholder title with a dead session and
             // say NOTHING — keystrokes went nowhere and nothing explained why. Write the reason into the
             // terminal the user is looking at. The SAME epoch + liveness guard as the success path above:
             // without it a superseded StrictMode rejection could scribble an error into a pane whose
             // later attach succeeded.
-            const epochCurrent = attachEpochRef.current.get(paneId) === epoch;
+            const epochCurrent = runtimesRef.current.get(paneId)?.attachEpoch === epoch;
             if (!paneAlive(tabId, paneId) || !epochCurrent) return;
             writePaneNotice(handle, `could not start a shell: ${formatAttachError(err)}`);
           });
       };
-      readyCbsRef.current.set(paneId, cb);
+      paneOf(paneId).onReady = cb;
     }
     return cb;
   };
@@ -857,7 +866,7 @@ export function App({
   // This pane's onOscTitle, cached like `readyFor`. A program's OSC 0/2 title lands in the pane's
   // `osc` slot; the EMPTY string is the escape's reset (printf '\e]2;\a') and clears the slot.
   const oscTitleFor = (tabId: number, paneId: PaneId): ((title: string) => void) => {
-    let cb = oscTitleCbsRef.current.get(paneId);
+    let cb = paneOf(paneId).onOscTitle;
     if (!cb) {
       cb = (title) => {
         dispatch({
@@ -868,7 +877,7 @@ export function App({
           value: title === "" ? null : title,
         });
       };
-      oscTitleCbsRef.current.set(paneId, cb);
+      paneOf(paneId).onOscTitle = cb;
     }
     return cb;
   };
@@ -879,12 +888,12 @@ export function App({
   // The per-pane closure is the load-bearing SCOPING — a `printf` in a BACKGROUND pane badges that
   // pane, never the focused one (the badge is orthogonal to the tab label by construction).
   const badgeFor = (tabId: number, paneId: PaneId): ((badge: string | null) => void) => {
-    let cb = badgeCbsRef.current.get(paneId);
+    let cb = paneOf(paneId).onBadge;
     if (!cb) {
       cb = (badge) => {
         dispatch({ kind: "setBadge", tabId, paneId, badge });
       };
-      badgeCbsRef.current.set(paneId, cb);
+      paneOf(paneId).onBadge = cb;
     }
     return cb;
   };
@@ -901,11 +910,11 @@ export function App({
     paneId: PaneId,
     { state, deadline }: ActivityTransition,
   ) => {
-    activityStatesRef.current.set(paneId, state);
-    const prior = activityTimersRef.current.get(paneId);
+    setPaneField(paneId, "activity", state);
+    const prior = runtimesRef.current.get(paneId)?.activityTimer;
     if (prior !== undefined) {
       clearTimeout(prior);
-      activityTimersRef.current.delete(paneId);
+      setPaneField(paneId, "activityTimer", undefined);
     }
     const now = Date.now();
     // trmx-159: fold the class-layer deadline (unknown-fallback / light-off / window-close) with the
@@ -915,11 +924,11 @@ export function App({
       deadline === null ? classAt : classAt === null ? deadline : Math.min(deadline, classAt);
     if (armAt !== null) {
       const timer = setTimeout(() => {
-        activityTimersRef.current.delete(paneId);
-        const current = activityStatesRef.current.get(paneId) ?? initialActivity();
+        setPaneField(paneId, "activityTimer", undefined);
+        const current = runtimesRef.current.get(paneId)?.activity ?? initialActivity();
         applyActivityTransition(tabId, paneId, onDeadline(current, Date.now()));
       }, Math.max(0, armAt - now));
-      activityTimersRef.current.set(paneId, timer);
+      setPaneField(paneId, "activityTimer", timer);
     }
     // trmx-159: the visible line/dot follow `lightActive` (executing-user-work), not raw visibility;
     // the close guard still reads isBusy(state) (rawBusy) via busyLookup, unchanged.
@@ -933,13 +942,13 @@ export function App({
     output: (sessionId, byteLength) => {
       const hit = paneBySessionId(stateRef.current, sessionId);
       if (!hit) return;
-      const current = activityStatesRef.current.get(hit.paneId) ?? initialActivity();
+      const current = runtimesRef.current.get(hit.paneId)?.activity ?? initialActivity();
       applyActivityTransition(hit.tab.tabId, hit.paneId, onActivityOutput(current, byteLength, Date.now()));
     },
     input: (sessionId, data) => {
       const hit = paneBySessionId(stateRef.current, sessionId);
       if (!hit) return;
-      const current = activityStatesRef.current.get(hit.paneId) ?? initialActivity();
+      const current = runtimesRef.current.get(hit.paneId)?.activity ?? initialActivity();
       applyActivityTransition(hit.tab.tabId, hit.paneId, onActivityInput(current, data, Date.now()));
     },
   };
@@ -947,11 +956,11 @@ export function App({
   // trmx-99 (FR-7b): start / cancel a pane's exit-code flash. The flashing set drives the overlay
   // re-render; the timer clears it after FLASH_MS. A new command (C) cancels a stale flash.
   const startFlash = (paneId: PaneId) => {
-    const prior = activityFlashTimersRef.current.get(paneId);
+    const prior = runtimesRef.current.get(paneId)?.flashTimer;
     if (prior !== undefined) clearTimeout(prior);
     setFlashingPanes((prev) => new Set(prev).add(paneId));
     const timer = setTimeout(() => {
-      activityFlashTimersRef.current.delete(paneId);
+      setPaneField(paneId, "flashTimer", undefined);
       setFlashingPanes((prev) => {
         if (!prev.has(paneId)) return prev;
         const next = new Set(prev);
@@ -959,13 +968,13 @@ export function App({
         return next;
       });
     }, FLASH_MS);
-    activityFlashTimersRef.current.set(paneId, timer);
+    setPaneField(paneId, "flashTimer", timer);
   };
   const clearFlashFor = (paneId: PaneId) => {
-    const prior = activityFlashTimersRef.current.get(paneId);
+    const prior = runtimesRef.current.get(paneId)?.flashTimer;
     if (prior !== undefined) {
       clearTimeout(prior);
-      activityFlashTimersRef.current.delete(paneId);
+      setPaneField(paneId, "flashTimer", undefined);
     }
     setFlashingPanes((prev) => {
       if (!prev.has(paneId)) return prev;
@@ -981,18 +990,18 @@ export function App({
   // machine's `busyChanged` (so an `A`-while-running clears the line), a `C` cancels a stale flash, and a
   // failed command's exit code flashes the error color.
   const promptMarkerFor = (tabId: number, paneId: PaneId): ((t: PromptTransition) => void) => {
-    let cb = promptMarkerCbsRef.current.get(paneId);
+    let cb = paneOf(paneId).onPromptMarker;
     if (!cb) {
       cb = (transition) => {
-        osc133PanesRef.current.add(paneId);
+        setPaneField(paneId, "osc133", true);
         if (transition.busy) clearFlashFor(paneId); // a new command wins over a leftover flash
         if (transition.busyChanged) {
-          const current = activityStatesRef.current.get(paneId) ?? initialActivity();
+          const current = runtimesRef.current.get(paneId)?.activity ?? initialActivity();
           applyActivityTransition(tabId, paneId, onBusyChange(current, transition.busy, Date.now()));
         }
         if (shouldFlash(transition.exitCode)) startFlash(paneId);
       };
-      promptMarkerCbsRef.current.set(paneId, cb);
+      paneOf(paneId).onPromptMarker = cb;
     }
     return cb;
   };
@@ -1000,29 +1009,19 @@ export function App({
   // Dispose one pane's resources: drop all its paneId-keyed maps and close its PTY (unless the
   // shell already exited). Shared by pane-close, pty:exited, and whole-tab close — one path, no leak.
   const disposePaneResources = (paneId: PaneId, opts?: { alreadyExited?: boolean }) => {
-    const sessionId = sessionsRef.current.get(paneId);
-    sessionsRef.current.delete(paneId);
-    handlesRef.current.delete(paneId);
-    storesRef.current.delete(paneId);
-    pendingCwdRef.current.delete(paneId);
-    pendingScriptRef.current.delete(paneId); // trmx-93: a pane closed before its script sourced
-    readyCbsRef.current.delete(paneId);
-    oscTitleCbsRef.current.delete(paneId);
-    badgeCbsRef.current.delete(paneId);
-    attachEpochRef.current.delete(paneId);
-    // trmx-91: cancel this pane's pending activity timer and drop its debounce state (no stray fire
-    // into a dead pane, no leaked ActivityState).
-    const activityTimer = activityTimersRef.current.get(paneId);
-    if (activityTimer !== undefined) clearTimeout(activityTimer);
-    activityTimersRef.current.delete(paneId);
-    activityStatesRef.current.delete(paneId);
-    // trmx-99 (FR-7b): drop this pane's OSC 133 latch + marker cb + exit-flash (a closed pane leaves no
-    // sticky source, no stale flash timer). The latch resets so a reused pane re-detects integration.
-    osc133PanesRef.current.delete(paneId);
-    promptMarkerCbsRef.current.delete(paneId);
-    clearFlashFor(paneId);
-    // trmx-98: drop this pane's find-bar state so a closed pane leaves no open bar / stale controller.
-    searchControllersRef.current.delete(paneId);
+    // trmx-248: one call drops the record and clears BOTH timers (activity + exit-flash), and hands
+    // back the session id captured before the drop. What it deliberately does not do is the two
+    // halves a ref-held store cannot own — the React state removals below — and the backend close.
+    const { sessionId } = runtimesRef.current.dispose(paneId);
+    setFlashingPanes((prev) => {
+      if (!prev.has(paneId)) return prev;
+      const next = new Set(prev);
+      next.delete(paneId);
+      return next;
+    });
+    // trmx-98: drop this pane's find-bar state so a closed pane leaves no open bar. Load-bearing:
+    // `openSearchRef.current.size` gates focus-follows-mouse GLOBALLY, so a stale entry would
+    // suppress it for every pane.
     setOpenSearchPanes((prev) => {
       if (!prev.has(paneId)) return prev;
       const next = new Set(prev);
@@ -1048,7 +1047,7 @@ export function App({
   // process hint, falling back to the pane's effective title). PaneIds are global-unique, so the
   // cross-tab scan can't alias.
   const busyLookup: BusyLookup = {
-    activityState: (paneId) => activityStatesRef.current.get(paneId),
+    activityState: (paneId) => runtimesRef.current.get(paneId)?.activity,
     displayName: (paneId) => {
       for (const tab of stateRef.current.tabs) {
         const pane = tab.panes[paneId];
@@ -1111,7 +1110,7 @@ export function App({
     // bare question — nothing is "still running").
     if (!bypassesConfirm(opts)) {
       if (pendingCloseRef.current !== null) return; // a confirm is already up — swallow the repeat
-      const busy = paneIsBusy(activityStatesRef.current.get(paneId), tab.panes[paneId].activityVisible);
+      const busy = paneIsBusy(runtimesRef.current.get(paneId)?.activity, tab.panes[paneId].activityVisible);
       if (shouldConfirmClose(makeSettingsStore().get("terminal.confirmClose"), busy, "user")) {
         const name = busy ? busyLookup.displayName(paneId)?.trim() : undefined;
         setPendingCloseSynced({ kind: "pane", tabId, paneId, names: name ? [name] : [] });
@@ -1142,8 +1141,8 @@ export function App({
     const { tabId, paneId } = reservation.reserveTab();
     const activeTab =
       s.activeTabId !== null ? s.tabs.find((t) => t.tabId === s.activeTabId) : undefined;
-    const activeStore = activeTab ? storesRef.current.get(activeTab.focusedPaneId) : undefined;
-    pendingCwdRef.current.set(paneId, cwdOverride ?? activeStore?.get() ?? undefined);
+    const activeStore = activeTab ? runtimesRef.current.get(activeTab.focusedPaneId)?.cwd : undefined;
+    seedPaneField(paneId, "pendingCwd", cwdOverride ?? activeStore?.get() ?? undefined);
     dispatch({ kind: "openTab" });
     return { tabId, paneId };
   };
@@ -1165,8 +1164,8 @@ export function App({
     // trmx-224: reserve AFTER the refusal checks — a refused split reserves nothing (the
     // 1:1 reservation-per-dispatch pairing; splitPane advances only the pane counter).
     const { paneId } = reservation.reservePane();
-    const focusedStore = storesRef.current.get(tab.focusedPaneId);
-    pendingCwdRef.current.set(paneId, focusedStore?.get() ?? undefined);
+    const focusedStore = runtimesRef.current.get(tab.focusedPaneId)?.cwd;
+    seedPaneField(paneId, "pendingCwd", focusedStore?.get() ?? undefined);
     dispatch({ kind: "splitPane", tabId: tab.tabId, dir: treeDir });
     return { paneId };
   };
@@ -1183,7 +1182,7 @@ export function App({
     // the old bail-before-set stale-entry dance is now structural.
     const pending = Promise.resolve<{ sourceLine: string } | null>({ sourceLine: entry.sourceLine });
     const opened = surface === "tab" ? requestNewTab() : requestSplit(surface);
-    if (opened) pendingScriptRef.current.set(opened.paneId, pending);
+    if (opened) seedPaneField(opened.paneId, "pendingScript", pending);
   };
 
   // trmx-224: deliver one service batch — ONE synchronous block (reserve→seed→dispatch per
@@ -1281,7 +1280,7 @@ export function App({
       if (!tab) return;
       const paneId = tab.focusedPaneId;
       const now = Date.now();
-      const current = activityStatesRef.current.get(paneId) ?? initialActivity();
+      const current = runtimesRef.current.get(paneId)?.activity ?? initialActivity();
       const renderedActive = lightActive(current, now) || flashingPanes.has(paneId);
       if (renderedActive) clearFlashFor(paneId);
       applyActivityTransition(
@@ -1320,7 +1319,7 @@ export function App({
     clearScrollback: () => {
       const tab = getActiveTab();
       if (!tab) return;
-      const handle = handlesRef.current.get(tab.focusedPaneId);
+      const handle = runtimesRef.current.get(tab.focusedPaneId)?.handle;
       (handle?.terminal as unknown as { clear?: () => void } | undefined)?.clear?.();
     },
     // trmx-98 (FR-1.5): open the focused pane's find bar (or focus it if already open). The bar renders
@@ -1329,21 +1328,21 @@ export function App({
       const tab = getActiveTab();
       if (!tab) return;
       const paneId = tab.focusedPaneId;
-      const controller = searchControllersRef.current.get(paneId);
+      const controller = runtimesRef.current.get(paneId)?.search;
       if (controller) controller.focus();
       else setOpenSearchPanes((prev) => new Set(prev).add(paneId));
     },
     searchNext: () => {
       const tab = getActiveTab();
-      if (tab) searchControllersRef.current.get(tab.focusedPaneId)?.next();
+      if (tab) runtimesRef.current.get(tab.focusedPaneId)?.search?.next();
     },
     searchPrev: () => {
       const tab = getActiveTab();
-      if (tab) searchControllersRef.current.get(tab.focusedPaneId)?.prev();
+      if (tab) runtimesRef.current.get(tab.focusedPaneId)?.search?.prev();
     },
     closeSearch: () => {
       const tab = getActiveTab();
-      if (tab) searchControllersRef.current.get(tab.focusedPaneId)?.close();
+      if (tab) runtimesRef.current.get(tab.focusedPaneId)?.search?.close();
     },
     openSettings: () => {
       invoke("open_settings_window", { section: null }).catch((err: unknown) =>
@@ -1366,7 +1365,7 @@ export function App({
     selectTheme: (id) => makeSettingsStore().set("appearance.theme", id),
     runScript: (sourceLine) => {
       const tab = getActiveTab();
-      const sessionId = tab ? sessionsRef.current.get(tab.focusedPaneId) : undefined;
+      const sessionId = tab ? runtimesRef.current.get(tab.focusedPaneId)?.sessionId : undefined;
       if (sessionId !== undefined) {
         seamsRef.current.sendInput(sessionId, `${sourceLine}\r`).catch((err: unknown) =>
           log.error("run script failed", err),
@@ -1487,7 +1486,7 @@ export function App({
         });
         // trmx-159: the 1 Hz name hint also reclassifies the current epoch — recovering a still-unknown
         // epoch and catching an in-epoch program takeover (name-only ⇒ partial-metadata fail-safe).
-        const current = activityStatesRef.current.get(hit.paneId) ?? initialActivity();
+        const current = runtimesRef.current.get(hit.paneId)?.activity ?? initialActivity();
         applyActivityTransition(
           hit.tab.tabId,
           hit.paneId,
@@ -1562,12 +1561,12 @@ export function App({
       } else if (!busy) {
         dispatch({ kind: "setForeground", tabId: hit.tab.tabId, paneId: hit.paneId, name: null });
       }
-      const current = activityStatesRef.current.get(hit.paneId) ?? initialActivity();
+      const current = runtimesRef.current.get(hit.paneId)?.activity ?? initialActivity();
       // trmx-159 (weakens the trmx-99 latch): once a pane is OSC-133-owned, the OSC 133 machine OWNS
       // rawBusy — so IGNORE the poller's `busy` field (do not feed it to onBusyChange). But still
       // CONSUME its classification metadata: the poller's name-bearing rise classifies the epoch that
       // the `C` marker opened `unknown`. rawBusy stays provably with OSC 133; only the class is adopted.
-      if (osc133PanesRef.current.has(hit.paneId)) {
+      if ((runtimesRef.current.get(hit.paneId)?.osc133 ?? false)) {
         if (meta) {
           applyActivityTransition(hit.tab.tabId, hit.paneId, onClassifyMetadata(current, meta, Date.now()));
         }
@@ -1602,7 +1601,7 @@ export function App({
     return observeSessionNotice(({ session_id, text }) => {
       const hit = paneBySessionId(stateRef.current, session_id);
       if (!hit) return;
-      const handle = handlesRef.current.get(hit.paneId);
+      const handle = runtimesRef.current.get(hit.paneId)?.handle;
       if (handle) writePaneNotice(handle, text);
     });
   }, [observeSessionNotice]);
@@ -1626,14 +1625,14 @@ export function App({
           buildLsSnapshot(
             stateRef.current.tabs,
             stateRef.current.activeTabId,
-            (paneId) => storesRef.current.get(paneId)?.get() ?? null,
+            (paneId) => runtimesRef.current.get(paneId)?.cwd?.get() ?? null,
             paneBusy,
           ),
         sendText: (pane, text) => {
           const active = getActiveTab();
           const paneId = pane === "focused" ? active?.focusedPaneId : Number(pane);
           if (paneId === undefined || Number.isNaN(paneId)) return false;
-          const sessionId = sessionsRef.current.get(paneId);
+          const sessionId = runtimesRef.current.get(paneId)?.sessionId;
           if (sessionId === undefined) return false;
           seamsRef.current.sendInput(sessionId, text).catch(() => {});
           return true;
@@ -1800,7 +1799,7 @@ export function App({
     if (activeFocusedPaneId === null) return;
     // trmx-98: an open find bar on the focused pane owns the keyboard — don't grab it back to the terminal.
     if (openSearchPanes.has(activeFocusedPaneId)) return;
-    const terminal = handlesRef.current.get(activeFocusedPaneId)?.terminal;
+    const terminal = runtimesRef.current.get(activeFocusedPaneId)?.handle?.terminal;
     (terminal as unknown as { focus?: () => void } | undefined)?.focus?.();
   }, [state.activeTabId, activeFocusedPaneId, renamingTabId, badgingPaneId, openSearchPanes]);
 
@@ -1929,14 +1928,12 @@ export function App({
   // Cleanup on unmount: a mid-drag unmount must not leave a queued frame to dispatch into a dead
   // reducer, and (trmx-91/99) no pending activity OR flash timer may fire a setState after unmount.
   useEffect(() => {
-    const activityTimers = activityTimersRef.current;
-    const flashTimers = activityFlashTimersRef.current;
+    const runtimes = runtimesRef.current;
     return () => {
       if (frameCancelRef.current) frameCancelRef.current();
-      for (const timer of activityTimers.values()) clearTimeout(timer);
-      activityTimers.clear();
-      for (const timer of flashTimers.values()) clearTimeout(timer);
-      flashTimers.clear();
+      // trmx-248: timers ONLY — StrictMode replays this cleanup while the App is still mounted, so
+      // dropping records here would wipe pending cwd, callbacks, sessions and attach epochs.
+      runtimes.clearAllTimers();
     };
   }, []);
 
@@ -2042,7 +2039,7 @@ export function App({
       } catch {
         /* no active pointer to capture — the shield still isolates xterm */
       }
-      (handlesRef.current.get(p.paneId)?.terminal as unknown as { clearSelection?: () => void } | undefined)?.clearSelection?.();
+      (runtimesRef.current.get(p.paneId)?.handle?.terminal as unknown as { clearSelection?: () => void } | undefined)?.clearSelection?.();
       suppressClickRef.current = true;
       setPaneDragging(true);
     }
@@ -2180,7 +2177,7 @@ export function App({
                 // change re-renders App and re-reads it, and a badge only ever lands on a live
                 // terminal. trmx-149: font SIZING no longer needs cell metrics — the iTerm2 fit-to-box
                 // model runs on the pane rect itself (BadgeOverlay gets rect.width/height below).
-                const metrics = handlesRef.current.get(paneId)?.terminal as unknown as
+                const metrics = runtimesRef.current.get(paneId)?.handle?.terminal as unknown as
                   | { cols?: number }
                   | undefined;
                 const cellsWide = metrics?.cols ?? FALLBACK_BADGE_COLS;
@@ -2236,7 +2233,7 @@ export function App({
                       dispatch({ kind: "focusPane", tabId: tab.tabId, paneId });
                       // Mirror the click path: the hovered pane's terminal takes the keyboard
                       // (the suspension set above already covers every onReady-guard condition).
-                      const handle = handlesRef.current.get(paneId);
+                      const handle = runtimesRef.current.get(paneId)?.handle;
                       (
                         handle?.terminal as unknown as { focus?: () => void } | undefined
                       )?.focus?.();
@@ -2293,9 +2290,9 @@ export function App({
                     {/* trmx-98 (FR-1.5): the per-pane find bar. Rendered only when open AND the pane's
                         terminal handle (with its search addon) is ready. */}
                     {openSearchPanes.has(paneId) &&
-                      handlesRef.current.get(paneId)?.search &&
+                      runtimesRef.current.get(paneId)?.handle?.search &&
                       (() => {
-                        const search = handlesRef.current.get(paneId)!.search;
+                        const search = runtimesRef.current.get(paneId)!.handle!.search;
                         return (
                           <FindBar
                             key={`find-bar-${paneId}`}
@@ -2309,14 +2306,14 @@ export function App({
                                 return next;
                               });
                               (
-                                handlesRef.current.get(paneId)?.terminal as unknown as
+                                runtimesRef.current.get(paneId)?.handle?.terminal as unknown as
                                   | { focus?: () => void }
                                   | undefined
                               )?.focus?.();
                             }}
                             onRegister={(c) => {
-                              if (c) searchControllersRef.current.set(paneId, c);
-                              else searchControllersRef.current.delete(paneId);
+                              if (c) setPaneField(paneId, "search", c);
+                              else setPaneField(paneId, "search", undefined);
                             }}
                           />
                         );

@@ -31,9 +31,11 @@ cd "$ROOT"
 WATCHED=(
   # 439 non-test lines after the trmx-243 split (was 1969). +~9% headroom.
   "crates/termixion-tauri/src/main.rs:480"
-  # 2582 lines after trmx-247 moved the window-lifecycle helpers into ipc/ (was 2616 -> budget 2670).
-  # Lowered with the file, per the ratchet's own rule; trmx-248 and trmx-254 will cut it further.
-  "app/src/App.tsx:2640"
+  # 2579 lines after trmx-248 collapsed the fifteen per-pane ref containers (14 Maps + 1 Set) into
+  # one PaneRuntime record (was 2582 -> budget 2640). Barely a reduction, and that is expected: the
+  # win here is one teardown contract instead of fifteen hand-kept deletes, not line count. The real
+  # drop comes in trmx-254, when the record moves out of App.tsx entirely.
+  "app/src/App.tsx:2632"
 )
 
 # Non-test line count. For `.rs` this SKIPS each top-level `#[cfg(test)] mod … { … }` block and

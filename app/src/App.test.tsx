@@ -2765,6 +2765,55 @@ describe("focus follows mouse (trmx-225)", () => {
     await expectHoverInert();
   });
 
+  // trmx-248: the other half of that suspension — it has to END when the pane goes away.
+  // `openSearchPanes` gates focus-follows-mouse GLOBALLY (one entry suppresses hover for every
+  // pane), so a pane that closes while its find bar is open must take its entry with it. The entry
+  // is App-owned React state rather than part of the pane runtime, so no registry unit test can
+  // reach it — `disposePaneResources` has to clear it by hand.
+  it("a pane closing with its find bar OPEN stops suppressing focus-follows-mouse (trmx-248)", async () => {
+    const seams = renderApp();
+    await resolveAttach(seams.calls[0], { sessionId: 11, title: "one" });
+    fireEvent.keyDown(document.body, { key: "d", metaKey: true }); // pane 2
+    await resolveAttach(seams.calls[1], { sessionId: 22, title: "two" });
+    fireEvent.keyDown(document.body, { key: "d", metaKey: true }); // pane 3
+    await resolveAttach(seams.calls[2], { sessionId: 33, title: "three" });
+
+    // Focus pane 1 and open its find bar: hover is now globally suppressed.
+    await act(async () => {
+      seams.tabsAction.fire("pane-left");
+    });
+    await act(async () => {
+      seams.tabsAction.fire("pane-left");
+    });
+    expect(focusedHost(1)).toBe(true);
+    fireEvent.keyDown(document.body, { key: "f", metaKey: true });
+    const pane3FocusWhileOpen = recorder.mounts[2].handle.terminal.focus as ReturnType<typeof vi.fn>;
+    const beforeSuppressed = pane3FocusWhileOpen.mock.calls.length;
+    await act(async () => {
+      hover(3, 60, 60);
+    });
+    expect(pane3FocusWhileOpen.mock.calls.length).toBe(beforeSuppressed); // precondition: suppressed
+
+    // Pane 1's shell exits, taking the pane down while its find bar is still open.
+    await act(async () => {
+      seams.ptyExited.fire(11);
+    });
+    expect(screen.queryByTestId("pane-host-1")).not.toBeInTheDocument();
+
+    // The stale entry is gone, so hover works again for the SURVIVING panes.
+    await act(async () => {
+      seams.tabsAction.fire("pane-left");
+    });
+    expect(focusedHost(2)).toBe(true);
+    const pane3Focus = recorder.mounts[2].handle.terminal.focus as ReturnType<typeof vi.fn>;
+    const before = pane3Focus.mock.calls.length;
+    await act(async () => {
+      hover(3, 40, 40);
+    });
+    expect(focusedHost(3)).toBe(true);
+    expect(pane3Focus.mock.calls.length).toBeGreaterThan(before);
+  });
+
   it("suspends while a close-confirm dialog is pending", async () => {
     const seams = renderApp();
     await splitAndFocusPane1(seams);
