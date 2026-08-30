@@ -45,14 +45,12 @@ import { NAMED_BUCKETS, sessionsFrom, type AiSession } from "./chrome/aiSessionB
 import { TabStrip } from "./tabs/TabStrip";
 import { barLayoutFor, labelOrientationFor } from "./tabs/barLayout";
 import {
-  canSplitFocused,
   initialTabsState,
   paneBySessionId,
   reduceTabs,
 } from "./tabs/tabState";
 import {
   canDropEdge,
-  MIN_PANE_PX,
   solveRects,
   type DividerRect,
   type PaneId,
@@ -61,7 +59,6 @@ import {
 } from "./panes/layoutTree";
 import { grabOffsetOf, ratioForDrag, RESET_RATIO } from "./panes/dividerDrag";
 import { dropZone, type DropZone } from "./panes/dropZone";
-import { nextPane, paneInDirection, type Direction } from "./panes/paneNav";
 import { activeDividerSegments, dividerKey } from "./panes/paneChrome";
 import { BadgeOverlay } from "./panes/BadgeOverlay";
 import { ActivityLineOverlay } from "./panes/ActivityLineOverlay";
@@ -94,7 +91,7 @@ import { realObserveServiceNudge, type ServiceNudgeObservation } from "./ipc/ser
 import { makeIdReservation, type IdReservation } from "./tabs/idReservation";
 import { shouldFocusOnHover } from "./panes/focusFollowsMouse";
 import { ScriptPicker } from "./scripts/ScriptPicker";
-import { listScripts, type ScriptEntry } from "./scripts/scriptsBackend";
+import { listScripts } from "./scripts/scriptsBackend";
 import { buildCommands, type Command, type CommandContext } from "./commands/registry";
 import { createDispatcher, type Dispatcher } from "./commands/dispatch";
 import { FULL_DEFAULT_KEYS, mergeKeymap } from "./commands/keymapDispatch";
@@ -109,6 +106,7 @@ import { usePaneCallbacks } from "./app/usePaneCallbacks";
 import { usePaneActivity } from "./app/usePaneActivity";
 import { useCloseGuard } from "./app/useCloseGuard";
 import { useCommandContext } from "./app/useCommandContext";
+import { usePaneOps } from "./app/usePaneOps";
 import { realSetWindowTitle } from "./terminal/windowTitle";
 import { UpdateAuthorityHost } from "./update/UpdateAuthorityHost";
 import { log } from "./ipc/logSink";
@@ -531,111 +529,17 @@ export function App({
     setPendingCloseSynced,
     closeTabInternal, closePaneInternal, confirmPendingClose, cancelPendingClose, busyLookup,
   } = close;
-  const createTab = (cwdOverride?: string): { tabId: number; paneId: number } => {
-    const s = stateRef.current;
-    const { tabId, paneId } = reservation.reserveTab();
-    const activeTab =
-      s.activeTabId !== null ? s.tabs.find((t) => t.tabId === s.activeTabId) : undefined;
-    const activeStore = activeTab ? runtimesRef.current.get(activeTab.focusedPaneId)?.cwd : undefined;
-    seedPaneField(paneId, "pendingCwd", cwdOverride ?? activeStore?.get() ?? undefined);
-    dispatch({ kind: "openTab" });
-    return { tabId, paneId };
-  };
-  createTabRef.current = createTab;
-  // The public creator stays PARAMETERLESS: it is wired as an event handler (the tab strip's
-  // "+" onClick), and a parameter would receive the click event (trmx-224 regression).
-  const requestNewTab = () => createTab();
-
-  // trmx-84: split the active tab's focused pane. `right` → a row split (side by side), `below` → a
-  // column split (stacked). Refused (soft no-op) when the result would go below the min pane size.
-  // The new pane inherits the focused pane's cwd and takes focus (readyFor focuses it on mount).
-  const requestSplit = (dir: "right" | "below"): { paneId: number } | null => {
-    const s = stateRef.current;
-    if (s.activeTabId === null) return null;
-    const tab = s.tabs.find((t) => t.tabId === s.activeTabId);
-    if (!tab) return null;
-    const treeDir: SplitDir = dir === "right" ? "row" : "column";
-    if (!canSplitFocused(tab, treeDir, boundsRef.current, MIN_PANE_PX)) return null; // won't fit — no-op
-    // trmx-224: reserve AFTER the refusal checks — a refused split reserves nothing (the
-    // 1:1 reservation-per-dispatch pairing; splitPane advances only the pane counter).
-    const { paneId } = reservation.reservePane();
-    const focusedStore = runtimesRef.current.get(tab.focusedPaneId)?.cwd;
-    seedPaneField(paneId, "pendingCwd", focusedStore?.get() ?? undefined);
-    dispatch({ kind: "splitPane", tabId: tab.tabId, dir: treeDir });
-    return { paneId };
-  };
-
-  // trmx-93 (FR-5): run `entry` in a fresh surface. The chosen script is stored in pendingScriptRef
-  // keyed by the upcoming pane's (predictable) id SYNCHRONOUSLY before the creating dispatch — the
-  // same nextPaneId requestNewTab/requestSplit seed pendingCwdRef with, so cwd inheritance survives
-  // and the new pane's attach sources the script. For a split that won't fit we bail WITHOUT setting
-  // the pending script, so a no-op split can't leave a stale entry for the next pane to pick up.
-  const runScriptInSurface = (entry: ScriptEntry, surface: "tab" | "right" | "below") => {
-    // trmx-224: creators return their RESERVED ids — the wrapper never predicts (a delegating
-    // read would double-reserve). Keying happens right after the call, in the same synchronous
-    // section, well before any attach; a refused split returns null and nothing is keyed, so
-    // the old bail-before-set stale-entry dance is now structural.
-    const pending = Promise.resolve<{ sourceLine: string } | null>({ sourceLine: entry.sourceLine });
-    const opened = surface === "tab" ? requestNewTab() : requestSplit(surface);
-    if (opened) seedPaneField(opened.paneId, "pendingScript", pending);
-  };
-
-  // trmx-224: deliver one service batch — ONE synchronous block (reserve→seed→dispatch per
-  // path via requestNewTab), then focus the FIRST delivered tab (each openTab activates the
-  // appended tab, so without this the LAST path would win). Any `await` inside this block
-  // would reopen the prediction-interleaving race class — keep it unbroken.
-  const deliverServicePaths = (paths: string[]) => {
-    let firstTabId: number | null = null;
-    for (const path of paths) {
-      const opened = createTab(path);
-      if (firstTabId === null) firstTabId = opened.tabId;
-    }
-    if (firstTabId !== null) dispatch({ kind: "activateTab", tabId: firstTabId });
-  };
-  deliverServicePathsRef.current = deliverServicePaths;
-
-  // trmx-86 (FR-3.5): move focus between panes of the ACTIVE tab. `nav-dir` picks the geometrically
-  // nearest pane via paneInDirection over the current solved rects; `nav-cycle` steps the leaves order.
-  // A null / same-as-current target is a no-op. Shared by the keymap AND the Window-menu verbs, and kept
-  // action-shaped so FR-9's command registry can lift it directly.
-  const requestPaneNav = (
-    action: { kind: "nav-dir"; dir: Direction } | { kind: "nav-cycle"; delta: 1 | -1 },
-  ) => {
-    const s = stateRef.current;
-    if (s.activeTabId === null) return;
-    const tab = s.tabs.find((t) => t.tabId === s.activeTabId);
-    if (!tab) return;
-    const target =
-      action.kind === "nav-dir"
-        ? paneInDirection(solveRects(tab.tree, boundsRef.current).panes, tab.focusedPaneId, action.dir)
-        : nextPane(tab.tree, tab.focusedPaneId, action.delta);
-    if (target !== null && target !== tab.focusedPaneId) {
-      dispatch({ kind: "focusPane", tabId: tab.tabId, paneId: target });
-    }
-  };
-
-  // ⌘W / menu "close": close the active tab's FOCUSED pane (pane → tab → window). `origin`
-  // (trmx-144) tags who asked — the dispatcher injects "remote" for control-channel requests, so
-  // those skip the confirm gate; everything else defaults to "user".
-  const requestCloseActive = (origin?: "user" | "remote") => {
-    const s = stateRef.current;
-    if (s.activeTabId === null) return;
-    const tab = s.tabs.find((t) => t.tabId === s.activeTabId);
-    if (!tab) return;
-    closePaneInternal(tab.tabId, tab.focusedPaneId, { origin: origin ?? "user" });
-  };
-
-  // The tab-strip × closes the WHOLE tab (all its panes), distinct from the ⌘W pane precedence.
-  const requestCloseTab = (tabId: number) => closeTabInternal(tabId);
-
-  // trmx-94 (FR-9.1): the command platform. The CommandContext maps each command's `run` onto the
-  // existing request* funcs + a few new capabilities; menu verbs, keymap hits, and palette picks ALL
-  // route through `dispatch` (the single spine). The dispatcher is created ONCE (MRU persists) with a
-  // forwarding ctx that always calls the CURRENT request funcs via a ref.
-  const getActiveTab = () => {
-    const s = stateRef.current;
-    return s.activeTabId !== null ? s.tabs.find((t) => t.tabId === s.activeTabId) : undefined;
-  };
+  // trmx-254 (T6): the pane/tab operations. `createTab` stays internal to the hook — a symbol walk
+  // shows it never escapes; `runScriptInSurface` is returned because the JSX reads it.
+  const paneOps = usePaneOps({
+    stateRef, runtimesRef, boundsRef, createTabRef, deliverServicePathsRef,
+    dispatch, seedPaneField, reservation,
+    close: { closePaneInternal, closeTabInternal },
+  });
+  const {
+    getActiveTab, requestNewTab, requestSplit, requestPaneNav,
+    requestCloseActive, requestCloseTab, runScriptInSurface,
+  } = paneOps;
   // trmx-254 (T5): commandCtxRef / keymapRef / dispatcherRef / commandsRef stay ROOT-owned. The
   // dispatcher is a SINGLETON closing over a Proxy that reads `commandCtxRef.current`, which the root
   // reassigns during render — that indirection is what lets E05/E10/E14 read it out-of-render and
