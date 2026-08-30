@@ -530,12 +530,13 @@ export function App({
   // shows it never escapes; `runScriptInSurface` is returned because the JSX reads it.
   const paneOps = usePaneOps({
     stateRef, runtimesRef, boundsRef, createTabRef, deliverServicePathsRef,
-    dispatch, seedPaneField, reservation,
+    dispatch, setRenamingTabId, setBadgingPaneId, seedPaneField, reservation,
     close: { closePaneInternal, closeTabInternal },
   });
   const {
     getActiveTab, requestNewTab, requestSplit, requestPaneNav,
     requestCloseActive, requestCloseTab, runScriptInSurface,
+    startRename, commitRename, cancelRename, commitBadge, cancelBadge,
   } = paneOps;
   // trmx-254 (T5): commandCtxRef / keymapRef / dispatcherRef / commandsRef stay ROOT-owned. The
   // dispatcher is a SINGLETON closing over a Proxy that reads `commandCtxRef.current`, which the root
@@ -597,39 +598,6 @@ export function App({
     "app-settings": "app.settings",
     "window-close": "window.close",
   };
-
-  // trmx-75/166: the rename intents. Start = activate + flip into rename; commit sets the TAB's
-  // manual title PIN (empty → clear-to-auto); cancel drops the edit. Commit/cancel clearing
-  // `renamingTabId` re-runs the focus effect, handing the keyboard back to the focused pane.
-  const startRename = (tabId: number) => {
-    dispatch({ kind: "activateTab", tabId });
-    setRenamingTabId(tabId);
-  };
-  const commitRename = (tabId: number, value: string) => {
-    // trmx-166: the rename is a TAB-scoped pin (setTabTitle), not a per-pane manual source — so it
-    // survives pane splits and focus changes. The reducer no-ops on an unknown tab.
-    dispatch({ kind: "setTabTitle", tabId, value: value.trim() === "" ? null : value });
-    setRenamingTabId(null);
-  };
-  const cancelRename = () => setRenamingTabId(null);
-
-  // trmx-90: the ⇧⌘B badge editor intents. Commit writes the FOCUSED pane's badge (empty/whitespace →
-  // clear to null); cancel (Esc/blur) drops the edit with no dispatch. Clearing badgingPaneId re-runs
-  // the focus effect, handing the keyboard back to that pane's terminal. The tab is found by paneId
-  // (global-unique) so a commit lands on the right pane even if focus/activation moved meanwhile.
-  const commitBadge = (paneId: PaneId, value: string) => {
-    const tab = stateRef.current.tabs.find((t) => t.panes[paneId] !== undefined);
-    if (tab) {
-      dispatch({
-        kind: "setBadge",
-        tabId: tab.tabId,
-        paneId,
-        badge: value.trim() === "" ? null : value,
-      });
-    }
-    setBadgingPaneId(null);
-  };
-  const cancelBadge = () => setBadgingPaneId(null);
 
   // Subscriptions: pty:exited (a pane's shell exited → close just that pane), session:title-hint
   // (route by sessionId into the owning PANE's `process` slot), and the menu's tabs:action intents.

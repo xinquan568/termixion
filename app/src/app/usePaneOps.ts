@@ -8,7 +8,7 @@
 // stays internal. `runScriptInSurface` IS returned — the JSX reads it, which an earlier draft of the
 // contract missed.
 
-import type { Dispatch } from "react";
+import type { Dispatch, SetStateAction } from "react";
 import { MIN_PANE_PX, solveRects, type PaneId, type Rect, type SplitDir } from "../panes/layoutTree";
 import { nextPane, paneInDirection, type Direction } from "../panes/paneNav";
 import type { ScriptEntry } from "../scripts/scriptsBackend";
@@ -24,6 +24,8 @@ export type PaneOpsDeps = {
   createTabRef: { current: (cwdOverride?: string) => { tabId: number; paneId: number } };
   deliverServicePathsRef: { current: (paths: string[]) => void };
   dispatch: Dispatch<TabsAction>;
+  setRenamingTabId: Dispatch<SetStateAction<number | null>>;
+  setBadgingPaneId: Dispatch<SetStateAction<PaneId | null>>;
   seedPaneField: <K extends keyof PaneRuntime>(paneId: PaneId, field: K, value: PaneRuntime[K]) => void;
   /** Non-null: the root lazily initialises `reservationRef` before this hook is called. */
   reservation: IdReservation;
@@ -44,12 +46,19 @@ export type PaneOps = {
   requestCloseTab: (tabId: number) => void;
   runScriptInSurface: (entry: ScriptEntry, surface: "tab" | "right" | "below") => void;
   deliverServicePaths: (paths: string[]) => void;
+  // trmx-254 (T10): the rename/badge intents. Small, and they belong with the other tab/pane verbs
+  // rather than in a module of their own.
+  startRename: (tabId: number) => void;
+  commitRename: (tabId: number, value: string) => void;
+  cancelRename: () => void;
+  commitBadge: (paneId: PaneId, value: string) => void;
+  cancelBadge: () => void;
 };
 
 export function usePaneOps(deps: PaneOpsDeps): PaneOps {
   const {
     stateRef, runtimesRef, boundsRef, createTabRef, deliverServicePathsRef,
-    dispatch, seedPaneField, reservation, close,
+    dispatch, setRenamingTabId, setBadgingPaneId, seedPaneField, reservation, close,
   } = deps;
   const { closePaneInternal, closeTabInternal } = close;
 
@@ -159,8 +168,43 @@ export function usePaneOps(deps: PaneOpsDeps): PaneOps {
     return s.activeTabId !== null ? s.tabs.find((t) => t.tabId === s.activeTabId) : undefined;
   };
 
+  // trmx-75/166: the rename intents. Start = activate + flip into rename; commit sets the TAB's
+  // manual title PIN (empty → clear-to-auto); cancel drops the edit. Commit/cancel clearing
+  // `renamingTabId` re-runs the focus effect, handing the keyboard back to the focused pane.
+  const startRename = (tabId: number) => {
+    dispatch({ kind: "activateTab", tabId });
+    setRenamingTabId(tabId);
+  };
+  const commitRename = (tabId: number, value: string) => {
+    // trmx-166: the rename is a TAB-scoped pin (setTabTitle), not a per-pane manual source — so it
+    // survives pane splits and focus changes. The reducer no-ops on an unknown tab.
+    dispatch({ kind: "setTabTitle", tabId, value: value.trim() === "" ? null : value });
+    setRenamingTabId(null);
+  };
+  const cancelRename = () => setRenamingTabId(null);
+
+  // trmx-90: the ⇧⌘B badge editor intents. Commit writes the FOCUSED pane's badge (empty/whitespace →
+  // clear to null); cancel (Esc/blur) drops the edit with no dispatch. Clearing badgingPaneId re-runs
+  // the focus effect, handing the keyboard back to that pane's terminal. The tab is found by paneId
+  // (global-unique) so a commit lands on the right pane even if focus/activation moved meanwhile.
+  const commitBadge = (paneId: PaneId, value: string) => {
+    const tab = stateRef.current.tabs.find((t) => t.panes[paneId] !== undefined);
+    if (tab) {
+      dispatch({
+        kind: "setBadge",
+        tabId: tab.tabId,
+        paneId,
+        badge: value.trim() === "" ? null : value,
+      });
+    }
+    setBadgingPaneId(null);
+  };
+  const cancelBadge = () => setBadgingPaneId(null);
+
+
   return {
     getActiveTab, requestNewTab, requestSplit, requestPaneNav,
     requestCloseActive, requestCloseTab, runScriptInSurface, deliverServicePaths,
+    startRename, commitRename, cancelRename, commitBadge, cancelBadge,
   };
 }
