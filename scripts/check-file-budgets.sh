@@ -31,12 +31,10 @@ cd "$ROOT"
 WATCHED=(
   # 439 non-test lines after the trmx-243 split (was 1969). +~9% headroom.
   "crates/termixion-tauri/src/main.rs:480"
-  # 2597 lines after trmx-248 collapsed the fifteen per-pane ref containers (14 Maps + 1 Set) into
-  # one PaneRuntime record. The file is 15 lines LONGER than the 2582 it started at: consolidating
-  # the containers saved lines, but the two distinct writers (update-only vs create-then-write) and
-  # the comment explaining why they are separate cost more. The budget still tightens, 2640 -> 2632,
-  # because the point of a ratchet is that headroom only ever shrinks: 58 lines of slack become 35.
-  # trmx-254 is where the number really falls, when the record moves out of App.tsx entirely.
+  # 2579 lines after trmx-248 collapsed the fifteen per-pane ref containers (14 Maps + 1 Set) into
+  # one PaneRuntime record (was 2582 -> budget 2640). Barely a reduction, and that is expected: the
+  # win here is one teardown contract instead of fifteen hand-kept deletes, not line count. The real
+  # drop comes in trmx-254, when the record moves out of App.tsx entirely.
   "app/src/App.tsx:2632"
 )
 

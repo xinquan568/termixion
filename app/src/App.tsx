@@ -614,31 +614,13 @@ export function App({
   const createTabRef = useRef<(cwdOverride?: string) => { tabId: number; paneId: number }>(
     () => ({ tabId: 0, paneId: 0 }),
   );
-  // trmx-93 (FR-5): a script to source once its pane's session attaches, keyed by the pane's
-  // (predictable) nextPaneId and set SYNCHRONOUSLY before the creating dispatch — so the async
-  // startup resolution can never lose the race with attach (the send-step awaits the promise).
   const startupFiredRef = useRef(false); // trmx-93: the startup script fires at most once
-  // Attach epoch per pane: each onReady bumps it; a resolution whose epoch is no longer current is
-  // STALE (StrictMode's dev remount opens two PTYs — only the current epoch keeps its session).
-  // trmx-91: per-pane activity DEBOUNCE state + its single timer, both keyed by the global paneId. App
-  // owns the debounce (panes/activityLine.ts is pure/time-injected): each pane holds an ActivityState
-  // and at most ONE pending timer, armed to the current transition's deadline (cleared + re-armed on
-  // every transition, disposed on pane close / unmount).
-  // trmx-99 (FR-7b): panes whose activity is OSC-133-owned (the poller's session:activity is ignored for
-  // them, sticky per session); their stable onPromptMarker callbacks; and the per-pane exit-flash timers.
   const renamingRef = useRef(renamingTabId); // out-of-render read for the onReady focus guard
   const badgingRef = useRef(badgingPaneId); // out-of-render read for the onReady focus guard (trmx-90)
   // trmx-248 (grill H6): ONE record per pane, replacing the fifteen parallel per-pane Maps/Sets
   // this component used to carry. `paneRuntime.ts` owns the teardown contract; App keeps the two
   // halves a ref cannot own — the React state removals and the backend close.
   const runtimesRef = useRef(createPaneRuntimes());
-  // Write one field of a pane's runtime, if the pane still has one. A no-op for a pane already
-  // disposed — which is the same tolerance the fifteen Maps had, where `.set` on a dropped key
-  // silently resurrected nothing because every read went through `.get`.
-  // The pane's record, created if this is its first touch this render. Used by the render-time
-  // caches below, whose whole point is a STABLE callback identity: a write that silently no-opped
-  // because no record existed yet would hand TerminalView a fresh callback every render, remounting
-  // the terminal and re-attaching the session.
   // Get-or-create. `makeCwdStore()` is built only on the miss: `paneOf` is called several times per
   // pane on every render (the callback caches, `storeFor`), and eagerly passing a fresh store to
   // `ensure` allocated one plus its closures per call just to throw it away.

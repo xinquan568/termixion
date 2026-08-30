@@ -2767,9 +2767,9 @@ describe("focus follows mouse (trmx-225)", () => {
 
   // trmx-248: the other half of that suspension — it has to END when the pane goes away.
   // `openSearchPanes` gates focus-follows-mouse GLOBALLY (one entry suppresses hover for every
-  // pane), so a pane that closes while its find bar is open must take its entry with it. Before the
-  // PaneRuntime split this was eleven hand-written deletes in `disposePaneResources`; the entry is
-  // App-owned React state, so no registry unit test can reach it.
+  // pane), so a pane that closes while its find bar is open must take its entry with it. The entry
+  // is App-owned React state rather than part of the pane runtime, so no registry unit test can
+  // reach it — `disposePaneResources` has to clear it by hand.
   it("a pane closing with its find bar OPEN stops suppressing focus-follows-mouse (trmx-248)", async () => {
     const seams = renderApp();
     await resolveAttach(seams.calls[0], { sessionId: 11, title: "one" });

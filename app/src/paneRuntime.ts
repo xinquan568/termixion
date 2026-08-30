@@ -28,7 +28,6 @@ import type { TerminalHandle } from "./terminal/mountTerminal";
 import type { PromptTransition } from "./terminal/osc133";
 import type { CwdStore } from "./terminal/osc7";
 
-/** Everything App tracks about one live pane, out of render. */
 /**
  * A pending timer's id. The DOM lib types `setTimeout` as returning `number` and `@types/node`
  * types it as returning `Timeout`; both resolutions write this record (App.tsx and the unit test),
@@ -36,6 +35,7 @@ import type { CwdStore } from "./terminal/osc7";
  */
 export type TimerId = ReturnType<typeof setTimeout> | number;
 
+/** Everything App tracks about one live pane, out of render. */
 export interface PaneRuntime {
   /** OSC 7 cwd store — the one field always present, so it is not optional. */
   cwd: CwdStore;
@@ -45,7 +45,13 @@ export interface PaneRuntime {
   sessionId?: number;
   /** cwd to seed the open with (trmx-74: a new tab inherits the active pane's directory). */
   pendingCwd?: string;
-  /** trmx-93: a startup script resolving in flight; consumed on its own path, not at close. */
+  /**
+   * trmx-93: a startup script resolving in flight; consumed on its own path, not at close.
+   *
+   * Seeded SYNCHRONOUSLY against the pane's (predictable) next id, before the dispatch that creates
+   * it, so the async startup resolution cannot lose the race with attach — the send step awaits
+   * this promise rather than assuming it has already resolved.
+   */
   pendingScript?: Promise<{ sourceLine: string } | null>;
   /** Bumped by each onReady; a resolution whose epoch is stale is discarded (StrictMode remount). */
   attachEpoch: number;
@@ -53,7 +59,11 @@ export interface PaneRuntime {
   onOscTitle?: (title: string) => void;
   onBadge?: (badge: string | null) => void;
   onPromptMarker?: (transition: PromptTransition) => void;
-  /** trmx-91 activity debounce state. */
+  /**
+   * trmx-91 activity debounce state, with at most ONE pending timer armed to the current
+   * transition's deadline (cleared and re-armed on every transition). App owns the debounce because
+   * `panes/activityLine.ts` is pure and time-injected.
+   */
   activity?: ActivityState;
   activityTimer?: TimerId;
   /** trmx-99 exit-flash timer. */
