@@ -18,7 +18,20 @@ import { FALLBACK_BADGE_COLS } from "../panes/appConstants";
 import { shouldFocusOnHover } from "../panes/focusFollowsMouse";
 import { FindBar } from "../search/FindBar";
 import { listThemes } from "../theme/registry";
-import { useEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ActionDispatch,
+  type Dispatch,
+  type MouseEvent,
+  type PointerEvent,
+  type RefObject,
+  type SetStateAction,
+} from "react";
+import type { BarLayout } from "../tabs/barLayout";
+import type { ScriptEntry } from "../scripts/scriptsBackend";
+import type { PaneRuntimes } from "./paneRuntime";
 import { activeDividerSegments, dividerKey } from "../panes/paneChrome";
 import { CommandPalette } from "../commands/CommandPalette";
 import type { Command } from "../commands/registry";
@@ -39,6 +52,10 @@ import { TerminalView } from "../terminal/TerminalView";
 import { UpdateAuthorityHost } from "../update/UpdateAuthorityHost";
 import type { PendingClose } from "./closeContracts";
 import type { PaneRuntime } from "./paneRuntime";
+import type { TabsAction, TabsState } from "../tabs/tabState";
+import type { PromptTransition } from "../terminal/osc133";
+import type { TerminalHandle } from "../terminal/mountTerminal";
+import type { CwdStore } from "../terminal/osc7";
 
 export type AppViewProps = {
   activeTitle: string | undefined;
@@ -51,67 +68,67 @@ export type AppViewProps = {
   badgeFor: (tabId: number, paneId: PaneId) => (badge: string | null) => void;
   badgeOutlineColor: string;
   badgingPaneId: number | null;
-  badgingRef: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").RefObject<number | null>;
-  barLayout: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/app/src/tabs/barLayout").BarLayout;
+  badgingRef: RefObject<number | null>;
+  barLayout: BarLayout;
   barPosition: TabBarPosition;
   bounds: Rect;
   cancelBadge: () => void;
   cancelPendingClose: () => void;
   cancelRename: () => void;
-  commandCtxRef: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").RefObject<CommandContext>;
-  commandsRef: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").RefObject<Command[]>;
+  commandCtxRef: RefObject<CommandContext>;
+  commandsRef: RefObject<Command[]>;
   commitBadge: (paneId: PaneId, value: string) => void;
   commitRename: (tabId: number, value: string) => void;
   confirmPendingClose: (dontAskAgain: boolean) => void;
-  contentRef: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").RefObject<HTMLDivElement | null>;
-  dispatch: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").ActionDispatch<[action: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/app/src/tabs/tabState").TabsAction]>;
-  dispatcherRef: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").RefObject<Dispatcher | null>;
+  contentRef: RefObject<HTMLDivElement | null>;
+  dispatch: ActionDispatch<[action: TabsAction]>;
+  dispatcherRef: RefObject<Dispatcher | null>;
   dragDir: SplitDir | null;
-  dragRef: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").RefObject<{ pointerId: number; tabId: number; path: DividerRect["path"]; dir: SplitDir; bounds: Rect; grabOffset: number; contentLeft: number; contentTop: number; } | null>;
+  dragRef: RefObject<{ pointerId: number; tabId: number; path: DividerRect["path"]; dir: SplitDir; bounds: Rect; grabOffset: number; contentLeft: number; contentTop: number; } | null>;
   dropPreview: { paneId: PaneId; zone: DropZone; } | null;
-  ffmRef: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").RefObject<boolean>;
+  ffmRef: RefObject<boolean>;
   flashingPanes: Set<number>;
   invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
   keymap: Record<string, string>;
   labelOrientation: "horizontal" | "vertical";
-  lastPointerRef: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").RefObject<{ x: number; y: number; } | null>;
-  onDividerDoubleClick: (tabId: number, path: DividerRect["path"]) => (e: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").MouseEvent) => void;
-  onDividerPointerCancel: (e: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").PointerEvent) => void;
-  onDividerPointerDown: (tabId: number, d: DividerRect) => (e: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").PointerEvent) => void;
-  onDividerPointerMove: (e: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").PointerEvent) => void;
-  onDividerPointerUp: (e: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").PointerEvent) => void;
-  onPaneClickCapture: (e: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").MouseEvent) => void;
-  onPanePointerCancel: (e: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").PointerEvent) => void;
-  onPanePointerDownCapture: (tabId: number, paneId: PaneId) => (e: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").PointerEvent) => void;
-  onPanePointerMoveCapture: (e: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").PointerEvent) => void;
-  onPanePointerUpCapture: (e: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").PointerEvent) => void;
+  lastPointerRef: RefObject<{ x: number; y: number; } | null>;
+  onDividerDoubleClick: (tabId: number, path: DividerRect["path"]) => (e: MouseEvent) => void;
+  onDividerPointerCancel: (e: PointerEvent) => void;
+  onDividerPointerDown: (tabId: number, d: DividerRect) => (e: PointerEvent) => void;
+  onDividerPointerMove: (e: PointerEvent) => void;
+  onDividerPointerUp: (e: PointerEvent) => void;
+  onPaneClickCapture: (e: MouseEvent) => void;
+  onPanePointerCancel: (e: PointerEvent) => void;
+  onPanePointerDownCapture: (tabId: number, paneId: PaneId) => (e: PointerEvent) => void;
+  onPanePointerMoveCapture: (e: PointerEvent) => void;
+  onPanePointerUpCapture: (e: PointerEvent) => void;
   openSearchPanes: Set<number>;
-  openSearchRef: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").RefObject<Set<number>>;
+  openSearchRef: RefObject<Set<number>>;
   oscTitleFor: (tabId: number, paneId: PaneId) => (title: string) => void;
   paneDragging: boolean;
   pendingClose: PendingClose | null;
-  pendingCloseRef: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").RefObject<PendingClose | null>;
-  pickupRef: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").RefObject<{ pointerId: number; tabId: number; paneId: PaneId; originX: number; originY: number; active: boolean; } | null>;
-  promptMarkerFor: (tabId: number, paneId: PaneId) => (t: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/app/src/terminal/osc133").PromptTransition) => void;
-  readyFor: (tabId: number, paneId: PaneId) => (handle: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/app/src/terminal/mountTerminal").TerminalHandle) => void;
-  renamingRef: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").RefObject<number | null>;
+  pendingCloseRef: RefObject<PendingClose | null>;
+  pickupRef: RefObject<{ pointerId: number; tabId: number; paneId: PaneId; originX: number; originY: number; active: boolean; } | null>;
+  promptMarkerFor: (tabId: number, paneId: PaneId) => (t: PromptTransition) => void;
+  readyFor: (tabId: number, paneId: PaneId) => (handle: TerminalHandle) => void;
+  renamingRef: RefObject<number | null>;
   renamingTabId: number | null;
   requestCloseTab: (tabId: number) => void;
   requestNewTab: () => void;
-  runScriptInSurface: (entry: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/app/src/scripts/scriptsBackend").ScriptEntry, surface: "tab" | "right" | "below") => void;
-  runtimesRef: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").RefObject<import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/app/src/app/paneRuntime").PaneRuntimes>;
-  scriptPickerRef: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").RefObject<"right" | "tab" | "below" | null>;
+  runScriptInSurface: (entry: ScriptEntry, surface: "tab" | "right" | "below") => void;
+  runtimesRef: RefObject<PaneRuntimes>;
+  scriptPickerRef: RefObject<"right" | "tab" | "below" | null>;
   scriptPickerRequest: "right" | "tab" | "below" | null;
   searchColors: { match: string; activeMatch: string; };
-  setOpenSearchPanes: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").Dispatch<import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").SetStateAction<Set<number>>>;
+  setOpenSearchPanes: Dispatch<SetStateAction<Set<number>>>;
   setPaneField: <K extends keyof PaneRuntime>(paneId: PaneId, field: K, value: PaneRuntime[K]) => void;
-  setScriptPickerRequest: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").Dispatch<import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").SetStateAction<"right" | "tab" | "below" | null>>;
-  setShowPalette: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").Dispatch<import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/node_modules/.pnpm/@types+react@19.2.18/node_modules/@types/react/index").SetStateAction<boolean>>;
+  setScriptPickerRequest: Dispatch<SetStateAction<"right" | "tab" | "below" | null>>;
+  setShowPalette: Dispatch<SetStateAction<boolean>>;
   shortcutHintsOn: boolean;
   showPalette: boolean;
   startRename: (tabId: number) => void;
-  state: import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/app/src/tabs/tabState").TabsState;
-  storeFor: (paneId: PaneId) => import("/Users/xqliu/opt/aispace/claude-projects/eric-tech/008-Termixion/runs/trmx-254-paneruntime-step-2-extract-hooks/worktrees/termixion/app/src/terminal/osc7").CwdStore;
+  state: TabsState;
+  storeFor: (paneId: PaneId) => CwdStore;
 };
 
 export function AppView(props: AppViewProps) {
