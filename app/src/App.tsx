@@ -77,7 +77,6 @@ import {
   onInput as onActivityInput,
   onManualToggle,
   onOutput as onActivityOutput,
-  type ActivityMeta,
   type ActivityTransition,
 } from "./panes/activityLine";
 import { shouldFlash, FLASH_MS } from "./panes/activityFlash";
@@ -95,7 +94,6 @@ import {
   isLabelOrientation,
   isTabBarPosition,
   makeSettingsStore,
-  SETTINGS_CHANGED_EVENT,
   type LabelOrientation,
   type TabBarPosition,
 } from "./store/settingsStore";
@@ -104,7 +102,6 @@ import { normalizeLegacyThemeId } from "./theme/defaultTheme";
 import { isRegisteredThemeId, isUserThemeIdShape, resolveTheme } from "./theme/registry";
 import { applyTxTheme } from "./theme/txCssVars";
 import { FindBar } from "./search/FindBar";
-import { withAlpha } from "./theme/colorMath";
 import { useBackend } from "./ipc/useBackend";
 import {
   closePty,
@@ -115,7 +112,6 @@ import {
   sendPtyInput,
   takePendingOpenPaths,
   type InvokeFn,
-  type SessionInfo,
 } from "./ipc/backend";
 import { realObserveServiceNudge, type ServiceNudgeObservation } from "./ipc/serviceNudge";
 import { makeIdReservation, type IdReservation } from "./tabs/idReservation";
@@ -135,7 +131,6 @@ import { growTarget } from "./commands/growPane";
 import { listThemes } from "./theme/registry";
 import { realEventBus } from "./ipc/eventBus";
 import { routeControlRequest, buildLsSnapshot, type ControlDeps } from "./control/controlBridge";
-import { isControlRequest } from "./control/controlRequestGuard";
 import { installThemeHotReload } from "./startup/themeHotReload";
 import { makeCwdStore, type CwdStore } from "./terminal/osc7";
 import { createPaneRuntimes, type PaneRuntime } from "./app/paneRuntime";
@@ -144,79 +139,6 @@ import type { TerminalHandle } from "./terminal/mountTerminal";
 import { UpdateAuthorityHost } from "./update/UpdateAuthorityHost";
 import { log } from "./ipc/logSink";
 
-/** The menu's tab-intent broadcast (main.rs emits "new"/"close"/"next"/"prev"/split verbs). */
-export const TABS_ACTION_EVENT = "tabs:action";
-
-// trmx-85: the drag rAF schedule (one setPaneRatio per frame, the trmx-67 coalescer idiom). A
-// module-level const — NOT an inline arrow — and injectable via AppProps for deterministic tests.
-const realFrameSchedule: FrameSchedule = (cb) => {
-  if (typeof requestAnimationFrame === "undefined") {
-    const t = setTimeout(cb, 16);
-    return () => clearTimeout(t);
-  }
-  const id = requestAnimationFrame(cb);
-  return () => cancelAnimationFrame(id);
-};
-
-/** The default content bounds before the real ResizeObserver measures the pane area (px). */
-const DEFAULT_BOUNDS: Rect = { x: 0, y: 0, width: 800, height: 600 };
-
-// trmx-90: cols fallback for the badge's narrow-pane threshold before the terminal has fit (or
-// under a headless test stub with no metrics) — a sane wide default so a freshly-set badge still shows
-// (a badge is only ever set once a live terminal exists, so this window is effectively pre-mount only).
-// trmx-149 dropped the rows twin: font sizing now fits the pane RECT (iTerm2's box), not cell metrics.
-const FALLBACK_BADGE_COLS = 80;
-
-// trmx-99: the alpha over the theme's semantic-error tint for the exit-code FLASH — faint enough to
-// sit quietly at a pane's top edge, strong enough to read. (trmx-160: the BUSY line is no longer a
-// theme tint — it is the iTerm2 progress-bar clone, a theme-independent green keyed only on the mode.)
-const ACTIVITY_LINE_ALPHA = 0.8;
-
-/** trmx-99: the exit-code flash color — `color.semantic.error` at {@link ACTIVITY_LINE_ALPHA}. */
-function activityErrorColorFor(themeId: string): string {
-  return withAlpha(resolveTheme(themeId).color.semantic.error, ACTIVITY_LINE_ALPHA);
-}
-
-/** trmx-160: the active theme's mode — selects the progress bar's track color (black/white) + period. */
-function activityIsDarkFor(themeId: string): boolean {
-  return resolveTheme(themeId).isDark;
-}
-
-/** Wire a mounted terminal to a live PTY session; resolves the session's identity (useBackend). */
-export type AttachFn = (
-  handle: TerminalHandle,
-  opts?: { cwd?: string },
-) => Promise<SessionInfo>;
-
-/** Observe the menu's `tabs:action` broadcasts; returns a teardown. */
-export type TabsActionObservation = (onAction: (payload: unknown) => void) => () => void;
-
-
-/** Observe `pty:exited` sessionIds; returns a teardown. */
-export type PtyExitedObservation = (onExit: (sessionId: number) => void) => () => void;
-
-/** Observe `session:title-hint` broadcasts (trmx-75); returns a teardown. */
-export type TitleHintObservation = (
-  onHint: (sessionId: number, name: string) => void,
-) => () => void;
-
-/**
- * Observe `session:activity` busy<->idle transitions (trmx-91); returns a teardown. trmx-159: a busy
- * rise also carries optional classification metadata (foreground name / argv tail / stdin-tty).
- */
-export type ActivityObservation = (
-  onActivity: (sessionId: number, busy: boolean, meta?: ActivityMeta) => void,
-) => () => void;
-
-/** trmx-159: injection seam for tests — observe a session's PTY output byte length. */
-export type OutputObservation = (
-  onOutput: (sessionId: number, byteLength: number) => void,
-) => () => void;
-
-/** trmx-159: injection seam for tests — observe a session's keystroke input. */
-export type InputObservation = (
-  onInput: (sessionId: number, data: string) => void,
-) => () => void;
 
 // trmx-247: realCloseWindow / realCloseAcknowledged / realQuitConfirmed moved to ipc/window.ts.
 import {
@@ -225,186 +147,37 @@ import {
   realQuitConfirmed,
 } from "./ipc/window";
 
-// Observe the menu's tabs:action broadcasts over the event bus, with the teardown-before-resolve
-// pattern from TerminalView's realObserveSettings: a teardown called before the async listen
-// resolves unlistens the late subscription instead of leaking it, and the `live` guard keeps a
-// torn-down handler silent. In a plain browser/jsdom the listen rejects and the seam is inert.
-const realObserveTabsAction: TabsActionObservation = (onAction) => {
-  let live = true;
-  let unlisten: (() => void) | undefined;
-  realEventBus
-    .listen(TABS_ACTION_EVENT, (payload) => {
-      if (live) onAction(payload);
-    })
-    .then((u) => {
-      if (live) unlisten = u;
-      else u();
-    })
-    .catch(() => {
-      // No Tauri runtime — there is no menu to announce tab intents.
-    });
-  return () => {
-    live = false;
-    unlisten?.();
-  };
-};
+// trmx-254: App.tsx's old module head, relocated by dependency (see the LEVELS map). The split is
+// not cosmetic: `ipc/` is L0 and may not import theme/, terminal/ or control/, so the seams that
+// reach into those zones live with them instead.
+import {
+  isAskGeneration,
+  realObserveCloseRequested,
+  realObserveSessionNotice,
+  realObserveTabsAction,
+  type CloseRequestedObservation,
+  type InputObservation,
+  type OutputObservation,
+  type PtyExitedObservation,
+  type SessionNoticeObservation,
+  type TabsActionObservation,
+  type TitleHintObservation,
+} from "./ipc/appEvents";
+import { activityErrorColorFor, activityIsDarkFor } from "./theme/activityColors";
+import { DEFAULT_BOUNDS, FALLBACK_BADGE_COLS, type ActivityObservation } from "./panes/appConstants";
+import type { CloseOpts, PendingClose } from "./app/closeContracts";
+import {
+  formatAttachError,
+  realFrameSchedule,
+  realObserveAppSettings,
+  writePaneNotice,
+  type AttachFn,
+} from "./terminal/appSeams";
+import { realObserveControlRequest, type ControlRequestObservation } from "./control/controlRequestSeam";
 
-// trmx-81: observe settings:changed for the tab-bar position — the same teardown-before-resolve
-// pattern as realObserveTabsAction above (TerminalView's realObserveSettings). A module-level
-// const, NOT an inline arrow: it is an effect dep, and a fresh identity every render would
-// re-subscribe on every App re-render.
-const realObserveAppSettings: SettingsObservation = (onChange) => {
-  let live = true;
-  let unlisten: (() => void) | undefined;
-  realEventBus
-    .listen(SETTINGS_CHANGED_EVENT, (payload) => {
-      if (live) onChange(payload);
-    })
-    .then((u) => {
-      if (live) unlisten = u;
-      else u();
-    })
-    .catch(() => {
-      // No Tauri runtime — the bar stays where hydration seeded it for this session.
-    });
-  return () => {
-    live = false;
-    unlisten?.();
-  };
-};
-
-// trmx-101 (FR-9.4): observe the Rust control socket's requests over `control:request` — same
-// teardown-before-resolve pattern. Each payload is `{ id, request }`; App routes it through the command
-// dispatcher / builds the snapshot / sends text, then replies via `invoke("control_response")`.
+// trmx-254: the `ControlRequest` facade stays exported from App.tsx so existing importers
+// (App.confirmClose.test.tsx) keep working; the seam itself now lives in control/.
 export type { ControlRequest } from "./control/controlRequestGuard";
-export type ControlRequestObservation = (
-  onRequest: (req: import("./control/controlRequestGuard").ControlRequest) => void,
-) => () => void;
-const realObserveControlRequest: ControlRequestObservation = (onRequest) => {
-  let live = true;
-  let unlisten: (() => void) | undefined;
-  realEventBus
-    .listen("control:request", (payload) => {
-      // trmx-237 (H3): validate before destructuring. A malformed payload from a local `ctl` caller
-      // used to throw inside this listener and escape into React; now it is dropped with a record.
-      if (!live) return;
-      if (!isControlRequest(payload)) {
-        log.warn("control: malformed request payload dropped", payload);
-        return;
-      }
-      onRequest(payload);
-    })
-    .then((u) => {
-      if (live) unlisten = u;
-      else u();
-    })
-    .catch(() => {
-      // No Tauri runtime — there is no control socket in a plain browser tab.
-    });
-  return () => {
-    live = false;
-    unlisten?.();
-  };
-};
-
-// trmx-237 (grill H4): the pane's own error channel. A backend notice (a cwd that could not be honored)
-// and a failed attach both end up as one dim-red line in the terminal the user is already looking at —
-// the only surface that is guaranteed to be visible for the thing that just went wrong.
-export function writePaneNotice(handle: TerminalHandle, text: string): void {
-  // The terminal seam takes BYTES (the PTY contract), so encode rather than passing a string.
-  // \x1b[31m … \x1b[0m: red, then reset. On its own lines so it never mangles shell output.
-  const line = `\r\n\x1b[31m[termixion] ${text}\x1b[0m\r\n`;
-  handle.terminal.write(new TextEncoder().encode(line));
-}
-
-/** A rejection reason rendered for a terminal line: an Error's message, else a compact string. */
-export function formatAttachError(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return typeof err === "string" ? err : "unknown error";
-}
-
-/** Payload of the backend's `session:notice` event (trmx-237): a line for one session's pane. */
-export type SessionNotice = { session_id: number; text: string };
-export type SessionNoticeObservation = (onNotice: (notice: SessionNotice) => void) => () => void;
-const realObserveSessionNotice: SessionNoticeObservation = (onNotice) => {
-  let live = true;
-  let unlisten: (() => void) | undefined;
-  realEventBus
-    .listen("session:notice", (payload) => {
-      if (!live) return;
-      const n = payload as Partial<SessionNotice> | null;
-      if (!n || typeof n.session_id !== "number" || typeof n.text !== "string") return;
-      onNotice({ session_id: n.session_id, text: n.text });
-    })
-    .then((u) => {
-      if (live) unlisten = u;
-      else u();
-    })
-    .catch(() => {
-      // No Tauri runtime — nothing emits pane notices in a plain browser.
-    });
-  return () => {
-    live = false;
-    unlisten?.();
-  };
-};
-
-// trmx-144: observe the backend's `close:requested` broadcasts (the native window close / ⌘Q
-// intercepted Rust-side and round-tripped to the webview for the quit confirm) — the same
-// teardown-before-resolve pattern as realObserveControlRequest above.
-/**
- * trmx-268: a wire ask generation. `AskTracker` starts at 0 and pre-increments, so the first ask on
- * the wire is 1 — anything else (missing, non-numeric, 0, negative, fractional, NaN, Infinity) is a
- * malformed payload and must be IGNORED, never coerced and serviced.
- */
-export function isAskGeneration(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-}
-
-export type CloseRequestedObservation = (onRequest: (generation: number) => void) => () => void;
-const realObserveCloseRequested: CloseRequestedObservation = (onRequest) => {
-  let live = true;
-  let unlisten: (() => void) | undefined;
-  realEventBus
-    .listen("close:requested", (generation) => {
-      // trmx-268: the payload is the ask generation the ack must echo. A malformed one is dropped
-      // rather than coerced — servicing a bogus generation would ack a streak that does not exist.
-      if (live && isAskGeneration(generation)) onRequest(generation);
-    })
-    .then((u) => {
-      if (live) unlisten = u;
-      else u();
-    })
-    .catch(() => {
-      // No Tauri runtime — the OS never routes a window close through the webview.
-    });
-  return () => {
-    live = false;
-    unlisten?.();
-  };
-};
-
-// trmx-144: one close's options, threaded pane → tab so a close that already passed (or bypassed)
-// the confirm gate is never re-gated downstream.
-type CloseOpts = {
-  /** The session already exited on its own (pty:exited) — nothing left to protect, no close_pty. */
-  alreadyExited?: boolean;
-  /** Who asked: "remote" (control channel) never prompts — a dialog would deadlock a headless caller. */
-  origin?: "user" | "remote";
-  /** The user just confirmed THIS close in the dialog — proceed without re-prompting. */
-  confirmed?: boolean;
-};
-
-// trmx-144: the pending confirm-before-close dialog's target (null = no dialog). `tabId`/`paneId`
-// pin the target by id so a confirm re-resolves it (a dead target makes confirm a safe no-op).
-type PendingClose = {
-  kind: "pane" | "tab" | "quit";
-  tabId?: number;
-  paneId?: PaneId;
-  names: string[];
-  /** Quit only: how many tabs have running programs — the dialog's summary line. */
-  busyTabCount?: number;
-};
 
 export interface AppProps {
   /** Injection seam for tests; defaults to useBackend's attachTerminal (the live PTY wiring). */

@@ -11,7 +11,7 @@
 // rejection path, a stale attach's rejection could scribble an error into a pane whose later attach
 // succeeded — an error message on a working shell. Both cases are pinned here.
 import { describe, expect, it, vi } from "vitest";
-import { formatAttachError, writePaneNotice } from "./App";
+import { formatAttachError, writePaneNotice } from "./terminal/appSeams";
 import type { TerminalHandle } from "./terminal/mountTerminal";
 
 function decode(calls: unknown[][]): string {
