@@ -45,11 +45,24 @@ export function useProbe() { return cached + 1; }
 '
 expect_fail "(vi) capturing a MUTABLE module-scope binding is rejected" "mutable module-scope binding"
 
+fixture useProbe.ts 'export async function useProbe() { const R = await import("react"); return R.useRef(null); }
+'
+expect_fail "(vii) a DYNAMIC import of react is rejected (it hides the ownership call)" "dynamically imports"
+
+fixture useProbe.ts 'export { useState as useProbe } from "react";
+'
+expect_fail "(viii) RE-EXPORTING an ownership API is rejected" "re-exports useState"
+
+fixture helpers.ts 'import { useState } from "react";
+export function makeThing() { return useState(0); }
+'
+expect_fail "(ix) default-DENY: a module not named use* is still constrained" "calls useState"
+
 fixture useProbe.ts 'const RATE = 3;
 import type { PaneId } from "../panes/layoutTree";
 export function useProbe(deps: { paneId: PaneId }) { return deps.paneId * RATE; }
 '
 if ! run; then echo "FAIL: (vii) the CLEAN case must pass"; cat "$TMP/out"; exit 1; fi
-echo "ok: (vii) a pure hook over injected values, a const and a type-only import passes"
+echo "ok: (x) a pure hook over injected values, a const and a type-only import passes"
 
-echo "verify-contracts.test: OK (7 cases)."
+echo "verify-contracts.test: OK (10 cases)."

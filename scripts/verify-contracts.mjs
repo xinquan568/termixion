@@ -32,13 +32,17 @@ import { readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const DIR = process.env.VERIFY_CONTRACTS_DIR ?? "app/src/app";
-const ORCHESTRATION_EXTRA = new Set();
+// DEFAULT-DENY. Every module in the zone is orchestration unless it is listed here as a VIEW.
+// The first version allowlisted `use*` prefixes, which meant a new file called anything else was
+// silently unconstrained — I defeated my own gate with a five-line `helpers.ts`. Inverting it means
+// a new module is constrained by default and someone must consciously declare it a view.
+const VIEW_MODULES = new Set(["AppView.tsx"]);
 const OWNERSHIP = new Set(["useState", "useReducer", "useRef", "useEffect", "useLayoutEffect"]);
 const LEVEL = { assets:0, ipc:0, keys:0, ui:0, test:0, panes:1, scripts:1, smoke:1, theme:1,
                 store:2, startup:3, tabs:3, terminal:3, update:3,
                 chrome:4, commands:4, conformance:4, perf:4, search:4, settings:4, control:5, app:6 };
 
-const isOrchestration = (f) => /^use[A-Z].*\.tsx?$/.test(f) || ORCHESTRATION_EXTRA.has(f);
+const isOrchestration = (f) => !VIEW_MODULES.has(f);
 
 // The program is built from the TARGET DIRECTORY only — not the whole app tsconfig. It is faster,
 // and it makes a fixture directory behave identically to the real one, which is what lets the
@@ -97,6 +101,15 @@ for (const f of files) {
   const localToOriginal = new Map();
   const reactNamespaces = new Set();
   for (const st of sf.statements) {
+    // Re-exporting an ownership API hands it to someone else — the module is still the source.
+    if (ts.isExportDeclaration(st) && st.exportClause && ts.isNamedExports(st.exportClause)) {
+      for (const e of st.exportClause.elements) {
+        const orig = (e.propertyName ?? e.name).text;
+        if (OWNERSHIP.has(orig)) {
+          errors.push(`${at(e)}  re-exports ${orig} — an orchestration module may not re-expose a React ownership API`);
+        }
+      }
+    }
     if (!ts.isImportDeclaration(st) || !st.importClause) continue;
     const nb = st.importClause.namedBindings;
     if (nb && ts.isNamedImports(nb)) {
@@ -118,6 +131,14 @@ for (const f of files) {
       }
       if (name && OWNERSHIP.has(name)) {
         errors.push(`${at(n)}  calls ${name}() — the composition root owns state, refs and effects`);
+      }
+    }
+    // `await import("react")` hands back the whole namespace, so the import map cannot see the
+    // ownership call that follows. Treat the dynamic import itself as the violation.
+    if (ts.isCallExpression(n) && n.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      const arg = n.arguments[0];
+      if (arg && ts.isStringLiteral(arg) && /^react(\/|$)/.test(arg.text)) {
+        errors.push(`${at(n)}  dynamically imports "${arg.text}" — that hides ownership calls from this gate`);
       }
     }
     if (ts.isIdentifier(n) && mutableModuleScope.has(n.text)) {
