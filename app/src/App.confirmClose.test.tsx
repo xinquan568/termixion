@@ -35,7 +35,7 @@ vi.mock("./update/UpdateAuthorityHost", () => ({
   UpdateAuthorityHost: () => <div data-testid="update-authority-host" />,
 }));
 
-import { App, type AppProps, type ControlRequest } from "./App";
+import { App, type AppDeps, type ControlRequest } from "./App";
 import { makeSettingsStore, __resetSettingsForTest } from "./store/settingsStore";
 
 interface AttachCall {
@@ -96,7 +96,7 @@ function makeVoidObservation() {
   return { observe, fire: (generation = 1) => handler?.(generation) };
 }
 
-function renderApp(over: Partial<AppProps> = {}) {
+function renderApp(over: Partial<AppDeps> = {}) {
   const { attach, calls } = makeAttach();
   const order: string[] = [];
   const closeWindow = vi.fn(() => {
@@ -123,7 +123,7 @@ function renderApp(over: Partial<AppProps> = {}) {
   const controlRequest = makeObservation<ControlRequest>();
   const closeRequested = makeVoidObservation();
   const invoke = vi.fn(() => Promise.resolve({}));
-  const props: AppProps = {
+  const props: AppDeps = {
     attach,
     closeWindow,
     quitConfirmed,
@@ -141,7 +141,7 @@ function renderApp(over: Partial<AppProps> = {}) {
     invoke,
     ...over, // trmx-224: per-test seams (service nudge / take invoke)
   };
-  render(<App {...props} />);
+  render(<App deps={props} />);
   return {
     attach,
     calls,
@@ -529,8 +529,8 @@ describe("service delivery during a pending close-confirm (trmx-224)", () => {
         : Promise.resolve({}),
     );
     const seams = renderApp({
-      observeServiceNudge: serviceNudge.observe as AppProps["observeServiceNudge"],
-      invoke: invoke as AppProps["invoke"],
+      observeServiceNudge: serviceNudge.observe as AppDeps["observeServiceNudge"],
+      invoke: invoke as AppDeps["invoke"],
     });
     await splitWithBusyPane2(seams);
     cmdW(); // when-busy default + busy pane 2 → the dialog gates the close

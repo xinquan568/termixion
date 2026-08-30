@@ -29,7 +29,7 @@ vi.mock("./update/UpdateAuthorityHost", () => ({
   UpdateAuthorityHost: () => <div data-testid="update-authority-host" />,
 }));
 
-import { App, type AppProps } from "./App";
+import { App, type AppDeps } from "./App";
 import { makeSettingsStore, __resetSettingsForTest } from "./store/settingsStore";
 import type { InvokeFn, SessionInfo } from "./ipc/backend";
 
@@ -64,23 +64,23 @@ function makeObservation<T>() {
   return { observe, fire: (value: T) => handler?.(value) };
 }
 
-function renderScriptsApp(over: Partial<AppProps>) {
+function renderScriptsApp(over: Partial<AppDeps>) {
   const { attach, calls } = makeAttach();
   const tabsAction = makeObservation<unknown>();
-  const props: AppProps = {
+  const props: AppDeps = {
     attach,
     closeWindow: vi.fn(),
     closeSession: vi.fn(() => Promise.resolve()),
     observeTabsAction: tabsAction.observe,
     observePtyExited: makeObservation<number>().observe,
-    observeTitleHint: vi.fn(() => vi.fn()) as unknown as AppProps["observeTitleHint"],
-    observeActivity: vi.fn(() => vi.fn()) as unknown as AppProps["observeActivity"],
+    observeTitleHint: vi.fn(() => vi.fn()) as unknown as AppDeps["observeTitleHint"],
+    observeActivity: vi.fn(() => vi.fn()) as unknown as AppDeps["observeActivity"],
     observeSettings: makeObservation<unknown>().observe,
     setWindowTitle: vi.fn(),
     installHotReload: vi.fn(() => vi.fn()),
     ...over,
   };
-  render(<App {...props} />);
+  render(<App deps={props} />);
   return { calls, tabsAction };
 }
 

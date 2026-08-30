@@ -116,6 +116,7 @@ describe("main.tsx service cold-launch pre-fetch (trmx-224: take BEFORE mount, m
 
   it("feeds App via the serviceBootPaths prop, from exactly one take call site", () => {
     expect(source.match(/takePendingOpenPaths\(/g)).toHaveLength(1);
-    expect(source.indexOf("serviceBootPaths={serviceBootPaths}")).toBeGreaterThan(takeIndex);
+    // trmx-254 (T12): the 22 flat props became one `deps` object. Same wiring, new syntax.
+    expect(source.indexOf("deps={{ serviceBootPaths }}")).toBeGreaterThan(takeIndex);
   });
 });

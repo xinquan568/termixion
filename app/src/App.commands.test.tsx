@@ -21,7 +21,7 @@ vi.mock("./terminal/TerminalView", async () => {
 vi.mock("./ipc/useBackend", () => ({ useBackend: () => ({ coreVersion: "0.0.2", attachTerminal: vi.fn() }) }));
 vi.mock("./update/UpdateAuthorityHost", () => ({ UpdateAuthorityHost: () => <div data-testid="uah" /> }));
 
-import { App, type AppProps } from "./App";
+import { App, type AppDeps } from "./App";
 import { __resetSettingsForTest } from "./store/settingsStore";
 import type { SessionInfo } from "./ipc/backend";
 
@@ -37,21 +37,23 @@ function makeAttach() {
 function obs<T>() {
   return { observe: vi.fn((_handler: (v: T) => void) => { void _handler; return vi.fn(); }) };
 }
-function renderApp(over: Partial<AppProps> = {}) {
+function renderApp(over: Partial<AppDeps> = {}) {
   const { attach, calls } = makeAttach();
   render(
     <App
-      attach={attach}
-      closeWindow={vi.fn()}
-      closeSession={vi.fn(() => Promise.resolve())}
-      observeTabsAction={obs<unknown>().observe}
-      observePtyExited={obs<number>().observe}
-      observeTitleHint={vi.fn(() => vi.fn()) as unknown as AppProps["observeTitleHint"]}
-      observeActivity={vi.fn(() => vi.fn()) as unknown as AppProps["observeActivity"]}
-      observeSettings={obs<unknown>().observe}
-      setWindowTitle={vi.fn()}
-      installHotReload={vi.fn(() => vi.fn())}
-      {...over}
+      deps={{
+        attach: attach,
+        closeWindow: vi.fn(),
+        closeSession: vi.fn(() => Promise.resolve()),
+        observeTabsAction: obs<unknown>().observe,
+        observePtyExited: obs<number>().observe,
+        observeTitleHint: vi.fn(() => vi.fn()) as unknown as AppDeps["observeTitleHint"],
+        observeActivity: vi.fn(() => vi.fn()) as unknown as AppDeps["observeActivity"],
+        observeSettings: obs<unknown>().observe,
+        setWindowTitle: vi.fn(),
+        installHotReload: vi.fn(() => vi.fn()),
+        ...over,
+      }}
     />,
   );
   return { calls };

@@ -51,7 +51,7 @@ const invokeSpy = vi.hoisted(() =>
 );
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeSpy, Channel: class {} }));
 
-import { App, type AppProps } from "./App";
+import { App, type AppDeps } from "./App";
 import { __resetSettingsForTest } from "./store/settingsStore";
 import type { SessionInfo } from "./ipc/backend";
 
@@ -97,18 +97,18 @@ describe("App × the core title mirror (trmx-243 L6)", () => {
     // test observe the real IPC edge rather than an injected stub.
     render(
       <App
-        attach={attach as unknown as AppProps["attach"]}
-        closeWindow={vi.fn()}
-        closeSession={vi.fn(() => Promise.resolve())}
-        observeTabsAction={obs<unknown>()}
-        observePtyExited={obs<number>()}
-        observeTitleHint={
-          titleHint.observe as unknown as AppProps["observeTitleHint"]
-        }
-        observeActivity={vi.fn(() => vi.fn()) as unknown as AppProps["observeActivity"]}
-        observeSettings={obs<unknown>()}
-        setWindowTitle={vi.fn()}
-        installHotReload={vi.fn(() => vi.fn())}
+        deps={{
+          attach: attach as unknown as AppDeps["attach"],
+          closeWindow: vi.fn(),
+          closeSession: vi.fn(() => Promise.resolve()),
+          observeTabsAction: obs<unknown>(),
+          observePtyExited: obs<number>(),
+          observeTitleHint: titleHint.observe as unknown as AppDeps["observeTitleHint"],
+          observeActivity: vi.fn(() => vi.fn()) as unknown as AppDeps["observeActivity"],
+          observeSettings: obs<unknown>(),
+          setWindowTitle: vi.fn(),
+          installHotReload: vi.fn(() => vi.fn()),
+        }}
       />,
     );
 

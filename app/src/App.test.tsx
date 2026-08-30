@@ -81,7 +81,7 @@ vi.mock("./update/UpdateAuthorityHost", () => ({
   UpdateAuthorityHost: () => <div data-testid="update-authority-host" />,
 }));
 
-import { App, type AppProps } from "./App";
+import { App, type AppDeps } from "./App";
 import { makeSettingsStore, __resetSettingsForTest } from "./store/settingsStore";
 import { clearUserThemes, registerUserThemes } from "./theme/registry";
 import { night } from "./theme/themes/night";
@@ -202,7 +202,7 @@ function makeFrameSchedule() {
 function renderApp(
   opts: {
     strict?: boolean;
-    invoke?: AppProps["invoke"];
+    invoke?: AppDeps["invoke"];
     /** trmx-224: cold-launch service dirs (main.tsx pre-fetches these before mount). */
     serviceBootPaths?: string[];
   } = {},
@@ -224,7 +224,7 @@ function renderApp(
   // tests backend-free (the real installer subscribes to the Tauri themes:changed bus).
   const hotReloadTeardown = vi.fn();
   const installHotReload = vi.fn().mockReturnValue(hotReloadTeardown);
-  const props: AppProps = {
+  const props: AppDeps = {
     attach,
     closeWindow,
     closeSession,
@@ -247,10 +247,10 @@ function renderApp(
   };
   const ui = opts.strict ? (
     <StrictMode>
-      <App {...props} />
+      <App deps={props} />
     </StrictMode>
   ) : (
-    <App {...props} />
+    <App deps={props} />
   );
   const view = render(ui);
   return {
@@ -2500,7 +2500,7 @@ describe("service open-paths delivery (trmx-224)", () => {
       const batch = batches[call] ?? [];
       call += 1;
       return Promise.resolve(batch as unknown);
-    }) as AppProps["invoke"];
+    }) as AppDeps["invoke"];
   };
 
   it("cold launch: serviceBootPaths become the initial tabs — first focused, no $HOME tab", async () => {
@@ -2610,7 +2610,7 @@ describe("service delivery fail-soft composition (trmx-224)", () => {
   it("a REJECTING take invoke at nudge time changes nothing (the seam maps rejection to empty)", async () => {
     const invoke = vi.fn((cmd: string) =>
       Promise.reject(new Error(`no backend for ${cmd}`)),
-    ) as AppProps["invoke"];
+    ) as AppDeps["invoke"];
     const { serviceNudge } = renderApp({ invoke });
     await act(async () => {
       serviceNudge.fire(undefined);
@@ -2624,7 +2624,7 @@ describe("service delivery fail-soft composition (trmx-224)", () => {
       cmd === "take_pending_open_paths"
         ? Promise.resolve(["/ok", 42] as unknown)
         : Promise.reject(new Error("unexpected")),
-    ) as AppProps["invoke"];
+    ) as AppDeps["invoke"];
     const { serviceNudge } = renderApp({ invoke });
     await act(async () => {
       serviceNudge.fire(undefined);

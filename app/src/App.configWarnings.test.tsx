@@ -29,7 +29,7 @@ vi.mock("./update/UpdateAuthorityHost", () => ({
 const invokeSpy = vi.hoisted(() => vi.fn(() => Promise.resolve(null)));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeSpy }));
 
-import { App, type AppProps } from "./App";
+import { App, type AppDeps } from "./App";
 import {
   CONFIG_WARNINGS_EVENT,
   __resetSettingsForTest,
@@ -59,20 +59,22 @@ function fakeListenBus() {
   };
 }
 
-function renderApp(over: Partial<AppProps> = {}) {
+function renderApp(over: Partial<AppDeps> = {}) {
   render(
     <App
-      attach={vi.fn(() => new Promise<SessionInfo>(() => {}))}
-      closeWindow={vi.fn()}
-      closeSession={vi.fn(() => Promise.resolve())}
-      observeTabsAction={obs<unknown>()}
-      observePtyExited={obs<number>()}
-      observeTitleHint={vi.fn(() => vi.fn()) as unknown as AppProps["observeTitleHint"]}
-      observeActivity={vi.fn(() => vi.fn()) as unknown as AppProps["observeActivity"]}
-      observeSettings={obs<unknown>()}
-      setWindowTitle={vi.fn()}
-      installHotReload={vi.fn(() => vi.fn())}
-      {...over}
+      deps={{
+        attach: vi.fn(() => new Promise<SessionInfo>(() => {})),
+        closeWindow: vi.fn(),
+        closeSession: vi.fn(() => Promise.resolve()),
+        observeTabsAction: obs<unknown>(),
+        observePtyExited: obs<number>(),
+        observeTitleHint: vi.fn(() => vi.fn()) as unknown as AppDeps["observeTitleHint"],
+        observeActivity: vi.fn(() => vi.fn()) as unknown as AppDeps["observeActivity"],
+        observeSettings: obs<unknown>(),
+        setWindowTitle: vi.fn(),
+        installHotReload: vi.fn(() => vi.fn()),
+        ...over,
+      }}
     />,
   );
 }

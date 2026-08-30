@@ -124,79 +124,88 @@ import { realObserveControlRequest, type ControlRequestObservation } from "./con
 // (App.confirmClose.test.tsx) keep working; the seam itself now lives in control/.
 export type { ControlRequest } from "./control/controlRequestGuard";
 
-export interface AppProps {
-  /** Injection seam for tests; defaults to useBackend's attachTerminal (the live PTY wiring). */
+export type AppDeps = {
   attach?: AttachFn;
-  /** Injection seam for tests; defaults to closing the native window (last-tab close). */
   closeWindow?: () => void;
-  /** Injection seam for tests; defaults to the real `quit_confirmed` invoke (trmx-144). */
   quitConfirmed?: () => void;
-  /** trmx-268: tell the backend the webview is alive, echoing the ask generation. */
   closeAcknowledged?: (generation: number) => Promise<void>;
-  /** Injection seam for tests; defaults to the real `close_pty` command. */
   closeSession?: (sessionId: number) => Promise<void>;
-  /** Injection seam for tests; defaults to the real `tabs:action` event-bus subscription. */
   observeTabsAction?: TabsActionObservation;
-  /** Injection seam for tests; defaults to the real `pty:exited` event-bus subscription. */
   observePtyExited?: PtyExitedObservation;
-  /** Injection seam for tests; defaults to the real `session:title-hint` subscription (trmx-75). */
   observeTitleHint?: TitleHintObservation;
-  /** Injection seam for tests; defaults to the real `session:activity` subscription (trmx-91). */
   observeActivity?: ActivityObservation;
-  /** Injection seam for tests (trmx-159); production observes PTY output via useBackend directly. */
   observeOutput?: OutputObservation;
-  /** Injection seam for tests (trmx-159); production observes keystroke input via useBackend directly. */
   observeInput?: InputObservation;
-  /** Injection seam for tests; defaults to the real `settings:changed` subscription (trmx-81). */
   observeSettings?: SettingsObservation;
-  /** Injection seam for tests; the control socket's request stream (trmx-101). */
   observeControlRequest?: ControlRequestObservation;
-  /** Injection seam for tests; the backend's per-session notice stream (trmx-237 H4). */
   observeSessionNotice?: SessionNoticeObservation;
-  /** Injection seam for tests; the backend's `close:requested` stream (trmx-144). */
   observeCloseRequested?: CloseRequestedObservation;
-  /** Injection seam for tests; defaults to retitling the native window (trmx-75). */
   setWindowTitle?: (title: string) => void;
-  /** Injection seam for tests; the frame schedule that throttles divider-drag dispatches (trmx-85). */
   dragSchedule?: FrameSchedule;
-  /** Injection seam for tests; defaults to the real themes hot-reload installer (trmx-89). */
   installHotReload?: typeof installThemeHotReload;
-  /** Injection seam for tests; defaults to the real `pty_write` (trmx-93 — sends a sourced script). */
   sendInput?: (sessionId: number, data: string) => Promise<void>;
-  /** Injection seam for tests; the backend `invoke` for the script picker + startup resolution (trmx-93). */
   invoke?: InvokeFn;
-  /** trmx-224: cold-launch service dirs, pre-fetched by main.tsx BEFORE mount (so plain boot
-   * stays synchronous). Non-empty ⇒ these become the initial tabs (first focused) and the
-   * default tab + startup script are skipped. */
   serviceBootPaths?: string[];
-  /** Injection seam for tests; defaults to the real `services:open-paths` subscription (trmx-224). */
   observeServiceNudge?: ServiceNudgeObservation;
+};
+
+/** trmx-254: the 22 seams are now one object; `deps` replaces the flat prop list. */
+export interface AppProps {
+  deps?: AppDeps;
 }
 
-export function App({
-  attach,
-  closeWindow = realCloseWindow,
-  quitConfirmed = realQuitConfirmed,
-  closeAcknowledged = realCloseAcknowledged,
-  closeSession = closePty,
-  observeTabsAction = realObserveTabsAction,
-  observePtyExited = onPtyExited,
-  observeTitleHint = onTitleHint,
-  observeActivity = onSessionActivity,
-  observeOutput,
-  observeInput,
-  observeSettings = realObserveAppSettings,
-  observeControlRequest = realObserveControlRequest,
-  observeSessionNotice = realObserveSessionNotice,
-  observeCloseRequested = realObserveCloseRequested,
-  setWindowTitle = realSetWindowTitle,
-  dragSchedule = realFrameSchedule,
-  installHotReload = installThemeHotReload,
-  sendInput = (sessionId, data) => sendPtyInput(sessionId, data),
-  invoke = realInvoke,
-  serviceBootPaths = [],
-  observeServiceNudge = realObserveServiceNudge,
-}: AppProps = {}) {
+// trmx-254 (T12): the 22 injection seams become ONE `deps` object. Defaults live at MODULE scope so
+// their identity is stable across renders, and each field resolves with `??` — never a spread merge.
+// That distinction is behavioural, not stylistic: `{...DEFAULTS, ...deps}` RETAINS an explicitly
+// passed `undefined`, so a test that writes `invoke: opts.invoke` (with `opts.invoke` undefined)
+// would silently get `undefined` instead of the production default. Several tests do exactly that.
+const DEPS_DEFAULTS = {
+  closeWindow: realCloseWindow,
+  quitConfirmed: realQuitConfirmed,
+  closeAcknowledged: realCloseAcknowledged,
+  closeSession: closePty,
+  observeTabsAction: realObserveTabsAction,
+  observePtyExited: onPtyExited,
+  observeTitleHint: onTitleHint,
+  observeActivity: onSessionActivity,
+  observeSettings: realObserveAppSettings,
+  observeControlRequest: realObserveControlRequest,
+  observeSessionNotice: realObserveSessionNotice,
+  observeCloseRequested: realObserveCloseRequested,
+  observeServiceNudge: realObserveServiceNudge,
+  setWindowTitle: realSetWindowTitle,
+  dragSchedule: realFrameSchedule,
+  installHotReload: installThemeHotReload,
+  invoke: realInvoke,
+  sendInput: (sessionId: number, data: string) => sendPtyInput(sessionId, data),
+} as const;
+
+export function App({ deps }: AppProps = {}) {
+  // 18 defaulted seams — `??` per field, so an explicit `undefined` still resolves to the default.
+  const closeWindow = deps?.closeWindow ?? DEPS_DEFAULTS.closeWindow;
+  const quitConfirmed = deps?.quitConfirmed ?? DEPS_DEFAULTS.quitConfirmed;
+  const closeAcknowledged = deps?.closeAcknowledged ?? DEPS_DEFAULTS.closeAcknowledged;
+  const closeSession = deps?.closeSession ?? DEPS_DEFAULTS.closeSession;
+  const observeTabsAction = deps?.observeTabsAction ?? DEPS_DEFAULTS.observeTabsAction;
+  const observePtyExited = deps?.observePtyExited ?? DEPS_DEFAULTS.observePtyExited;
+  const observeTitleHint = deps?.observeTitleHint ?? DEPS_DEFAULTS.observeTitleHint;
+  const observeActivity = deps?.observeActivity ?? DEPS_DEFAULTS.observeActivity;
+  const observeSettings = deps?.observeSettings ?? DEPS_DEFAULTS.observeSettings;
+  const observeControlRequest = deps?.observeControlRequest ?? DEPS_DEFAULTS.observeControlRequest;
+  const observeSessionNotice = deps?.observeSessionNotice ?? DEPS_DEFAULTS.observeSessionNotice;
+  const observeCloseRequested = deps?.observeCloseRequested ?? DEPS_DEFAULTS.observeCloseRequested;
+  const observeServiceNudge = deps?.observeServiceNudge ?? DEPS_DEFAULTS.observeServiceNudge;
+  const setWindowTitle = deps?.setWindowTitle ?? DEPS_DEFAULTS.setWindowTitle;
+  const dragSchedule = deps?.dragSchedule ?? DEPS_DEFAULTS.dragSchedule;
+  const installHotReload = deps?.installHotReload ?? DEPS_DEFAULTS.installHotReload;
+  const invoke = deps?.invoke ?? DEPS_DEFAULTS.invoke;
+  const sendInput = deps?.sendInput ?? DEPS_DEFAULTS.sendInput;
+  // 3 seams with NO production default — `undefined` is meaningful and must stay undefined.
+  const attach = deps?.attach;
+  const observeOutput = deps?.observeOutput;
+  const observeInput = deps?.observeInput;
+  // 1 array default.
+  const serviceBootPaths = deps?.serviceBootPaths ?? [];
   // trmx-159: the per-pane I/O observers route PTY output/input into the activity classifier. They are
   // set (below, once applyActivityTransition exists) into this ref, which the stable useBackend wiring
   // and the test-only observeOutput/observeInput seams both read — so production observes I/O through
