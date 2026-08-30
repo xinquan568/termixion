@@ -92,72 +92,54 @@ for (const f of files) {
     }
   }
 
-  // Local name -> ORIGINAL exported name, read syntactically from the import declarations. This is
-  // what makes aliases detectable without module resolution: `import { useState as mine }` maps
-  // mine -> useState. Symbol resolution alone is not enough — when `react` cannot be resolved (a
-  // fixture directory with no node_modules) `getAliasedSymbol` yields a symbol named "unknown", and
-  // an earlier version of this gate silently passed every aliased violation because of it.
-  const localToOriginal = new Map();
-  const reactNamespaces = new Set();
+  // FAIL-CLOSED at the IMPORT, not at the call site.
+  //
+  // Chasing call sites was a losing game: I fixed module-level destructuring and review immediately
+  // defeated it with FUNCTION-LOCAL `const { useState: mine } = React`, then `const mine = useState`,
+  // then `React["useState"](0)`. Each fix invited the next variant, and a gate that is one clever
+  // alias away from silent is worse than no gate, because it is quoted as proof.
+  //
+  // An orchestration module cannot call a React ownership API without importing it somehow. So the
+  // IMPORT is the violation: a value import of `useState`/`useReducer`/`useRef`/`useEffect`/
+  // `useLayoutEffect` from react, or a value default/namespace import of react (which hands over the
+  // whole surface). TYPE-ONLY imports stay legal — `import type { Dispatch } from "react"` is how
+  // these hooks type the setters they receive, and every one of them does it.
   for (const st of sf.statements) {
-    // Re-exporting an ownership API hands it to someone else — the module is still the source.
     if (ts.isExportDeclaration(st) && st.exportClause && ts.isNamedExports(st.exportClause)) {
       const from = st.moduleSpecifier && ts.isStringLiteral(st.moduleSpecifier) ? st.moduleSpecifier.text : "";
-      if (!/^react(\/|$)/.test(from)) continue;
-      for (const e of st.exportClause.elements) {
-        const orig = (e.propertyName ?? e.name).text;
-        if (OWNERSHIP.has(orig)) {
-          errors.push(`${at(e)}  re-exports ${orig} — an orchestration module may not re-expose a React ownership API`);
+      if (/^react(\/|$)/.test(from)) {
+        for (const e of st.exportClause.elements) {
+          const orig = (e.propertyName ?? e.name).text;
+          if (OWNERSHIP.has(orig)) {
+            errors.push(`${at(e)}  re-exports ${orig} from react — an orchestration module may not re-expose a React ownership API`);
+          }
         }
       }
     }
     if (!ts.isImportDeclaration(st) || !st.importClause) continue;
-    // Only React is an ownership source. Without this, `import { useState } from "../store/x"` —
-    // a same-named helper from another module — was reported as a violation.
     if (!ts.isStringLiteral(st.moduleSpecifier) || !/^react(\/|$)/.test(st.moduleSpecifier.text)) continue;
+    if (st.importClause.isTypeOnly) continue;                       // `import type { ... }` is fine
     const nb = st.importClause.namedBindings;
-    if (nb && ts.isNamedImports(nb)) {
-      for (const e of nb.elements) localToOriginal.set(e.name.text, (e.propertyName ?? e.name).text);
+    if (st.importClause.name) {
+      errors.push(`${at(st)}  value-imports React as a default binding — that hands the module every ownership API`);
     }
-    if (nb && ts.isNamespaceImport(nb)) reactNamespaces.add(nb.name.text);
-    if (st.importClause.name) reactNamespaces.add(st.importClause.name.text);
-  }
-
-  // `const { useState } = React` and `const { useState: mine } = React` — bind the LOCAL name to the
-  // original so the call site below resolves either form.
-  for (const st of sf.statements) {
-    if (!ts.isVariableStatement(st)) continue;
-    for (const d of st.declarationList.declarations) {
-      if (!d.initializer || !ts.isIdentifier(d.initializer)) continue;
-      if (!reactNamespaces.has(d.initializer.text)) continue;
-      if (!ts.isObjectBindingPattern(d.name)) continue;
-      for (const el of d.name.elements) {
-        if (!ts.isIdentifier(el.name)) continue;
-        const orig = el.propertyName && ts.isIdentifier(el.propertyName) ? el.propertyName.text : el.name.text;
-        localToOriginal.set(el.name.text, orig);
+    if (nb && ts.isNamespaceImport(nb)) {
+      errors.push(`${at(st)}  value-imports React as a namespace — that hands the module every ownership API`);
+    }
+    if (nb && ts.isNamedImports(nb)) {
+      for (const e of nb.elements) {
+        if (e.isTypeOnly) continue;                                 // `import { type Dispatch }`
+        const orig = (e.propertyName ?? e.name).text;
+        if (OWNERSHIP.has(orig)) {
+          errors.push(`${at(e)}  imports ${orig} from react — the composition root owns state, refs and effects`);
+        }
       }
     }
   }
 
   (function walk(n) {
-    if (ts.isCallExpression(n)) {
-      const callee = n.expression;
-      let name = null;
-      if (ts.isIdentifier(callee)) {
-        // ONLY names traced back to a react import count. Falling back to the raw callee text made
-        // `import { useState } from "../store/settingsStore"` a violation — a same-named helper from
-        // another module is not React ownership, and a gate with false positives gets disabled.
-        name = localToOriginal.get(callee.text) ?? null;
-      } else if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)) {
-        // `React.useRef(...)` — a namespace or default import used as an object.
-        if (reactNamespaces.has(callee.expression.text)) name = callee.name.text;
-      }
-      if (name && OWNERSHIP.has(name)) {
-        errors.push(`${at(n)}  calls ${name}() — the composition root owns state, refs and effects`);
-      }
-    }
-    // `await import("react")` hands back the whole namespace, so the import map cannot see the
-    // ownership call that follows. Treat the dynamic import itself as the violation.
+    // `await import("react")` bypasses the import declarations entirely; the gate cannot see through
+    // it, so the dynamic import IS the violation.
     if (ts.isCallExpression(n) && n.expression.kind === ts.SyntaxKind.ImportKeyword) {
       const arg = n.arguments[0];
       if (arg && ts.isStringLiteral(arg) && /^react(\/|$)/.test(arg.text)) {

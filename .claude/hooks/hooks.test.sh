@@ -75,6 +75,7 @@ run_hook pre-push
 expect pre-push "cargo test --workspace --quiet"
 expect pre-push "pnpm --filter app test"             # trmx-239: frontend regressions reached only CI
 expect pre-push "cargo clippy --workspace --all-targets -- -D warnings"
+expect pre-push "node scripts/verify-contracts.mjs"
 
 if [ "$fails" -ne 0 ]; then
   echo "hooks.test: $fails expectation(s) failed." >&2

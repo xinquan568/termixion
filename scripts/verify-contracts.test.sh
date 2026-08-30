@@ -23,22 +23,22 @@ expect_fail "(i) a hook importing a ROOT file is rejected" "imports a ROOT file"
 fixture useProbe.ts 'import { useState } from "react";
 export function useProbe() { const [n, setN] = useState(0); return { n, setN }; }
 '
-expect_fail "(ii) a hook declaring its own state is rejected" "calls useState"
+expect_fail "(ii) a hook declaring its own state is rejected" "imports useState from react"
 
 fixture useProbe.ts 'import { useState as mine } from "react";
 export function useProbe() { const [n] = mine(0); return n; }
 '
-expect_fail "(iii) an ALIASED ownership call is rejected (text matching would miss this)" "calls useState"
+expect_fail "(iii) an ALIASED import is rejected (text matching would miss this)" "imports useState from react"
 
 fixture useProbe.ts 'import * as React from "react";
 export function useProbe() { return React.useRef(null); }
 '
-expect_fail "(iv) a NAMESPACED ownership call is rejected" "calls useRef"
+expect_fail "(iv) a NAMESPACE react import is rejected" "value-imports React as a namespace"
 
 fixture useProbe.ts 'import { useReducer } from "react";
 export function useProbe() { return useReducer((s: number) => s, 0); }
 '
-expect_fail "(v) useReducer counts as ownership, not just useState" "calls useReducer"
+expect_fail "(v) useReducer counts as ownership, not just useState" "imports useReducer from react"
 
 fixture useProbe.ts 'let cached = 0;
 export function useProbe() { return cached + 1; }
@@ -56,19 +56,46 @@ expect_fail "(viii) RE-EXPORTING an ownership API is rejected" "re-exports useSt
 fixture helpers.ts 'import { useState } from "react";
 export function makeThing() { return useState(0); }
 '
-expect_fail "(ix) default-DENY: a module not named use* is still constrained" "calls useState"
+expect_fail "(ix) default-DENY: a module not named use* is still constrained" "imports useState from react"
 
 fixture useProbe.ts 'import React from "react";
 const { useState: mine } = React;
 export function useProbe() { return mine(0); }
 '
-expect_fail "(xi) ALIASED DESTRUCTURING off a React namespace is rejected" "calls useState"
+expect_fail "(x) MODULE-LEVEL aliased destructuring off a React namespace is rejected" "value-imports React as a default"
 
 fixture useProbe.ts 'import { useState } from "../store/settingsStore";
 export function useProbe() { return useState(); }
 '
 if ! run; then echo "FAIL: (xii) a same-named import from a NON-React module must NOT be flagged"; cat "$TMP/out"; exit 1; fi
-echo "ok: (xii) a same-named helper from a non-React module is NOT a false positive"
+echo "ok: (xi) a same-named helper from a non-React module is NOT a false positive"
+rm -rf "$TMP/zone"
+
+fixture useProbe.ts 'import React from "react";
+export function useProbe() { const { useState: mine } = React; return mine(0); }
+'
+expect_fail "(xii) FUNCTION-LOCAL aliased destructuring is rejected" "value-imports React as a default"
+
+fixture useProbe.ts 'import { useState } from "react";
+export function useProbe() { const mine = useState; return mine(0); }
+'
+expect_fail "(xii) indirect assignment (const mine = useState) is rejected" "imports useState from react"
+
+fixture useProbe.ts 'import * as React from "react";
+export function useProbe() { return React["useState"](0); }
+'
+expect_fail "(xiii) element access React[\"useState\"] is rejected" "value-imports React as a namespace"
+
+fixture useProbe.ts 'import { useState as mine } from "react";
+export { mine };
+'
+expect_fail "(xiv) import-then-re-export alias is rejected" "imports useState from react"
+
+fixture useProbe.ts 'import type { Dispatch, SetStateAction } from "react";
+export function useProbe(deps: { set: Dispatch<SetStateAction<number>> }) { deps.set(1); }
+'
+if ! run; then echo "FAIL: (xv) (xvi) a TYPE-ONLY react import must pass — every hook types its setters that way"; cat "$TMP/out"; exit 1; fi
+echo "ok: (xvi) a type-only react import passes"
 rm -rf "$TMP/zone"
 
 fixture useProbe.ts 'const RATE = 3;
@@ -76,6 +103,6 @@ import type { PaneId } from "../panes/layoutTree";
 export function useProbe(deps: { paneId: PaneId }) { return deps.paneId * RATE; }
 '
 if ! run; then echo "FAIL: (vii) the CLEAN case must pass"; cat "$TMP/out"; exit 1; fi
-echo "ok: (x) a pure hook over injected values, a const and a type-only import passes"
+echo "ok: (xvii) a pure hook over injected values, a const and a type-only import passes"
 
-echo "verify-contracts.test: OK (12 cases)."
+echo "verify-contracts.test: OK (17 cases)."

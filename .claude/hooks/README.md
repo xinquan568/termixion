@@ -8,6 +8,8 @@ defeat a gate — the hooks are the fast local copy, not the enforcement.
 - **pre-commit** — `scripts/secret-scan.sh`, `scripts/check-core-seam.sh`,
   `scripts/check-isc-headers.sh`, `cargo fmt --all --check`, `pnpm --filter app lint`.
 - **pre-push** — `cargo clippy --workspace --all-targets -- -D warnings`,
+  `node scripts/verify-contracts.mjs` (trmx-254: the app/ orchestration modules own no React state,
+  refs or effects and import only downward — an invariant the type checker cannot see),
   `cargo test --workspace`, `pnpm --filter app test`.
 - **commit-msg** — Conventional Commits (`<type>(<scope>): <subject>`) + the R9 `trmx-N` branch check.
 
