@@ -14,6 +14,7 @@ use notify::RecursiveMode;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::ipc_error::IpcError;
 use tauri::Emitter;
 use tauri_plugin_opener::OpenerExt;
 use termixion_core::{ThemeSpec, ThemeWarning, parse_theme, user_theme_id};
@@ -92,17 +93,17 @@ fn is_theme_file(path: &Path) -> bool {
 /// Validate that `stem` is a safe single path component for a `<stem>.toml` theme file: non-empty
 /// and free of any path separator or `.` — which also rules out `.`, `..` (traversal), hidden
 /// dotfiles, and extension smuggling. Returns the stem unchanged when safe, else a descriptive Err.
-fn sanitize_stem(stem: &str) -> Result<&str, String> {
+fn sanitize_stem(stem: &str) -> Result<&str, IpcError> {
     if stem.is_empty() {
-        return Err("theme name must not be empty".to_string());
+        return Err(IpcError::invalid("theme name must not be empty"));
     }
     if let Some(bad) = stem
         .chars()
         .find(|&ch| ch == '/' || ch == '\\' || ch == '.')
     {
-        return Err(format!(
+        return Err(IpcError::invalid(format!(
             "invalid theme name `{stem}`: must not contain `{bad}` (use a plain file name, no path or extension)"
-        ));
+        )));
     }
     Ok(stem)
 }
@@ -114,31 +115,42 @@ fn sanitize_stem(stem: &str) -> Result<&str, String> {
 /// Write `contents` ATOMICALLY: temp file in the SAME directory, then `rename` over the target (a
 /// reader/watcher can never observe a torn file). Creates the parent directory. Mirrors
 /// config_io's `write_atomic`, minus the self-echo hash (the themes watcher is a bare re-read).
-fn write_atomic(path: &Path, contents: &str) -> Result<(), String> {
+fn write_atomic(path: &Path, contents: &str) -> Result<(), IpcError> {
     let parent = path
         .parent()
-        .ok_or_else(|| format!("theme path has no parent directory: {}", path.display()))?;
+        // Our constructed path, our invariant — not something the caller can cause.
+        .ok_or_else(|| {
+            IpcError::internal(format!(
+                "theme path has no parent directory: {}",
+                path.display()
+            ))
+        })?;
     std::fs::create_dir_all(parent)
-        .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
+        .map_err(|error| IpcError::io(format!("could not create {}: {error}", parent.display())))?;
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| format!("theme path has no file name: {}", path.display()))?;
+        .ok_or_else(|| {
+            IpcError::internal(format!("theme path has no file name: {}", path.display()))
+        })?;
     // Same directory as the target so the rename is same-filesystem (atomic); pid-suffixed and
     // file-name-scoped so two writes (two Termixion processes, or two stems) never collide on it.
     let temp = parent.join(format!(".{file_name}.tmp-{}", std::process::id()));
     std::fs::write(&temp, contents)
-        .map_err(|error| format!("could not write {}: {error}", temp.display()))?;
+        .map_err(|error| IpcError::io(format!("could not write {}: {error}", temp.display())))?;
     if let Err(error) = std::fs::rename(&temp, path) {
         let _ = std::fs::remove_file(&temp); // best-effort: never leave residue behind
-        return Err(format!("could not replace {}: {error}", path.display()));
+        return Err(IpcError::io(format!(
+            "could not replace {}: {error}",
+            path.display()
+        )));
     }
     Ok(())
 }
 
 /// The core of `themes_write` (path-parameterized): sanitize the stem, then atomically write
 /// `<dir>/<stem>.toml`. Returns the written file path string.
-fn write_theme_in(dir: &Path, stem: &str, text: &str) -> Result<String, String> {
+fn write_theme_in(dir: &Path, stem: &str, text: &str) -> Result<String, IpcError> {
     let stem = sanitize_stem(stem)?;
     let path = dir.join(format!("{stem}.toml"));
     write_atomic(&path, text)?;
@@ -193,20 +205,20 @@ pub fn themes_read() -> Vec<ThemeEntry> {
 /// Duplicate flow hands a full-token TOML body). The stem must be a safe single path component.
 /// Returns the written file path string.
 #[tauri::command]
-pub fn themes_write(stem: String, text: String) -> Result<String, String> {
+pub fn themes_write(stem: String, text: String) -> Result<String, IpcError> {
     write_theme_in(&themes_dir(), &stem, &text)
 }
 
 /// Create the themes directory if absent, then open it in the OS file manager (Finder) via the
 /// opener plugin — the "Open themes folder" affordance so a user can drop in / edit theme files.
 #[tauri::command]
-pub fn themes_open_dir(app: tauri::AppHandle) -> Result<(), String> {
+pub fn themes_open_dir(app: tauri::AppHandle) -> Result<(), IpcError> {
     let dir = themes_dir();
     std::fs::create_dir_all(&dir)
-        .map_err(|error| format!("could not create {}: {error}", dir.display()))?;
+        .map_err(|error| IpcError::io(format!("could not create {}: {error}", dir.display())))?;
     app.opener()
         .open_path(dir.display().to_string(), None::<&str>)
-        .map_err(|error| format!("could not open {}: {error}", dir.display()))
+        .map_err(|error| IpcError::io(format!("could not open {}: {error}", dir.display())))
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +277,7 @@ pub const THEMES_WAKE_EVENT: &str = "themes:changed";
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ipc_error::IpcErrorKind;
 
     // trmx-238 (L7): the three watchers now share one loop, so each one's PARAMETERS and its WAKE
     // ACTION are pinned here — otherwise the dedupe could silently change a mode or an event name.
@@ -437,6 +450,45 @@ bright_white = "#f0f6fc"
         ] {
             assert!(sanitize_stem(bad).is_err(), "must reject {bad:?}");
         }
+    }
+
+    // --- trmx-249: kind fidelity ---------------------------------------------------------
+    //
+    // `write_theme_in` mixes an `invalid` stem rejection with `io` filesystem failure behind one
+    // return type. Exact kinds, not merely different ones.
+
+    #[test]
+    fn write_theme_in_rejects_an_empty_stem_as_invalid() {
+        let dir = test_dir("kind-invalid");
+        let err = write_theme_in(&dir, "", MINIMAL).expect_err("an empty stem is rejected");
+        assert_eq!(err.kind, IpcErrorKind::Invalid);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_theme_in_rejects_a_path_bearing_stem_as_invalid() {
+        let dir = test_dir("kind-invalid-path");
+        let err = write_theme_in(&dir, "../escape", MINIMAL).expect_err("a path stem is rejected");
+        assert_eq!(err.kind, IpcErrorKind::Invalid);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_theme_in_reports_a_filesystem_failure_as_io() {
+        let dir = test_dir("kind-io");
+        let blocker = dir.join("blocker");
+        std::fs::write(&blocker, b"not a directory").expect("seed blocker");
+        let err = write_theme_in(&blocker, "night", MINIMAL)
+            .expect_err("a themes dir under a file cannot be created");
+        assert_eq!(err.kind, IpcErrorKind::Io, "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_atomic_reports_a_parentless_path_as_internal() {
+        let err = write_atomic(Path::new("/"), "x").expect_err("`/` has no parent");
+        assert_eq!(err.kind, IpcErrorKind::Internal, "{err}");
+        assert!(err.message.contains("no parent directory"), "{err}");
     }
 
     // --- filesystem glue (deterministic: private temp dirs, no watcher, no races) --------

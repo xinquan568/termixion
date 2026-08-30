@@ -42,6 +42,12 @@ pub enum IpcErrorKind {
 impl IpcErrorKind {
     /// Every variant, in wire order.
     ///
+    /// Not called by production code — it exists so the WIRE VOCABULARY is derived from the enum
+    /// rather than hand-listed. The golden test serializes it into the shared fixture, and the
+    /// TypeScript suite compares its own tuple against that. Deleting it would silently reduce the
+    /// contract to the one kind the sample happens to carry.
+    #[allow(dead_code)]
+    ///
     /// Exhaustiveness is the compiler's job, not the author's: [`Self::assert_exhaustive`] matches
     /// on every variant with no wildcard arm, so adding a variant without extending `ALL` fails to
     /// build. A hand-maintained list cannot guard against a hand-maintenance mistake.
@@ -55,6 +61,7 @@ impl IpcErrorKind {
         IpcErrorKind::Internal,
     ];
 
+    #[allow(dead_code)]
     /// A wildcard-free match binding each variant to its index in [`Self::ALL`]. Adding a variant
     /// breaks this match (non-exhaustive pattern) *and* the length assertion below it.
     const fn assert_exhaustive(self) -> usize {
@@ -100,6 +107,14 @@ impl IpcError {
     /// An invariant we control was violated.
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new(IpcErrorKind::Internal, message)
+    }
+}
+
+/// Renders just the message, so `{err}` and `err.to_string()` read exactly as they did when these
+/// commands rejected with a bare `String`. The kind travels on the wire, not in the human text.
+impl std::fmt::Display for IpcError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
     }
 }
 
@@ -214,6 +229,94 @@ mod tests {
             vocabulary, golden["vocabulary"],
             "the IpcErrorKind vocabulary drifted from the golden fixture"
         );
+    }
+
+    /// Acceptance "reach" (trmx-249): serializing a standalone `IpcError` proves nothing about the
+    /// COMMANDS — all 15 could still be `Result<_, String>` and every other test here would pass.
+    ///
+    /// This reads the authoritative registration list in `main.rs` and the command modules, and
+    /// asserts the EXACT name sets rather than counts. A count cannot notice that one command
+    /// entered the fallible set as another left it.
+    #[test]
+    fn exactly_the_expected_commands_reject_with_ipc_error() {
+        const EXPECTED_FALLIBLE: [&str; 15] = [
+            "open_pty",
+            "pty_write",
+            "pty_resize",
+            "close_pty",
+            "config_write",
+            "config_reset_all",
+            "config_open_file",
+            "themes_write",
+            "themes_open_dir",
+            "log_message",
+            "log_dir",
+            "log_open_dir",
+            "scripts_open_dir",
+            "shell_integration_reveal",
+            "open_settings_window",
+        ];
+
+        // The registration list is the boundary: a command not in it is not reachable from the
+        // webview, whatever its signature says.
+        let main_rs = include_str!("main.rs");
+        let block = main_rs
+            .split_once("tauri::generate_handler![")
+            .expect("main.rs registers commands")
+            .1
+            .split_once("])")
+            .expect("the handler list closes")
+            .0;
+        let registered: Vec<&str> = block
+            .split(',')
+            .map(|entry| entry.trim())
+            .filter(|entry| !entry.is_empty() && !entry.starts_with("//"))
+            .map(|entry| entry.rsplit("::").next().expect("a command name"))
+            .collect();
+        assert_eq!(
+            registered.len(),
+            33,
+            "the registered command count changed: {registered:?}"
+        );
+
+        // Every module that can host a fallible command.
+        let sources: [&str; 7] = [
+            include_str!("pty_io.rs"),
+            include_str!("config_io.rs"),
+            include_str!("themes_io.rs"),
+            include_str!("logging.rs"),
+            include_str!("scripts_io.rs"),
+            include_str!("shell_integration_io.rs"),
+            include_str!("window_manager.rs"),
+        ];
+
+        let rejects_with_ipc_error = |name: &str| {
+            sources.iter().any(|src| {
+                src.split(&format!("fn {name}(")).skip(1).any(|tail| {
+                    // The signature ends at the opening brace of the body.
+                    let head = tail.split_once(" {").map_or(tail, |(h, _)| h);
+                    head.contains("IpcError")
+                })
+            })
+        };
+
+        let actual: Vec<&str> = registered
+            .iter()
+            .copied()
+            .filter(|name| rejects_with_ipc_error(name))
+            .collect();
+
+        let mut expected = EXPECTED_FALLIBLE.to_vec();
+        let mut got = actual.clone();
+        expected.sort_unstable();
+        got.sort_unstable();
+        assert_eq!(
+            got, expected,
+            "the set of commands rejecting with IpcError drifted from the 15 this issue covers"
+        );
+
+        // And the other 18 keep no error channel at all — the scope line, asserted rather than assumed.
+        assert_eq!(registered.len() - actual.len(), 18);
     }
 
     #[test]

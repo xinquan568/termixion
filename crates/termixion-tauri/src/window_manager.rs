@@ -8,6 +8,7 @@
 //! predicate) are unit-tested; the window creation itself is thin runtime glue like `build_menu`,
 //! exercised by `cargo tauri dev` and the packaged smoke.
 
+use crate::ipc_error::IpcError;
 use tauri::{AppHandle, Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder};
 
 /// The label of the singleton settings window.
@@ -61,8 +62,10 @@ fn apply_macos_titlebar<'a, R: Runtime>(
 /// (no section) and `app.check-updates` (`section = "about"`, where the update controls live). Same
 /// effect as the menu's ShowSettings path, reached through the command dispatch spine.
 #[tauri::command]
-pub fn open_settings_window(app: AppHandle, section: Option<String>) -> Result<(), String> {
-    show_settings_window(&app, section.as_deref()).map_err(|error| error.to_string())
+pub fn open_settings_window(app: AppHandle, section: Option<String>) -> Result<(), IpcError> {
+    // trmx-249: a window that will not open is our invariant, not the caller's input.
+    show_settings_window(&app, section.as_deref())
+        .map_err(|error| IpcError::internal(error.to_string()))
 }
 
 /// Create or focus the singleton settings window; with `section`, land on (or navigate an already
