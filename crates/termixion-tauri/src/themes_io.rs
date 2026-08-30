@@ -485,6 +485,17 @@ bright_white = "#f0f6fc"
     }
 
     #[test]
+    fn write_atomic_reports_a_path_with_no_file_name_as_internal() {
+        // The SECOND invariant branch the leaf matrix recovered. A path ending in `..` has a
+        // parent (so it clears the first check) but no file name.
+        let dir = test_dir("kind-internal-noname");
+        let err = write_atomic(&dir.join(".."), "x").expect_err("`..` has no file name");
+        assert_eq!(err.kind, IpcErrorKind::Internal, "{err}");
+        assert!(err.message.contains("no file name"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn write_atomic_reports_a_parentless_path_as_internal() {
         let err = write_atomic(Path::new("/"), "x").expect_err("`/` has no parent");
         assert_eq!(err.kind, IpcErrorKind::Internal, "{err}");

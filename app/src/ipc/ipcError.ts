@@ -65,21 +65,28 @@ export class BackendError extends Error {
  * than lying about it); a legacy bare string; a real `Error`; and anything else.
  */
 export function decodeIpcError(value: unknown): BackendError {
-  if (value instanceof BackendError) return value;
+  // EVERY inspection is guarded, including `instanceof` and property reads. A rejection can be a
+  // Proxy or an object with a throwing getter, and a decoder that throws while decoding hands
+  // realInvoke an undecoded rejection — which is exactly the `[object Object]` this prevents.
+  try {
+    if (value instanceof BackendError) return value;
 
-  if (typeof value === "string") return new BackendError(value);
+    if (typeof value === "string") return new BackendError(value);
 
-  if (value !== null && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    if (typeof record.message === "string") {
-      // An unknown `kind` means a backend newer than this bundle. The message is still the truth,
-      // so keep it and leave `kind` undefined rather than asserting a class we do not understand.
-      return new BackendError(
-        record.message,
-        isIpcErrorKind(record.kind) ? record.kind : undefined,
-      );
+    if (value !== null && typeof value === "object") {
+      const record = value as Record<string, unknown>;
+      const message = record.message;
+      if (typeof message === "string") {
+        // An unknown `kind` means a backend newer than this bundle. The message is still the truth,
+        // so keep it and leave `kind` undefined rather than asserting a class we do not understand.
+        const kind = record.kind;
+        return new BackendError(message, isIpcErrorKind(kind) ? kind : undefined);
+      }
+      if (value instanceof Error) return new BackendError(value.message);
     }
-    if (value instanceof Error) return new BackendError(value.message);
+  } catch {
+    // A throwing getter, a hostile Proxy trap, a revoked Proxy.
+    return new BackendError("the backend rejected with an unreadable value");
   }
 
   // A malformed payload: null, a number, an object with no message. Never render `[object Object]`.

@@ -14,13 +14,37 @@
 use serde::Serialize;
 use termixion_core::PtyError;
 
-/// The machine-readable class of an [`IpcError`]. Serialized in `snake_case` as the wire `kind`.
+/// Declares the kind enum and its complete variant list from ONE list of variants.
 ///
-/// The frontend mirrors this as a `IPC_ERROR_KINDS` tuple and compares the two against a golden
-/// fixture, so a variant added here without updating that tuple fails the TypeScript suite.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum IpcErrorKind {
+/// trmx-249: an earlier version hand-wrote `ALL` beside the enum and guarded it with a
+/// wildcard-free `match`. That is not enough, and the gap is quiet: the match forces you to HANDLE
+/// a new variant, not to LIST it. Add a variant plus its match arm and forget `ALL`, and everything
+/// compiles, every test passes, and the wire vocabulary silently loses a kind — verified by doing
+/// exactly that and watching six tests stay green. Generating both from one list is what actually
+/// makes membership indivisible.
+macro_rules! ipc_error_kinds {
+    ($($(#[$doc:meta])* $variant:ident),+ $(,)?) => {
+        /// The machine-readable class of an [`IpcError`]. Serialized in `snake_case` as the wire
+        /// `kind`. The frontend mirrors this as `IPC_ERROR_KINDS` and compares the two against the
+        /// shared golden fixture, so a variant added here fails the TypeScript suite until mirrored.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+        #[serde(rename_all = "snake_case")]
+        pub enum IpcErrorKind {
+            $($(#[$doc])* $variant),+
+        }
+
+        impl IpcErrorKind {
+            /// Every variant, in declaration order.
+            ///
+            /// Generated from the same list as the enum, so it cannot omit one. Not called by
+            /// production code — it exists so the wire vocabulary is DERIVED rather than listed.
+            #[allow(dead_code)]
+            pub const ALL: &'static [IpcErrorKind] = &[$(IpcErrorKind::$variant),+];
+        }
+    };
+}
+
+ipc_error_kinds! {
     /// A PTY session id the registry has never seen or has already removed.
     NotFound,
     /// The session exists but its child has exited.
@@ -37,44 +61,6 @@ pub enum IpcErrorKind {
     /// An invariant we control was violated: a poisoned mutex, a constructed path with no parent
     /// or no file name, a window that would not open. Never the caller's fault.
     Internal,
-}
-
-impl IpcErrorKind {
-    /// Every variant, in wire order.
-    ///
-    /// Not called by production code — it exists so the WIRE VOCABULARY is derived from the enum
-    /// rather than hand-listed. The golden test serializes it into the shared fixture, and the
-    /// TypeScript suite compares its own tuple against that. Deleting it would silently reduce the
-    /// contract to the one kind the sample happens to carry.
-    #[allow(dead_code)]
-    ///
-    /// Exhaustiveness is the compiler's job, not the author's: [`Self::assert_exhaustive`] matches
-    /// on every variant with no wildcard arm, so adding a variant without extending `ALL` fails to
-    /// build. A hand-maintained list cannot guard against a hand-maintenance mistake.
-    pub const ALL: [IpcErrorKind; 7] = [
-        IpcErrorKind::NotFound,
-        IpcErrorKind::NotRunning,
-        IpcErrorKind::Spawn,
-        IpcErrorKind::InvalidSize,
-        IpcErrorKind::Io,
-        IpcErrorKind::Invalid,
-        IpcErrorKind::Internal,
-    ];
-
-    #[allow(dead_code)]
-    /// A wildcard-free match binding each variant to its index in [`Self::ALL`]. Adding a variant
-    /// breaks this match (non-exhaustive pattern) *and* the length assertion below it.
-    const fn assert_exhaustive(self) -> usize {
-        match self {
-            IpcErrorKind::NotFound => 0,
-            IpcErrorKind::NotRunning => 1,
-            IpcErrorKind::Spawn => 2,
-            IpcErrorKind::InvalidSize => 3,
-            IpcErrorKind::Io => 4,
-            IpcErrorKind::Invalid => 5,
-            IpcErrorKind::Internal => 6,
-        }
-    }
 }
 
 /// The rejection payload: a machine-readable [`IpcErrorKind`] plus the message that was always
@@ -137,20 +123,55 @@ impl From<PtyError> for IpcError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use termixion_core::PtySize;
 
-    #[test]
-    fn all_is_exhaustive_and_ordered() {
-        // If a variant is added without extending ALL, `assert_exhaustive` fails to compile.
-        // This asserts the two agree on ORDER and LENGTH, which the compiler cannot.
-        for (index, kind) in IpcErrorKind::ALL.iter().enumerate() {
-            assert_eq!(
-                kind.assert_exhaustive(),
-                index,
-                "ALL is out of order at {index}"
-            );
+    /// True when the return type is exactly `Result<_, IpcError>`.
+    ///
+    /// Checks the OUTER type is `Result` (so `CommandOutcome<T, IpcError>` does not count) and
+    /// that its error argument's final path segment is `IpcError` (so a fully-qualified
+    /// `crate::ipc_error::IpcError` does count).
+    fn rejects_with_ipc_error(function: &syn::ItemFn) -> bool {
+        let syn::ReturnType::Type(_, ty) = &function.sig.output else {
+            return false;
+        };
+        let syn::Type::Path(path) = ty.as_ref() else {
+            return false;
+        };
+        let Some(last) = path.path.segments.last() else {
+            return false;
+        };
+        if last.ident != "Result" {
+            return false;
         }
+        let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+            return false;
+        };
+        let Some(syn::GenericArgument::Type(syn::Type::Path(err))) = args.args.iter().nth(1) else {
+            return false;
+        };
+        err.path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "IpcError")
     }
+
+    /// True when the return type's outer type is `Result`, whatever its error type.
+    ///
+    /// Separates "has an error channel we did not type" from "has no error channel at all".
+    /// An `IpcResult<T>` alias also lands here only if it is literally spelled `Result`;
+    /// see the scope note on this test.
+    fn returns_result(function: &syn::ItemFn) -> bool {
+        let syn::ReturnType::Type(_, ty) = &function.sig.output else {
+            return false;
+        };
+        let syn::Type::Path(path) = ty.as_ref() else {
+            return false;
+        };
+        path.path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "Result")
+    }
+    use termixion_core::PtySize;
 
     #[test]
     fn kinds_serialize_as_snake_case() {
@@ -234,9 +255,22 @@ mod tests {
     /// Acceptance "reach" (trmx-249): serializing a standalone `IpcError` proves nothing about the
     /// COMMANDS — all 15 could still be `Result<_, String>` and every other test here would pass.
     ///
-    /// This reads the authoritative registration list in `main.rs` and the command modules, and
-    /// asserts the EXACT name sets rather than counts. A count cannot notice that one command
-    /// entered the fallible set as another left it.
+    /// trmx-300: this PARSES the signatures. Two string-matching versions leaked — a
+    /// fully-qualified `crate::ipc_error::IpcError` read as infallible, a
+    /// `CommandOutcome<T, IpcError>` read as fallible, and `pub mod x;` escaped the module
+    /// self-check. A heuristic over source text keeps finding new ways to be wrong; the parse
+    /// answers the actual question: is the return type `Result<_, IpcError>`?
+    ///
+    /// **What this guarantees, stated honestly.** It reconciles the registration list against
+    /// top-level `#[tauri::command]` functions whose return type is written as `Result<..>` in the
+    /// censused files, and it partitions them three ways: `IpcError`, some other error type (which
+    /// must be empty), and no error channel. It does NOT resolve type aliases, follow re-exports,
+    /// or recurse into inline modules; a command hidden behind `type IpcResult<T> = ..` or defined
+    /// inside a nested module is outside its reach. Those are all unusual in this crate — every
+    /// FALLIBLE command today is a top-level fn with a spelled-out `Result`, and the other 18 are
+    /// deliberately not `Result` at all — and the exact-name sets plus
+    /// the 33-registration count catch ordinary additions and moves. Recorded so the guarantee is
+    /// not read as stronger than it is.
     #[test]
     fn exactly_the_expected_commands_reject_with_ipc_error() {
         const EXPECTED_FALLIBLE: [&str; 15] = [
@@ -256,10 +290,119 @@ mod tests {
             "shell_integration_reveal",
             "open_settings_window",
         ];
+        const EXPECTED_INFALLIBLE: [&str; 18] = [
+            "core_version",
+            "take_pending_open_paths",
+            "pty_ack",
+            "smoke_config",
+            "smoke_done",
+            "perf_config",
+            "perf_done",
+            "config_read",
+            "shells_list",
+            "effective_shell",
+            "keys_read",
+            "themes_read",
+            "scripts_list",
+            "control_response",
+            "enhancements_status",
+            "quit_confirmed",
+            "webview_close_request",
+            "close_acknowledged",
+        ];
 
-        // The registration list is the boundary: a command not in it is not reachable from the
-        // webview, whatever its signature says.
+        const SOURCES: [(&str, &str); 18] = [
+            ("main", include_str!("main.rs")),
+            ("close_gate", include_str!("close_gate.rs")),
+            ("config_io", include_str!("config_io.rs")),
+            ("control", include_str!("control.rs")),
+            ("enhancements_io", include_str!("enhancements_io.rs")),
+            ("fs_watch", include_str!("fs_watch.rs")),
+            ("ipc_error", include_str!("ipc_error.rs")),
+            ("launch", include_str!("launch.rs")),
+            ("logging", include_str!("logging.rs")),
+            ("menu", include_str!("menu.rs")),
+            ("poller", include_str!("poller.rs")),
+            ("pty_io", include_str!("pty_io.rs")),
+            ("scripts_io", include_str!("scripts_io.rs")),
+            ("services_io", include_str!("services_io.rs")),
+            (
+                "shell_integration_io",
+                include_str!("shell_integration_io.rs"),
+            ),
+            ("shells_io", include_str!("shells_io.rs")),
+            ("themes_io", include_str!("themes_io.rs")),
+            ("window_manager", include_str!("window_manager.rs")),
+        ];
+
         let main_rs = include_str!("main.rs");
+        let parsed: Vec<(&str, syn::File)> = SOURCES
+            .iter()
+            .map(|(name, src)| {
+                (
+                    *name,
+                    syn::parse_file(src).unwrap_or_else(|e| panic!("{name}.rs parses: {e}")),
+                )
+            })
+            .collect();
+
+        // COVERAGE SELF-CHECK. Every `mod x;` declared in main.rs must be censused — at ANY
+        // visibility, which is where the previous `strip_prefix("mod ")` version failed.
+        let main_ast = &parsed
+            .iter()
+            .find(|(name, _)| *name == "main")
+            .expect("main.rs is censused")
+            .1;
+        for item in &main_ast.items {
+            if let syn::Item::Mod(module) = item {
+                // Only FILE modules (`mod x;`). An inline `mod x { .. }` — main.rs's own
+                // `#[cfg(test)] mod tests` — carries its body here and needs no separate source.
+                if module.content.is_some() {
+                    continue;
+                }
+                let name = module.ident.to_string();
+                assert!(
+                    SOURCES.iter().any(|(known, _)| *known == name),
+                    "module `{name}` is not in the census SOURCES — it could host an unnoticed command"
+                );
+            }
+        }
+
+        let is_command = |function: &syn::ItemFn| {
+            function.attrs.iter().any(|attr| {
+                attr.path()
+                    .segments
+                    .last()
+                    .is_some_and(|s| s.ident == "command")
+            })
+        };
+
+        // THREE buckets, not two. "Not `Result<_, IpcError>`" is not the same as "no error
+        // channel": a command returning `Result<T, String>` — the very shape this issue removed —
+        // would otherwise sit quietly in the infallible set and pass. `other_error` must stay empty.
+        let mut fallible: Vec<String> = Vec::new();
+        let mut infallible: Vec<String> = Vec::new();
+        let mut other_error: Vec<String> = Vec::new();
+        for (_, file) in &parsed {
+            for item in &file.items {
+                if let syn::Item::Fn(function) = item {
+                    if !is_command(function) {
+                        continue;
+                    }
+                    let name = function.sig.ident.to_string();
+                    if rejects_with_ipc_error(function) {
+                        fallible.push(name);
+                    } else if returns_result(function) {
+                        other_error.push(name);
+                    } else {
+                        infallible.push(name);
+                    }
+                }
+            }
+        }
+
+        // The registration list is the boundary: a command not in it is unreachable from the
+        // webview, whatever its signature says.
         let block = main_rs
             .split_once("tauri::generate_handler![")
             .expect("main.rs registers commands")
@@ -269,7 +412,7 @@ mod tests {
             .0;
         let registered: Vec<&str> = block
             .split(',')
-            .map(|entry| entry.trim())
+            .map(str::trim)
             .filter(|entry| !entry.is_empty() && !entry.starts_with("//"))
             .map(|entry| entry.rsplit("::").next().expect("a command name"))
             .collect();
@@ -279,44 +422,36 @@ mod tests {
             "the registered command count changed: {registered:?}"
         );
 
-        // Every module that can host a fallible command.
-        let sources: [&str; 7] = [
-            include_str!("pty_io.rs"),
-            include_str!("config_io.rs"),
-            include_str!("themes_io.rs"),
-            include_str!("logging.rs"),
-            include_str!("scripts_io.rs"),
-            include_str!("shell_integration_io.rs"),
-            include_str!("window_manager.rs"),
-        ];
-
-        let rejects_with_ipc_error = |name: &str| {
-            sources.iter().any(|src| {
-                src.split(&format!("fn {name}(")).skip(1).any(|tail| {
-                    // The signature ends at the opening brace of the body.
-                    let head = tail.split_once(" {").map_or(tail, |(h, _)| h);
-                    head.contains("IpcError")
-                })
-            })
+        let sorted = |mut names: Vec<String>| {
+            names.retain(|name| registered.contains(&name.as_str()));
+            names.sort();
+            names
         };
-
-        let actual: Vec<&str> = registered
+        let mut expected_fallible: Vec<String> =
+            EXPECTED_FALLIBLE.iter().map(|s| (*s).to_string()).collect();
+        let mut expected_infallible: Vec<String> = EXPECTED_INFALLIBLE
             .iter()
-            .copied()
-            .filter(|name| rejects_with_ipc_error(name))
+            .map(|s| (*s).to_string())
             .collect();
+        expected_fallible.sort();
+        expected_infallible.sort();
 
-        let mut expected = EXPECTED_FALLIBLE.to_vec();
-        let mut got = actual.clone();
-        expected.sort_unstable();
-        got.sort_unstable();
         assert_eq!(
-            got, expected,
+            sorted(fallible),
+            expected_fallible,
             "the set of commands rejecting with IpcError drifted from the 15 this issue covers"
         );
-
-        // And the other 18 keep no error channel at all — the scope line, asserted rather than assumed.
-        assert_eq!(registered.len() - actual.len(), 18);
+        assert_eq!(
+            sorted(infallible),
+            expected_infallible,
+            "the set of commands with NO error channel drifted from the 18 this issue leaves alone"
+        );
+        assert!(
+            sorted(other_error).is_empty(),
+            "a registered command returns Result with an error type that is NOT IpcError — the \
+             boundary is meant to be uniform, and such a command would otherwise be miscounted \
+             as having no error channel at all"
+        );
     }
 
     #[test]
@@ -327,5 +462,48 @@ mod tests {
             value,
             serde_json::json!({ "kind": "io", "message": "could not create /x" })
         );
+    }
+
+    /// The classifier's three-way partition, exercised directly.
+    ///
+    /// It cannot be probed by editing a real command — changing only a signature does not compile,
+    /// and the crate must build for the test binary to exist. So the cases are parsed from source
+    /// text here, which is exactly what the census does with the real files.
+    #[test]
+    fn the_classifier_partitions_three_ways() {
+        let source = r#"
+            #[tauri::command]
+            pub fn typed() -> Result<(), IpcError> { Ok(()) }
+            #[tauri::command]
+            pub fn typed_qualified() -> Result<u8, crate::ipc_error::IpcError> { Ok(0) }
+            #[tauri::command]
+            pub fn stringly() -> Result<(), String> { Ok(()) }
+            #[tauri::command]
+            pub fn infallible() -> u8 { 0 }
+            #[tauri::command]
+            pub fn not_a_result() -> CommandOutcome<u8, IpcError> { todo!() }
+        "#;
+        let file = syn::parse_file(source).expect("the probe source parses");
+        let classify = |name: &str| {
+            let function = file
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    syn::Item::Fn(f) if f.sig.ident == name => Some(f),
+                    _ => None,
+                })
+                .expect("the probe fn exists");
+            (rejects_with_ipc_error(function), returns_result(function))
+        };
+
+        assert_eq!(classify("typed"), (true, true));
+        // A fully-qualified error path must still count — the string version read this as infallible.
+        assert_eq!(classify("typed_qualified"), (true, true));
+        // The case that mattered: an error channel we did NOT type. Not IpcError, but emphatically
+        // not "no error channel" either, which is how the two-bucket version would have filed it.
+        assert_eq!(classify("stringly"), (false, true));
+        assert_eq!(classify("infallible"), (false, false));
+        // The outer type is checked, so this is not mistaken for a Result.
+        assert_eq!(classify("not_a_result"), (false, false));
     }
 }
