@@ -68,13 +68,7 @@ import { activeDividerSegments, dividerKey } from "./panes/paneChrome";
 import { BadgeOverlay } from "./panes/BadgeOverlay";
 import { ActivityLineOverlay } from "./panes/ActivityLineOverlay";
 import { initialActivity, lightActive, onManualToggle } from "./panes/activityLine";
-import {
-  collectBusyPanes,
-  collectBusyTabs,
-  paneIsBusy,
-  shouldConfirmClose,
-  type BusyLookup,
-} from "./panes/closeGuard";
+import { collectBusyTabs, shouldConfirmClose } from "./panes/closeGuard";
 import { ConfirmCloseDialog } from "./panes/ConfirmCloseDialog";
 import { type FrameSchedule } from "./terminal/resizeCoalescer";
 import {
@@ -123,6 +117,7 @@ import { makeCwdStore } from "./terminal/osc7";
 import { createPaneRuntimes, type PaneRuntime } from "./app/paneRuntime";
 import { usePaneCallbacks } from "./app/usePaneCallbacks";
 import { usePaneActivity } from "./app/usePaneActivity";
+import { useCloseGuard } from "./app/useCloseGuard";
 import { realSetWindowTitle } from "./terminal/windowTitle";
 import { UpdateAuthorityHost } from "./update/UpdateAuthorityHost";
 import { log } from "./ipc/logSink";
@@ -153,7 +148,7 @@ import {
 } from "./ipc/appEvents";
 import { activityErrorColorFor, activityIsDarkFor } from "./theme/activityColors";
 import { DEFAULT_BOUNDS, FALLBACK_BADGE_COLS, type ActivityObservation } from "./panes/appConstants";
-import type { CloseOpts, PendingClose } from "./app/closeContracts";
+import type { PendingClose } from "./app/closeContracts";
 import {
   realFrameSchedule,
   realObserveAppSettings,
@@ -543,134 +538,19 @@ export function App({
     setFlashingPanes, observeActivity, observeOutput, observeInput, observeTitleHint,
   });
   const { applyActivityTransition, clearFlashFor, promptMarkerFor } = activity;
-  const disposePaneResources = (paneId: PaneId, opts?: { alreadyExited?: boolean }) => {
-    // trmx-248: one call drops the record and clears BOTH timers (activity + exit-flash), and hands
-    // back the session id captured before the drop. What it deliberately does not do is the two
-    // halves a ref-held store cannot own — the React state removals below — and the backend close.
-    const { sessionId } = runtimesRef.current.dispose(paneId);
-    setFlashingPanes((prev) => {
-      if (!prev.has(paneId)) return prev;
-      const next = new Set(prev);
-      next.delete(paneId);
-      return next;
-    });
-    // trmx-98: drop this pane's find-bar state so a closed pane leaves no open bar. Load-bearing:
-    // `openSearchRef.current.size` gates focus-follows-mouse GLOBALLY, so a stale entry would
-    // suppress it for every pane.
-    setOpenSearchPanes((prev) => {
-      if (!prev.has(paneId)) return prev;
-      const next = new Set(prev);
-      next.delete(paneId);
-      return next;
-    });
-    if (sessionId !== undefined && !opts?.alreadyExited) {
-      seamsRef.current.closeSession(sessionId).catch((err: unknown) => {
-        log.error("close pty failed", err);
-      });
-    }
-  };
-
-  // trmx-144: set the pending confirm dialog through ONE path so the render state and its
-  // out-of-render mirror can never drift.
-  const setPendingCloseSynced = (next: PendingClose | null) => {
-    pendingCloseRef.current = next;
-    setPendingClose(next);
-  };
-
-  // trmx-144: the per-pane reads the closeGuard aggregators need — the RAW debounce state (an
-  // in-flight job counts even before the cosmetic line shows) and a display name (the foreground-
-  // process hint, falling back to the pane's effective title). PaneIds are global-unique, so the
-  // cross-tab scan can't alias.
-  const busyLookup: BusyLookup = {
-    activityState: (paneId) => runtimesRef.current.get(paneId)?.activity,
-    displayName: (paneId) => {
-      for (const tab of stateRef.current.tabs) {
-        const pane = tab.panes[paneId];
-        if (pane) return pane.titleSources.process ?? pane.title;
-      }
-      return undefined;
-    },
-  };
-
-  // trmx-144: whether a close skips the confirm gate outright — the session already exited (nothing
-  // left to protect), a remote controller asked (a dialog would deadlock a headless caller), or the
-  // user just confirmed this very close in the dialog.
-  const bypassesConfirm = (opts?: CloseOpts): boolean =>
-    opts?.alreadyExited === true || opts?.origin === "remote" || opts?.confirmed === true;
-
-  // Close a whole tab (all its panes) — the tab-strip × and the last-pane fallthrough. The LAST tab
-  // closes the WINDOW instead (no dispatch, no per-session close — the backend's CloseRequested
-  // kill_all owns cleanup). Otherwise drop the tab and dispose every pane's resources.
-  const closeTabInternal = (tabId: number, opts?: CloseOpts) => {
-    const s = stateRef.current;
-    const tab = s.tabs.find((t) => t.tabId === tabId);
-    if (!tab) return;
-    // trmx-144: the confirm gate — a user-initiated close of a tab holding a busy pane prompts
-    // instead of closing (per terminal.confirmClose, read fresh at close time).
-    if (!bypassesConfirm(opts)) {
-      if (pendingCloseRef.current !== null) return; // a confirm is already up — swallow the repeat
-      const report = collectBusyPanes(tab, busyLookup);
-      if (shouldConfirmClose(makeSettingsStore().get("terminal.confirmClose"), report.busy, "user")) {
-        setPendingCloseSynced({ kind: "tab", tabId, names: report.names });
-        return; // the dialog's onConfirm re-enters with { confirmed: true }
-      }
-    }
-    if (s.tabs.length <= 1) {
-      // trmx-144: the last tab closing the window IS the quit, and this gesture was already gated
-      // (or bypassed) above — authorize it so the backend's close:requested round-trip for this
-      // very close never prompts a second time.
-      quitAuthorizedRef.current = true;
-      seamsRef.current.closeWindow();
-      return;
-    }
-    const paneIds = tabPaneIds(tab);
-    dispatch({ kind: "closeTab", tabId });
-    for (const paneId of paneIds) disposePaneResources(paneId, opts);
-    // A tab dying MID-RENAME must clear the rename state, or a stuck renamingTabId would suppress
-    // focus-follows-activation forever.
-    setRenamingTabId((current) => (current === tabId ? null : current));
-    // trmx-90: same for a tab dying MID-BADGE-EDIT — clear the editor if the badging pane was in it.
-    setBadgingPaneId((current) => (current !== null && paneIds.includes(current) ? null : current));
-  };
-
-  // Close one pane with the ⌘W precedence: pane → tab → window. More than one pane → drop just that
-  // pane (its sibling re-lays out, sessions untouched). The LAST pane of a tab closes the whole tab
-  // (which may be the last tab → the window).
-  const closePaneInternal = (tabId: number, paneId: PaneId, opts?: CloseOpts) => {
-    const s = stateRef.current;
-    const tab = s.tabs.find((t) => t.tabId === tabId);
-    if (!tab || tab.panes[paneId] === undefined) return;
-    // trmx-144: the confirm gate — a user-initiated close of a RAW-busy pane prompts instead of
-    // closing. The name is included only when busy (the "always" dialog on an idle pane asks the
-    // bare question — nothing is "still running").
-    if (!bypassesConfirm(opts)) {
-      if (pendingCloseRef.current !== null) return; // a confirm is already up — swallow the repeat
-      const busy = paneIsBusy(runtimesRef.current.get(paneId)?.activity, tab.panes[paneId].activityVisible);
-      if (shouldConfirmClose(makeSettingsStore().get("terminal.confirmClose"), busy, "user")) {
-        const name = busy ? busyLookup.displayName(paneId)?.trim() : undefined;
-        setPendingCloseSynced({ kind: "pane", tabId, paneId, names: name ? [name] : [] });
-        return; // the dialog's onConfirm re-enters with { confirmed: true }
-      }
-    }
-    if (tabPaneIds(tab).length > 1) {
-      // A pane dying mid-rename (it is the focused/renamed pane) must clear the rename, or the input
-      // would survive and re-target the NEW focused pane on commit. The whole-tab branch clears it
-      // in closeTabInternal; the pane branch must do the same for the focused pane.
-      const wasRenamedPane = tab.focusedPaneId === paneId;
-      dispatch({ kind: "closePane", tabId, paneId });
-      disposePaneResources(paneId, opts);
-      if (wasRenamedPane) setRenamingTabId((current) => (current === tabId ? null : current));
-      // trmx-90: a pane dying MID-BADGE-EDIT clears the editor so it can't re-target the new focus.
-      setBadgingPaneId((current) => (current === paneId ? null : current));
-    } else {
-      closeTabInternal(tabId, opts);
-    }
-  };
-
-  // Open a new tab inheriting the ACTIVE tab's FOCUSED pane cwd (or `cwdOverride` when given —
-  // trmx-224 service tabs open at the requested dir). The cwd is keyed by the pane id RESERVED
-  // for this dispatch (idReservation — never read from commit-lagged stateRef), and the
-  // allocated ids are returned so callers can key further metadata / activate the tab.
+  // trmx-254 (T4): the close concern. E11 and E05's pty-exited subscription keep their registrations
+  // and dependency arrays at the root; only their bodies live in the hook. Close-time cleanup is
+  // composed here: `clearForPane` (flash) comes from the activity concern, search/rename/badge
+  // setters are passed in — no hook reaches into another hook's state.
+  const close = useCloseGuard({
+    runtimesRef, stateRef, seamsRef, pendingCloseRef, quitAuthorizedRef, dispatch,
+    setPendingClose, setFlashingPanes, setOpenSearchPanes, setRenamingTabId, setBadgingPaneId,
+    observeCloseRequested, observePtyExited,
+  });
+  const {
+    setPendingCloseSynced,
+    closeTabInternal, closePaneInternal, confirmPendingClose, cancelPendingClose, busyLookup,
+  } = close;
   const createTab = (cwdOverride?: string): { tabId: number; paneId: number } => {
     const s = stateRef.current;
     const { tabId, paneId } = reservation.reserveTab();
@@ -1149,27 +1029,6 @@ export function App({
   // trmx-144: the dialog's resolutions. Confirm re-enters the SAME close path with {confirmed:true},
   // re-resolving the target by id first — a pane/tab that died while the dialog was up makes confirm
   // a safe no-op (never a wrong-target close). "Don't ask again" persists the setting before closing.
-  const confirmPendingClose = (dontAskAgain: boolean) => {
-    const pending = pendingCloseRef.current;
-    if (pending === null) return;
-    if (dontAskAgain) makeSettingsStore().set("terminal.confirmClose", "never");
-    setPendingCloseSynced(null);
-    if (pending.kind === "quit") {
-      quitAuthorizedRef.current = true;
-      seamsRef.current.quitConfirmed();
-      return;
-    }
-    if (pending.tabId === undefined) return;
-    const tab = stateRef.current.tabs.find((t) => t.tabId === pending.tabId);
-    if (!tab) return;
-    if (pending.kind === "pane") {
-      if (pending.paneId === undefined || tab.panes[pending.paneId] === undefined) return;
-      closePaneInternal(pending.tabId, pending.paneId, { confirmed: true });
-    } else {
-      closeTabInternal(pending.tabId, { confirmed: true });
-    }
-  };
-  const cancelPendingClose = () => setPendingCloseSynced(null);
 
   // trmx-81/82: keep the bar position + side-label orientation live over settings:changed. Its OWN
   // effect, dep'd only on the stable observation seam — payloads are untrusted (only a well-formed
