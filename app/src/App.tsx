@@ -218,46 +218,12 @@ export type InputObservation = (
   onInput: (sessionId: number, data: string) => void,
 ) => () => void;
 
-/**
- * The production last-tab-close sink: close the native window. Lazy-imported and error-swallowed
- * like realSetWindowTitle (windowTitle.ts) — without a Tauri runtime (`pnpm dev`, jsdom) there is
- * no window to close and that must stay inert. No per-session cleanup here: the backend's
- * CloseRequested handler kill_all's every session (trmx-74).
- */
-export function realCloseWindow(): void {
-  // trmx-268: NO native close. This was the only non-test frontend path to a native close of the
-  // MAIN window, and it existed purely to trigger the backend's veto-and-ask round trip. Asking the
-  // backend directly means a native `CloseRequested` can now only be a genuine traffic-light gesture
-  // or `quit_confirmed`'s authorized re-drive — there is no third, uncorrelatable case to reason
-  // about. (`app/src/main.tsx`'s `closeThisWindow` still closes the SETTINGS window natively; the
-  // gate answers `Ignore` for it.)
-  realInvoke("webview_close_request").catch(() => {
-    // No Tauri runtime — a plain browser tab owns its own lifecycle.
-  });
-}
-
-/**
- * trmx-268: the webview's proof of life. Carries the GENERATION being answered, so an ack for a
- * streak the backend has since restarted is ignored — an acknowledged-then-hung webview still
- * reaches the fallback in two gestures.
- */
-export function realCloseAcknowledged(generation: number): Promise<void> {
-  return realInvoke("close_acknowledged", { generation }).then(
-    () => undefined,
-    () => undefined, // no Tauri runtime, or the window went away — nothing to prove liveness to
-  );
-}
-
-/**
- * trmx-144: the production quit-confirm sink — tell the backend the webview approved the quit
- * (the `close:requested` round-trip's "yes", and the remote window.close fast-path). Error-swallowed
- * like realCloseWindow: without a Tauri runtime there is nothing to quit.
- */
-export function realQuitConfirmed(): void {
-  realInvoke("quit_confirmed").catch(() => {
-    // No Tauri runtime — a plain browser tab owns its own lifecycle.
-  });
-}
+// trmx-247: realCloseWindow / realCloseAcknowledged / realQuitConfirmed moved to ipc/window.ts.
+import {
+  realCloseAcknowledged,
+  realCloseWindow,
+  realQuitConfirmed,
+} from "./ipc/window";
 
 // Observe the menu's tabs:action broadcasts over the event bus, with the teardown-before-resolve
 // pattern from TerminalView's realObserveSettings: a teardown called before the async listen
