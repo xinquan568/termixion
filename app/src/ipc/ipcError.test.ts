@@ -56,6 +56,35 @@ describe("decodeIpcError", () => {
     expect(error.message).not.toContain("[object Object]");
   });
 
+  it("survives a throwing message getter without throwing", () => {
+    const hostile = {
+      get message(): string {
+        throw new Error("nope");
+      },
+    };
+    const error = decodeIpcError(hostile);
+    expect(error).toBeInstanceOf(BackendError);
+    expect(error.message).toBe("the backend rejected with an unreadable value");
+  });
+
+  it("survives a throwing kind getter without throwing", () => {
+    const hostile = {
+      message: "a real message",
+      get kind(): string {
+        throw new Error("nope");
+      },
+    };
+    expect(() => decodeIpcError(hostile)).not.toThrow();
+  });
+
+  it("survives a revoked Proxy without throwing", () => {
+    const { proxy, revoke } = Proxy.revocable({ message: "x" }, {});
+    revoke();
+    const error = decodeIpcError(proxy);
+    expect(error).toBeInstanceOf(BackendError);
+    expect(String(error)).not.toContain("[object Object]");
+  });
+
   it("survives a circular value without throwing", () => {
     const circular: Record<string, unknown> = {};
     circular.self = circular;
