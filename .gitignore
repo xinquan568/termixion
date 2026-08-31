@@ -49,3 +49,6 @@ crates/termixion-tauri/binaries/
 # them leaves 8 freshly-compiled .zwc files here; without this, a `git add -A` would re-commit them.
 # `scripts/check-no-zwc.sh` is the backstop in CI.
 *.zwc
+
+# trmx-251: CI-only, collected from $HOME before the failure-path artifact upload
+/smoke-logs
