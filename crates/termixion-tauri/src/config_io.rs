@@ -1515,6 +1515,37 @@ mod tests {
         );
     }
 
+    /// trmx-251: the section of the shared command-response golden this module owns.
+    ///
+    /// One file, asserted here and read verbatim by `app/e2e/fixtures/tauriFake.ts`. The fake
+    /// answers the Playwright suite with these exact values, so a DTO whose serialization drifts
+    /// breaks this assertion — and a fake that drifts from the file breaks the TypeScript test.
+    /// Neither side can move alone, which a hand-written double could.
+    fn golden_section(name: &str) -> serde_json::Value {
+        let golden: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/command-responses-golden.json"
+        ))
+        .expect("the command-response golden parses");
+        golden
+            .get(name)
+            .unwrap_or_else(|| panic!("the golden has a `{name}` section"))
+            .clone()
+    }
+
+    #[test]
+    fn config_read_response_matches_the_shared_golden() {
+        let response = read_response_from(
+            FileRead::Text("[terminal]\nfont_size = 14\ncursor_blink = true\n".to_string()),
+            Path::new("/x/termixion.toml"),
+        );
+        let actual = serde_json::to_value(&response).expect("ConfigReadResponse serializes");
+        assert_eq!(
+            actual,
+            golden_section("configRead"),
+            "config_read's wire shape drifted from tests/fixtures/command-responses-golden.json"
+        );
+    }
+
     // --- trmx-249: kind fidelity -------------------------------------------------------------
     //
     // `write_key_at` is the busiest fallible path in the app AND the one that mixes the most

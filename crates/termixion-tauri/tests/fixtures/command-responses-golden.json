@@ -1,0 +1,115 @@
+{
+  "_comment": "trmx-251. The COMMAND-RESPONSE contract, shared by Rust and TypeScript. Each section is asserted against real serde output by the owning Rust module (config_io / shells_io / themes_io); app/e2e/fixtures/tauriFake.ts reads THIS FILE (never a copy) and answers the Playwright suite with these exact values. A DTO whose serialization drifts breaks the Rust assertion; a fake that drifts breaks the TypeScript test. Neither side can move alone. Do not regenerate from code \u2014 assert against it.",
+  "configRead": {
+    "exists": true,
+    "path": "/x/termixion.toml",
+    "values": {
+      "terminal.cursorBlink": true,
+      "terminal.fontSize": 14
+    },
+    "warnings": []
+  },
+  "shellsList": [
+    {
+      "id": "system",
+      "label": "System default",
+      "path": ""
+    },
+    {
+      "id": "/bin/zsh",
+      "label": "zsh",
+      "path": "/bin/zsh"
+    }
+  ],
+  "effectiveShell": {
+    "path": "/bin/zsh",
+    "kind": "configured"
+  },
+  "themesRead": [
+    {
+      "id": "user:aurora-borealis-midnight-express-overdrive",
+      "source": "user",
+      "valid": false,
+      "spec": null,
+      "warnings": [
+        {
+          "type": "InvalidColor",
+          "key": "color.bg.primary",
+          "got": "\"not-a-color\""
+        },
+        {
+          "type": "MissingRequired",
+          "key": "is_dark"
+        },
+        {
+          "type": "MissingRequired",
+          "key": "color.text.primary"
+        },
+        {
+          "type": "MissingRequired",
+          "key": "terminal.ansi.black"
+        },
+        {
+          "type": "MissingRequired",
+          "key": "terminal.ansi.red"
+        },
+        {
+          "type": "MissingRequired",
+          "key": "terminal.ansi.green"
+        },
+        {
+          "type": "MissingRequired",
+          "key": "terminal.ansi.yellow"
+        },
+        {
+          "type": "MissingRequired",
+          "key": "terminal.ansi.blue"
+        },
+        {
+          "type": "MissingRequired",
+          "key": "terminal.ansi.magenta"
+        },
+        {
+          "type": "MissingRequired",
+          "key": "terminal.ansi.cyan"
+        },
+        {
+          "type": "MissingRequired",
+          "key": "terminal.ansi.white"
+        },
+        {
+          "type": "MissingRequired",
+          "key": "terminal.ansi.bright_black"
+        },
+        {
+          "type": "MissingRequired",
+          "key": "terminal.ansi.bright_red"
+        },
+        {
+          "type": "MissingRequired",
+          "key": "terminal.ansi.bright_green"
+        },
+        {
+          "type": "MissingRequired",
+          "key": "terminal.ansi.bright_yellow"
+        },
+        {
+          "type": "MissingRequired",
+          "key": "terminal.ansi.bright_blue"
+        },
+        {
+          "type": "MissingRequired",
+          "key": "terminal.ansi.bright_magenta"
+        },
+        {
+          "type": "MissingRequired",
+          "key": "terminal.ansi.bright_cyan"
+        },
+        {
+          "type": "MissingRequired",
+          "key": "terminal.ansi.bright_white"
+        }
+      ]
+    }
+  ]
+}
