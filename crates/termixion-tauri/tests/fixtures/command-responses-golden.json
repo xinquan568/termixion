@@ -23,7 +23,7 @@
   ],
   "effectiveShell": {
     "path": "/bin/zsh",
-    "kind": "configured"
+    "kind": "zsh"
   },
   "themesRead": [
     {

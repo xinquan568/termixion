@@ -59,6 +59,16 @@ pub struct EffectiveShell {
     pub kind: String,
 }
 
+/// The shell "kind" the frontend keys enhancement rows on: the program's FILE NAME, so `/bin/zsh`
+/// is `zsh`. Extracted (trmx-251) so a test sample cannot claim a kind the command never emits —
+/// the golden previously asserted `"configured"`, which this function can never return.
+fn shell_kind(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
 #[tauri::command]
 pub fn effective_shell(state: tauri::State<'_, crate::config_io::ConfigState>) -> EffectiveShell {
     let configured = crate::config_io::configured_shell(&state);
@@ -67,10 +77,7 @@ pub fn effective_shell(state: tauri::State<'_, crate::config_io::ConfigState>) -
         is_executable_file,
     );
     let path = spec.program.to_string_lossy().into_owned();
-    let kind = std::path::Path::new(&path)
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let kind = shell_kind(&path);
     EffectiveShell { path, kind }
 }
 
@@ -116,10 +123,13 @@ mod tests {
             "shells_list's wire shape drifted from the shared golden"
         );
 
+        // `kind` comes from the SAME helper production uses, so this sample cannot assert a value
+        // `effective_shell` is incapable of emitting — which is exactly what it did before.
         let effective = EffectiveShell {
             path: "/bin/zsh".to_string(),
-            kind: "configured".to_string(),
+            kind: shell_kind("/bin/zsh"),
         };
+        assert_eq!(effective.kind, "zsh", "the helper must yield the file name");
         assert_eq!(
             serde_json::to_value(&effective).expect("EffectiveShell serializes"),
             golden_section("effectiveShell"),

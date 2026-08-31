@@ -68,50 +68,86 @@ export const FAKE_RESPONSES: Readonly<Record<string, unknown>> = {
 export const FAKE_ACCEPTED_VOID: readonly string[] = ["log_message"];
 
 /**
+ * Per-command argument contracts (T7).
+ *
+ * Answering a known command with ANY payload hides frontend argument drift, so each command states
+ * what it will accept. All four hydrating commands are zero-argument on the Rust side
+ * (`config_read`, `shells_list`, `effective_shell`, `themes_read` take no user parameters), so a
+ * caller passing anything is a caller that has drifted.
+ */
+export const ARG_CONTRACTS: Readonly<Record<string, "none" | "logMessage">> = {
+  config_read: "none",
+  shells_list: "none",
+  effective_shell: "none",
+  themes_read: "none",
+  log_message: "logMessage",
+};
+
+/**
  * Install the fake **before navigation**. Installing after `page.goto` is too late: the app reads
  * `__TAURI_INTERNALS__` during boot, so the window must already carry it.
  *
- * The rejection shape matches the real backend's typed `IpcError` (trmx-249) rather than a bare
- * string, so a spec exercising a failure path sees what production sends.
+ * The rejection is a clone of the Rust-asserted `IpcError` sample — verbatim, not rebuilt — so a
+ * spec can deep-equal the whole caught value against the golden. The unhandled command name is not
+ * smuggled into the message (that would break the equality); it is in the call log instead.
  */
 export async function installTauriFake(page: Page): Promise<void> {
   await page.addInitScript(
-    ({ responses, acceptedVoid, rejectionKind }) => {
-      const calls: { cmd: string; args: unknown }[] = [];
+    ({ responses, contracts, rejection }) => {
+      const calls: { cmd: string; args: unknown; ok: boolean }[] = [];
       (window as unknown as Record<string, unknown>).__TAURI_FAKE_CALLS__ = calls;
+
+      const argsOk = (contract: string, args: unknown): boolean => {
+        if (contract === "none") {
+          return args === undefined || args === null
+            ? true
+            : typeof args === "object" && Object.keys(args as object).length === 0;
+        }
+        if (contract === "logMessage") {
+          if (args === null || typeof args !== "object") return false;
+          const record = args as Record<string, unknown>;
+          return typeof record.level === "string" && typeof record.message === "string";
+        }
+        return false;
+      };
+
       (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {
         transformCallback: () => 0,
         invoke: (cmd: string, args: unknown) => {
-          calls.push({ cmd, args });
+          const contract = contracts[cmd];
+          const known = Object.prototype.hasOwnProperty.call(responses, cmd) || contract !== undefined;
+          const ok = known && argsOk(contract ?? "none", args);
+          calls.push({ cmd, args, ok });
+          if (!ok) {
+            // Unknown command, or a known one called with arguments it does not take. Both reject
+            // with the exact golden payload — an over-permissive fake hides a real caller bug.
+            return Promise.reject({ ...rejection });
+          }
           if (Object.prototype.hasOwnProperty.call(responses, cmd)) {
             return Promise.resolve(responses[cmd]);
           }
-          if (acceptedVoid.includes(cmd)) return Promise.resolve(null);
-          // An unhandled command rejects in the backend's typed shape, naming the command so the
-          // failure says what is missing rather than just that something is.
-          return Promise.reject({
-            kind: rejectionKind,
-            message: `e2e fake backend: unhandled command ${cmd}`,
-          });
+          return Promise.resolve(null);
         },
       };
     },
     {
       responses: FAKE_RESPONSES as Record<string, unknown>,
-      acceptedVoid: [...FAKE_ACCEPTED_VOID],
-      // "not_found" is the real vocabulary's term for "the backend has no such thing".
-      rejectionKind: ipcErrorGolden.vocabulary.includes("not_found")
-        ? "not_found"
-        : ipcErrorGolden.vocabulary[0],
+      contracts: ARG_CONTRACTS as Record<string, string>,
+      rejection: ipcErrorGolden.sample,
     },
   );
 }
 
-/** Every `invoke` the page has made, in order — for asserting exact arguments. */
-export async function fakeCalls(page: Page): Promise<{ cmd: string; args: unknown }[]> {
+/** Every `invoke` the page has made, in order, with whether the fake accepted it. */
+export async function fakeCalls(
+  page: Page,
+): Promise<{ cmd: string; args: unknown; ok: boolean }[]> {
   return page.evaluate(
     () =>
-      (window as unknown as { __TAURI_FAKE_CALLS__?: { cmd: string; args: unknown }[] })
-        .__TAURI_FAKE_CALLS__ ?? [],
+      (
+        window as unknown as {
+          __TAURI_FAKE_CALLS__?: { cmd: string; args: unknown; ok: boolean }[];
+        }
+      ).__TAURI_FAKE_CALLS__ ?? [],
   );
 }
