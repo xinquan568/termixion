@@ -277,7 +277,8 @@ jobs:
       # attempt and passes the retry leaves the JOB GREEN — `failure()` would skip the upload and
       # discard the very trace that identifies it. `trace: "on-first-retry"` produces a trace for
       # exactly that case, and #302's ~2.2% flake is exactly that case. So the trace is kept whether
-      # or not the job ends red; a fully clean run uploads only Playwright's tiny `.last-run.json`.
+      # or not the job ends red. A fully clean run stores NOTHING: the only file Playwright leaves
+      # is the dot-prefixed `.last-run.json`, and `upload-artifact` excludes hidden files by default.
       #
       # `if-no-files-found: ignore` because this also runs when something EARLIER in the job failed
       # and Playwright never ran; without it the upload would fail and mask the real error.
