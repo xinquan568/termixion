@@ -59,6 +59,16 @@ pub struct EffectiveShell {
     pub kind: String,
 }
 
+/// The shell "kind" the frontend keys enhancement rows on: the program's FILE NAME, so `/bin/zsh`
+/// is `zsh`. Extracted (trmx-251) so a test sample cannot claim a kind the command never emits —
+/// the golden previously asserted `"configured"`, which this function can never return.
+fn shell_kind(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
 #[tauri::command]
 pub fn effective_shell(state: tauri::State<'_, crate::config_io::ConfigState>) -> EffectiveShell {
     let configured = crate::config_io::configured_shell(&state);
@@ -67,15 +77,66 @@ pub fn effective_shell(state: tauri::State<'_, crate::config_io::ConfigState>) -
         is_executable_file,
     );
     let path = spec.program.to_string_lossy().into_owned();
-    let kind = std::path::Path::new(&path)
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let kind = shell_kind(&path);
     EffectiveShell { path, kind }
 }
 
 #[cfg(test)]
 mod tests {
+    /// trmx-251: the section of the shared command-response golden this module owns.
+    ///
+    /// One file, asserted here and read verbatim by `app/e2e/fixtures/tauriFake.ts`. The fake
+    /// answers the Playwright suite with these exact values, so a DTO whose serialization drifts
+    /// breaks this assertion — and a fake that drifts from the file breaks the TypeScript test.
+    /// Neither side can move alone, which a hand-written double could.
+    fn golden_section(name: &str) -> serde_json::Value {
+        let golden: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/command-responses-golden.json"
+        ))
+        .expect("the command-response golden parses");
+        golden
+            .get(name)
+            .unwrap_or_else(|| panic!("the golden has a `{name}` section"))
+            .clone()
+    }
+
+    #[test]
+    fn shell_entry_and_effective_shell_match_the_shared_golden() {
+        // Representative values, not a live probe: shells_list() reads the real filesystem, so its
+        // CONTENT is machine-dependent while its SHAPE is the contract. serde decides the field
+        // names either way, which is what the fake and the frontend depend on.
+        let entries = vec![
+            ShellEntry {
+                id: "system".to_string(),
+                label: "System default".to_string(),
+                path: String::new(),
+            },
+            ShellEntry {
+                id: "/bin/zsh".to_string(),
+                label: "zsh".to_string(),
+                path: "/bin/zsh".to_string(),
+            },
+        ];
+        assert_eq!(
+            serde_json::to_value(&entries).expect("Vec<ShellEntry> serializes"),
+            golden_section("shellsList"),
+            "shells_list's wire shape drifted from the shared golden"
+        );
+
+        // `kind` comes from the SAME helper production uses, so this sample cannot assert a value
+        // `effective_shell` is incapable of emitting — which is exactly what it did before.
+        let effective = EffectiveShell {
+            path: "/bin/zsh".to_string(),
+            kind: shell_kind("/bin/zsh"),
+        };
+        assert_eq!(effective.kind, "zsh", "the helper must yield the file name");
+        assert_eq!(
+            serde_json::to_value(&effective).expect("EffectiveShell serializes"),
+            golden_section("effectiveShell"),
+            "effective_shell's wire shape drifted from the shared golden"
+        );
+    }
+
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 

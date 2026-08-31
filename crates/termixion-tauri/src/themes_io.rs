@@ -452,6 +452,40 @@ bright_white = "#f0f6fc"
         }
     }
 
+    /// trmx-251: the section of the shared command-response golden this module owns.
+    ///
+    /// One file, asserted here and read verbatim by `app/e2e/fixtures/tauriFake.ts`. The fake
+    /// answers the Playwright suite with these exact values, so a DTO whose serialization drifts
+    /// breaks this assertion — and a fake that drifts from the file breaks the TypeScript test.
+    /// Neither side can move alone, which a hand-written double could.
+    fn golden_section(name: &str) -> serde_json::Value {
+        let golden: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/command-responses-golden.json"
+        ))
+        .expect("the command-response golden parses");
+        golden
+            .get(name)
+            .unwrap_or_else(|| panic!("the golden has a `{name}` section"))
+            .clone()
+    }
+
+    #[test]
+    fn theme_entry_array_matches_the_shared_golden() {
+        // An INVALID entry: it pins the ThemeEntry wrapper (id/source/valid/spec/warnings) and the
+        // tagged ThemeWarning shape without embedding a whole ThemeSpec — trmx-89's
+        // theme-golden.json already pins ThemeSpec itself, and duplicating it here would create the
+        // second copy that precedent exists to avoid.
+        let entries = vec![read_entry(
+            "aurora-borealis-midnight-express-overdrive",
+            "[color.bg]\nprimary = \"not-a-color\"\n",
+        )];
+        assert_eq!(
+            serde_json::to_value(&entries).expect("Vec<ThemeEntry> serializes"),
+            golden_section("themesRead"),
+            "themes_read's wire shape drifted from the shared golden"
+        );
+    }
+
     // --- trmx-249: kind fidelity ---------------------------------------------------------
     //
     // `write_theme_in` mixes an `invalid` stem rejection with `io` filesystem failure behind one
