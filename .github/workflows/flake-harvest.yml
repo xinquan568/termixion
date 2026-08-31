@@ -17,8 +17,11 @@
 # arithmetic is why #302's "fresh 20/20 gate" criterion cannot validate a fix on its own: 20 clean
 # runs happen ~64% of the time even with the flake fully present.
 #
-# NOT A GATE. `workflow_dispatch` only — it never runs on push or pull_request, costs nothing until
-# someone asks for it, and must never become a required check.
+# NOT A GATE — but that is an INVARIANT TO MAINTAIN, not something this file can enforce.
+# `workflow_dispatch` guarantees it never runs on push or pull_request, so it costs nothing until
+# someone asks. It does NOT stop a ruleset or branch-protection entry from naming `harvest 1` (or
+# `plan shards`) as a required check: required checks ignore the trigger type, and a PR would then
+# wait forever on a check that never runs. Do not add these job names to branch protection.
 #
 # TEMPORARY. Delete this file when #302 closes; it is a diagnostic, not part of the build.
 name: flake harvest (trmx-302)
@@ -31,7 +34,7 @@ on:
         required: false
         default: "10"
       runs_per_shard:
-        description: "Suite runs per shard; total runs = shards x this"
+        description: "Suite runs per shard (1-40); total runs = shards x this"
         required: false
         default: "6"
       runner:
@@ -79,6 +82,11 @@ jobs:
       # Every shard runs to completion: one shard finding the flake must not cancel the others,
       # because the count of clean runs is what turns a single sighting into a rate.
       fail-fast: false
+      # The separate concurrency group stops harvests colliding with each other, but not with the
+      # normal gate: both draw on the same runner quota, and macOS runners are the scarce ones. A
+      # 50-shard dispatch would otherwise queue the gate behind a diagnostic. 10 leaves the default
+      # dispatch unthrottled while making a large one take longer rather than crowd CI out.
+      max-parallel: 10
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:
@@ -110,8 +118,18 @@ jobs:
         run: |
           set -uo pipefail
           case "$RUNS" in ''|*[!0-9]*) echo "runs_per_shard must be a positive integer, got '$RUNS'" >&2; exit 1 ;; esac
+          # Upper bound is not tidiness. A shard that overruns `timeout-minutes` is CANCELLED, and a
+          # cancelled job skips the `!cancelled()` upload — so the one run that finally caught the
+          # flake would be thrown away. At ~35s per run, 40 runs is ~23 min, which stays clear of the
+          # 60-minute timeout even with cold-cache setup.
+          if [ "$RUNS" -lt 1 ] || [ "$RUNS" -gt 40 ]; then
+            echo "runs_per_shard must be between 1 and 40 (timeout headroom), got $RUNS" >&2; exit 1
+          fi
           mkdir -p flake-logs
-          for i in $(seq 1 "$RUNS"); do
+          # An arithmetic loop, not `seq`: GNU and BSD `seq` disagree on degenerate ranges, and this
+          # runs on both macOS and Linux images.
+          i=1
+          while [ "$i" -le "$RUNS" ]; do
             echo "::group::shard $SHARD run $i/$RUNS"
             # --retries=0 so a flake is a visible failure, and --trace on the CLI so the committed
             # playwright.config.ts is untouched — the trace-mode change belongs to #302 itself and
@@ -134,6 +152,7 @@ jobs:
               echo '```' >> "$GITHUB_STEP_SUMMARY"
               exit 1
             fi
+            i=$((i + 1))
           done
           echo "shard $SHARD: $RUNS/$RUNS clean"
           echo "### shard $SHARD: $RUNS/$RUNS clean" >> "$GITHUB_STEP_SUMMARY"
