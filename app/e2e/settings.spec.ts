@@ -9,6 +9,7 @@
 // click re-themes elements inside .tx-settings — jsdom can't cascade custom properties, so this
 // browser-level check is the authoritative half of the cascade guarantee.
 import { test, expect } from "@playwright/test";
+import { installTauriFake, commandGolden } from "./fixtures/tauriFake";
 
 test("?window=settings renders the settings surface with the vmark chrome", async ({ page }) => {
   await page.goto("/?window=settings");
@@ -161,4 +162,31 @@ test("the plain root still boots the terminal surface", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator(".xterm")).toBeAttached();
   await expect(page.getByPlaceholder("Search settings…")).toHaveCount(0);
+});
+
+// ---------------------------------------------------------------------------------------------
+// trmx-251: the HYDRATED settings surface.
+//
+// Everything above runs with no backend and asserts chrome and navigation, which stays valuable.
+// But nothing proved that the values `config_read` returns actually reach the controls — the shell
+// and theme specs would pass even if config hydration were ignored entirely. The golden carries
+// deliberately NON-DEFAULT values (cursorBlink true, which is off by default since trmx-55; and
+// fontSize 14) precisely so a browser assertion can tell hydration from a default.
+test("?window=settings hydrates the terminal controls from config_read (trmx-251)", async ({
+  page,
+}) => {
+  await installTauriFake(page);
+  await page.goto("/?window=settings");
+
+  const values = (commandGolden.configRead as { values: Record<string, unknown> }).values;
+  // Read the expectations FROM the golden rather than restating them, so a config shape change
+  // breaks the Rust assertion instead of silently rewriting what this spec expects.
+  expect(values["terminal.cursorBlink"]).toBe(true);
+  expect(values["terminal.fontSize"]).toBe(14);
+
+  // cursorBlink defaults to OFF, so a checked toggle can only come from the backend.
+  await expect(page.getByRole("switch", { name: "Cursor Blink" })).toBeChecked();
+  await expect(page.getByRole("textbox", { name: "Font Size" })).toHaveValue(
+    String(values["terminal.fontSize"]),
+  );
 });
