@@ -145,10 +145,17 @@ test.describe("tauriFake behaviour", () => {
       ).__TAURI_INTERNALS__.invoke("log_message", { level: "warn", message: "probe" }),
     );
     const calls = await fakeCalls(page);
-    const logged = calls.filter((c) => c.cmd === "log_message");
-    expect(logged.length).toBeGreaterThan(0);
-    expect(logged[logged.length - 1].args).toEqual({ level: "warn", message: "probe" });
-    expect(logged[logged.length - 1].ok).toBe(true);
+    // Find OUR probe rather than assuming it is last. The app logs through this same command
+    // asynchronously (e.g. "core handshake failed"), and on a slower machine that lands after the
+    // probe — which is exactly how this raced in CI before being pinned this way.
+    const probe = calls.find((c) => {
+      if (c.cmd !== "log_message") return false;
+      const args = c.args as { level?: unknown; message?: unknown } | null;
+      return args?.level === "warn" && args?.message === "probe";
+    });
+    expect(probe, "the probe log_message call was recorded").toBeDefined();
+    expect(probe?.args).toEqual({ level: "warn", message: "probe" });
+    expect(probe?.ok).toBe(true);
     // The app's own boot call is evidence the fake is wired into the real app path, not just callable.
     expect(calls.some((c) => c.cmd === "config_read")).toBe(true);
   });

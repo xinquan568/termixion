@@ -10,6 +10,7 @@
 // affordances (Open themes folder, the trmx-171 right-click Duplicate menu, the docs hint) are
 // present, and no user themes appear (the registry hydrate no-ops without a runtime) — never crashes.
 import { test, expect } from "@playwright/test";
+import { installTauriFake } from "./fixtures/tauriFake";
 
 test("Appearance picker: built-ins still render + the user-theme affordances are present (trmx-89)", async ({
   page,
@@ -58,25 +59,11 @@ test("Appearance picker: built-ins still render + the user-theme affordances are
 test("Appearance picker: swatches align in a uniform grid; long labels clamp to two lines (trmx-218)", async ({
   page,
 }) => {
-  await page.addInitScript(() => {
-    (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {
-      transformCallback: () => 0,
-      invoke: (cmd: string) =>
-        cmd === "themes_read"
-          ? Promise.resolve([
-              {
-                id: "user:aurora-borealis-midnight-express-overdrive",
-                source: "user",
-                valid: false,
-                spec: null,
-                // Wire-realistic (step-8 F1): Rust serializes InvalidColor as { type, key, got },
-                // so the badge exercises the same firstMessage branch production hits.
-                warnings: [{ type: "InvalidColor", key: "color.bg.primary", got: "not-a-color" }],
-              },
-            ])
-          : Promise.reject(new Error(`e2e fake backend: unhandled command ${cmd}`)),
-    };
-  });
+  // trmx-251: the shared fake replaces the ad-hoc one that used to live here. That version was
+  // wire-realistic in one warning's SHAPE but hand-wrote a single warning; the Rust-derived golden
+  // shows `read_entry` emits 19 for a theme this incomplete. The badge still exercises the same
+  // firstMessage branch, now against a payload the backend can actually produce.
+  await installTauriFake(page);
   await page.goto("/?window=settings&section=appearance");
 
   // The user cell hydrated: 8 built-in radios + 1 invalid (non-radio) user swatch = 9 cells.

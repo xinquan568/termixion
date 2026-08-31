@@ -11,14 +11,24 @@
   },
   "shellsList": [
     {
-      "id": "system",
-      "label": "System default",
-      "path": ""
-    },
-    {
-      "id": "/bin/zsh",
+      "id": "zsh",
       "label": "zsh",
       "path": "/bin/zsh"
+    },
+    {
+      "id": "bash",
+      "label": "bash (/opt/homebrew/bin/bash)",
+      "path": "/opt/homebrew/bin/bash"
+    },
+    {
+      "id": "fish",
+      "label": "fish",
+      "path": "/opt/homebrew/bin/fish"
+    },
+    {
+      "id": "nushell",
+      "label": "nushell",
+      "path": "/opt/homebrew/bin/nu"
     }
   ],
   "effectiveShell": {

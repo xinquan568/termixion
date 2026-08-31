@@ -102,21 +102,27 @@ mod tests {
 
     #[test]
     fn shell_entry_and_effective_shell_match_the_shared_golden() {
-        // Representative values, not a live probe: shells_list() reads the real filesystem, so its
-        // CONTENT is machine-dependent while its SHAPE is the contract. serde decides the field
-        // names either way, which is what the fake and the frontend depend on.
-        let entries = vec![
-            ShellEntry {
-                id: "system".to_string(),
-                label: "System default".to_string(),
-                path: String::new(),
-            },
-            ShellEntry {
-                id: "/bin/zsh".to_string(),
-                label: "zsh".to_string(),
-                path: "/bin/zsh".to_string(),
-            },
-        ];
+        // Built through the SAME curated_shells the command uses, with a synthetic /etc/shells and
+        // stubbed probes so it is deterministic. An earlier version hand-wrote a
+        // { id: "system", label: "System default", path: "" } entry — which `curated_shells` can
+        // never produce, since the UI adds its own "System default" option. That is the same
+        // impossible-sample mistake as the `kind: "configured"` one; deriving prevents both.
+        let entries: Vec<ShellEntry> = curated_shells(
+            Some("/bin/zsh\n/bin/bash\n"),
+            |_| true,
+            |p| Some(p.to_string()),
+        )
+        .into_iter()
+        .map(|c| ShellEntry {
+            id: c.id,
+            label: c.label,
+            path: c.path,
+        })
+        .collect();
+        assert!(
+            !entries.iter().any(|e| e.label == "System default"),
+            "the backend never emits a System default entry — the UI adds that option itself"
+        );
         assert_eq!(
             serde_json::to_value(&entries).expect("Vec<ShellEntry> serializes"),
             golden_section("shellsList"),
