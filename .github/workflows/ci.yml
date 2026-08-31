@@ -271,12 +271,19 @@ jobs:
         run: pnpm --filter app exec playwright install chromium
       - name: Playwright webview component test (dev server)
         run: pnpm --filter app test:e2e
-      # trmx-251: with `retries: 0` a failure is a single run, so the trace is the only diagnostic
-      # left — CI had none. `if-no-files-found: ignore` because this step also fires when something
-      # EARLIER in the job failed and Playwright never ran; without it the upload would fail and
-      # mask the real error. Output is app/test-results (see .gitignore:11), not test-results.
+      # trmx-251: CI had no artifact at all, so a Playwright failure was diagnosed from scrollback.
+      #
+      # `!cancelled()`, NOT `failure()`. Under the current `retries: 1` a flake that fails its first
+      # attempt and passes the retry leaves the JOB GREEN — `failure()` would skip the upload and
+      # discard the very trace that identifies it. `trace: "on-first-retry"` produces a trace for
+      # exactly that case, and #302's ~2.2% flake is exactly that case. So the trace is kept whether
+      # or not the job ends red; a fully clean run uploads only Playwright's tiny `.last-run.json`.
+      #
+      # `if-no-files-found: ignore` because this also runs when something EARLIER in the job failed
+      # and Playwright never ran; without it the upload would fail and mask the real error.
+      # Output is app/test-results (see .gitignore:11), not test-results.
       - name: Upload Playwright traces
-        if: failure()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: playwright-traces
