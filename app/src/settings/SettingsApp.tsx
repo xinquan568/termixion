@@ -49,10 +49,9 @@ import { isSection, type SettingsSection } from "../ipc/surface";
 import type { AppInfo } from "../update/appInfo";
 import type { Opener } from "../update/opener";
 import type { UseUpdate } from "../update/useUpdate";
+import { useSettingsRuntime } from "../store/settingsRuntimeContext";
 import {
-  getConfigWarnings,
   isTabBarPosition,
-  onConfigWarningsChanged,
   SETTINGS_CHANGED_EVENT,
   type ConfigWarningItem,
   type SettingsStore,
@@ -133,7 +132,12 @@ export function SettingsApp({
     settings.get("tabs.barPosition"),
   );
   // trmx-80: the config-file warnings banner, seeded from the hydrated module state.
-  const [warnings, setWarnings] = useState<ConfigWarningItem[]>(() => getConfigWarnings());
+  // trmx-253 (T3.3): the warnings authority is THIS subtree's runtime (main.tsx's at runtime,
+  // the ambient one under an un-migrated test) rather than a module-global function.
+  const settingsRuntime = useSettingsRuntime();
+  const [warnings, setWarnings] = useState<ConfigWarningItem[]>(() =>
+    settingsRuntime.getConfigWarnings(),
+  );
   const [warningsDismissed, setWarningsDismissed] = useState(false);
 
   // Re-derive the window's CSS vars whenever the theme changes (and once on mount).
@@ -146,11 +150,11 @@ export function SettingsApp({
   // new problem is never hidden by an old dismissal (an empty set renders no banner anyway).
   useEffect(
     () =>
-      onConfigWarningsChanged((items) => {
+      settingsRuntime.onConfigWarningsChanged((items) => {
         setWarnings(items);
         setWarningsDismissed(false);
       }),
-    [],
+    [settingsRuntime],
   );
 
   // trmx-89 (4b): populate THIS window's registry with the user themes on mount (the picker lists

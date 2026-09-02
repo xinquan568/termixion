@@ -5,10 +5,14 @@
 // on the authority's broadcast snapshots (late subscribers included) and forwards manual actions as
 // update:command. R8: failing tests first, including the review's late-open and mirrored-Download
 // scenarios.
+//
+// trmx-253 (T3.4): the settings stores come from `freshSettingsStore()` — one runtime per store,
+// on the production (config-file) backend — instead of the deleted per-instance localStorage
+// backend. Preferences are seeded with typed `set()` calls rather than raw storage strings.
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { makeFakeUpdateClient } from "./updateClient";
-import { makeSettingsStore, type KeyValueStore } from "../store/settingsStore";
+import { freshSettingsStore } from "../test/settingsRuntime";
 import { useUpdateAuthority } from "./useUpdateAuthority";
 import { useUpdateMirror } from "./useUpdateMirror";
 import {
@@ -22,14 +26,13 @@ import type { EventBus } from "../ipc/eventBus";
 
 const INFO: UpdateInfo = { version: "0.0.2", currentVersion: "0.0.1", notes: "notes" };
 
-function fakeStorage(initial: Record<string, string> = {}): KeyValueStore {
-  const data = new Map(Object.entries(initial));
-  return {
-    getItem: (k) => (data.has(k) ? data.get(k)! : null),
-    setItem: (k, v) => void data.set(k, v),
-    removeItem: (k) => void data.delete(k),
-  };
-}
+// A fresh runtime isolates every setting except `update.lastCheckAt`, which is scheduler
+// bookkeeping rather than user configuration and so lives on the real localStorage forever
+// (docs/config.md) — a per-FILE global. The last case below drives a REAL authority, whose
+// checkNow stamps that key, so each test starts from a cleared one.
+beforeEach(() => {
+  localStorage.clear();
+});
 
 function fakeBus(): EventBus & { events: Array<{ event: string; payload: unknown }> } {
   const handlers = new Map<string, Set<(p: unknown) => void>>();
@@ -72,7 +75,7 @@ describe("useUpdateMirror", () => {
       await bus.listen(UPDATE_REQUEST_STATE_EVENT, () => {
         bus.emit(UPDATE_STATE_EVENT, { state: snapshotOf(status), source: "main" });
       });
-      const settings = makeSettingsStore(fakeStorage());
+      const settings = freshSettingsStore();
       const { result } = renderHook(() => useUpdateMirror({ bus, settings }));
       await waitFor(() => expect(result.current.update.state.status).toBe(status));
       expect(result.current.connected).toBe(true);
@@ -81,7 +84,7 @@ describe("useUpdateMirror", () => {
 
   it("applies later authority broadcasts as they arrive", async () => {
     const bus = fakeBus();
-    const settings = makeSettingsStore(fakeStorage());
+    const settings = freshSettingsStore();
     const { result } = renderHook(() => useUpdateMirror({ bus, settings }));
     await waitFor(() => expect(result.current.connected).toBe(true));
     act(() => {
@@ -92,7 +95,7 @@ describe("useUpdateMirror", () => {
 
   it("ignores broadcasts tagged with its own source and malformed payloads", async () => {
     const bus = fakeBus();
-    const settings = makeSettingsStore(fakeStorage());
+    const settings = freshSettingsStore();
     const { result } = renderHook(() => useUpdateMirror({ bus, settings, source: "settings" }));
     await waitFor(() => expect(result.current.connected).toBe(true));
     act(() => {
@@ -121,7 +124,7 @@ describe("useUpdateMirror", () => {
     await bus.listen(UPDATE_REQUEST_STATE_EVENT, () => {
       bus.emit(UPDATE_STATE_EVENT, { state: snapshotOf("available"), source: "main" });
     });
-    const settings = makeSettingsStore(fakeStorage());
+    const settings = freshSettingsStore();
     const { result } = renderHook(() => useUpdateMirror({ bus, settings, source: "settings" }));
     await waitFor(() => expect(result.current.update.state.status).toBe("available"));
 
@@ -135,7 +138,7 @@ describe("useUpdateMirror", () => {
   });
 
   it("reports disconnected (fallback signal) when the bus has no runtime", async () => {
-    const settings = makeSettingsStore(fakeStorage());
+    const settings = freshSettingsStore();
     const { result } = renderHook(() => useUpdateMirror({ bus: rejectingBus, settings }));
     await waitFor(() => expect(result.current.connected).toBe(false));
     expect(result.current.update.state.status).toBe("idle");
@@ -143,12 +146,9 @@ describe("useUpdateMirror", () => {
 
   it("end-to-end with a real authority on the same bus: mirror's Check Now drives the authority and the mirror converges", async () => {
     const bus = fakeBus();
-    const settings = makeSettingsStore(
-      fakeStorage({
-        "termixion.update.checkFrequency": "manual",
-        "termixion.update.autoDownload": "false",
-      }),
-    );
+    const settings = freshSettingsStore();
+    settings.set("update.checkFrequency", "manual");
+    settings.set("update.autoDownload", false);
     const client = makeFakeUpdateClient({ update: INFO });
     renderHook(() =>
       useUpdateAuthority({

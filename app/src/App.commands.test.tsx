@@ -4,7 +4,7 @@
 // trmx-94 (FR-9, test-first): App's command-platform integration — a webview chord resolves through
 // the keymap → dispatch (⇧⌘P opens the palette keyboard-only; ⌘D splits); the guard rails hold
 // (⌘C/⌘V and native-menu chords are NOT intercepted; a focused non-terminal editable is inert).
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./terminal/TerminalView", async () => {
@@ -22,7 +22,8 @@ vi.mock("./ipc/useBackend", () => ({ useBackend: () => ({ coreVersion: "0.0.2", 
 vi.mock("./update/UpdateAuthorityHost", () => ({ UpdateAuthorityHost: () => <div data-testid="uah" /> }));
 
 import { App, type AppDeps } from "./App";
-import { __resetSettingsForTest } from "./store/settingsStore";
+import { freshSettingsRuntime, renderWithSettings } from "./test/settingsRuntime";
+import type { SettingsRuntime } from "./store/settingsStore";
 import type { SessionInfo } from "./ipc/backend";
 
 interface AttachCall {
@@ -39,7 +40,7 @@ function obs<T>() {
 }
 function renderApp(over: Partial<AppDeps> = {}) {
   const { attach, calls } = makeAttach();
-  render(
+  renderWithSettings(
     <App
       deps={{
         attach: attach,
@@ -55,6 +56,7 @@ function renderApp(over: Partial<AppDeps> = {}) {
         ...over,
       }}
     />,
+    { runtime },
   );
   return { calls };
 }
@@ -66,7 +68,12 @@ function key(k: string, mods: Partial<KeyboardEventInit> = {}, target?: Element)
   return ev;
 }
 
-beforeEach(() => __resetSettingsForTest());
+// trmx-253 (T3.4): a runtime per test replaces the global reset — App reads settings through the
+// provider `renderWithSettings` puts above it, and two runtimes share nothing.
+let runtime: SettingsRuntime;
+beforeEach(() => {
+  runtime = freshSettingsRuntime();
+});
 afterEach(() => vi.restoreAllMocks());
 
 describe("App command platform (trmx-94)", () => {

@@ -14,7 +14,7 @@
 // Vitest compares the WHOLE argument array, and the real call was `invoke("set_session_title",
 // { sessionId, title })`, so a one-argument negative assertion would have passed vacuously and the
 // test would never have been red.
-import { act, render, waitFor } from "@testing-library/react";
+import { act, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./terminal/TerminalView", async () => {
@@ -52,7 +52,7 @@ const invokeSpy = vi.hoisted(() =>
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeSpy, Channel: class {} }));
 
 import { App, type AppDeps } from "./App";
-import { __resetSettingsForTest } from "./store/settingsStore";
+import { renderWithSettings } from "./test/settingsRuntime";
 import type { SessionInfo } from "./ipc/backend";
 
 function obs<T>() {
@@ -76,7 +76,6 @@ function makeHintObservation() {
 }
 
 beforeEach(() => {
-  __resetSettingsForTest();
   invokeSpy.mockClear();
 });
 afterEach(() => vi.restoreAllMocks());
@@ -95,7 +94,9 @@ describe("App × the core title mirror (trmx-243 L6)", () => {
     // NOTE: `mirrorTitle` is deliberately NOT passed. App then falls back to its production
     // default, which reaches the module-level `invoke` mocked above — that is what makes this
     // test observe the real IPC edge rather than an injected stub.
-    render(
+    // trmx-253 (T3.4): App reads settings through a provider, so the render goes through the
+    // fresh-runtime fixture (one runtime per test IS the isolation the global reset used to give).
+    renderWithSettings(
       <App
         deps={{
           attach: attach as unknown as AppDeps["attach"],

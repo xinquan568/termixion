@@ -4,17 +4,17 @@
 // trmx-53 (test-first): the pre-first-paint theme application. Static CSS cannot know the
 // persisted theme, so startup reads it through the settings registry and paints the body — plus
 // the settings surface's --tx-* vars — before anything renders. trmx-80 (FR-13): settings are
-// file-backed now, so the read goes through the snapshot-backed store (seeded by hydrateSettings
-// in boot(), BEFORE this runs — ordering guarded by main.order.test.ts); the old `storage` seam
-// is meaningless for the theme value and became an injectable settings store. Theme
-// materialization also moved into hydrateSettings (settingsStore.test.ts covers it) — this spec
-// covers the paint only.
+// file-backed now, so the read goes through the snapshot-backed store (seeded by the runtime's
+// hydrate() in boot(), BEFORE this runs — ordering guarded by main.order.test.ts); the old
+// `storage` seam is meaningless for the theme value and became an injectable settings store. Theme
+// materialization also moved into hydration (settingsStore.test.ts covers it) — this spec covers
+// the paint only. trmx-253 (T3.4): the store is a REQUIRED option, so every case here names the
+// store it paints from instead of leaning on a module-global one.
 import { beforeEach, describe, expect, it } from "vitest";
 import { applyStartupTheme } from "./applyStartupTheme";
 import { themes, type ThemeId } from "../theme/themes";
+import { freshSettingsRuntime, freshSettingsStore } from "../test/settingsRuntime";
 import {
-  __resetSettingsForTest,
-  hydrateSettings,
   SETTING_DEFAULTS,
   type SettingKey,
   type SettingsStore,
@@ -40,7 +40,6 @@ const probe = (color: string) => {
 };
 
 beforeEach(() => {
-  __resetSettingsForTest();
   // trmx-173: the vars/body live on documentElement/body inline style — clear between tests so the
   // --tx-* assertions never read a value bled from a prior test.
   document.documentElement.style.cssText = "";
@@ -58,13 +57,18 @@ describe("applyStartupTheme", () => {
   });
 
   it("derives the first-run default when the snapshot is empty (jsdom → night)", () => {
-    // No injected store: the DEFAULT snapshot-backed store serves defaultFor() pre-hydration.
-    applyStartupTheme({ doc: document });
+    // An un-hydrated runtime's store: nothing in the snapshot, so the read derives via defaultFor().
+    // trmx-253 (T3.4): `settings` is REQUIRED now — there is no ambient store to omit it in favour
+    // of — so the empty-snapshot contract is expressed with an explicit fresh store.
+    applyStartupTheme({ settings: freshSettingsStore(), doc: document });
     expect(document.body.style.background).toBe(probe(themes.night.color.bg.primary));
   });
 
-  it("paints the theme hydrateSettings seeded into the shared snapshot (the boot path)", async () => {
-    await hydrateSettings({
+  it("paints the theme hydration seeded into the runtime's snapshot (the boot path)", async () => {
+    // The boot ordering, on ONE runtime: hydrate() seeds the snapshot, then the store built over
+    // that same runtime is what applyStartupTheme reads — exactly what main.tsx does.
+    const runtime = freshSettingsRuntime();
+    await runtime.hydrate({
       invoke: (cmd) =>
         cmd === "config_read"
           ? Promise.resolve({
@@ -77,7 +81,7 @@ describe("applyStartupTheme", () => {
       bus: { listen: () => Promise.resolve(() => {}) },
       storage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
     });
-    applyStartupTheme({ doc: document });
+    applyStartupTheme({ settings: runtime.makeStore(), doc: document });
     expect(document.body.style.background).toBe(probe(themes.solarized.color.bg.primary));
   });
 

@@ -34,9 +34,16 @@ const banned = (from: string, to: string) =>
   zones.some((z) => dirOf(z.target) === from && dirOf(z.from) === to);
 
 // Mirrors the LEVELS map in eslint.config.js. Duplicated deliberately: if the two ever disagree,
-// this test fails, which is the point — it is a second opinion, not a re-export.
+// this test fails, which is the point — it is a second opinion, not a re-export. (trmx-253 proved
+// the duplication earns its keep: dropping `test` from the config's map failed all three
+// configuration cases here until this copy was changed too, deliberately and in the same PR.)
+//
+// `test` is absent on purpose, matching eslint.config.js: src/test/ is the shared TEST FIXTURE
+// layer — never in the production import graph, so it cannot form the cycles this gate prevents,
+// and it must be able to build any layer's real objects (trmx-253's settings-runtime fixture
+// constructs a store/ runtime for suites in settings/, terminal/, update/, chrome/ and the root).
 const LEVELS: Record<string, number> = {
-  assets: 0, ipc: 0, keys: 0, ui: 0, test: 0,
+  assets: 0, ipc: 0, keys: 0, ui: 0,
   panes: 1, scripts: 1, smoke: 1, theme: 1,
   store: 2,
   startup: 3, tabs: 3, terminal: 3, update: 3,

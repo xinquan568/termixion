@@ -6,13 +6,10 @@
 // invisible from the terminal window, which is where the user actually is.
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, act, fireEvent } from "@testing-library/react";
+import { screen, act, fireEvent } from "@testing-library/react";
 import { ConfigWarningsBadge } from "./ConfigWarningsBadge";
-import {
-  CONFIG_WARNINGS_EVENT,
-  __resetSettingsForTest,
-  hydrateSettings,
-} from "../store/settingsStore";
+import { freshSettingsRuntime, renderWithSettings } from "../test/settingsRuntime";
+import { CONFIG_WARNINGS_EVENT, type SettingsRuntime } from "../store/settingsStore";
 
 /** A listen-capable bus whose `fire` delivers synchronously, like the store's other tests use. */
 function fakeListenBus() {
@@ -38,21 +35,25 @@ const invoke = (cmd: string): Promise<unknown> => {
 };
 
 describe("ConfigWarningsBadge (trmx-238 M19)", () => {
+  // trmx-253 (T3.4): one runtime per test IS the isolation — the badge reads its warnings through
+  // the very runtime the test hydrates, so the seed and the component are provably the same
+  // instance (and `useSettingsRuntime()` throws without the provider `renderWithSettings` adds).
+  let runtime: SettingsRuntime;
   beforeEach(() => {
-    __resetSettingsForTest();
+    runtime = freshSettingsRuntime();
   });
 
   it("renders nothing when there are no warnings", async () => {
     const bus = fakeListenBus();
-    await hydrateSettings({ invoke, bus, storage: undefined });
-    render(<ConfigWarningsBadge onOpenSettings={() => {}} />);
+    await runtime.hydrate({ invoke, bus });
+    renderWithSettings(<ConfigWarningsBadge onOpenSettings={() => {}} />, { runtime });
     expect(screen.queryByRole("button")).toBeNull();
   });
 
   it("appears when a config:warnings broadcast arrives, and counts them", async () => {
     const bus = fakeListenBus();
-    await hydrateSettings({ invoke, bus, storage: undefined });
-    render(<ConfigWarningsBadge onOpenSettings={() => {}} />);
+    await runtime.hydrate({ invoke, bus });
+    renderWithSettings(<ConfigWarningsBadge onOpenSettings={() => {}} />, { runtime });
     act(() => {
       bus.fire(CONFIG_WARNINGS_EVENT, [
         { type: "UnknownKey", key: "terminal.font_sise" },
@@ -66,8 +67,8 @@ describe("ConfigWarningsBadge (trmx-238 M19)", () => {
 
   it("dismiss hides it, and the NEXT non-empty set brings it back", async () => {
     const bus = fakeListenBus();
-    await hydrateSettings({ invoke, bus, storage: undefined });
-    render(<ConfigWarningsBadge onOpenSettings={() => {}} />);
+    await runtime.hydrate({ invoke, bus });
+    renderWithSettings(<ConfigWarningsBadge onOpenSettings={() => {}} />, { runtime });
     act(() => {
       bus.fire(CONFIG_WARNINGS_EVENT, [{ type: "UnknownKey", key: "a" }]);
     });
@@ -89,9 +90,9 @@ describe("ConfigWarningsBadge (trmx-238 M19)", () => {
 
   it("clicking the badge opens Settings", async () => {
     const bus = fakeListenBus();
-    await hydrateSettings({ invoke, bus, storage: undefined });
+    await runtime.hydrate({ invoke, bus });
     const onOpenSettings = vi.fn();
-    render(<ConfigWarningsBadge onOpenSettings={onOpenSettings} />);
+    renderWithSettings(<ConfigWarningsBadge onOpenSettings={onOpenSettings} />, { runtime });
     act(() => {
       bus.fire(CONFIG_WARNINGS_EVENT, [{ type: "UnknownKey", key: "a" }]);
     });

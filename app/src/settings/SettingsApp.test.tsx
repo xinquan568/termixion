@@ -5,21 +5,17 @@
 // entries), page switching (nav clicks, initial section, settings:navigate events), the centered
 // "Settings" title, and the data-tauri-drag-region chrome that makes an Overlay-titlebar window
 // draggable. R8: written before the shell exists.
-// trmx-80 (FR-13): the config-warnings banner — seeded from getConfigWarnings() at mount, kept
-// current by config:warnings events (the store's subscription re-parses first — hydrateSettings
-// subscribes before the shell renders, exactly the production boot order), dismissable.
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+// trmx-80 (FR-13): the config-warnings banner — seeded from the runtime's getConfigWarnings() at
+// mount, kept current by config:warnings events (the runtime's subscription re-parses first —
+// runtime.hydrate() subscribes before the shell renders, exactly the production boot order),
+// dismissable.
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsApp, SETTINGS_NAVIGATE_EVENT } from "./SettingsApp";
 import { makeFakeAppInfo } from "../update/appInfo";
 import { makeFakeOpener } from "../update/opener";
-import {
-  __resetSettingsForTest,
-  CONFIG_WARNINGS_EVENT,
-  hydrateSettings,
-  makeSettingsStore,
-  type KeyValueStore,
-} from "../store/settingsStore";
+import { CONFIG_WARNINGS_EVENT, type SettingsRuntime } from "../store/settingsStore";
+import { freshSettingsRuntime, renderWithSettings } from "../test/settingsRuntime";
 import { initialUpdateState } from "../update/updateState";
 import type { UseUpdate } from "../update/useUpdate";
 import { clearUserThemes, type UserThemeEntry } from "../theme/registry";
@@ -45,15 +41,6 @@ function validSpec(): ThemeSpec {
 
 function validUserEntry(id: string): UserThemeEntry {
   return { id, source: "user", valid: true, spec: validSpec(), warnings: [] };
-}
-
-function fakeStorage(initial: Record<string, string> = {}): KeyValueStore {
-  const data = new Map(Object.entries(initial));
-  return {
-    getItem: (k) => (data.has(k) ? data.get(k)! : null),
-    setItem: (k, v) => void data.set(k, v),
-    removeItem: (k) => void data.delete(k),
-  };
 }
 
 function fakeUpdate(): UseUpdate {
@@ -89,17 +76,20 @@ function fakeListen(): {
   };
 }
 
-function renderApp(props: Partial<Parameters<typeof SettingsApp>[0]> = {}) {
-  const settings = makeSettingsStore(fakeStorage());
-  return render(
+function renderApp(
+  props: Partial<Parameters<typeof SettingsApp>[0]> = {},
+  runtime: SettingsRuntime = freshSettingsRuntime(),
+) {
+  return renderWithSettings(
     <SettingsApp
       update={fakeUpdate()}
       appInfo={makeFakeAppInfo("0.0.1")}
       opener={makeFakeOpener()}
-      settings={settings}
+      settings={runtime.makeStore()}
       openConfigFile={async () => {}}
       {...props}
     />,
+    { runtime },
   );
 }
 
@@ -273,17 +263,10 @@ describe("SettingsApp — live barPosition for the Appearance page (trmx-82, D5)
   const ORIENTATION_GROUP = { name: "Tab label orientation" } as const;
 
   it("seeds barPosition from the injected store: a persisted 'left' selects Left and enables Orientation", () => {
-    const settings = makeSettingsStore(fakeStorage({ "termixion.tabs.barPosition": "left" }));
-    render(
-      <SettingsApp
-        update={fakeUpdate()}
-        appInfo={makeFakeAppInfo("0.0.1")}
-        opener={makeFakeOpener()}
-        settings={settings}
-        openConfigFile={async () => {}}
-        initialSection="appearance"
-      />,
-    );
+    const runtime = freshSettingsRuntime();
+    const settings = runtime.makeStore();
+    settings.set("tabs.barPosition", "left");
+    renderApp({ settings, initialSection: "appearance" }, runtime);
     expect(screen.getByRole("radio", { name: "Left" })).toHaveAttribute("aria-checked", "true");
     expect(screen.getByRole("radiogroup", ORIENTATION_GROUP)).not.toHaveAttribute(
       "aria-disabled",
@@ -347,14 +330,11 @@ describe("SettingsApp — live barPosition for the Appearance page (trmx-82, D5)
   });
 });
 
-// trmx-80 (FR-13): the config-warnings banner. These tests hydrate the module snapshot with a
-// fake backend FIRST (the production boot order: hydrateSettings subscribes the store to the bus
-// before the shell renders and subscribes), so delivering config:warnings updates the store's
-// state before the shell's handler re-reads it.
+// trmx-80 (FR-13): the config-warnings banner. Each test hydrates its OWN runtime against a fake
+// backend FIRST and then renders the shell under that same runtime (the production boot order:
+// hydrate subscribes to the bus before the shell renders and subscribes), so delivering
+// config:warnings updates the runtime's ledger before the shell's handler re-reads it.
 describe("SettingsApp config warnings banner (trmx-80)", () => {
-  beforeEach(() => __resetSettingsForTest());
-  afterEach(() => __resetSettingsForTest());
-
   /** A T2 backend whose config_read carries `warnings`; every other command resolves null. */
   function fakeConfigInvoke(warnings: unknown[]) {
     return (cmd: string): Promise<unknown> => {
@@ -372,14 +352,15 @@ describe("SettingsApp config warnings banner (trmx-80)", () => {
 
   it("shows each hydration warning in a banner at the top of the window", async () => {
     const bus = fakeListen();
-    await hydrateSettings({
+    const runtime = freshSettingsRuntime();
+    await runtime.hydrate({
       invoke: fakeConfigInvoke([
         { type: "UnknownKey", key: "terminal.zoom" },
         { type: "OutOfRange", key: "terminal.fontSize", got: 99, clamped_to: 72 },
       ]),
       bus,
     });
-    renderApp({ listen: bus.listen });
+    renderApp({ listen: bus.listen }, runtime);
     const banner = screen.getByRole("alert");
     expect(banner.textContent).toContain("Config file warnings");
     expect(banner.textContent).toContain('Unknown setting "terminal.zoom" in the config file');
@@ -393,11 +374,12 @@ describe("SettingsApp config warnings banner (trmx-80)", () => {
 
   it("replaces the banner on a config:warnings event and CLEARS on an empty one", async () => {
     const bus = fakeListen();
-    await hydrateSettings({
+    const runtime = freshSettingsRuntime();
+    await runtime.hydrate({
       invoke: fakeConfigInvoke([{ type: "UnknownKey", key: "old.key" }]),
       bus,
     });
-    renderApp({ listen: bus.listen });
+    renderApp({ listen: bus.listen }, runtime);
     expect(screen.getByRole("alert").textContent).toContain("old.key");
 
     // The file watcher re-parsed: the new set supersedes the old one wholesale.
@@ -417,8 +399,9 @@ describe("SettingsApp config warnings banner (trmx-80)", () => {
     // warning client-side — and the banner must surface it (the store is the warnings authority,
     // not the raw config:warnings event, which never fires for client-authored warnings).
     const bus = fakeListen();
-    await hydrateSettings({ invoke: fakeConfigInvoke([]), bus });
-    renderApp({ listen: bus.listen });
+    const runtime = freshSettingsRuntime();
+    await runtime.hydrate({ invoke: fakeConfigInvoke([]), bus });
+    renderApp({ listen: bus.listen }, runtime);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
     bus.deliver("settings:changed", {
@@ -437,8 +420,9 @@ describe("SettingsApp config warnings banner (trmx-80)", () => {
     // the file clean, since a theme is a free string to the backend. The empty FILE set must not
     // wipe the CLIENT warning; only a later valid value for the key clears it.
     const bus = fakeListen();
-    await hydrateSettings({ invoke: fakeConfigInvoke([]), bus });
-    renderApp({ listen: bus.listen });
+    const runtime = freshSettingsRuntime();
+    await runtime.hydrate({ invoke: fakeConfigInvoke([]), bus });
+    renderApp({ listen: bus.listen }, runtime);
 
     bus.deliver("settings:changed", {
       key: "appearance.theme",
@@ -460,11 +444,12 @@ describe("SettingsApp config warnings banner (trmx-80)", () => {
 
   it("clears the banner once the user fixes the file (a clean reparse delivers ZERO warnings)", async () => {
     const bus = fakeListen();
-    await hydrateSettings({
+    const runtime = freshSettingsRuntime();
+    await runtime.hydrate({
       invoke: fakeConfigInvoke([{ type: "UnknownKey", key: "typo.key" }]),
       bus,
     });
-    renderApp({ listen: bus.listen });
+    renderApp({ listen: bus.listen }, runtime);
     expect(screen.getByRole("alert").textContent).toContain("typo.key");
 
     // The watcher accepted the fixed file: an EMPTY warning set must clear the stale banner.
@@ -474,11 +459,12 @@ describe("SettingsApp config warnings banner (trmx-80)", () => {
 
   it("dismiss hides the banner until a new event arrives", async () => {
     const bus = fakeListen();
-    await hydrateSettings({
+    const runtime = freshSettingsRuntime();
+    await runtime.hydrate({
       invoke: fakeConfigInvoke([{ type: "SyntaxError", message: "expected `=` at line 3" }]),
       bus,
     });
-    renderApp({ listen: bus.listen });
+    renderApp({ listen: bus.listen }, runtime);
     expect(screen.getByRole("alert")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss config warnings" }));
@@ -498,18 +484,7 @@ describe("SettingsApp — user themes hydration (trmx-89, 4b)", () => {
   afterEach(() => clearUserThemes());
 
   function renderWithThemes(invoke: InvokeFn, listen: ReturnType<typeof fakeListen>["listen"]) {
-    return render(
-      <SettingsApp
-        update={fakeUpdate()}
-        appInfo={makeFakeAppInfo("0.0.1")}
-        opener={makeFakeOpener()}
-        settings={makeSettingsStore(fakeStorage())}
-        openConfigFile={async () => {}}
-        listen={listen}
-        invoke={invoke}
-        initialSection="appearance"
-      />,
-    );
+    return renderApp({ listen, invoke, initialSection: "appearance" });
   }
 
   const themesReadCount = (invoke: ReturnType<typeof vi.fn>) =>

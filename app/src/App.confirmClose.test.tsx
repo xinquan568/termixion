@@ -9,7 +9,7 @@
 // last-tab close), and a "quit" dialog otherwise. Same headless harness as App.test.tsx: TerminalView
 // stubbed, every runtime edge injected via App's seam props.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, act, within } from "@testing-library/react";
+import { screen, fireEvent, act, within } from "@testing-library/react";
 import type { SessionInfo } from "./ipc/backend";
 
 vi.mock("./terminal/TerminalView", async () => {
@@ -36,7 +36,8 @@ vi.mock("./update/UpdateAuthorityHost", () => ({
 }));
 
 import { App, type AppDeps, type ControlRequest } from "./App";
-import { makeSettingsStore, __resetSettingsForTest } from "./store/settingsStore";
+import { freshSettingsRuntime, renderWithSettings } from "./test/settingsRuntime";
+import type { SettingsRuntime } from "./store/settingsStore";
 
 interface AttachCall {
   resolve: (info: SessionInfo) => void;
@@ -141,7 +142,7 @@ function renderApp(over: Partial<AppDeps> = {}) {
     invoke,
     ...over, // trmx-224: per-test seams (service nudge / take invoke)
   };
-  render(<App deps={props} />);
+  renderWithSettings(<App deps={props} />, { runtime });
   return {
     attach,
     calls,
@@ -189,15 +190,19 @@ async function splitWithBusyPane2(seams: Seams) {
   act(() => seams.activity.fire(22, true));
 }
 
+// trmx-253 (T3.4): the settings runtime App reads through, rebuilt per test — a fresh runtime
+// starts on the registry defaults (terminal.confirmClose = "when-busy"), so it replaces both the
+// global reset AND guarantees a write here lands in the very snapshot the rendered App reads.
+let runtime: SettingsRuntime;
+
 const setConfirmClose = (value: "never" | "when-busy" | "always") =>
-  makeSettingsStore().set("terminal.confirmClose", value);
+  runtime.makeStore().set("terminal.confirmClose", value);
 
 beforeEach(() => {
-  __resetSettingsForTest(); // terminal.confirmClose reverts to its "when-busy" default
+  runtime = freshSettingsRuntime();
 });
 afterEach(() => {
   vi.restoreAllMocks();
-  __resetSettingsForTest();
 });
 
 describe("confirm-before-close: the pane gate (trmx-144)", () => {
@@ -398,7 +403,7 @@ describe("confirm-before-close: the open dialog owns the surface (trmx-144)", ()
     fireEvent.click(within(screen.getByTestId("confirm-close")).getByRole("checkbox"));
     fireEvent.click(dialogButton("Close"));
 
-    expect(makeSettingsStore().get("terminal.confirmClose")).toBe("never");
+    expect(runtime.makeStore().get("terminal.confirmClose")).toBe("never");
     expect(screen.queryByTestId("pane-host-2")).not.toBeInTheDocument();
     expect(seams.closeSession).toHaveBeenCalledExactlyOnceWith(22);
 

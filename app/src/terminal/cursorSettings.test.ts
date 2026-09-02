@@ -4,32 +4,20 @@
 // trmx-51: the cursor options overlay + the live settings:changed application (R8: tests first).
 import { describe, expect, it } from "vitest";
 import { applyCursorSettingsChange, cursorTerminalOptions, type CursorOptionsSink } from "./cursorSettings";
-import { makeSettingsStore, type KeyValueStore } from "../store/settingsStore";
-
-function fakeStorage(initial: Record<string, string> = {}): KeyValueStore {
-  const data = new Map(Object.entries(initial));
-  return {
-    getItem: (k) => (data.has(k) ? data.get(k)! : null),
-    setItem: (k, v) => void data.set(k, v),
-    removeItem: (k) => void data.delete(k),
-  };
-}
+import { freshSettingsStore } from "../test/settingsRuntime";
 
 describe("cursorTerminalOptions", () => {
   it("defaults to the registry cursor: underline, no blink (trmx-55)", () => {
-    expect(cursorTerminalOptions(makeSettingsStore(fakeStorage()))).toEqual({
+    expect(cursorTerminalOptions(freshSettingsStore())).toEqual({
       cursorStyle: "underline",
       cursorBlink: false,
     });
   });
 
   it("prefers the persisted values", () => {
-    const store = makeSettingsStore(
-      fakeStorage({
-        "termixion.terminal.cursorStyle": "block",
-        "termixion.terminal.cursorBlink": "true",
-      }),
-    );
+    const store = freshSettingsStore();
+    store.set("terminal.cursorStyle", "block");
+    store.set("terminal.cursorBlink", true);
     expect(cursorTerminalOptions(store)).toEqual({ cursorStyle: "block", cursorBlink: true });
   });
 });
