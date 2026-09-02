@@ -33,6 +33,7 @@ import {
   PROMPT_CHOICES,
   SETTING_RANGES,
   SETTINGS_CHANGED_EVENT,
+  type ClipboardWrite,
   type ConfirmClose,
   type CursorStyle,
   type SettingsStore,
@@ -89,6 +90,13 @@ const CONFIRM_CLOSE_OPTIONS: ReadonlyArray<{ value: ConfirmClose; label: string 
   { value: "never", label: "Never" },
   { value: "when-busy", label: "When busy" },
   { value: "always", label: "Always" },
+];
+
+// trmx-252 (L11): the OSC 52 clipboard-write policy. "Allow" is the pre-trmx-252 behaviour, so
+// this is opt-in hardening for users who do not want a remote program overwriting their clipboard.
+const CLIPBOARD_WRITE_OPTIONS: ReadonlyArray<{ value: ClipboardWrite; label: string }> = [
+  { value: "allow", label: "Allow" },
+  { value: "deny", label: "Deny" },
 ];
 
 const SCROLLBACK_RANGE = SETTING_RANGES["terminal.scrollbackLines"];
@@ -200,6 +208,10 @@ export function TerminalSettings({
   // trmx-144: confirm-before-closing tri-state (default "when-busy").
   const [confirmClose, setConfirmClose] = useState<ConfirmClose>(() =>
     settings.get("terminal.confirmClose"),
+  );
+  // trmx-252: the OSC 52 clipboard-write policy (default "allow" — current behaviour).
+  const [clipboardWrite, setClipboardWrite] = useState<ClipboardWrite>(() =>
+    settings.get("terminal.clipboardWrite"),
   );
   // trmx-205: the shell selector — installed shells fetched once via the injected invoke seam;
   // a rejected invoke (plain-browser dev server, no backend) degrades the options to
@@ -389,6 +401,21 @@ export function TerminalSettings({
             onChange={(value) => {
               setFocusFollowsMouse(value);
               settings.set("terminal.focusFollowsMouse", value);
+            }}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Program clipboard writes"
+          description="Whether a program running in the terminal may set the system clipboard (OSC 52). Denying still consumes the request; the pane shows a notice when one is accepted"
+          keywords={["clipboard", "osc52", "osc 52", "security", "paste"]}
+        >
+          <SegmentedControl
+            value={clipboardWrite}
+            options={CLIPBOARD_WRITE_OPTIONS}
+            label="Program clipboard writes"
+            onChange={(value) => {
+              setClipboardWrite(value);
+              settings.set("terminal.clipboardWrite", value);
             }}
           />
         </SettingRow>

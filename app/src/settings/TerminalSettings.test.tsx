@@ -7,7 +7,7 @@
 // settings:changed broadcast the live terminal consumes. R8: written before the page exists.
 // trmx-80 (FR-13) adds the scrollback/font trio below them: Scrollback (clamped numeric field),
 // Font Family (empty = the platform default stack, named in the placeholder), Font Size (stepper).
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { TerminalSettings } from "./TerminalSettings";
 import { ITERM2_FONT_FAMILY } from "../terminal/iterm2Theme";
@@ -69,13 +69,15 @@ describe("TerminalSettings", () => {
     // Prompt dropdown — shown by default because the degraded/unknown effective shell renders
     // visible).
     const rows = container.querySelectorAll(".tx-setting-row");
-    expect(rows).toHaveLength(15); // trmx-225 adds Focus Follows Mouse
+    expect(rows).toHaveLength(16); // trmx-225 adds Focus Follows Mouse; trmx-252 the clipboard policy
     const labels = [...rows].map((r) => r.querySelector(".tx-setting-row__label")?.textContent);
     expect(labels).toEqual([
       "Cursor Style",
       "Cursor Blink",
       "Copy on Select",
       "Focus Follows Mouse",
+      // trmx-252: the OSC 52 policy sits with the other clipboard-adjacent rows.
+      "Program clipboard writes",
       "Activity Indicator",
       "AI Session Counter",
       "Confirm before closing",
@@ -254,10 +256,10 @@ describe("TerminalSettings", () => {
 describe("TerminalSettings confirm-before-closing row (trmx-144)", () => {
   it("renders the three options as a radiogroup and defaults to When busy", () => {
     render(<TerminalSettings settings={makeSettingsStore(fakeStorage())} />);
-    expect(
-      screen.getByRole("radiogroup", { name: "Confirm before closing" }),
-    ).toBeInTheDocument();
-    const radios = screen.getAllByRole("radio");
+    const group = screen.getByRole("radiogroup", { name: "Confirm before closing" });
+    expect(group).toBeInTheDocument();
+    // Scoped to THIS group — trmx-252 added a second radiogroup to the page.
+    const radios = within(group).getAllByRole("radio");
     expect(radios.map((r) => r.textContent)).toEqual(["Never", "When busy", "Always"]);
     expect(screen.getByRole("radio", { name: "When busy" })).toHaveAttribute(
       "aria-checked",
@@ -299,6 +301,40 @@ describe("TerminalSettings confirm-before-closing row (trmx-144)", () => {
       "aria-checked",
       "false",
     );
+  });
+});
+
+// trmx-252 (test 10, Settings half): the OSC 52 clipboard-write policy row — a SegmentedControl
+// (Allow / Deny) over terminal.clipboardWrite, defaulting to "allow" (current behaviour). Without
+// a UI the key is config-file-only, and the fan-out has a hole no other test would catch.
+describe("TerminalSettings clipboard-write row (trmx-252)", () => {
+  it("renders both options as a radiogroup and defaults to Allow", () => {
+    render(<TerminalSettings settings={makeSettingsStore(fakeStorage())} />);
+    expect(
+      screen.getByRole("radiogroup", { name: "Program clipboard writes" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "Allow" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("radio", { name: "Deny" })).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("persists a selection via settings.set, broadcasts it, and reflects the new value", () => {
+    const bus = fakeBus();
+    const store = makeSettingsStore(fakeStorage(), bus, "settings-window");
+    render(<TerminalSettings settings={store} />);
+    fireEvent.click(screen.getByRole("radio", { name: "Deny" }));
+    expect(store.get("terminal.clipboardWrite")).toBe("deny");
+    expect(bus.events).toContainEqual({
+      event: SETTINGS_CHANGED_EVENT,
+      payload: { key: "terminal.clipboardWrite", value: "deny", source: "settings-window" },
+    });
+    expect(screen.getByRole("radio", { name: "Deny" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("radio", { name: "Allow" })).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("reflects a persisted value on mount", () => {
+    const store = makeSettingsStore(fakeStorage({ "termixion.terminal.clipboardWrite": "deny" }));
+    render(<TerminalSettings settings={store} />);
+    expect(screen.getByRole("radio", { name: "Deny" })).toHaveAttribute("aria-checked", "true");
   });
 });
 

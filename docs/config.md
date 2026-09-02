@@ -38,6 +38,7 @@ tables; internally each maps 1:1 to a camelCase registry key (the mapping is own
 | `terminal.activity_indicator` | `terminal.activityIndicator` | bool | `true` | — | immediate⁴ |
 | `terminal.copy_on_select` | `terminal.copyOnSelect` | bool | `true` | — | immediate (attaches/detaches per pane)⁶ |
 | `terminal.confirm_close` | `terminal.confirmClose` | string | `"when-busy"` | `never` · `when-busy` · `always` | immediate (read at the next close)⁸ |
+| `terminal.clipboard_write` | `terminal.clipboardWrite` | string | `"allow"` | `allow` · `deny` | immediate (read at the next OSC 52 write)⁹ |
 | `terminal.scrollback_lines` | `terminal.scrollbackLines` | integer | `10000` | `0`–`200000` (clamped) | immediate¹ |
 | `shell.enhancements` | `shell.enhancements` | bool | `true` | master switch for the bundled zsh enhancement layer (trmx-206); `false` = spawns byte-identical to the un-enhanced baseline | new sessions only |
 | `shell.autosuggestions` | `shell.autosuggestions` | bool | `true` | fish-style suggestions (zsh-autosuggestions, bundled); skipped if your setup already loads it | new sessions only |
@@ -98,6 +99,30 @@ on its own never prompts, and a close driven over the remote-control socket neve
 ```toml
 [terminal]
 confirm_close = "when-busy"   # never · when-busy · always
+```
+
+⁹ Program clipboard writes (trmx-252): a program running in the terminal can set your system
+clipboard by printing an **OSC 52** escape sequence — that is how `tmux set-clipboard` and a `nvim`
+yank over ssh reach your local pasteboard. It is a genuinely useful feature and a genuine risk:
+anything that can print to your terminal can print an escape sequence, including a **remote** shell
+or a script you piped from the network, so an untrusted program can silently replace what you are
+about to paste. `deny` turns it off. Reading the clipboard is **never** possible in either mode —
+an OSC 52 *query* is always consumed unanswered, and that is not configurable.
+
+- `allow` (default) — a write request sets the clipboard, and the pane briefly shows a small notice
+  in its bottom-left corner saying the request was accepted. The notice reports an accepted
+  **request**, not a confirmed clipboard change: the write is dispatched over IPC and its outcome is
+  not observable. Repeated requests coalesce into one notice.
+- `deny` — the sequence is still fully **consumed** (it can never fall through or print as garbage),
+  but nothing is written and no notice appears.
+- Applies **live**, per write: flipping it in Settings or in this file affects the very next OSC 52
+  sequence in every already-running pane — no restart, no new tab.
+- It governs OSC 52 only. Your own ⌘C, Edit → Copy, and `terminal.copy_on_select` still work in
+  both modes — this key restricts what *programs* can do, never what you can do.
+
+```toml
+[terminal]
+clipboard_write = "allow"     # allow · deny
 ```
 
 ## `[keys]` — keybindings (trmx-94, FR-9)

@@ -67,6 +67,10 @@ export type CursorStyle = "bar" | "block" | "underline";
 /** trmx-144: when closing a pane/tab/window asks for confirmation — "when-busy" prompts only
  * while a foreground program is still running (the iTerm2-style default). */
 export type ConfirmClose = "never" | "when-busy" | "always";
+/** trmx-252 (L11): may a program running in the terminal SET the clipboard with OSC 52?
+ * "allow" is the pre-trmx-252 behaviour; "deny" makes the OSC 52 handler consume the sequence
+ * without writing (osc52.ts — enforcement lives where the write happens, never in core). */
+export type ClipboardWrite = "allow" | "deny";
 /** trmx-81 (FR-2.2): the window edge the tab bar sits on. */
 export type TabBarPosition = "top" | "bottom" | "left" | "right";
 /** trmx-82 (FR-2.3): how the side-rail tab labels run (only meaningful on left/right bars). */
@@ -81,6 +85,9 @@ export interface SettingsValues {
   "terminal.cursorBlink": boolean;
   /** trmx-144: confirm before closing a pane, a tab, or quitting (default "when-busy"). */
   "terminal.confirmClose": ConfirmClose;
+  /** trmx-252: the OSC 52 clipboard-write policy — "allow" (default, current behaviour) lets a
+   * program set the clipboard; "deny" consumes the sequence without writing. */
+  "terminal.clipboardWrite": ClipboardWrite;
   /** trmx-91: show the per-pane activity line while a session runs a foreground job. */
   "terminal.activityIndicator": boolean;
   /** trmx-95: auto-copy the mouse selection to the clipboard, iTerm2-style (default on). */
@@ -165,6 +172,8 @@ export const SETTING_DEFAULTS: SettingsValues = {
   "terminal.cursorBlink": false,
   // trmx-144: prompt only when a program is still running (iTerm2-style default).
   "terminal.confirmClose": "when-busy",
+  // trmx-252: ALLOW preserves the pre-trmx-252 behaviour — opt-in hardening, not a breaking change.
+  "terminal.clipboardWrite": "allow",
   // trmx-91: the activity line is ON by default (off keeps the poller running for titles).
   "terminal.activityIndicator": true,
   // trmx-95: auto-copy selection ON by default (iTerm2 parity).
@@ -216,6 +225,8 @@ const STORAGE_KEYS: Record<SettingKey, string> = {
   "terminal.cursorBlink": "termixion.terminal.cursorBlink",
   // trmx-144: never existed pre-config-file, so the T3b migration finds nothing — harmless.
   "terminal.confirmClose": "termixion.terminal.confirmClose",
+  // trmx-252: never existed pre-config-file, so the T3b migration finds nothing — harmless.
+  "terminal.clipboardWrite": "termixion.terminal.clipboardWrite",
   "terminal.activityIndicator": "termixion.terminal.activityIndicator",
   "terminal.copyOnSelect": "termixion.terminal.copyOnSelect",
   // trmx-225: never existed pre-config-file, so the T3b migration finds nothing — harmless.
@@ -250,6 +261,8 @@ export const SETTING_KEYS = Object.keys(SETTING_DEFAULTS) as SettingKey[];
 const FREQUENCIES: readonly CheckFrequency[] = ["on-startup", "daily", "weekly", "manual"];
 const CURSOR_STYLES: readonly CursorStyle[] = ["bar", "block", "underline"];
 const CONFIRM_CLOSE_VALUES: readonly ConfirmClose[] = ["never", "when-busy", "always"];
+/** trmx-252: the closed terminal.clipboardWrite value set (matching core's ClipboardWrite). */
+export const CLIPBOARD_WRITE_VALUES: readonly ClipboardWrite[] = ["allow", "deny"];
 const TAB_BAR_POSITIONS: readonly TabBarPosition[] = ["top", "bottom", "left", "right"];
 const LABEL_ORIENTATIONS: readonly LabelOrientation[] = ["horizontal", "vertical"];
 
@@ -328,6 +341,13 @@ function parse<K extends SettingKey>(key: K, raw: string): SettingsValues[K] {
       ? raw
       : fallback) as SettingsValues[K];
   }
+  if (key === "terminal.clipboardWrite") {
+    // trmx-252: enum parse-with-fallback. Junk falls back to "allow" — the DEFAULT, not a
+    // fail-closed "deny": a broken value must not silently disable a working feature.
+    return (CLIPBOARD_WRITE_VALUES.includes(raw as ClipboardWrite)
+      ? raw
+      : fallback) as SettingsValues[K];
+  }
   return (CURSOR_STYLES.includes(raw as CursorStyle) ? raw : fallback) as SettingsValues[K];
 }
 
@@ -378,6 +398,12 @@ function coerce<K extends SettingKey>(key: K, value: unknown): SettingsValues[K]
   }
   if (key === "terminal.confirmClose") {
     return CONFIRM_CLOSE_VALUES.includes(value as ConfirmClose)
+      ? (value as SettingsValues[K])
+      : undefined;
+  }
+  if (key === "terminal.clipboardWrite") {
+    // trmx-252: a closed enum — anything else is unusable, and the caller decides the fallback.
+    return CLIPBOARD_WRITE_VALUES.includes(value as ClipboardWrite)
       ? (value as SettingsValues[K])
       : undefined;
   }

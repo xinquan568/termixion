@@ -363,6 +363,7 @@ describe("registry shape", () => {
         "terminal.cursorBlink",
         "terminal.activityIndicator",
         "terminal.confirmClose",
+        "terminal.clipboardWrite",
         "terminal.copyOnSelect",
         "terminal.focusFollowsMouse",
         "terminal.scrollbackLines",
@@ -816,6 +817,112 @@ describe("terminal.confirmClose (trmx-144)", () => {
     expect(
       getConfigWarnings().some(
         (w) => w.source === "client" && w.message.includes("terminal.confirmClose"),
+      ),
+    ).toBe(true);
+  });
+});
+
+// trmx-252 (test 10): terminal.clipboardWrite — the OSC 52 clipboard-write policy ("allow" |
+// "deny"), default "allow" (current behaviour; opt-in hardening). The whole FRONTEND fan-out is
+// pinned here because a partial addition fails silently: a key missing from SETTING_DEFAULTS is
+// not enumerable (so Reset all skips it), one missing from `coerce` never hydrates and never
+// applies a live config-file edit, and one missing from `parse` reads back junk in legacy mode.
+describe("terminal.clipboardWrite (trmx-252)", () => {
+  it('defaults to "allow" in both backends — upgrading must not change behaviour', () => {
+    expect(makeSettingsStore(fakeStorage()).get("terminal.clipboardWrite")).toBe("allow");
+    expect(makeSettingsStore().get("terminal.clipboardWrite")).toBe("allow"); // snapshot, pre-hydration
+    expect(SETTING_DEFAULTS["terminal.clipboardWrite"]).toBe("allow");
+  });
+
+  it("round-trips both values (legacy storage mode)", () => {
+    const store = makeSettingsStore(fakeStorage());
+    for (const value of ["allow", "deny"] as const) {
+      store.set("terminal.clipboardWrite", value);
+      expect(store.get("terminal.clipboardWrite")).toBe(value);
+    }
+  });
+
+  it("treats a junk persisted value as the default (enum parse-with-fallback)", () => {
+    const store = makeSettingsStore(fakeStorage({ "termixion.terminal.clipboardWrite": "maybe" }));
+    expect(store.get("terminal.clipboardWrite")).toBe("allow");
+  });
+
+  it("snapshot mode: set validates, writes through config_write, and broadcasts; junk is rejected", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "night" } });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    const bus = fakeBus();
+    const store = makeSettingsStore(undefined, bus, "settings");
+    store.set("terminal.clipboardWrite", "deny");
+    expect(store.get("terminal.clipboardWrite")).toBe("deny");
+    expect(backend.writes()).toContainEqual({ key: "terminal.clipboardWrite", value: "deny" });
+    expect(bus.events).toEqual([
+      {
+        event: SETTINGS_CHANGED_EVENT,
+        payload: { key: "terminal.clipboardWrite", value: "deny", source: "settings" },
+      },
+    ]);
+    bus.events.length = 0;
+    const writesBefore = backend.writes().length;
+    store.set("terminal.clipboardWrite", "maybe" as never);
+    expect(store.get("terminal.clipboardWrite")).toBe("deny");
+    expect(backend.writes().length).toBe(writesBefore);
+    expect(bus.events).toEqual([]);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it("hydration seeds a valid file value; an invalid one falls to the default + client warning", async () => {
+    const backend = fakeConfigBackend({
+      values: { "terminal.clipboardWrite": "deny", "appearance.theme": "night" },
+    });
+    await hydrateSettings({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    expect(makeSettingsStore().get("terminal.clipboardWrite")).toBe("deny");
+
+    __resetSettingsForTest();
+    const junk = fakeConfigBackend({
+      values: { "terminal.clipboardWrite": "maybe", "appearance.theme": "night" },
+    });
+    await hydrateSettings({ invoke: junk.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    expect(makeSettingsStore().get("terminal.clipboardWrite")).toBe("allow");
+    expect(
+      getConfigWarnings().some(
+        (w) => w.source === "client" && w.message.includes("terminal.clipboardWrite"),
+      ),
+    ).toBe(true);
+
+    // Wrong TYPE entirely (a boolean) is rejected by coerce the same way.
+    __resetSettingsForTest();
+    const wrongType = fakeConfigBackend({
+      values: { "terminal.clipboardWrite": true, "appearance.theme": "night" },
+    });
+    await hydrateSettings({
+      invoke: wrongType.invoke,
+      bus: fakeListenBus(),
+      storage: fakeStorage(),
+    });
+    expect(makeSettingsStore().get("terminal.clipboardWrite")).toBe("allow");
+  });
+
+  it("live settings:changed applies a valid value; junk is inert (config-file junk warns)", async () => {
+    const bus = fakeListenBus();
+    const backend = fakeConfigBackend({ values: { "appearance.theme": "night" } });
+    await hydrateSettings({ invoke: backend.invoke, bus, storage: fakeStorage() });
+    const store = makeSettingsStore();
+    bus.fire(SETTINGS_CHANGED_EVENT, {
+      key: "terminal.clipboardWrite",
+      value: "deny",
+      source: "config-file",
+    });
+    expect(store.get("terminal.clipboardWrite")).toBe("deny");
+    bus.fire(SETTINGS_CHANGED_EVENT, {
+      key: "terminal.clipboardWrite",
+      value: "maybe",
+      source: "config-file",
+    });
+    expect(store.get("terminal.clipboardWrite")).toBe("deny"); // the junk value never landed
+    expect(
+      getConfigWarnings().some(
+        (w) => w.source === "client" && w.message.includes("terminal.clipboardWrite"),
       ),
     ).toBe(true);
   });
