@@ -146,8 +146,9 @@ The two shared commands resolving is the half that matters as much as the reject
 ACL discriminates rather than simply denying everything.
 
 **The handler is not entered.** The evidence is the message's provenance, not an inference about
-what else might have failed: that string is verbatim the ACL layer's own format at
-`tauri-2.11.5/src/ipc/authority.rs:356` —
+what else might have failed: the captured string matches the distinctive prefix of the
+ACL layer's own format at `tauri-2.11.5/src/ipc/authority.rs:356` (the transcript above elides that
+format's trailing URL and diagnostic suffix, so this is a prefix match, not a full one) —
 `"{command_pretty_name} not allowed on window \"{window}\", webview \"{webview}\", URL: {}"`.
 Capability resolution runs ahead of `run_invoke_handler`, so a denied command never reaches its body.
 
