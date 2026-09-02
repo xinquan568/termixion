@@ -135,8 +135,21 @@ config_read:             RESOLVED (shared command, expected)
 themes_read:             RESOLVED (shared command, expected)
 ```
 
+The exact invocation, from the settings surface of `app/src/main.tsx` after `resolveSurface`:
+
+```ts
+await realInvoke("pty_write", { sessionId: 1, data: "x" });
+// -> rejects: BackendError: pty_write not allowed on window "settings", webview "settings"
+```
+
 The two shared commands resolving is the half that matters as much as the rejections: it shows the
 ACL discriminates rather than simply denying everything.
+
+**The handler is not entered.** Tauri resolves the capability before dispatch, so the rejection is
+raised by the ACL layer rather than by the command body — which is also why the message names the
+window and webview rather than anything about a session. The corroborating evidence is that
+`sessionId: 1` does not exist in a freshly launched app: had `pty_write` been entered, it would have
+failed with the registry's own `not_found` `IpcError` (trmx-249) instead.
 
 `take_pending_open_paths` is the one worth noting. Its invariant was already written down
 (`main.tsx:85`) and test-pinned (`main.order.test.ts:109`), but both live in the frontend **caller** —

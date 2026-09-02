@@ -11,6 +11,7 @@ import {
   CANARY_URI,
   WS_URI,
   describeCspProbe,
+  measureStyle,
   runCspProbe,
   type CspProbeDeps,
   type CspViolation,
@@ -142,6 +143,23 @@ describe("runCspProbe", () => {
     expect(record.checks.webSocket).toBe("inconclusive");
   });
 
+  it.each([
+    ["a port that merely shares the prefix", "ws://localhost:51730/"],
+    ["a different path on the same port", "ws://localhost:5173/other"],
+  ])("does NOT attribute %s to the probe socket", async (_label, blockedURI) => {
+    // The first version compared with startsWith, which matched both of these.
+    const record = await runCspProbe(
+      deps({
+        probeWebSocket: () => Promise.resolve(false),
+        violations: () => [
+          ...bothCanaries,
+          { effectiveDirective: "connect-src", blockedURI, sourceFile: "" },
+        ],
+      }),
+    );
+    expect(record.checks.webSocket).toBe("inconclusive");
+  });
+
   it("reports a failed socket with no violation as inconclusive, not as a CSP failure", async () => {
     const record = await runCspProbe(deps({ probeWebSocket: () => Promise.resolve(false) }));
     // Vite 8 rejects a handshake without the vite-hmr subprotocol/token, so a bare failure here is
@@ -215,5 +233,40 @@ describe("describeCspProbe", () => {
   it("names which canary is missing", async () => {
     const record = await runCspProbe(deps({ violations: () => [blobCanary] }));
     expect(describeCspProbe(record)).toContain("canaries=img:MISSING,blob:seen");
+  });
+});
+
+// Review finding 4, second half: the correctness bug was fixed by distinct ids/sentinels, but the
+// CLEANUP that makes the checks repeatable had no coverage. These run against jsdom's real DOM.
+describe("measureStyle cleanup", () => {
+  it("removes BOTH the target element and the injected node", async () => {
+    const style = document.createElement("style");
+    style.textContent = "#cleanup-probe { outline-width: 7px; }";
+    await measureStyle("cleanup-probe", style, false);
+    expect(document.getElementById("cleanup-probe")).toBeNull();
+    expect(document.head.contains(style)).toBe(false);
+  });
+
+  it("removes both even when the injected node fails to load", async () => {
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = "/does-not-exist.css";
+    const failing = measureStyle("cleanup-probe-2", link, true);
+    // jsdom does not fetch, so drive the failure the way a blocked stylesheet would.
+    link.onerror?.(new Event("error"));
+    await expect(failing).rejects.toThrow();
+    expect(document.getElementById("cleanup-probe-2")).toBeNull();
+    expect(document.head.contains(link)).toBe(false);
+  });
+
+  it("leaves the document as it found it across repeated runs", async () => {
+    const before = document.head.childElementCount;
+    for (let i = 0; i < 3; i += 1) {
+      const style = document.createElement("style");
+      style.textContent = "#repeat-probe { outline-width: 7px; }";
+      await measureStyle("repeat-probe", style, false);
+    }
+    expect(document.head.childElementCount).toBe(before);
+    expect(document.querySelectorAll("#repeat-probe")).toHaveLength(0);
   });
 });

@@ -38,18 +38,20 @@ const security = JSON.parse(readFileSync(CONF, "utf8")).app.security as {
 describe("the shipped Content-Security-Policy", () => {
   const csp = directives(security.csp);
 
-  it("declares every directive the app relies on — a missing one falls back to default-src silently", () => {
-    expect([...csp.keys()].sort()).toEqual(
-      [
-        "connect-src",
-        "default-src",
-        "font-src",
-        "img-src",
-        "script-src",
-        "style-src",
-        "worker-src",
-      ].sort(),
-    );
+  it("pins EVERY directive to an exact source set", () => {
+    // Deliberately exhaustive rather than a set of rules. The first version only forbade wildcards,
+    // 'unsafe-eval' and off-machine origins, which still admitted `img-src https:`,
+    // `style-src blob:`, and `default-src 'unsafe-inline'`. Any widening — a new scheme-source, a
+    // new keyword, a new directive — must now be an edit to this literal, and therefore reviewed.
+    expect(Object.fromEntries(csp)).toEqual({
+      "default-src": ["'self'"],
+      "script-src": ["'self'"],
+      "style-src": ["'self'", "'unsafe-inline'"],
+      "img-src": ["'self'", "data:", "blob:"],
+      "font-src": ["'self'", "data:"],
+      "connect-src": ["ipc:", "http://ipc.localhost"],
+      "worker-src": ["'self'"],
+    });
   });
 
   // The only network origins this app may name. `http://ipc.localhost` is Tauri's own IPC endpoint

@@ -120,6 +120,8 @@ async function outcome(run: () => Promise<string>, want: string): Promise<CheckO
   }
 }
 
+const normalizeUri = (uri: string) => uri.replace(/\/+$/, "");
+
 const isBlobWorkerViolation = (v: CspViolation) =>
   v.effectiveDirective.startsWith("worker-src") ||
   (v.effectiveDirective.startsWith("script-src") && v.blockedURI.startsWith("blob"));
@@ -189,10 +191,14 @@ export async function runCspProbe(deps: CspProbeDeps): Promise<CspProbeRecord> {
     } else {
       // Correlate by BOTH directive and blocked URI: an unrelated connect-src violation must not be
       // mislabelled as this socket's CSP failure.
+      // EXACT match after normalising trailing slashes. `startsWith` was wrong: it also matched
+      // `ws://localhost:51730/` (a different port that shares the prefix) and
+      // `ws://localhost:5173/other` (a different path), either of which would have been
+      // misattributed to this socket.
       const blocked = unexpected.some(
         (v) =>
           v.effectiveDirective.startsWith("connect-src") &&
-          v.blockedURI.replace(/\/$/, "").startsWith(WS_URI.replace(/\/$/, "")),
+          normalizeUri(v.blockedURI) === normalizeUri(WS_URI),
       );
       checks.webSocket = blocked ? "csp-fail" : "inconclusive";
     }
@@ -248,19 +254,22 @@ export function describeCspProbe(record: CspProbeRecord): string {
 const CHECK_TIMEOUT_MS = 3000;
 
 function withTimeout<T>(work: Promise<T>, label: string): Promise<T> {
+  // The timer is CLEARED on settle. Leaving it armed kept the probe's process alive past its own
+  // result and leaked one timer per check — harmless in the smoke, wrong in a unit test.
+  let timer: ReturnType<typeof setTimeout>;
   return Promise.race([
     work,
-    new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error(`${label} timed out`)), CHECK_TIMEOUT_MS),
-    ),
-  ]);
+    new Promise<T>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out`)), CHECK_TIMEOUT_MS);
+    }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 /**
  * Mount `node`, measure the target's computed outline-width, and remove BOTH the target and the
  * injected node. Leaving the node mounted is what made the two style checks non-independent.
  */
-async function measureStyle(
+export async function measureStyle(
   targetId: string,
   node: HTMLElement,
   awaitLoad: boolean,
