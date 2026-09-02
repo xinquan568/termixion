@@ -42,6 +42,8 @@ export type WebSocketOutcome = "pass" | "csp-fail" | "inconclusive" | "skipped";
 export interface CspProbeRecord {
   probe: "csp";
   violations: { expected: CspViolation[]; unexpected: CspViolation[] };
+  /** False means the probe script never ran — a different fault from a policy that let the canary through. */
+  collectorPresent: boolean;
   /** Diagnostic only — never a pass/fail criterion (see rule 1 above). */
   renderer: "webgl" | "dom-fallback" | "error";
   checks: {
@@ -64,6 +66,13 @@ const SETTLE_MS = 250;
 export interface CspProbeDeps {
   /** The collector's array, installed by `public/csp-probe.js` before the module bundle ran. */
   violations: () => CspViolation[];
+  /**
+   * Whether the collector itself loaded. WITHOUT this, `canary=MISSING` is ambiguous between "the
+   * policy was never applied" and "the probe script never ran" — the two have completely different
+   * remedies, and reporting them identically is the exact failure this probe exists to avoid.
+   * Found by running Gate B, where dev mode reported a missing canary and could not say why.
+   */
+  collectorPresent: () => boolean;
   /** Applies a same-origin `<link>` and resolves the resulting computed outline-width. */
   probeLinkStylesheet: () => Promise<string>;
   /** Applies an inline `<style>` and resolves the resulting computed outline-width. */
@@ -133,6 +142,12 @@ export async function runCspProbe(deps: CspProbeDeps): Promise<CspProbeRecord> {
   }
   await deps.settle(SETTLE_MS);
 
+  let collectorPresent: boolean;
+  try {
+    collectorPresent = deps.collectorPresent();
+  } catch {
+    collectorPresent = false;
+  }
   const all = deps.violations();
   const expected = all.filter((v) => v.blockedURI === CANARY_URI);
   const unexpected = all.filter((v) => v.blockedURI !== CANARY_URI);
@@ -158,9 +173,17 @@ export async function runCspProbe(deps: CspProbeDeps): Promise<CspProbeRecord> {
     checks.webSocket !== "csp-fail" &&
     checks.webSocket !== "inconclusive";
 
-  const ok = assertionsHeld && unexpected.length === 0 && expected.length === 1;
+  const ok =
+    collectorPresent && assertionsHeld && unexpected.length === 0 && expected.length === 1;
 
-  return { probe: "csp", violations: { expected, unexpected }, renderer, checks, ok };
+  return {
+    probe: "csp",
+    violations: { expected, unexpected },
+    collectorPresent,
+    renderer,
+    checks,
+    ok,
+  };
 }
 
 /** Render the record for `smoke_done`'s reason string, which is what CI actually surfaces. */
@@ -173,6 +196,7 @@ export function describeCspProbe(record: CspProbeRecord): string {
     `csp=${record.ok ? "ok" : "FAIL"}`,
     `renderer=${record.renderer}`,
     `unexpected=${record.violations.unexpected.length}`,
+    `collector=${record.collectorPresent ? "present" : "ABSENT"}`,
     `canary=${record.violations.expected.length === 1 ? "seen" : "MISSING"}`,
   ];
   if (failed.length > 0) parts.push(`failed[${failed.join(" ")}]`);
@@ -233,6 +257,9 @@ export function realCspProbeDeps(): CspProbeDeps {
   return {
     violations: () =>
       ((window as unknown as { __cspViolations?: CspViolation[] }).__cspViolations ?? []).slice(),
+
+    collectorPresent: () =>
+      Array.isArray((window as unknown as { __cspViolations?: unknown }).__cspViolations),
 
     // `style-src 'self'` — the shape Vite emits into dist/index.html.
     probeLinkStylesheet: () =>

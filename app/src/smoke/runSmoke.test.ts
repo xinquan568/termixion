@@ -27,6 +27,7 @@ const goodOutput = [
 const passingCsp = async () => ({
   probe: "csp" as const,
   violations: { expected: [], unexpected: [] },
+  collectorPresent: true,
   renderer: "webgl" as const,
   checks: {
     styleLink: "pass" as const,
@@ -122,6 +123,7 @@ describe("runSmoke — the CSP probe", () => {
   const record = (ok: boolean) => ({
     probe: "csp" as const,
     violations: { expected: [], unexpected: [] },
+    collectorPresent: true,
     renderer: "webgl" as const,
     checks: {
       styleLink: "pass" as const,

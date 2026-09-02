@@ -23,6 +23,7 @@ const canary: CspViolation = {
 function deps(over: Partial<CspProbeDeps> = {}): CspProbeDeps {
   return {
     violations: () => [canary],
+    collectorPresent: () => true,
     probeLinkStylesheet: () => Promise.resolve("3px"),
     probeInlineStyle: () => Promise.resolve("3px"),
     probeSelfWorker: () => Promise.resolve("csp-probe-echo"),
@@ -41,6 +42,20 @@ describe("runCspProbe", () => {
     expect(record.ok).toBe(true);
     expect(record.violations.expected).toEqual([canary]);
     expect(record.violations.unexpected).toEqual([]);
+  });
+
+  it("distinguishes an ABSENT collector from a policy that let the canary through", async () => {
+    // Both report canary=MISSING, but the remedies are opposite: one is a broken probe, the other
+    // is a policy that was never applied. Gate B hit exactly this and could not say which.
+    const absent = await runCspProbe(deps({ collectorPresent: () => false, violations: () => [] }));
+    expect(absent.collectorPresent).toBe(false);
+    expect(absent.ok).toBe(false);
+    expect(describeCspProbe(absent)).toContain("collector=ABSENT");
+
+    const live = await runCspProbe(deps({ violations: () => [] }));
+    expect(live.collectorPresent).toBe(true);
+    expect(live.ok).toBe(false);
+    expect(describeCspProbe(live)).toContain("collector=present");
   });
 
   it("FAILS when the canary never fired — an empty list alone does not prove the collector was live", async () => {
