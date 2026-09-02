@@ -1,0 +1,5 @@
+/* SPDX-License-Identifier: ISC */
+/* trmx-252: the same-origin stylesheet for the `style-src 'self'` active check. The probe asserts
+   this rule reached computed style, so a blocked stylesheet is a failed assertion and not merely a
+   logged violation. */
+#csp-probe-style-target { outline-width: 3px; }

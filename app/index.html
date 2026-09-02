@@ -3,6 +3,12 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!-- trmx-252: the CSP violation collector, FIRST in head and a CLASSIC script so it runs
+         during parsing — before the deferred module bundle and before the stylesheet Vite
+         emits into dist/index.html (which is not in this source file). Diagnostic only: Vite
+         prepends /@vite/client in dev, so no pass/fail depends on this winning that race —
+         see app/src/smoke/cspProbe.ts, whose checks are all active. -->
+    <script src="/csp-probe.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Termixion</title>
   </head>

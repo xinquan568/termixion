@@ -23,6 +23,22 @@ const goodOutput = [
   "__TXSMOKEDONE__", // the marker as OUTPUT (contiguous)
 ].join("\r\n");
 
+/** trmx-252: a passing CSP record, so the pre-existing smoke tests keep testing what they test. */
+const passingCsp = async () => ({
+  probe: "csp" as const,
+  violations: { expected: [], unexpected: [] },
+  renderer: "webgl" as const,
+  checks: {
+    styleLink: "pass" as const,
+    styleInline: "pass" as const,
+    workerSelf: "pass" as const,
+    workerBlob: "pass" as const,
+    webSocket: "skipped" as const,
+    canary: "pass" as const,
+  },
+  ok: true,
+});
+
 describe("runSmoke", () => {
   it("drives the sentinel sequence, evaluates the output, and reports success", async () => {
     let onBytes: PtyBytesHandler | undefined;
@@ -38,7 +54,13 @@ describe("runSmoke", () => {
     reportDone.mockResolvedValue(undefined);
     const invoke = vi.fn<InvokeFn>();
     invoke.mockResolvedValue(undefined);
-    const deps: SmokeDeps = { invoke, openPty, sendInput, reportDone };
+    const deps: SmokeDeps = {
+      invoke,
+      openPty,
+      sendInput,
+      reportDone,
+      runCspProbe: passingCsp,
+    };
 
     const promise = runSmoke(DIR, deps);
     // openPty captures onBytes synchronously; feed the shell output incl the done marker.
@@ -76,6 +98,7 @@ describe("runSmoke", () => {
       },
       sendInput,
       reportDone,
+      runCspProbe: passingCsp,
     };
     const promise = runSmoke(DIR, deps);
     onBytes!(
@@ -90,5 +113,61 @@ describe("runSmoke", () => {
       deps.invoke,
     );
     expect(deps.reportDone).toHaveBeenCalledWith(false, expect.any(String), deps.invoke);
+  });
+});
+
+// trmx-252 (M3): the CSP gate rides the packaged smoke, because it is the only path that runs the
+// real webview under the real policy. Playwright drives raw Vite and never sees a Tauri CSP at all.
+describe("runSmoke — the CSP probe", () => {
+  const record = (ok: boolean) => ({
+    probe: "csp" as const,
+    violations: { expected: [], unexpected: [] },
+    renderer: "webgl" as const,
+    checks: {
+      styleLink: "pass" as const,
+      styleInline: "pass" as const,
+      workerSelf: "pass" as const,
+      workerBlob: "pass" as const,
+      webSocket: "skipped" as const,
+      canary: "pass" as const,
+    },
+    ok,
+  });
+
+  function drive(cspOk: boolean) {
+    let onBytes: PtyBytesHandler | undefined;
+    const reportDone =
+      vi.fn<(ok: boolean, reason: string, invoke: InvokeFn) => Promise<void>>();
+    reportDone.mockResolvedValue(undefined);
+    const invoke = vi.fn<InvokeFn>();
+    invoke.mockResolvedValue(undefined);
+    const deps: SmokeDeps = {
+      invoke,
+      openPty: async (cb: PtyBytesHandler) => {
+        onBytes = cb;
+        return SESSION;
+      },
+      sendInput: async () => {},
+      reportDone,
+      runCspProbe: async () => record(cspOk),
+    };
+    const done = runSmoke(DIR, deps);
+    onBytes!(new TextEncoder().encode(goodOutput));
+    return { done, reportDone };
+  }
+
+  it("carries the probe record into the smoke reason", async () => {
+    const { done, reportDone } = drive(true);
+    await done;
+    expect(reportDone.mock.calls[0][1]).toContain("csp=ok");
+  });
+
+  it("FAILS the smoke when the probe fails, even though the PTY sequence succeeded", async () => {
+    const { done, reportDone } = drive(false);
+    const result = await done;
+    // The whole point of the gate: a green terminal sequence must not mask a broken policy.
+    expect(result.ok).toBe(false);
+    expect(reportDone.mock.calls[0][0]).toBe(false);
+    expect(reportDone.mock.calls[0][1]).toContain("csp=FAIL");
   });
 });

@@ -50,7 +50,9 @@ async function boot() {
   try {
     smokeDir = (await realInvoke("smoke_config")) as string | null;
   } catch {
-    // No backend (plain browser / jsdom): stay null and take the normal launch path.
+    // Two causes now, both benign: no backend (plain browser / jsdom), OR — since trmx-252 made
+    // smoke_config/perf_config main-only — a capability rejection in the settings window,
+    // because boot() invokes these before it resolves the surface. Either way: normal path.
   }
 
   if (smokeDir) {
@@ -65,7 +67,9 @@ async function boot() {
   try {
     perfConfig = (await realInvoke("perf_config")) as PerfLaunchConfig | null;
   } catch {
-    // No backend (plain browser / jsdom): stay null and take the normal launch path.
+    // Two causes now, both benign: no backend (plain browser / jsdom), OR — since trmx-252 made
+    // smoke_config/perf_config main-only — a capability rejection in the settings window,
+    // because boot() invokes these before it resolves the surface. Either way: normal path.
   }
   if (perfConfig) {
     // trmx-103: the backend's `scenario` picks the driver — `multipane` runs the v0.0.9

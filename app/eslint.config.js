@@ -110,4 +110,15 @@ export default tseslint.config(
       globals: { process: "readonly", console: "readonly" },
     },
   },
+  {
+    // trmx-252: public/ holds VERBATIM-copied browser assets, not bundled source — Vite ships them
+    // untransformed, which is exactly why the CSP collector lives there (a classic script that runs
+    // before the module graph). They are plain scripts and one is a worker, so they need the browser
+    // and worker globals rather than the app's module environment. Still linted: they are real code.
+    files: ["public/**/*.js"],
+    languageOptions: {
+      sourceType: "script",
+      globals: { window: "readonly", document: "readonly", self: "readonly" },
+    },
+  },
 );
