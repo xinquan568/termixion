@@ -230,8 +230,33 @@ jobs:
         run: pnpm --filter app lint
       - name: cargo test (workspace — incl. macOS PTY + integration)
         run: cargo test --workspace --locked
-      - name: pnpm test (vitest)
-        run: pnpm --filter app test
+      # trmx-253 (M20): the vitest step REPLACED by its coverage-enabled form, not run beside it —
+      # two runs of the same suite would double the job's slowest step for no extra signal.
+      # Thresholds are negative (maximum uncovered counts), so this fails on NEW uncovered code
+      # rather than on a percentage that drifts as files are added.
+      - name: pnpm test (vitest, with coverage)
+        run: pnpm --filter app exec vitest run --coverage
+      # `!cancelled()`, NOT `success()`: a threshold failure is exactly when someone needs to read
+      # the report. Uploading only on success is the trap trmx-303 already fixed for Playwright
+      # traces. The report is written under app/coverage (the vitest root is app/), not repo-root.
+      - name: Upload coverage report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-frontend
+          path: app/coverage
+          if-no-files-found: warn
+          retention-days: 14
+      # ADVISORY, and advisory includes FAILING TO INSTALL — a step that can fail the build is not
+      # advisory. Install and run share one continue-on-error step for exactly that reason; a cached
+      # Rust target does not cache this binary, so the version is pinned and the binary cached
+      # separately. It re-runs the whole workspace suite instrumented, so if it crowds the job's
+      # 60-minute budget it moves to its own job rather than being trimmed.
+      - name: cargo llvm-cov (advisory — never fails the build)
+        continue-on-error: true
+        run: |
+          cargo install cargo-llvm-cov --version 0.6.20 --locked
+          cargo llvm-cov --workspace --locked --summary-only
 
       # --- build + end-to-end ---
       # trmx-207: the sidecar ships only in BUNDLED builds (tauri.sidecar.conf.json overlay);
