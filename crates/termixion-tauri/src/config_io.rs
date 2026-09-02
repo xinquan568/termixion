@@ -121,6 +121,7 @@ fn value_kind_for(registry_key: &str) -> Option<ValueKind> {
         | "terminal.shell" // trmx-205
         | "shell.prompt" // trmx-207
         | "terminal.confirmClose"
+        | "terminal.clipboardWrite" // trmx-252
         | "appearance.theme"
         | "tabs.barPosition"
         | "tabs.sideLabelOrientation"
@@ -1187,6 +1188,7 @@ mod tests {
             ("terminal.copyOnSelect", ValueKind::Bool),
             ("terminal.focusFollowsMouse", ValueKind::Bool),
             ("terminal.confirmClose", ValueKind::Str),
+            ("terminal.clipboardWrite", ValueKind::Str), // trmx-252
             ("terminal.scrollbackLines", ValueKind::Int),
             ("terminal.fontFamily", ValueKind::Str),
             ("terminal.shell", ValueKind::Str),      // trmx-205

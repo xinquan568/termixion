@@ -16,6 +16,12 @@ import {
   type SessionInfo,
 } from "../ipc/backend";
 import { evaluateSmoke, type SmokeResult } from "./evaluateSmoke";
+import {
+  describeCspProbe,
+  realCspProbeDeps,
+  runCspProbe,
+  type CspProbeRecord,
+} from "./cspProbe";
 
 const DONE_MARKER = "__TXSMOKEDONE__";
 
@@ -40,6 +46,12 @@ export interface SmokeDeps {
   /** Session-scoped write: the driver threads the sessionId openPty resolved (trmx-74). */
   sendInput: (sessionId: number, data: string, invoke: InvokeFn) => Promise<void>;
   reportDone: (ok: boolean, reason: string, invoke: InvokeFn) => Promise<void>;
+  /**
+   * trmx-252 (M3): the CSP gate. This is the ONLY path that runs the real webview under the real
+   * policy — Playwright drives the raw Vite server and never receives a Tauri CSP — so the smoke
+   * carries it. A green terminal sequence must not mask a policy that breaks the app.
+   */
+  runCspProbe: () => Promise<CspProbeRecord>;
 }
 
 /** Drive the smoke sequence and report the result. Resolves once reported (the backend then exits). */
@@ -67,9 +79,17 @@ export async function runSmoke(
     deps.invoke,
   );
   await deps.sendInput(sessionId, SMOKE_SCRIPT, deps.invoke);
-  await reachedMarker; // the backend watchdog (30s) fails the smoke if this never fires
+  await reachedMarker; // the backend watchdog (SMOKE_WATCHDOG_SECS = 90s) fails the smoke if this never fires
 
-  const result = evaluateSmoke(output, dir);
+  const pty = evaluateSmoke(output, dir);
+  // trmx-252: the CSP verdict is ANDed with the PTY verdict, and its record always rides the reason
+  // — a passing run's record is what tells a reader which renderer the runner used and that the
+  // collector was live (the canary), neither of which is inferable from "ok".
+  const csp = await deps.runCspProbe();
+  const result: SmokeResult = {
+    ok: pty.ok && csp.ok,
+    reason: `${pty.reason} | ${describeCspProbe(csp)}`,
+  };
   await deps.reportDone(result.ok, result.reason, deps.invoke);
   return result;
 }
@@ -83,4 +103,5 @@ export const realSmokeDeps: SmokeDeps = {
   sendInput: sendPtyInput,
   reportDone: (ok, reason, invoke) =>
     invoke("smoke_done", { success: ok, reason }).then(() => {}),
+  runCspProbe: () => runCspProbe(realCspProbeDeps()),
 };

@@ -41,7 +41,9 @@ test("?window=settings renders the settings surface with the vmark chrome", asyn
   await expect(page.getByText("Scrollback", { exact: true })).toBeVisible();
   await expect(page.getByText("Font Family", { exact: true })).toBeVisible();
   await expect(page.getByText("Font Size", { exact: true })).toBeVisible();
-  await expect(page.locator(".tx-setting-row")).toHaveCount(15); // trmx-225 adds Focus Follows Mouse
+  // trmx-252 adds the OSC 52 clipboard-write policy row.
+  await expect(page.getByText("Program clipboard writes", { exact: true })).toBeVisible();
+  await expect(page.locator(".tx-setting-row")).toHaveCount(16); // trmx-225 FFM + trmx-252 clipboard
 });
 
 test("?window=settings&section=about lands on the vmark-parity About page", async ({ page }) => {

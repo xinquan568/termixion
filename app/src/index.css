@@ -541,6 +541,51 @@ body {
 }
 
 /*
+ * trmx-252 (L11) — the per-pane OSC 52 CLIPBOARD NOTICE (clipboardNotice.ts): a small opaque pill
+ * telling the user a program in this pane just asked to set the clipboard. It must not be mistaken
+ * for either existing pane overlay, so all three occupy different geometry: the badge watermark is
+ * large + translucent in the TOP-RIGHT (.tx-badge), the activity line is a 2px bar along the TOP
+ * edge (.tx-activity-line), and this is a bordered pill in the BOTTOM-LEFT. Click-through
+ * (pointer-events: none, also inline for jsdom) so it never eats the terminal's clicks. z-index 5
+ * sits ABOVE the badge (4) — it is transient and short-lived, so it may cover the watermark for its
+ * ~2s — and BELOW the Kitty scrollbar (10) and the badge editor (6). The fade-in is the only motion
+ * and is dropped under prefers-reduced-motion (the notice itself always stays).
+ */
+.tx-clipboard-notice {
+  position: absolute;
+  bottom: 10px;
+  left: 10px;
+  z-index: 5;
+  pointer-events: none;
+  max-width: calc(100% - 20px);
+  padding: 3px 8px;
+  border-radius: 5px;
+  font: 11px var(--tx-ui-font);
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--tx-text);
+  background: var(--tx-bg-elev);
+  border: 1px solid var(--tx-border);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 25%);
+  animation: tx-clipboard-notice-in 120ms ease-out;
+}
+@keyframes tx-clipboard-notice-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tx-clipboard-notice {
+    animation: none;
+  }
+}
+
+/*
  * trmx-90 — the ⇧⌘B badge EDITOR input (PaneBadgeInput in App): a small, CENTERED text field over the
  * focused pane. Absolutely positioned in the pane host, centered with the translate trick; themed with
  * the same --tx-* vars + accent ring as the tab rename input. z-index 6 keeps it above the badge

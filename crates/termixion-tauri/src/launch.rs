@@ -247,40 +247,79 @@ pub(crate) fn perf_config(launch: State<'_, SpecialLaunch>) -> Option<PerfConfig
     })
 }
 
+/// trmx-252 (L13): what an exit command may do with the result the webview reported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExitDecision<'a> {
+    /// This process was never launched in that mode, so the call is not authorized: write nothing,
+    /// exit nothing, log and return. `smoke_done` / `perf_done` end the process in EVERY build,
+    /// which makes an ungated pair a kill switch reachable from any webview during a normal
+    /// session — including one a page navigation put there.
+    Ignore,
+    /// Launched in the mode: act, writing into the harness's `dir`, then terminate with `code`
+    /// (0 = pass, 1 = fail) so `scripts/smoke.sh` and `scripts/perf.sh` stay gates.
+    Exit { dir: &'a str, code: i32 },
+}
+
+/// Gate an exit command on its launch mode — `launch.smoke` for the smoke, `launch.perf` for perf.
+///
+/// The mode is the whole authorization, and it can only come from argv/env read once at startup
+/// ([`smoke_mode`] / [`perf_mode`]), which no webview can influence.
+pub(crate) fn exit_decision(mode: Option<&str>, success: bool) -> ExitDecision<'_> {
+    match mode {
+        None => ExitDecision::Ignore,
+        Some(dir) => ExitDecision::Exit {
+            dir,
+            code: i32::from(!success),
+        },
+    }
+}
+
 /// The webview reports the perf result (trmx-78): persist the JSON report to the out dir, then
 /// exit `0`/`1` on budget pass/fail so `scripts/perf.sh` is a gate. The report lands on disk
 /// either way — a failed run's numbers are exactly the ones worth reading.
 #[tauri::command]
 pub(crate) fn perf_done(report: String, success: bool, launch: State<'_, SpecialLaunch>) {
-    if let Some(dir) = launch.perf.as_ref() {
-        let path = Path::new(dir).join("report.json");
-        if let Err(err) = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&path, &report))
-        {
-            log::error!(
-                "termixion-perf: FAIL — could not write {}: {err}",
-                path.display()
-            );
-            std::process::exit(1);
-        }
-        log::info!("termixion-perf: report written to {}", path.display());
+    let ExitDecision::Exit { dir, code } = exit_decision(launch.perf.as_deref(), success) else {
+        log::warn!(
+            "termixion-perf: ignoring perf_done — this process was not launched with --perf"
+        );
+        return;
+    };
+    let path = Path::new(dir).join("report.json");
+    if let Err(err) = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&path, &report)) {
+        log::error!(
+            "termixion-perf: FAIL — could not write {}: {err}",
+            path.display()
+        );
+        std::process::exit(1);
     }
+    log::info!("termixion-perf: report written to {}", path.display());
     if success {
         log::info!("termixion-perf: OK — budgets met");
-        std::process::exit(0);
+    } else {
+        log::error!("termixion-perf: FAIL — budgets missed or the run was invalid");
     }
-    log::error!("termixion-perf: FAIL — budgets missed or the run was invalid");
-    std::process::exit(1);
+    std::process::exit(code);
 }
 
 /// The webview reports the smoke result; exit the process `0`/`1` so the packaged `--smoke` is a gate.
+///
+/// trmx-252: takes the launch state purely to gate on it — the smoke's sentinel dir is read by the
+/// webview through `smoke_config`, not here.
 #[tauri::command]
-pub(crate) fn smoke_done(success: bool, reason: String) {
+pub(crate) fn smoke_done(success: bool, reason: String, launch: State<'_, SpecialLaunch>) {
+    let ExitDecision::Exit { code, .. } = exit_decision(launch.smoke.as_deref(), success) else {
+        log::warn!(
+            "termixion-smoke: ignoring smoke_done — this process was not launched with --smoke"
+        );
+        return;
+    };
     if success {
         log::info!("termixion-smoke: OK — {reason}");
-        std::process::exit(0);
+    } else {
+        log::error!("termixion-smoke: FAIL — {reason}");
     }
-    log::error!("termixion-smoke: FAIL — {reason}");
-    std::process::exit(1);
+    std::process::exit(code);
 }
 
 #[cfg(test)]
@@ -490,6 +529,34 @@ mod tests {
         // ≈105 s schedule × ~3 headroom = the 300 s pinned here; change the consts together.
         assert_eq!(PERF_WATCHDOG_SECS, 300);
     }
+    /// trmx-252 (L13): the exit gate. `smoke_done` / `perf_done` call `std::process::exit`, so an
+    /// ungated pair is a kill switch any webview can pull — in a NORMAL launch, where neither mode
+    /// was ever requested. (They exit in every build, not release-only.) The mode's presence is
+    /// the whole authorization, and it comes from argv/env at launch, which no webview can reach.
+    #[test]
+    fn the_exit_commands_only_act_inside_their_launch_mode() {
+        // Not launched with --smoke/--perf: the call is ignored — nothing written, nothing exited.
+        assert_eq!(exit_decision(None, true), ExitDecision::Ignore);
+        assert_eq!(exit_decision(None, false), ExitDecision::Ignore);
+
+        // Launched in the mode: act, carrying the dir the harness gave us and the exit status the
+        // gate scripts read (0 = pass, 1 = fail).
+        assert_eq!(
+            exit_decision(Some("/tmp/termixion-smoke"), true),
+            ExitDecision::Exit {
+                dir: "/tmp/termixion-smoke",
+                code: 0
+            }
+        );
+        assert_eq!(
+            exit_decision(Some("/tmp/termixion-perf"), false),
+            ExitDecision::Exit {
+                dir: "/tmp/termixion-perf",
+                code: 1
+            }
+        );
+    }
+
     #[test]
     fn smoke_mode_resolves_off_on_and_missing_dir() {
         let on = "/tmp/termixion-smoke";

@@ -109,6 +109,41 @@ impl ConfirmClose {
     }
 }
 
+/// Whether a program running in the terminal may SET the system clipboard with OSC 52 (registry
+/// key `terminal.clipboardWrite`) — trmx-252 (L11).
+///
+/// Stored here as DATA ONLY. Core never touches a clipboard; the policy is READ AT WRITE TIME by
+/// the webview's OSC 52 handler (`app/src/terminal/osc52.ts`), which is where the write happens
+/// and therefore where enforcement belongs (R1/R2 — no platform code in core).
+///
+/// Defaults to [`ClipboardWrite::Allow`], which is the pre-trmx-252 behaviour: this is opt-in
+/// hardening for users who do not want a remote program (an ssh session, a pasted script) to be
+/// able to overwrite their clipboard, not a breaking change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClipboardWrite {
+    Allow,
+    Deny,
+}
+
+impl ClipboardWrite {
+    /// The TOML/registry spelling of this value (lowercase, e.g. `"allow"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Deny => "deny",
+        }
+    }
+
+    fn from_toml(s: &str) -> Option<Self> {
+        match s {
+            "allow" => Some(Self::Allow),
+            "deny" => Some(Self::Deny),
+            _ => None,
+        }
+    }
+}
+
 /// Where the tab bar sits in the window (registry key `tabs.barPosition`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -235,6 +270,9 @@ pub struct TerminalConfig {
     pub focus_follows_mouse: bool,
     /// When to confirm before closing a busy pane/tab or quitting (trmx-144).
     pub confirm_close: ConfirmClose,
+    /// trmx-252 (L11): may a program SET the clipboard with OSC 52? Default `allow` (current
+    /// behaviour); `deny` makes the webview consume the sequence without writing.
+    pub clipboard_write: ClipboardWrite,
     /// trmx-205: the shell new sessions spawn. `""` = System default (`$SHELL` → `/bin/zsh` →
     /// `/bin/bash`); a non-empty value is an absolute path to an installed shell, validated
     /// impurely at spawn/read time by the tauri layer (the pure parser accepts any string).
@@ -253,6 +291,8 @@ impl Default for TerminalConfig {
             copy_on_select: true,
             focus_follows_mouse: false,
             confirm_close: ConfirmClose::WhenBusy,
+            // trmx-252: ALLOW = the pre-trmx-252 behaviour, so upgrading changes nothing.
+            clipboard_write: ClipboardWrite::Allow,
             shell: String::new(),
         }
     }
@@ -499,6 +539,7 @@ pub const DEFAULT_TEMPLATE: &str = r##"# Termixion configuration (TOML).
 # copy_on_select = true           # auto-copy the mouse selection to the clipboard (iTerm2-style)
 # focus_follows_mouse = false     # focus the pane under the pointer without a click (trmx-225)
 # confirm_close = "when-busy"     # confirm before closing a busy pane/tab or quitting: "never" | "when-busy" | "always"
+# clipboard_write = "allow"       # may a program SET the clipboard with OSC 52? "allow" | "deny" (trmx-252)
 
 # [shell]
 # enhancements = true             # master switch for the zsh enhancement layer (trmx-206)
@@ -579,6 +620,7 @@ pub fn toml_path_for(registry_key: &str) -> Option<(&'static str, &'static str)>
         "terminal.copyOnSelect" => Some(("terminal", "copy_on_select")),
         "terminal.focusFollowsMouse" => Some(("terminal", "focus_follows_mouse")),
         "terminal.confirmClose" => Some(("terminal", "confirm_close")),
+        "terminal.clipboardWrite" => Some(("terminal", "clipboard_write")),
         "appearance.theme" => Some(("appearance", "theme")),
         "tabs.barPosition" => Some(("tabs", "bar_position")),
         "tabs.sideLabelOrientation" => Some(("tabs", "side_label_orientation")),
@@ -684,6 +726,11 @@ pub fn diff_configs(old: &Config, new: &Config) -> Vec<(String, RegistryValue)> 
         old.terminal.confirm_close != new.terminal.confirm_close,
         "terminal.confirmClose",
         RegistryValue::Str(new.terminal.confirm_close.as_str().to_string()),
+    );
+    push(
+        old.terminal.clipboard_write != new.terminal.clipboard_write,
+        "terminal.clipboardWrite",
+        RegistryValue::Str(new.terminal.clipboard_write.as_str().to_string()),
     );
     push(
         old.appearance.theme != new.appearance.theme,
@@ -927,6 +974,17 @@ fn walk_terminal(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
                 ConfirmClose::as_str,
                 r#"one of "never", "when-busy", "always""#,
                 &mut config.terminal.confirm_close,
+                sink,
+            ),
+            // trmx-252: the OSC 52 clipboard-write policy. Core only STORES it (R1/R2) — the
+            // webview's OSC 52 handler reads it at write time and enforces.
+            "clipboard_write" => read_enum(
+                value,
+                ("terminal.clipboard_write", "terminal.clipboardWrite"),
+                ClipboardWrite::from_toml,
+                ClipboardWrite::as_str,
+                r#"one of "allow", "deny""#,
+                &mut config.terminal.clipboard_write,
                 sink,
             ),
             _ => sink.warnings.push(ConfigWarning::UnknownKey {
@@ -1241,7 +1299,7 @@ mod tests {
     use super::*;
 
     /// All 15 registry keys.
-    const REGISTRY_KEYS: [&str; 21] = [
+    const REGISTRY_KEYS: [&str; 22] = [
         "update.autoCheck",
         "update.checkFrequency",
         "update.autoDownload",
@@ -1254,6 +1312,7 @@ mod tests {
         "terminal.copyOnSelect",
         "terminal.focusFollowsMouse",
         "terminal.confirmClose",
+        "terminal.clipboardWrite",
         "terminal.shell",
         "shell.enhancements",
         "shell.autosuggestions",
@@ -1285,6 +1344,7 @@ activity_indicator = false
 copy_on_select = false
 focus_follows_mouse = true
 confirm_close = "always"
+clipboard_write = "deny"
 shell = "/opt/homebrew/bin/fish"
 
 [shell]
@@ -1325,6 +1385,7 @@ show_shortcut_hints = false
                     copy_on_select: false,
                     focus_follows_mouse: true,
                     confirm_close: ConfirmClose::Always,
+                    clipboard_write: ClipboardWrite::Deny,
                     shell: "/opt/homebrew/bin/fish".to_string(),
                 },
                 shell: ShellConfig {
@@ -1462,7 +1523,7 @@ show_shortcut_hints = false
     fn full_file_yields_all_twelve_registry_pairs() {
         let (pairs, warnings) = parse_registry_pairs(FULL_NON_DEFAULT);
         assert_eq!(warnings, Vec::new());
-        assert_eq!(pairs.len(), 21);
+        assert_eq!(pairs.len(), 22);
         for key in REGISTRY_KEYS {
             assert!(value_for(&pairs, key).is_some(), "missing pair for {key}");
         }
@@ -1802,6 +1863,99 @@ show_shortcut_hints = false
         assert!(
             DEFAULT_TEMPLATE.contains("# confirm_close = \"when-busy\""),
             "the template must document terminal.confirm_close (commented out)"
+        );
+    }
+
+    // trmx-252 (test 9) — terminal.clipboard_write: the OSC 52 clipboard-write policy
+    // ("allow" | "deny"), stored in core as DATA only (enforcement lives in app/, R1/R2).
+    // The whole fan-out is pinned here, because a PARTIAL addition fails silently: a key that
+    // parses but never maps, or maps but never diffs, looks fine until a user edits the file.
+    #[test]
+    fn clipboard_write_parses_both_values_without_warning() {
+        for (spelling, expected) in [
+            ("allow", ClipboardWrite::Allow),
+            ("deny", ClipboardWrite::Deny),
+        ] {
+            let text = format!("[terminal]\nclipboard_write = \"{spelling}\"\n");
+            let (config, warnings) = parse_config(&text);
+            assert_eq!(warnings, Vec::new(), "for {spelling}");
+            assert_eq!(config.terminal.clipboard_write, expected, "for {spelling}");
+            let (pairs, _) = parse_registry_pairs(&text);
+            assert_eq!(
+                value_for(&pairs, "terminal.clipboardWrite"),
+                Some(&RegistryValue::Str(spelling.to_string())),
+                "for {spelling}"
+            );
+        }
+    }
+
+    #[test]
+    fn clipboard_write_defaults_to_allow_when_absent() {
+        // Default ALLOW preserves the pre-trmx-252 behaviour — this is opt-in hardening.
+        assert_eq!(
+            Config::default().terminal.clipboard_write,
+            ClipboardWrite::Allow
+        );
+        let (config, warnings) = parse_config("[terminal]\n");
+        assert_eq!(config.terminal.clipboard_write, ClipboardWrite::Allow);
+        assert_eq!(warnings, Vec::new());
+        let (pairs, _) = parse_registry_pairs("[terminal]\n");
+        assert!(value_for(&pairs, "terminal.clipboardWrite").is_none());
+    }
+
+    #[test]
+    fn unknown_clipboard_write_warns_with_valid_values_listed() {
+        let text = "[terminal]\nclipboard_write = \"maybe\"\n";
+        let (config, warnings) = parse_config(text);
+        assert_eq!(config.terminal.clipboard_write, ClipboardWrite::Allow);
+        assert_eq!(warnings.len(), 1);
+        match &warnings[0] {
+            ConfigWarning::InvalidValue { key, got, expected } => {
+                assert_eq!(key, "terminal.clipboard_write");
+                assert!(got.contains("maybe"));
+                for valid in ["allow", "deny"] {
+                    assert!(expected.contains(valid), "expected must list {valid}");
+                }
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+        let (pairs, _) = parse_registry_pairs(text);
+        assert!(value_for(&pairs, "terminal.clipboardWrite").is_none());
+    }
+
+    #[test]
+    fn clipboard_write_is_a_known_key_not_an_unknown_one() {
+        // The silent-failure mode this guards: a key documented in the template but missing from
+        // walk_terminal parses "fine" while warning the user their hand-written TOML is unknown.
+        let (_, warnings) = parse_config("[terminal]\nclipboard_write = \"deny\"\n");
+        assert!(
+            !warnings
+                .iter()
+                .any(|w| matches!(w, ConfigWarning::UnknownKey { key } if key == "terminal.clipboard_write")),
+            "clipboard_write must be a KNOWN terminal key: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn clipboard_write_diffs_maps_and_template_documents_it() {
+        let old = Config::default();
+        let mut new = Config::default();
+        new.terminal.clipboard_write = ClipboardWrite::Deny;
+        assert_eq!(
+            diff_configs(&old, &new),
+            vec![(
+                "terminal.clipboardWrite".to_string(),
+                RegistryValue::Str("deny".to_string())
+            )],
+            "a changed policy must BROADCAST, or a live edit never reaches the webview"
+        );
+        assert_eq!(
+            toml_path_for("terminal.clipboardWrite"),
+            Some(("terminal", "clipboard_write"))
+        );
+        assert!(
+            DEFAULT_TEMPLATE.contains("# clipboard_write = \"allow\""),
+            "the template must document terminal.clipboard_write (commented out)"
         );
     }
 

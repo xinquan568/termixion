@@ -118,6 +118,94 @@ describe("attachOsc52", () => {
   });
 });
 
+// trmx-252 (test 11) — the OSC 52 clipboard-WRITE POLICY (`terminal.clipboardWrite`). `deny` must
+// still CONSUME the sequence (matching the stance for queries and oversized payloads: nothing an
+// OSC 52 carries may fall through to another handler), and the policy must be read AT WRITE TIME:
+// the handler is attached ONCE per pane (TerminalView), so a value captured at attach time would
+// ignore every later change — the setting would appear to need a restart.
+describe("attachOsc52 clipboard-write policy (trmx-252)", () => {
+  it('"deny" consumes the sequence without writing and without notifying', async () => {
+    await withTerminal(async (term) => {
+      const writeClipboard = vi.fn();
+      const onAccepted = vi.fn();
+      // Registered FIRST, so xterm tries it LAST: it runs only if our handler returns false.
+      const fallthrough = vi.fn(() => true);
+      term.parser.registerOscHandler(52, fallthrough);
+      attachOsc52(term, writeClipboard, { policy: () => "deny", onAccepted });
+      await writeSeq(term, `\x1b]52;c;${HELLO_B64}${BEL}`);
+      expect(writeClipboard).not.toHaveBeenCalled();
+      expect(onAccepted).not.toHaveBeenCalled();
+      expect(fallthrough).not.toHaveBeenCalled(); // consumed here — never fell through
+    });
+  });
+
+  it('"allow" writes and reports the accepted request', async () => {
+    await withTerminal(async (term) => {
+      const writeClipboard = vi.fn();
+      const onAccepted = vi.fn();
+      attachOsc52(term, writeClipboard, { policy: () => "allow", onAccepted });
+      await writeSeq(term, `\x1b]52;c;${HELLO_B64}${BEL}`);
+      expect(writeClipboard).toHaveBeenCalledWith("hello");
+      expect(onAccepted).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("a LIVE policy change reaches the already-attached handler (read at write time)", async () => {
+    await withTerminal(async (term) => {
+      const writeClipboard = vi.fn();
+      let policy: "allow" | "deny" = "allow";
+      attachOsc52(term, writeClipboard, { policy: () => policy });
+
+      await writeSeq(term, `\x1b]52;c;${HELLO_B64}${BEL}`);
+      expect(writeClipboard).toHaveBeenCalledTimes(1);
+
+      policy = "deny"; // the user flips the setting; the handler is NOT re-attached
+      await writeSeq(term, `\x1b]52;c;${HELLO_B64}${BEL}`);
+      expect(writeClipboard).toHaveBeenCalledTimes(1); // still 1 — the deny took effect live
+
+      policy = "allow"; // and back again, without a remount
+      await writeSeq(term, `\x1b]52;c;${HELLO_B64}${BEL}`);
+      expect(writeClipboard).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("defaults to allow when no policy is injected (unchanged pre-trmx-252 behaviour)", async () => {
+    await withTerminal(async (term) => {
+      const writeClipboard = vi.fn();
+      attachOsc52(term, writeClipboard);
+      await writeSeq(term, `\x1b]52;c;${HELLO_B64}${BEL}`);
+      expect(writeClipboard).toHaveBeenCalledWith("hello");
+    });
+  });
+
+  it("a query is still unanswered under BOTH policies (the write-only invariant is unrelated)", async () => {
+    for (const policy of ["allow", "deny"] as const) {
+      await withTerminal(async (term) => {
+        const writeClipboard = vi.fn();
+        const onAccepted = vi.fn();
+        const emitted: string[] = [];
+        term.onData((d) => emitted.push(d));
+        attachOsc52(term, writeClipboard, { policy: () => policy, onAccepted });
+        await writeSeq(term, `\x1b]52;c;?${BEL}`);
+        expect(writeClipboard).not.toHaveBeenCalled();
+        expect(onAccepted).not.toHaveBeenCalled();
+        expect(emitted).toEqual([]);
+      });
+    }
+  });
+
+  it("a malformed payload never reports an accepted request", async () => {
+    await withTerminal(async (term) => {
+      const writeClipboard = vi.fn();
+      const onAccepted = vi.fn();
+      attachOsc52(term, writeClipboard, { policy: () => "allow", onAccepted });
+      await writeSeq(term, `\x1b]52;c;%%not-base64%%${BEL}`);
+      expect(writeClipboard).not.toHaveBeenCalled();
+      expect(onAccepted).not.toHaveBeenCalled();
+    });
+  });
+});
+
 describe("realWriteClipboard (the native IPC sink since trmx-145)", () => {
   it("delegates to the clipboard-manager plugin — NOT navigator.clipboard (the mojibake path)", () => {
     // jsdom has no navigator.clipboard at all, which doubles as proof the webview API is not

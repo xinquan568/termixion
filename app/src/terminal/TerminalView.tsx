@@ -52,7 +52,13 @@ import {
   realSetWindowTitle,
   type TitleTerminalLike,
 } from "./windowTitle";
-import { attachOsc52, realWriteClipboard, type Osc52TerminalLike } from "./osc52";
+import {
+  attachOsc52,
+  realWriteClipboard,
+  type ClipboardWritePolicy,
+  type Osc52TerminalLike,
+} from "./osc52";
+import { attachClipboardNotice } from "./clipboardNotice";
 import { attachOsc7, defaultCwdStore, type CwdStore, type Osc7TerminalLike } from "./osc7";
 import { attachOsc1337, type Osc1337TerminalLike } from "./osc1337";
 import { attachOsc133, type Osc133TerminalLike, type PromptTransition } from "./osc133";
@@ -165,6 +171,9 @@ export type AttachScrollbar = (
  * trmx-90: `onBadge` redirects the OSC 1337 SetBadgeFormat sink — App injects a per-PANE callback so
  * a `printf` badges its own pane (the reducer's `badge` slot); when omitted the badge is a no-op (a
  * badge has no standalone destination, unlike a title/clipboard).
+ * trmx-252: `onClipboardWrite` fires when an OSC 52 write request is ACCEPTED — the mount effect
+ * routes it into this pane's clipboard notice. Omitting it drops the notice ONLY; the write policy
+ * itself defaults inside `realAttachOscIntegrations`, so enforcement is never opt-in.
  */
 export type AttachOscIntegrations = (
   terminal: TerminalLike,
@@ -172,13 +181,32 @@ export type AttachOscIntegrations = (
   onTitle?: (title: string) => void,
   onBadge?: (badge: string | null) => void,
   onPromptMarker?: (transition: PromptTransition) => void,
+  onClipboardWrite?: () => void,
 ) => () => void;
+
+/**
+ * trmx-252 (L11): the LIVE OSC 52 write policy — `terminal.clipboardWrite` off the shared settings
+ * snapshot. A thunk, not a value: `attachOsc52` calls it at WRITE time, so a change made in the
+ * Settings window or by hand in the config file reaches the handler that is already attached to
+ * every running pane. Reading it here (at attach time) would silently require a restart.
+ */
+const realClipboardWritePolicy = (): ClipboardWritePolicy =>
+  makeSettingsStore().get("terminal.clipboardWrite");
 
 export function realAttachOscIntegrations(
   terminal: TerminalLike,
   sinks: {
     setTitle: (title: string) => void;
     writeClipboard: (text: string) => void;
+    // trmx-252: the per-pane OSC 52 notice sink — invoked when a write request is ACCEPTED (a
+    // request, not a confirmed clipboard change; see osc52.ts). Optional: with no pane host there
+    // is nowhere to show it, exactly like the badge sink below.
+    onClipboardWrite?: () => void;
+    /**
+     * trmx-252: the write policy, overridable for tests. Production always gets the live registry
+     * thunk — enforcement must not depend on a caller remembering to pass it.
+     */
+    clipboardWritePolicy?: () => ClipboardWritePolicy;
     // trmx-90: the per-pane badge sink. Optional (defaulted to a no-op below): unlike title/clipboard
     // a badge has no standalone edge, so a caller with no pane layer simply drops SetBadgeFormat.
     setBadge?: (badge: string | null) => void;
@@ -195,6 +223,11 @@ export function realAttachOscIntegrations(
   const detach52 = attachOsc52(
     terminal as unknown as Osc52TerminalLike,
     sinks.writeClipboard,
+    {
+      // trmx-252: read at write time (the thunk), never captured here — see the const above.
+      policy: sinks.clipboardWritePolicy ?? realClipboardWritePolicy,
+      onAccepted: sinks.onClipboardWrite,
+    },
   );
   const detach7 = attachOsc7(terminal as unknown as Osc7TerminalLike, cwdStore);
   // trmx-90: OSC 1337 SetBadgeFormat → the per-pane badge sink (localized adapter cast, like the
@@ -228,20 +261,27 @@ const defaultAttachOscIntegrations: AttachOscIntegrations = (
   onTitle,
   onBadge,
   onPromptMarker,
+  onClipboardWrite,
 ) =>
   realAttachOscIntegrations(
     terminal,
     // No tab/pane layer at all → the full default sinks (window title, real clipboard, no-op badge).
     // Otherwise build the sinks: onTitle REPLACES the window title (else stays realSetWindowTitle),
     // onBadge feeds the pane's badge slot (trmx-90; absent → osc1337 no-op); onPromptMarker feeds the
-    // pane's OSC 133 activity (trmx-99; absent → no-op).
-    onTitle === undefined && onBadge === undefined && onPromptMarker === undefined
+    // pane's OSC 133 activity (trmx-99; absent → no-op); onClipboardWrite feeds the pane's OSC 52
+    // notice (trmx-252; absent → no notice, but the POLICY still applies — it defaults inside
+    // realAttachOscIntegrations, so enforcement never depends on this branch).
+    onTitle === undefined &&
+      onBadge === undefined &&
+      onPromptMarker === undefined &&
+      onClipboardWrite === undefined
       ? undefined
       : {
           setTitle: onTitle ?? realSetWindowTitle,
           writeClipboard: realWriteClipboard,
           setBadge: onBadge,
           setPromptMarker: onPromptMarker,
+          onClipboardWrite,
         },
     cwdStore,
   );
@@ -386,7 +426,18 @@ export function TerminalView({
     // into this tab's injected store when the tab layer provides one, trmx-74). trmx-75: when the
     // tab layer provides onOscTitle, OSC titles go THERE (the tab's `osc` source) instead of the
     // native window. trmx-90: onBadge routes OSC 1337 SetBadgeFormat into THIS pane's badge slot.
-    const detachOsc = attachOscIntegrations(handle.terminal, cwdStore, onOscTitle, onBadge, onPromptMarker);
+    // trmx-252 (L11): the per-pane OSC 52 notice — an accepted clipboard-write request is otherwise
+    // completely invisible. Owned here (not by App) because it is chrome on THIS host, like the
+    // scrollbar; disposed below, which also clears its pending timer.
+    const clipboardNotice = attachClipboardNotice(host);
+    const detachOsc = attachOscIntegrations(
+      handle.terminal,
+      cwdStore,
+      onOscTitle,
+      onBadge,
+      onPromptMarker,
+      () => clipboardNotice.notify(),
+    );
     // trmx-66: owned ⌘C/⌘V — capture-phase guards on the host (sanitized paste, no-clear copy).
     const detachClipboard = attachClipboard(host, handle.terminal);
     // trmx-95 (FR-8): auto-copy-on-select — attached per pane ONLY while terminal.copyOnSelect is on,
@@ -467,6 +518,9 @@ export function TerminalView({
       detachClipboard();
       detachCopyOnSelect?.();
       detachOsc();
+      // trmx-252: removes the node AND clears a still-pending notice timer — a callback firing
+      // after teardown would otherwise touch a disposed pane's host.
+      clipboardNotice.dispose();
       scrollbar.dispose();
       handle.dispose();
     };
