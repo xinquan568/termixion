@@ -10,12 +10,21 @@ as coverage.
 ```
 default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
 img-src 'self' data: blob:; font-src 'self' data:;
-connect-src ipc: http://ipc.localhost; worker-src 'self' blob:
+connect-src ipc: http://ipc.localhost; worker-src 'self'
 ```
 
-`worker-src 'self' blob:` is load-bearing: xterm's WebGL renderer constructs a `blob:` worker, and
-dropping it breaks the terminal. `style-src 'unsafe-inline'` is required by Vite's style handling —
-the grill report (2026-08-26, assumption A5) predicted this, and the gate below confirmed it.
+`style-src 'unsafe-inline'` is required by Vite's style handling — the grill report (2026-08-26,
+assumption A5) predicted exactly this, and the packaged gate below confirmed it.
+
+**`worker-src` is `'self'`, with no `blob:`.** An earlier draft of this work allowed `blob:` on the
+stated grounds that xterm's WebGL renderer needs it. **That was wrong**, and review caught it:
+`@xterm/addon-webgl@0.18.0` contains no `Worker`, `Blob`, or `createObjectURL` at all, nor does
+xterm core, nor does anything in `app/src`. It was a relaxation with no consumer. The directive is
+now `'self'`, and the probe asserts a `blob:` worker is **refused** — so the relaxation cannot creep
+back without a failing gate. `app/src/smoke/cspPolicy.test.ts` pins it by source.
+
+The directives are pinned separately from the runtime probe because the probe verifies the policy is
+ENFORCED and COMPATIBLE, not that it is STRONG: `script-src *` would satisfy every runtime check.
 
 ### `devCsp` does NOT apply on desktop
 
@@ -49,7 +58,7 @@ not CSP evidence.
 `app/src/smoke/cspProbe.ts`, riding the packaged `--smoke` (`scripts/smoke.sh`). It runs in the real
 webview under the real policy — the only path that does.
 
-Two rules it is built on:
+Three rules it is built on, each because breaking it produced a real defect in review:
 
 1. **An ambiguous signal is never a verdict.** `TerminalView` falls back to the DOM renderer without
    WebGL2, so "WebGL initialised" cannot separate a CSP block from a headless runner — the renderer
@@ -57,9 +66,13 @@ Two rules it is built on:
    `connect-src` violation was recorded; otherwise it is `inconclusive`. And `canary=MISSING` is
    reported alongside `collector=present|ABSENT`, because "the policy let it through" and "the probe
    never loaded" have opposite remedies.
-2. **A check that cannot fail proves nothing.** The canary is a deliberately blocked request whose
-   violation *must* appear. An empty violation list on its own is equally consistent with a dead
-   listener; the canary is what makes `unexpected=0` mean something.
+2. **A check that cannot fail proves nothing.** Every relaxation the policy grants is paired with a
+   negative probe whose violation *must* appear. An empty violation list on its own is equally
+   consistent with a dead listener; the canaries are what make `unexpected=0` mean something.
+3. **A positive check must be able to fail independently.** The first draft used one element id and
+   one sentinel value for both style checks and never removed the injected `<link>`, so the inline
+   check passed off the still-mounted external stylesheet even when inline CSS was blocked — a
+   tautology. Each check now owns a distinct id, a distinct sentinel, and removes what it injects.
 
 Passive capture (`app/public/csp-probe.js`, a classic script first in `<head>`) is **diagnostic
 only** — Vite prepends `/@vite/client`, so that ordering cannot be won outright, and no assertion
@@ -67,13 +80,27 @@ depends on it. Every pass/fail comes from active checks run after the listener i
 
 Demonstrated in both directions on the packaged app:
 
-| policy | result | exit |
+| policy | packaged `--smoke` output | exit |
 |---|---|---|
-| `worker-src 'self' blob:` | `csp=ok renderer=webgl unexpected=0 canary=seen` | 0 |
-| `worker-src 'self'` (hostile) | `csp=FAIL unexpected=1 canary=seen failed[workerBlob=fail] violation[worker-src blob]` | 1 |
+| shipped | `csp=ok renderer=webgl collector=present canaries=img:seen,blob:seen unexpected=0` | 0 |
+| `worker-src` **relaxed** to `'self' blob:` | `csp=FAIL … canaries=img:seen,blob:MISSING unexpected=0` | 1 |
 
-In the failing run the PTY sequence still succeeded, and the smoke failed anyway — a green terminal
-does not mask a broken policy.
+Both rows are transcribed from real runs, not predicted.
+
+Note what the second row means: **nothing broke.** `unexpected=0`, the terminal sequence succeeded,
+the app was entirely functional — and the gate failed anyway, because the policy got *weaker*. The
+inverted canary makes this a check on the policy's strength, not merely on the app's compatibility
+with it. A relaxation cannot pass by being harmless.
+
+In a failing run the PTY sequence still succeeds and the smoke fails regardless — a green terminal
+does not mask a bad policy.
+
+**Scope of the A5 answer.** The probe exercises the *directives*: a same-origin stylesheet, an
+inline style, a same-origin worker, and (in dev) the HMR socket. It does **not** mount React or
+instantiate xterm — the smoke path returns before React mounts. So A5 is answered for the policy's
+compatibility with those directives, and is **not** a demonstration that the xterm WebGL renderer
+itself runs under this CSP. The renderer field in the record is diagnostic only. Mounting the real
+terminal composition inside the packaged probe is the obvious next step and is not done here.
 
 ## Per-window command capabilities
 
@@ -95,8 +122,29 @@ removal), which is precisely why a hand-maintained list is not viable.
 Omission fails **closed** — a command missing from the manifest is denied, so the risk is an
 availability regression rather than a silent hole.
 
-**Not covered automatically:** runtime capability *rejection* from the settings window. The
-`MockRuntime` harness is issue #245. Until then this is a documented manual check.
+### Verified at runtime, 2026-09-02
+
+The census and the manifest prove the ACL is *declared*. This is it being *enforced* — captured from
+the settings webview of the real packaged app, via a temporary probe reverted before commit:
+
+```
+pty_write:               REJECTED: BackendError: pty_write not allowed on window "settings", webview "settings"
+open_pty:                REJECTED: BackendError: open_pty not allowed on window "settings", webview "settings"
+take_pending_open_paths: REJECTED: BackendError: take_pending_open_paths not allowed on window "settings", webview "settings"
+config_read:             RESOLVED (shared command, expected)
+themes_read:             RESOLVED (shared command, expected)
+```
+
+The two shared commands resolving is the half that matters as much as the rejections: it shows the
+ACL discriminates rather than simply denying everything.
+
+`take_pending_open_paths` is the one worth noting. Its invariant was already written down
+(`main.tsx:85`) and test-pinned (`main.order.test.ts:109`), but both live in the frontend **caller** —
+a compromised settings webview bypassed them by invoking the command directly. That line above is
+the first time the invariant is enforced somewhere the caller cannot reach.
+
+**Still not covered automatically:** this was a manual run. The `MockRuntime` harness that would
+make it a test is issue #245, open and unstarted.
 
 ## OSC 52 clipboard writes
 

@@ -28,15 +28,14 @@ const passingCsp = async () => ({
   probe: "csp" as const,
   violations: { expected: [], unexpected: [] },
   collectorPresent: true,
+  canaries: { image: true, blobWorker: true },
   renderer: "webgl" as const,
   checks: {
-    styleLink: "pass" as const,
-    styleInline: "pass" as const,
-    workerSelf: "pass" as const,
-    workerBlob: "pass" as const,
-    webSocket: "skipped" as const,
-    canary: "pass" as const,
-  },
+      styleLink: "pass" as const,
+      styleInline: "pass" as const,
+      workerSelf: "pass" as const,
+      webSocket: "skipped" as const,
+    },
   ok: true,
 });
 
@@ -124,14 +123,13 @@ describe("runSmoke — the CSP probe", () => {
     probe: "csp" as const,
     violations: { expected: [], unexpected: [] },
     collectorPresent: true,
+  canaries: { image: true, blobWorker: true },
     renderer: "webgl" as const,
     checks: {
       styleLink: "pass" as const,
       styleInline: "pass" as const,
       workerSelf: "pass" as const,
-      workerBlob: "pass" as const,
       webSocket: "skipped" as const,
-      canary: "pass" as const,
     },
     ok,
   });
