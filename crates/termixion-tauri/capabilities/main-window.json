@@ -1,12 +1,26 @@
 {
   "$schema": "https://schema.tauri.app/capability/2",
   "identifier": "main-window",
-  "description": "Main-window-only grants (trmx-74): core:window:allow-close lets the tab manager close the window when the last tab closes. Scoped to main so the settings window gains no close-by-script surface it does not need. trmx-145 adds clipboard-manager:allow-write-text \u2014 WRITE-ONLY (no read grant, matching the OSC 52 write-only stance) and main-only, so terminal copies reach the native pasteboard while the settings window gains no clipboard surface at all.",
+  "description": "Main-window-only grants (trmx-74): core:window:allow-close lets the tab manager close the window when the last tab closes. Scoped to main so the settings window gains no close-by-script surface it does not need. trmx-145 adds clipboard-manager:allow-write-text — WRITE-ONLY (no read grant, matching the OSC 52 write-only stance) and main-only, so terminal copies reach the native pasteboard while the settings window gains no clipboard surface at all. trmx-252 (L13) adds the 14 app commands only the PTY-owning window may invoke: the PTY lifecycle (open/write/ack/resize/close), the control-socket reply, the close-gate trio, the pending-open-paths drain (main.tsx already restrains itself here — the Rust command has no window check, so this is where it becomes enforced), and the four deterministic-launch commands that the smoke and perf harnesses drive.",
   "windows": [
     "main"
   ],
   "permissions": [
     "core:window:allow-close",
-    "clipboard-manager:allow-write-text"
+    "clipboard-manager:allow-write-text",
+    "allow-open-pty",
+    "allow-pty-write",
+    "allow-pty-ack",
+    "allow-pty-resize",
+    "allow-close-pty",
+    "allow-control-response",
+    "allow-quit-confirmed",
+    "allow-webview-close-request",
+    "allow-close-acknowledged",
+    "allow-take-pending-open-paths",
+    "allow-smoke-config",
+    "allow-smoke-done",
+    "allow-perf-config",
+    "allow-perf-done"
   ]
 }

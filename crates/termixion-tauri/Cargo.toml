@@ -43,7 +43,12 @@ plist = "1"
 # Two string-matching versions both leaked (a fully-qualified `crate::ipc_error::IpcError`, a
 # `CommandOutcome<T, IpcError>`, a `pub mod`), which is what a syntax-keyed heuristic does.
 # Already in the lockfile via proc-macros, so this adds no new supply-chain surface.
-syn = { version = "2", features = ["full", "parsing"] }
+# trmx-252: `visit` is added for the command census in tests/command_capabilities.rs — the
+# registration list sits deep inside a builder-chain expression, so the walk has to be a real AST
+# traversal. Declared EXPLICITLY rather than relied upon through feature unification: another
+# crate in the graph may enable it today and stop tomorrow, and the failure would be a compile
+# error in a security gate. Same crate, no new supply-chain surface.
+syn = { version = "2", features = ["full", "parsing", "visit"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
