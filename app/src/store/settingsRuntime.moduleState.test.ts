@@ -164,18 +164,109 @@ function auditModuleState(source: string, fileName = "module.ts"): ModuleStateAu
   // unrelated shadow reused the name. That contradicted the whole premise of a name-based analysis.
   // A name that is ever bound to a module-scoped root keeps that origin; a conflicting later
   // binding is ignored rather than allowed to clear it.
+  // Four review rounds were spent ENUMERATING binding forms — identifier declarations, then
+  // shadowing order, then casts — and each round the next ordinary form escaped: destructuring,
+  // reassignment, for-of, catch. Enumerating shapes is the wrong technique for the same reason
+  // grepping was the wrong technique for counting: the list is never finished.
+  //
+  // So stop enumerating. Taint STRUCTURALLY: for any binding or assignment, if a module-scoped
+  // root appears ANYWHERE in the right-hand side, every name introduced on the left inherits it.
+  // That over-approximates by construction — `const { a } = shared` taints `a` even if `a` is not
+  // itself state — which is the safe direction and is what "can only over-report" has to mean.
+  const namesBoundBy = (name: ts.BindingName, into: string[]): void => {
+    if (ts.isIdentifier(name)) {
+      into.push(name.text);
+      return;
+    }
+    for (const element of name.elements) {
+      if (ts.isBindingElement(element)) namesBoundBy(element.name, into);
+    }
+  };
+  /**
+   * The roots an expression can PROPAGATE A REFERENCE from — not every identifier it mentions.
+   * That distinction is the whole difference between a usable guard and a useless one: walking the
+   * entire subtree flagged `Object.keys(SETTING_KEYS)` as aliasing SETTING_KEYS, so the audit
+   * reported the real settingsStore.ts as dirty. A call RETURNS something new; it does not alias
+   * its arguments. Aliasing travels through a direct reference, a literal that wraps one, or a
+   * choice between them — and nothing else here.
+   */
+  const rootsWithin = (node: ts.Node): string[] => {
+    const direct = rootIdentifier(node);
+    if (direct) {
+      if (owned.has(direct.text) || aliasOf.has(direct.text)) return [direct.text];
+      return [];
+    }
+    if (ts.isArrayLiteralExpression(node)) {
+      return node.elements.flatMap((element) => rootsWithin(element));
+    }
+    if (ts.isObjectLiteralExpression(node)) {
+      return node.properties.flatMap((property) =>
+        ts.isPropertyAssignment(property) ? rootsWithin(property.initializer) : [],
+      );
+    }
+    if (ts.isConditionalExpression(node)) {
+      return [...rootsWithin(node.whenTrue), ...rootsWithin(node.whenFalse)];
+    }
+    if (
+      ts.isBinaryExpression(node) &&
+      (node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
+        node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+        node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken)
+    ) {
+      return [...rootsWithin(node.left), ...rootsWithin(node.right)];
+    }
+    return [];
+  };
+  const taint = (targets: string[], from: ts.Node): void => {
+    const origins = rootsWithin(from);
+    if (origins.length === 0) return;
+    for (const target of targets) {
+      if (origins.includes(target) && origins.length === 1) continue; // self-reference
+      const set = aliasOf.get(target) ?? new Set<string>();
+      for (const origin of origins) if (origin !== target) set.add(origin);
+      if (set.size > 0) aliasOf.set(target, set);
+    }
+  };
+  // Two passes: aliases can be introduced after their use site, and a chain can be built in any
+  // order, so run to a fixed point rather than assuming source order.
   const collectAliases = (node: ts.Node): void => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-      const from = rootIdentifier(node.initializer);
-      if (from && from.text !== node.name.text) {
-        const origins = aliasOf.get(node.name.text) ?? new Set<string>();
-        origins.add(from.text);
-        aliasOf.set(node.name.text, origins);
+    if (ts.isVariableDeclaration(node) && node.initializer) {
+      const names: string[] = [];
+      namesBoundBy(node.name, names);
+      taint(names, node.initializer);
+    }
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+    ) {
+      const names: string[] = [];
+      if (ts.isIdentifier(node.left)) names.push(node.left.text);
+      else if (ts.isObjectLiteralExpression(node.left) || ts.isArrayLiteralExpression(node.left)) {
+        // destructuring ASSIGNMENT: ({ snapshot } = shared)
+        const walk = (n: ts.Node): void => {
+          if (ts.isIdentifier(n)) names.push(n.text);
+          ts.forEachChild(n, walk);
+        };
+        walk(node.left);
       }
+      if (names.length > 0) taint(names, node.right);
+    }
+    if (ts.isForOfStatement(node) || ts.isForInStatement(node)) {
+      const names: string[] = [];
+      if (ts.isVariableDeclarationList(node.initializer)) {
+        for (const decl of node.initializer.declarations) namesBoundBy(decl.name, names);
+      } else if (ts.isIdentifier(node.initializer)) {
+        names.push(node.initializer.text);
+      }
+      taint(names, node.expression);
     }
     ts.forEachChild(node, collectAliases);
   };
-  ts.forEachChild(sf, collectAliases);
+  let previous = -1;
+  for (let pass = 0; pass < 6 && aliasOf.size !== previous; pass += 1) {
+    previous = aliasOf.size;
+    ts.forEachChild(sf, collectAliases);
+  }
 
   const markIfOwned = (node: ts.Node): void => {
     const root = rootIdentifier(node);
@@ -186,11 +277,26 @@ function auditModuleState(source: string, fileName = "module.ts"): ModuleStateAu
 
   /** Parameter indices of a file-local function whose body mutates that parameter. */
   const mutatingParamsOf = (fnName: string): Set<number> | undefined => {
-    const fn = sf.statements.find(
-      (st): st is ts.FunctionDeclaration =>
-        ts.isFunctionDeclaration(st) && st.name?.text === fnName,
-    );
-    if (!fn?.body) return undefined;
+    // Helpers are not always top-level function declarations: `const wipe = (m) => m.clear()` and
+    // nested declarations are ordinary. Search the whole file for any function-like bound to this
+    // name, rather than only the top-level statement list.
+    let fn: ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression | undefined;
+    const findFn = (n: ts.Node): void => {
+      if (fn) return;
+      if (ts.isFunctionDeclaration(n) && n.name?.text === fnName) fn = n;
+      if (
+        ts.isVariableDeclaration(n) &&
+        ts.isIdentifier(n.name) &&
+        n.name.text === fnName &&
+        n.initializer &&
+        (ts.isArrowFunction(n.initializer) || ts.isFunctionExpression(n.initializer))
+      ) {
+        fn = n.initializer;
+      }
+      ts.forEachChild(n, findFn);
+    };
+    ts.forEachChild(sf, findFn);
+    if (!fn?.body || !ts.isBlock(fn.body)) return undefined;
     const params = fn.parameters.map((param) =>
       ts.isIdentifier(param.name) ? param.name.text : undefined,
     );
@@ -451,6 +557,60 @@ describe("trmx-253: the module-state audit itself has teeth", () => {
   // Step-9 verify iteration 3. The previous over-reporting fixture tested only ONE ordering — the
   // one I expected to work — so "first wins" passed it while still under-reporting the reverse.
   // Both orderings are pinned now, because the property must hold regardless of source order.
+  // Step-9 verify iteration 4. Enumerating binding FORMS failed four rounds running, so alias
+  // collection is now structural: any binding or assignment whose right-hand side propagates a
+  // reference taints every name it introduces. These are the forms that escaped the enumeration.
+  it.each([
+    ["destructuring", "const { snapshot } = shared;", "snapshot.clear();"],
+    ["nested destructuring", "const { inner: { m } } = shared;", "m.clear();"],
+    ["array destructuring", "const [first] = [shared];", "first.snapshot.clear();"],
+    ["reassignment", "let s; s = shared;", "s.snapshot.clear();"],
+    ["destructuring assignment", "let snapshot; ({ snapshot } = shared);", "snapshot.clear();"],
+    ["for-of over a literal", "for (const s of [shared]) {", "s.snapshot.clear(); }"],
+    ["nullish choice", "const s = shared ?? shared;", "s.snapshot.clear();"],
+    ["conditional choice", "const s = 1 > 0 ? shared : shared;", "s.snapshot.clear();"],
+  ])("CATCHES an alias introduced by %s", (_label, bind, use) => {
+    const audit = auditModuleState(
+      [
+        "const shared = { snapshot: new Map<string, string>(), inner: { m: new Map<string, string>() } };",
+        "function touch() {",
+        "  " + bind,
+        "  " + use,
+        "}",
+      ].join("\n"),
+      "binding-forms.ts",
+    );
+    expect(audit.mutated).toContain("shared");
+  });
+
+  it("CATCHES a helper that is an arrow function, not a declaration", () => {
+    const audit = auditModuleState(
+      [
+        "const shared = { snapshot: new Map<string, string>() };",
+        "const wipe = (m: Map<string, string>) => { m.clear(); };",
+        "function touch() { wipe(shared.snapshot); }",
+      ].join("\n"),
+      "arrow-helper.ts",
+    );
+    expect(audit.mutated).toContain("shared");
+  });
+
+  it("does NOT taint through a CALL — a call returns something new, it does not alias its arguments", () => {
+    // The over-approximation has to stop somewhere or the guard reports the real file as dirty:
+    // walking whole subtrees flagged `Object.keys(SETTING_KEYS)` as aliasing SETTING_KEYS.
+    const audit = auditModuleState(
+      [
+        "const registry = { a: 1 };",
+        "function touch() {",
+        "  const copy = Object.keys(registry);",
+        "  copy.push('x');",
+        "}",
+      ].join("\n"),
+      "no-call-taint.ts",
+    );
+    expect(audit.mutated).not.toContain("registry");
+  });
+
   it.each([
     ["module origin SECOND", ["function a(input: { snapshot: Map<string, string> }) { const s = input; s.snapshot.clear(); }", "function b() { const s = shared; s.snapshot.clear(); }"]],
     ["module origin FIRST", ["function b() { const s = shared; s.snapshot.clear(); }", "function a(input: { snapshot: Map<string, string> }) { const s = input; s.snapshot.clear(); }"]],
