@@ -57,6 +57,11 @@ export default defineConfig({
       // so new uncovered code fails the build while refactors that delete covered code do not.
       // Lower them when coverage improves; raising one is a reviewed decision, not a convenience.
       //
+      // BRANCHES has NO cushion (-433 = the measured value). The one-run variance affected only
+      // statements, functions and lines; branches were identical across every run, so slack there
+      // would be unexplained slack — and an undocumented three-branch allowance is exactly the kind
+      // of quiet headroom a ratchet exists to prevent.
+      //
       // The +1 on statements/functions/lines is MEASURED, not padding. Four of five baseline runs
       // reported 4937/2843/1260/4318 covered; one reported exactly one fewer statement, function
       // and line (branches unchanged), i.e. one small function went unexecuted in that run. Three
@@ -67,7 +72,7 @@ export default defineConfig({
       // failure rather than absorbing it silently.
       thresholds: {
         statements: -508,
-        branches: -436,
+        branches: -433,
         functions: -198,
         lines: -360,
       },

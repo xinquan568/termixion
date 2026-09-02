@@ -128,9 +128,35 @@ function auditModuleState(source: string, fileName = "module.ts"): ModuleStateAu
       return undefined;
     }
   };
+  // Second evasion (Step-9 verify): root-resolution alone still misses an ALIAS —
+  // `const s = shared; s.snapshot.set(...)` roots at `s`, which is not module-scoped. So first
+  // taint every local initialised from a module-scoped root, transitively, and treat a tainted
+  // local as the module binding it came from.
+  const aliasOf = new Map<string, string>();
+  const resolveOwner = (name: string): string | undefined => {
+    const seen = new Set<string>();
+    let current: string | undefined = name;
+    while (current && !seen.has(current)) {
+      if (owned.has(current)) return current;
+      seen.add(current);
+      current = aliasOf.get(current);
+    }
+    return undefined;
+  };
+  const collectAliases = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      const from = rootIdentifier(node.initializer);
+      if (from && from.text !== node.name.text) aliasOf.set(node.name.text, from.text);
+    }
+    ts.forEachChild(node, collectAliases);
+  };
+  ts.forEachChild(sf, collectAliases);
+
   const markIfOwned = (node: ts.Node): void => {
     const root = rootIdentifier(node);
-    if (root && owned.has(root.text)) mutated.add(root.text);
+    if (!root) return;
+    const owner = resolveOwner(root.text);
+    if (owner) mutated.add(owner);
   };
 
   const visit = (node: ts.Node): void => {
@@ -152,13 +178,21 @@ function auditModuleState(source: string, fileName = "module.ts"): ModuleStateAu
     if (ts.isDeleteExpression(node)) {
       markIfOwned(node.expression);
     }
-    if (
-      ts.isCallExpression(node) &&
-      ts.isPropertyAccessExpression(node.expression) &&
-      MUTATORS.has(node.expression.name.text)
-    ) {
-      // The receiver, rooted: catches `shared.snapshot.set(...)`, not just `snapshot.set(...)`.
-      markIfOwned(node.expression.expression);
+    if (ts.isCallExpression(node)) {
+      // The receiver, rooted AND alias-resolved: catches `shared.snapshot.set(...)` and
+      // `const s = shared; s.snapshot.set(...)`, not just `snapshot.set(...)`.
+      if (ts.isPropertyAccessExpression(node.expression) && MUTATORS.has(node.expression.name.text)) {
+        markIfOwned(node.expression.expression);
+      }
+      // ...and the COMPUTED form `x.snapshot["set"](...)`, which a property-access-only check missed.
+      if (
+        ts.isElementAccessExpression(node.expression) &&
+        node.expression.argumentExpression &&
+        ts.isStringLiteralLike(node.expression.argumentExpression) &&
+        MUTATORS.has(node.expression.argumentExpression.text)
+      ) {
+        markIfOwned(node.expression.expression);
+      }
     }
     ts.forEachChild(node, visit);
   };
@@ -256,6 +290,49 @@ describe("trmx-253: the module-state audit itself has teeth", () => {
     // and the ten names all appear factory-local. Only root-resolution catches it.
     expect(audit.mutated).toContain("shared");
   });
+
+  it("CATCHES the alias evasion: a factory-local binding that points at the module object", () => {
+    // The second evasion the Step-9 verify found. Root-resolution alone misses it, because the
+    // chain roots at `s` — a factory-local name.
+    const audit = auditModuleState(
+      [
+        "const shared = { snapshot: new Map(), configPath: null as string | null };",
+        "export function createSettingsRuntime() {",
+        "  const s = shared;",
+        "  const alsoS = s;",           // transitive
+        "  const m = shared.snapshot;", // alias of a PROPERTY of the module object
+        "  function touch() {",
+        "    s.snapshot.set('k', 'v');",
+        "    alsoS.configPath = 'x';",
+        "    m.clear();",
+        "  }",
+        "  return { touch };",
+        "}",
+      ].join("\n"),
+      "alias.ts",
+    );
+    expect(audit.mutated).toContain("shared");
+  });
+
+  it("CATCHES a computed mutator call", () => {
+    const audit = auditModuleState(
+      [
+        "const shared = { snapshot: new Map() };",
+        "function touch() {",
+        "  shared.snapshot['set']('k', 'v');",
+        "}",
+      ].join("\n"),
+      "computed.ts",
+    );
+    expect(audit.mutated).toContain("shared");
+  });
+
+  // WHAT THIS GUARD IS AND IS NOT. It is alias- and root-aware, and the three evasions found in
+  // review are pinned above. It is NOT adversary-proof, and claiming otherwise would be the same
+  // overstatement it exists to catch: a source-level audit living in the same repo as its subject
+  // cannot beat someone editing the file to defeat it — an indirection through a function return,
+  // a dynamic property name, or a re-export would all escape. Defeating it now takes DELIBERATE
+  // effort, which is the achievable goal: this guards against drift and accident, not sabotage.
 
   it("roots each mutation form back to the module binding", () => {
     for (const line of [
