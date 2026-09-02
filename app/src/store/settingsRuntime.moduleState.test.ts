@@ -102,33 +102,63 @@ function auditModuleState(source: string, fileName = "module.ts"): ModuleStateAu
 
   const owned = new Set(moduleScopedNames);
   const mutated = new Set<string>();
+
+  // Review finding 3: the first version matched only a bare Identifier on the left of an assignment
+  // and a bare Identifier as a mutating call's receiver. That is evadable by one indirection — a
+  // module-level `const shared = { snapshot: new Map(), configPath: null }` survives it, because
+  // `shared.configPath = x` has a PropertyAccessExpression on the left and `shared.snapshot.set(x)`
+  // has a PropertyAccessExpression as its receiver. Ten factory-local aliases would then satisfy
+  // the structural half while every piece stayed global: a guard passing on appearances, which is
+  // exactly what this file exists to prevent.
+  //
+  // So resolve the ROOT identifier of any access chain and test that instead. `a.b.c[d] = x` and
+  // `a.b.c.set(x)` both root at `a`.
+  const rootIdentifier = (node: ts.Node): ts.Identifier | undefined => {
+    let current: ts.Node = node;
+    for (;;) {
+      if (ts.isIdentifier(current)) return current;
+      if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+        current = current.expression;
+        continue;
+      }
+      if (ts.isNonNullExpression(current) || ts.isParenthesizedExpression(current)) {
+        current = current.expression;
+        continue;
+      }
+      return undefined;
+    }
+  };
+  const markIfOwned = (node: ts.Node): void => {
+    const root = rootIdentifier(node);
+    if (root && owned.has(root.text)) mutated.add(root.text);
+  };
+
   const visit = (node: ts.Node): void => {
     if (
       ts.isBinaryExpression(node) &&
       node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-      node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
-      ts.isIdentifier(node.left) &&
-      owned.has(node.left.text)
+      node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
     ) {
-      mutated.add(node.left.text);
+      // Covers `x = v`, `x.y = v`, `x.y.z += v`, `x[k] = v`.
+      markIfOwned(node.left);
     }
     if (
       (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
       (node.operator === ts.SyntaxKind.PlusPlusToken ||
-        node.operator === ts.SyntaxKind.MinusMinusToken) &&
-      ts.isIdentifier(node.operand) &&
-      owned.has(node.operand.text)
+        node.operator === ts.SyntaxKind.MinusMinusToken)
     ) {
-      mutated.add(node.operand.text);
+      markIfOwned(node.operand);
+    }
+    if (ts.isDeleteExpression(node)) {
+      markIfOwned(node.expression);
     }
     if (
       ts.isCallExpression(node) &&
       ts.isPropertyAccessExpression(node.expression) &&
-      ts.isIdentifier(node.expression.expression) &&
-      owned.has(node.expression.expression.text) &&
       MUTATORS.has(node.expression.name.text)
     ) {
-      mutated.add(node.expression.expression.text);
+      // The receiver, rooted: catches `shared.snapshot.set(...)`, not just `snapshot.set(...)`.
+      markIfOwned(node.expression.expression);
     }
     ts.forEachChild(node, visit);
   };
@@ -193,6 +223,55 @@ describe("trmx-253: the module-state audit itself has teeth", () => {
     expect(audit.letOrVar.sort()).toEqual(
       ["busSubscribed", "configInvoke", "configPath", "fileWarnings"].sort(),
     );
+  });
+
+  // Review finding 3: the audit's first version matched only a bare Identifier on the left of an
+  // assignment, and a bare Identifier as a mutating call's receiver — so ONE indirection defeated
+  // it. This fixture is that evasion, written to look like a clean extraction: every one of the ten
+  // names is a factory-local alias (the structural half passes), while the state itself lives in a
+  // module-scoped object mutated through property access.
+  const SHARED_STATE_EVASION = [
+    "const shared = {",
+    "  snapshot: new Map(),",
+    "  configPath: null as string | null,",
+    "  writeSeq: 0,",
+    "};",
+    "export function createSettingsRuntime() {",
+    "  const snapshot = shared.snapshot;",
+    "  const configPath = shared.configPath;",
+    "  const writeSeq = shared.writeSeq;",
+    "  function set(k: string, v: string) {",
+    "    shared.snapshot.set(k, v);",   // mutating call, PropertyAccess receiver
+    "    shared.configPath = k;",       // assignment, PropertyAccess LHS
+    "    shared.writeSeq += 1;",        // compound assignment through a property
+    "    delete (shared as Record<string, unknown>).configPath;",
+    "  }",
+    "  return { snapshot, configPath, writeSeq, set };",
+    "}",
+  ].join("\n");
+
+  it("CATCHES the one-indirection evasion: state in a module object, aliased inside the factory", () => {
+    const audit = auditModuleState(SHARED_STATE_EVASION, "evasion.ts");
+    // `shared` is const and its declaration is module-scoped, so a `let`/`var` check sees nothing
+    // and the ten names all appear factory-local. Only root-resolution catches it.
+    expect(audit.mutated).toContain("shared");
+  });
+
+  it("roots each mutation form back to the module binding", () => {
+    for (const line of [
+      "shared.snapshot.set('k', 'v');",           // mutating call via property receiver
+      "shared.configPath = 'x';",                 // property assignment
+      "shared.writeSeq += 1;",                    // compound property assignment
+      "shared.nested.deep.value = 1;",            // deep chain
+      "shared.byKey['k'] = 1;",                   // element access
+      "delete shared.configPath;",                // delete
+    ]) {
+      const audit = auditModuleState(
+        ["const shared = { snapshot: new Map() };", "function touch() {", "  " + line, "}"].join("\n"),
+        "form.ts",
+      );
+      expect(audit.mutated, line).toContain("shared");
+    }
   });
 
   it("does NOT flag an immutable registry constant (the audit is not just 'any module const')", () => {

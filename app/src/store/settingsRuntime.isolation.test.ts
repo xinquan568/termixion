@@ -344,3 +344,55 @@ describe("trmx-253: two settings runtimes share no state (all ten pieces)", () =
     );
   });
 });
+
+// Review finding 4: dispose() drained busUnlistens synchronously, but listen() is async — an
+// unlisten resolving AFTER dispose was pushed onto the drained list and stayed live, leaving a
+// subscription able to mutate a runtime documented as reset. The pre-existing teardown test used
+// ALREADY-RESOLVED listen promises, so it could not see this: the race needs a deferred listen.
+describe("trmx-253: dispose() and an in-flight listen()", () => {
+  function deferredBus() {
+    const resolvers: Array<(unlisten: () => void) => void> = [];
+    let unlistened = 0;
+    return {
+      unlistenedCount: () => unlistened,
+      settleAll: () => {
+        for (const resolve of resolvers.splice(0)) resolve(() => (unlistened += 1));
+      },
+      bus: {
+        emit: () => Promise.resolve(),
+        listen: () =>
+          new Promise<() => void>((resolve) => {
+            resolvers.push(resolve);
+          }),
+      },
+    };
+  }
+
+  it("tears down a listen that resolves AFTER dispose, instead of re-arming a disposed runtime", async () => {
+    const { bus, settleAll, unlistenedCount } = deferredBus();
+    const runtime = createSettingsRuntime();
+    void runtime.hydrate({ invoke: async () => ({}) as never, bus, storage: undefined });
+    await Promise.resolve();
+
+    runtime.dispose();          // drains while both listens are still pending
+    settleAll();                // ...and only now do they resolve
+    await Promise.resolve();
+
+    // Without the generation guard these unlistens join an already-drained list and are never
+    // called: the subscriptions stay live on a "disposed" runtime.
+    expect(unlistenedCount()).toBeGreaterThan(0);
+  });
+
+  it("still registers normally when the listens resolve before dispose", async () => {
+    const { bus, settleAll, unlistenedCount } = deferredBus();
+    const runtime = createSettingsRuntime();
+    void runtime.hydrate({ invoke: async () => ({}) as never, bus, storage: undefined });
+    await Promise.resolve();
+
+    settleAll();
+    await Promise.resolve();
+    expect(unlistenedCount()).toBe(0);   // registered, not yet torn down
+    runtime.dispose();
+    expect(unlistenedCount()).toBeGreaterThan(0);
+  });
+});

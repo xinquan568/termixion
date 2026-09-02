@@ -248,14 +248,29 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
       # ADVISORY, and advisory includes FAILING TO INSTALL — a step that can fail the build is not
-      # advisory. Install and run share one continue-on-error step for exactly that reason; a cached
-      # Rust target does not cache this binary, so the version is pinned and the binary cached
-      # separately. It re-runs the whole workspace suite instrumented, so if it crowds the job's
-      # 60-minute budget it moves to its own job rather than being trimmed.
+      # advisory, so install and run share one continue-on-error step.
+      #
+      # The binary IS cached, and it needs its own step: Swatinem/rust-cache covers the target dir
+      # and the registry, NOT ~/.cargo/bin. An earlier version of this comment claimed the binary
+      # was "cached separately" while nothing cached it and `cargo install` ran on every job — the
+      # comment asserted something the workflow did not do (review finding 2).
+      #
+      # It re-runs the whole workspace suite instrumented, so if it crowds the job's 60-minute
+      # budget it moves to its own job rather than being trimmed.
+      - name: Cache cargo-llvm-cov binary (advisory)
+        id: llvmcov-cache
+        continue-on-error: true
+        # SHA-pinned like every other action here (trmx-234 supply-chain hardening).
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-llvm-cov
+          key: cargo-llvm-cov-0.6.20-${{ runner.os }}-${{ runner.arch }}
       - name: cargo llvm-cov (advisory — never fails the build)
         continue-on-error: true
         run: |
-          cargo install cargo-llvm-cov --version 0.6.20 --locked
+          if ! cargo llvm-cov --version 2>/dev/null | grep -q '0\.6\.20'; then
+            cargo install cargo-llvm-cov --version 0.6.20 --locked
+          fi
           cargo llvm-cov --workspace --locked --summary-only
 
       # --- build + end-to-end ---

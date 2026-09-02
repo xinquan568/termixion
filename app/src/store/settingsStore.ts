@@ -678,6 +678,11 @@ export function createSettingsRuntime(runtimeDeps: SettingsRuntimeDeps = {}): Se
   let busSubscribed = false;
   // (10) the bus unsubscribers, drained by dispose().
   const busUnlistens: Array<() => void> = [];
+  // (10b) trmx-253 review finding 4: `listen()` is async, so an unlisten can resolve AFTER dispose()
+  // has already drained the list — the subscription would then stay live on a runtime documented as
+  // reset, and could mutate its snapshot. The generation is bumped by dispose(); a continuation
+  // whose generation is stale unlistens itself immediately instead of registering.
+  let busGeneration = 0;
 
   /** Invoke defensively: a missing Tauri runtime throws SYNCHRONOUSLY — normalize to a rejection. */
   function invokeSafely(cmd: string, args?: Record<string, unknown>): Promise<unknown> {
@@ -973,19 +978,33 @@ export function createSettingsRuntime(runtimeDeps: SettingsRuntimeDeps = {}): Se
   }
 
   /** Subscribe ONCE per RUNTIME lifetime; hydrate() may run again without re-subscribing. */
+  /**
+   * Register a resolved unlisten — unless dispose() has run since the listen was issued, in which
+   * case the subscription is torn down on the spot rather than joining an already-drained list.
+   */
+  const registerUnlisten =
+    (generation: number) =>
+    (unlisten: () => void): void => {
+      if (generation !== busGeneration) {
+        unlisten();
+        return;
+      }
+      busUnlistens.push(unlisten);
+    };
+
   function subscribeToBus(bus: SettingsListenBus): void {
     if (busSubscribed) return;
     busSubscribed = true;
     try {
       bus
         .listen(SETTINGS_CHANGED_EVENT, applySettingsChangedToSnapshot)
-        .then((unlisten) => void busUnlistens.push(unlisten))
+        .then(registerUnlisten(busGeneration))
         .catch(() => {
           // No Tauri runtime — cross-window/live-config updates simply never arrive.
         });
       bus
         .listen(CONFIG_WARNINGS_EVENT, replaceConfigWarnings)
-        .then((unlisten) => void busUnlistens.push(unlisten))
+        .then(registerUnlisten(busGeneration))
         .catch(() => {
           // Best-effort, as above.
         });
@@ -1073,6 +1092,9 @@ export function createSettingsRuntime(runtimeDeps: SettingsRuntimeDeps = {}): Se
       configWarningsListeners.clear();
       configInvoke = runtimeDeps.invoke ?? realInvoke;
       busSubscribed = false;
+      // Invalidate in-flight listen() continuations before draining, so one that resolves after
+      // this point unlistens itself instead of re-arming a disposed runtime.
+      busGeneration += 1;
       for (const unlisten of busUnlistens.splice(0)) {
         try {
           unlisten();
