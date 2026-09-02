@@ -2,7 +2,8 @@
 #
 # WHY THIS EXISTS. #251's gate measured ~2.2% failures across 46 runs of the Playwright suite at
 # `--retries: 0`, but the failing run's output was lost twice and 26 full-capture runs never
-# reproduced it. `retries: 1` masks it in normal CI (two consecutive failures at 2.2% is ~0.05%),
+# reproduced it. `retries: 1` masked it in normal CI at the time (two consecutive failures at 2.2%
+# is ~0.05%; retries have been 0 since #307),
 # and locally it is a lottery at ~2.5 min per run. This turns "wait for luck" into a decision about
 # how many runs to pay for.
 #
@@ -23,7 +24,19 @@
 # `plan shards`) as a required check: required checks ignore the trigger type, and a PR would then
 # wait forever on a check that never runs. Do not add these job names to branch protection.
 #
-# TEMPORARY. Delete this file when #302 closes; it is a diagnostic, not part of the build.
+# WHY THIS SURVIVED #302 (trmx-308). The original header said to delete this file when #302
+# closed. #302 closed on 2026-09-02 (#307) WITHOUT a root cause: two harvests — 10x6 then 10x15,
+# 210 runs total — produced zero failures, which bounds the CI failure rate under ~1.4% (rule of
+# three) but identifies nothing. `retries: 0` therefore ships on a measured bound, not on a fix.
+#
+# That is exactly why this file stays. The moment CI goes red the question will be "is this the
+# old flake, and at what rate?" — one `workflow_dispatch` away only while this file exists.
+# Deleting it would mean re-deriving the shard matrix and the sample-size arithmetic above at the
+# moment it is least convenient, and it costs nothing idle.
+#
+# WHAT WOULD ACTUALLY RETIRE IT: a named, fixed root cause (then the arithmetic is moot), or a
+# long enough stretch of green `retries: 0` main runs that re-measuring is pointless. Neither is
+# "#302 is closed".
 name: flake harvest (trmx-302)
 
 on:
