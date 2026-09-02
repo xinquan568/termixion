@@ -121,7 +121,15 @@ function auditModuleState(source: string, fileName = "module.ts"): ModuleStateAu
         current = current.expression;
         continue;
       }
-      if (ts.isNonNullExpression(current) || ts.isParenthesizedExpression(current)) {
+      if (
+        ts.isNonNullExpression(current) ||
+        ts.isParenthesizedExpression(current) ||
+        // Casts are routine maintenance, not sabotage: `shared as typeof shared` must not hide the
+        // root. Covers `as`, `satisfies`, and the angle-bracket form.
+        ts.isAsExpression(current) ||
+        ts.isSatisfiesExpression(current) ||
+        ts.isTypeAssertionExpression(current)
+      ) {
         current = current.expression;
         continue;
       }
@@ -143,10 +151,18 @@ function auditModuleState(source: string, fileName = "module.ts"): ModuleStateAu
     }
     return undefined;
   };
+  // The alias map is keyed by NAME, which is an approximation — so it must be built to err toward
+  // OVER-reporting. An earlier version let a later `const s = somethingLocal` overwrite an existing
+  // entry for `s`, which made the audit UNDER-report: a real alias mutation vanished because an
+  // unrelated shadow reused the name. That contradicted the whole premise of a name-based analysis.
+  // A name that is ever bound to a module-scoped root keeps that origin; a conflicting later
+  // binding is ignored rather than allowed to clear it.
   const collectAliases = (node: ts.Node): void => {
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
       const from = rootIdentifier(node.initializer);
-      if (from && from.text !== node.name.text) aliasOf.set(node.name.text, from.text);
+      if (from && from.text !== node.name.text && !aliasOf.has(node.name.text)) {
+        aliasOf.set(node.name.text, from.text);
+      }
     }
     ts.forEachChild(node, collectAliases);
   };
@@ -157,6 +173,43 @@ function auditModuleState(source: string, fileName = "module.ts"): ModuleStateAu
     if (!root) return;
     const owner = resolveOwner(root.text);
     if (owner) mutated.add(owner);
+  };
+
+  /** Parameter indices of a file-local function whose body mutates that parameter. */
+  const mutatingParamsOf = (fnName: string): Set<number> | undefined => {
+    const fn = sf.statements.find(
+      (st): st is ts.FunctionDeclaration =>
+        ts.isFunctionDeclaration(st) && st.name?.text === fnName,
+    );
+    if (!fn?.body) return undefined;
+    const params = fn.parameters.map((param) =>
+      ts.isIdentifier(param.name) ? param.name.text : undefined,
+    );
+    const hit = new Set<number>();
+    const scan = (n: ts.Node): void => {
+      const flag = (target: ts.Node) => {
+        const r = rootIdentifier(target);
+        const i = r ? params.indexOf(r.text) : -1;
+        if (i >= 0) hit.add(i);
+      };
+      if (
+        ts.isBinaryExpression(n) &&
+        n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        n.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+      ) {
+        flag(n.left);
+      }
+      if (
+        ts.isCallExpression(n) &&
+        ts.isPropertyAccessExpression(n.expression) &&
+        MUTATORS.has(n.expression.name.text)
+      ) {
+        flag(n.expression.expression);
+      }
+      ts.forEachChild(n, scan);
+    };
+    scan(fn.body);
+    return hit.size > 0 ? hit : undefined;
   };
 
   const visit = (node: ts.Node): void => {
@@ -192,6 +245,18 @@ function auditModuleState(source: string, fileName = "module.ts"): ModuleStateAu
         MUTATORS.has(node.expression.argumentExpression.text)
       ) {
         markIfOwned(node.expression.expression);
+      }
+    }
+    // A module-rooted value handed to a helper ESCAPES: `clearMap(shared.snapshot)` mutates it just
+    // as surely as `shared.snapshot.clear()`, and extracting a helper is ordinary maintenance. One
+    // level is tracked — the callee must be a function declared in this file whose body mutates the
+    // matching parameter. Deeper chains are not followed; that limit is stated below.
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+      const callee = mutatingParamsOf(node.expression.text);
+      if (callee) {
+        node.arguments.forEach((arg, index) => {
+          if (callee.has(index)) markIfOwned(arg);
+        });
       }
     }
     ts.forEachChild(node, visit);
@@ -314,6 +379,64 @@ describe("trmx-253: the module-state audit itself has teeth", () => {
     expect(audit.mutated).toContain("shared");
   });
 
+  // Step-9 verify, iteration 2: three forms that arise in ORDINARY maintenance, not sabotage — so
+  // the adversary-resistance disclaimer below never covered them.
+  it.each([
+    [
+      "a cast alias",
+      [
+        "const shared = { snapshot: new Map() };",
+        "function touch() {",
+        "  const s = shared as typeof shared;",
+        "  s.snapshot.clear();",
+        "}",
+      ],
+    ],
+    [
+      "an unrelated later binding that SHADOWS the alias name",
+      [
+        "const shared = { snapshot: new Map() };",
+        "function first() {",
+        "  const s = shared;",
+        "  s.snapshot.clear();",
+        "}",
+        "function second() {",
+        "  const local = { snapshot: new Map() };",
+        "  const s = local;",          // must NOT erase `s -> shared`
+        "  s.snapshot.clear();",
+        "}",
+      ],
+    ],
+    [
+      "a helper that mutates its parameter",
+      [
+        "const shared = { snapshot: new Map() };",
+        "function clearMap(m: Map<string, string>) {",
+        "  m.clear();",
+        "}",
+        "function touch() {",
+        "  clearMap(shared.snapshot);",
+        "}",
+      ],
+    ],
+  ])("CATCHES %s", (_label, lines) => {
+    const audit = auditModuleState((lines as string[]).join("\n"), "maintenance.ts");
+    expect(audit.mutated).toContain("shared");
+  });
+
+  it("errs toward OVER-reporting: shadowing never erases a known alias", () => {
+    // The failure the verify found was UNDER-reporting, which a name-keyed analysis must never do.
+    const audit = auditModuleState(
+      [
+        "const shared = { snapshot: new Map() };",
+        "function a() { const s = shared; s.snapshot.clear(); }",
+        "function b() { const other = { snapshot: new Map() }; const s = other; s.snapshot.clear(); }",
+      ].join("\n"),
+      "shadow.ts",
+    );
+    expect(audit.mutated).toContain("shared");
+  });
+
   it("CATCHES a computed mutator call", () => {
     const audit = auditModuleState(
       [
@@ -328,7 +451,9 @@ describe("trmx-253: the module-state audit itself has teeth", () => {
   });
 
   // WHAT THIS GUARD IS AND IS NOT. It is alias- and root-aware, and the three evasions found in
-  // review are pinned above. It is NOT adversary-proof, and claiming otherwise would be the same
+  // review are pinned above — including the CAST, SHADOWING and HELPER-PARAMETER forms, which are
+  // ordinary maintenance rather than sabotage and were NOT covered by the disclaimer below when it
+  // was first written. It is NOT adversary-proof, and claiming otherwise would be the same
   // overstatement it exists to catch: a source-level audit living in the same repo as its subject
   // cannot beat someone editing the file to defeat it — an indirection through a function return,
   // a dynamic property name, or a re-export would all escape. Defeating it now takes DELIBERATE
