@@ -12,11 +12,17 @@ export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,
   forbidOnly: isCI,
-  retries: isCI ? 1 : 0,
+  // trmx-302: no retries anywhere. `retries: 1` was masking flakes rather than tolerating them —
+  // at a 2% per-run rate, two consecutive failures is ~0.05%, so a real flake would essentially
+  // never be seen. A retry is only safe when someone looks at what it absorbed, and nobody was.
+  retries: 0,
   reporter: "list",
   use: {
     baseURL: "http://localhost:5173",
-    trace: "on-first-retry",
+    // MUST change with `retries` above, in the same commit. `on-first-retry` records only a retry,
+    // so with zero retries it emits NOTHING — setting retries to 0 alone would have made CI
+    // failures strictly harder to diagnose, which is the opposite of the intent.
+    trace: "retain-on-failure",
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
