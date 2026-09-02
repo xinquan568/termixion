@@ -81,7 +81,12 @@ export const WS_URI = "ws://localhost:5173";
 /** Milliseconds allowed for queued violation events to settle before a verdict is formed. */
 const SETTLE_MS = 250;
 
-/** Distinct sentinels: rule 3 — neither style check may be satisfied by the other's effect. */
+/**
+ * Distinct sentinels: rule 3 — neither style check may be satisfied by the other's effect.
+ * Measured on `padding-top`, deliberately: `outline-width` computes to 0 when `outline-style` is
+ * `none`, so the first version silently depended on a property nobody set and failed on CI with
+ * `unexpected=0` (no violation — the value simply was not there).
+ */
 const LINK_SENTINEL = "3px";
 const INLINE_SENTINEL = "7px";
 const ECHO = "csp-probe-echo";
@@ -91,9 +96,9 @@ export interface CspProbeDeps {
   violations: () => CspViolation[];
   /** Whether the collector itself loaded (see rule 1). */
   collectorPresent: () => boolean;
-  /** Applies a same-origin `<link>`, resolves the computed outline-width, removes what it injected. */
+  /** Applies a same-origin `<link>`, resolves the computed padding-top, removes what it injected. */
   probeLinkStylesheet: () => Promise<string>;
-  /** Applies an inline `<style>`, resolves the computed outline-width, removes what it injected. */
+  /** Applies an inline `<style>`, resolves the computed padding-top, removes what it injected. */
   probeInlineStyle: () => Promise<string>;
   /** Starts a same-origin worker and resolves its echo. */
   probeSelfWorker: () => Promise<string>;
@@ -266,7 +271,7 @@ function withTimeout<T>(work: Promise<T>, label: string): Promise<T> {
 }
 
 /**
- * Mount `node`, measure the target's computed outline-width, and remove BOTH the target and the
+ * Mount `node`, measure the target's computed padding-top, and remove BOTH the target and the
  * injected node. Leaving the node mounted is what made the two style checks non-independent.
  */
 export async function measureStyle(
@@ -288,7 +293,7 @@ export async function measureStyle(
         "stylesheet",
       );
     }
-    return getComputedStyle(target).outlineWidth;
+    return getComputedStyle(target).paddingTop;
   } finally {
     target.remove();
     node.remove();
@@ -337,7 +342,7 @@ export function realCspProbeDeps(): CspProbeDeps {
     // it cannot be satisfied by the external stylesheet above.
     probeInlineStyle: () => {
       const style = document.createElement("style");
-      style.textContent = "#csp-probe-inline-target { outline-width: 7px; }";
+      style.textContent = "#csp-probe-inline-target { padding-top: 7px; }";
       return measureStyle("csp-probe-inline-target", style, false);
     },
 

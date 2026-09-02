@@ -241,7 +241,7 @@ describe("describeCspProbe", () => {
 describe("measureStyle cleanup", () => {
   it("removes BOTH the target element and the injected node", async () => {
     const style = document.createElement("style");
-    style.textContent = "#cleanup-probe { outline-width: 7px; }";
+    style.textContent = "#cleanup-probe { padding-top: 7px; }";
     await measureStyle("cleanup-probe", style, false);
     expect(document.getElementById("cleanup-probe")).toBeNull();
     expect(document.head.contains(style)).toBe(false);
@@ -263,7 +263,7 @@ describe("measureStyle cleanup", () => {
     const before = document.head.childElementCount;
     for (let i = 0; i < 3; i += 1) {
       const style = document.createElement("style");
-      style.textContent = "#repeat-probe { outline-width: 7px; }";
+      style.textContent = "#repeat-probe { padding-top: 7px; }";
       await measureStyle("repeat-probe", style, false);
     }
     expect(document.head.childElementCount).toBe(before);
