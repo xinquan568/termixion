@@ -145,11 +145,19 @@ await realInvoke("pty_write", { sessionId: 1, data: "x" });
 The two shared commands resolving is the half that matters as much as the rejections: it shows the
 ACL discriminates rather than simply denying everything.
 
-**The handler is not entered.** Tauri resolves the capability before dispatch, so the rejection is
-raised by the ACL layer rather than by the command body — which is also why the message names the
-window and webview rather than anything about a session. The corroborating evidence is that
-`sessionId: 1` does not exist in a freshly launched app: had `pty_write` been entered, it would have
-failed with the registry's own `not_found` `IpcError` (trmx-249) instead.
+**The handler is not entered.** The evidence is the message's provenance, not an inference about
+what else might have failed: that string is verbatim the ACL layer's own format at
+`tauri-2.11.5/src/ipc/authority.rs:356` —
+`"{command_pretty_name} not allowed on window \"{window}\", webview \"{webview}\", URL: {}"`.
+Capability resolution runs ahead of `run_invoke_handler`, so a denied command never reaches its body.
+
+An earlier draft of this section argued the point differently — that `sessionId: 1` does not exist in
+a fresh app, so an entered handler would have failed with the registry's `not_found` `IpcError`
+instead. **That reasoning was wrong twice** and is recorded here because the shape of the error is
+instructive: `pty_write` takes `data: Vec<u8>` (`pty_io.rs:346`), so the string `"x"` would have
+failed serde argument decoding *before* reaching the registry at all; and a normal boot opens a
+session, so id 1 is not reliably absent. A counterfactual about a path that could not have been
+taken proves nothing.
 
 `take_pending_open_paths` is the one worth noting. Its invariant was already written down
 (`main.tsx:85`) and test-pinned (`main.order.test.ts:109`), but both live in the frontend **caller** —
