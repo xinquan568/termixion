@@ -140,14 +140,21 @@ function auditModuleState(source: string, fileName = "module.ts"): ModuleStateAu
   // `const s = shared; s.snapshot.set(...)` roots at `s`, which is not module-scoped. So first
   // taint every local initialised from a module-scoped root, transitively, and treat a tainted
   // local as the module binding it came from.
-  const aliasOf = new Map<string, string>();
+  // A name can be bound more than once. Keeping ONE origin — first or last — makes the result
+  // order-dependent, and order-dependence is how this analysis under-reported twice: `last wins`
+  // let an unrelated shadow erase a real alias, and `first wins` let an unrelated EARLIER binding
+  // block one. Keep every origin instead and resolve if ANY of them reaches module scope. That is
+  // what makes "can only over-report" a property of the construction rather than of the ordering.
+  const aliasOf = new Map<string, Set<string>>();
   const resolveOwner = (name: string): string | undefined => {
     const seen = new Set<string>();
-    let current: string | undefined = name;
-    while (current && !seen.has(current)) {
-      if (owned.has(current)) return current;
+    const queue = [name];
+    while (queue.length > 0) {
+      const current = queue.shift() as string;
+      if (seen.has(current)) continue;
       seen.add(current);
-      current = aliasOf.get(current);
+      if (owned.has(current)) return current;
+      for (const origin of aliasOf.get(current) ?? []) queue.push(origin);
     }
     return undefined;
   };
@@ -160,8 +167,10 @@ function auditModuleState(source: string, fileName = "module.ts"): ModuleStateAu
   const collectAliases = (node: ts.Node): void => {
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
       const from = rootIdentifier(node.initializer);
-      if (from && from.text !== node.name.text && !aliasOf.has(node.name.text)) {
-        aliasOf.set(node.name.text, from.text);
+      if (from && from.text !== node.name.text) {
+        const origins = aliasOf.get(node.name.text) ?? new Set<string>();
+        origins.add(from.text);
+        aliasOf.set(node.name.text, origins);
       }
     }
     ts.forEachChild(node, collectAliases);
@@ -200,11 +209,26 @@ function auditModuleState(source: string, fileName = "module.ts"): ModuleStateAu
         flag(n.left);
       }
       if (
-        ts.isCallExpression(n) &&
-        ts.isPropertyAccessExpression(n.expression) &&
-        MUTATORS.has(n.expression.name.text)
+        (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) &&
+        (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken)
       ) {
-        flag(n.expression.expression);
+        flag(n.operand);
+      }
+      if (ts.isDeleteExpression(n)) {
+        flag(n.expression);
+      }
+      if (ts.isCallExpression(n)) {
+        if (ts.isPropertyAccessExpression(n.expression) && MUTATORS.has(n.expression.name.text)) {
+          flag(n.expression.expression);
+        }
+        if (
+          ts.isElementAccessExpression(n.expression) &&
+          n.expression.argumentExpression &&
+          ts.isStringLiteralLike(n.expression.argumentExpression) &&
+          MUTATORS.has(n.expression.argumentExpression.text)
+        ) {
+          flag(n.expression.expression);
+        }
       }
       ts.forEachChild(n, scan);
     };
@@ -421,6 +445,41 @@ describe("trmx-253: the module-state audit itself has teeth", () => {
     ],
   ])("CATCHES %s", (_label, lines) => {
     const audit = auditModuleState((lines as string[]).join("\n"), "maintenance.ts");
+    expect(audit.mutated).toContain("shared");
+  });
+
+  // Step-9 verify iteration 3. The previous over-reporting fixture tested only ONE ordering — the
+  // one I expected to work — so "first wins" passed it while still under-reporting the reverse.
+  // Both orderings are pinned now, because the property must hold regardless of source order.
+  it.each([
+    ["module origin SECOND", ["function a(input: { snapshot: Map<string, string> }) { const s = input; s.snapshot.clear(); }", "function b() { const s = shared; s.snapshot.clear(); }"]],
+    ["module origin FIRST", ["function b() { const s = shared; s.snapshot.clear(); }", "function a(input: { snapshot: Map<string, string> }) { const s = input; s.snapshot.clear(); }"]],
+  ])("over-reports regardless of binding order (%s)", (_label, body) => {
+    const audit = auditModuleState(
+      ["const shared = { snapshot: new Map<string, string>() };", ...(body as string[])].join("\n"),
+      "order.ts",
+    );
+    expect(audit.mutated).toContain("shared");
+  });
+
+  // The helper scanner must recognise the SAME mutation forms as the outer visitor. It previously
+  // saw only assignments and dot-form mutator calls, so these three ordinary forms escaped — a
+  // narrower coverage than the "one level" the file claimed.
+  it.each([
+    ["increment", "function bump(x: { n: number }) { x.n++; }", "bump(shared.counter);"],
+    ["delete", "function drop(x: Record<string, unknown>) { delete x.k; }", "drop(shared.bag);"],
+    ["computed mutator", "function wipe(x: Map<string, string>) { x['clear'](); }", "wipe(shared.snapshot);"],
+  ])("CATCHES a helper that mutates its parameter by %s", (_label, helper, call) => {
+    const audit = auditModuleState(
+      [
+        "const shared = { snapshot: new Map<string, string>(), counter: { n: 0 }, bag: {} as Record<string, unknown> };",
+        helper as string,
+        "function touch() {",
+        "  " + (call as string),
+        "}",
+      ].join("\n"),
+      "helper-forms.ts",
+    );
     expect(audit.mutated).toContain("shared");
   });
 
