@@ -35,7 +35,7 @@ import {
   type Rect,
 } from "../panes/layoutTree";
 
-import { makeSettingsStore } from "../store/settingsStore";
+import { useSettingsStore } from "../store/settingsRuntimeContext";
 
 import { tabPaneIds, type Tab, type TabsAction, type TabsState } from "../tabs/tabState";
 import type { Direction as NavDirection } from "../panes/paneNav";
@@ -95,6 +95,8 @@ export function useCommandContext(deps: CommandContextDeps): CommandContextOut {
     dispatch, getActiveTab, invoke, flashingPanes, setKeymap, setRenamingTabId, setBadgingPaneId,
     setOpenSearchPanes, setScriptPickerRequest, setShowPalette, close, activity, paneOps,
   } = deps;
+  // trmx-253 (T3.4): the palette's theme command writes through THIS window's runtime store.
+  const settings = useSettingsStore();
   const { closeTabInternal } = close;
   const { applyActivityTransition, clearFlashFor } = activity;
   const { requestNewTab, requestSplit, requestPaneNav, requestCloseActive } = paneOps;
@@ -220,7 +222,7 @@ export function useCommandContext(deps: CommandContextDeps): CommandContextOut {
       else seamsRef.current.closeWindow();
     },
     openCommandPalette: () => setShowPalette(true),
-    selectTheme: (id) => makeSettingsStore().set("appearance.theme", id),
+    selectTheme: (id) => settings.set("appearance.theme", id),
     runScript: (sourceLine) => {
       const tab = getActiveTab();
       const sessionId = tab ? runtimesRef.current.get(tab.focusedPaneId)?.sessionId : undefined;

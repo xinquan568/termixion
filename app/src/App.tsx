@@ -55,10 +55,10 @@ import {
 import { type DropZone } from "./panes/dropZone";
 import { type FrameSchedule } from "./terminal/resizeCoalescer";
 import {
-  makeSettingsStore,
   type LabelOrientation,
   type TabBarPosition,
 } from "./store/settingsStore";
+import { useSettingsStore } from "./store/settingsRuntimeContext";
 import { resolveTheme } from "./theme/registry";
 import { useBackend } from "./ipc/useBackend";
 import {
@@ -238,6 +238,10 @@ export function App({ deps }: AppProps = {}) {
   const observeInput = deps?.observeInput;
   // 1 array default.
   const serviceBootPaths = deps?.serviceBootPaths ?? [];
+  // trmx-253 (T3.4): the settings store for THIS window, over the runtime main.tsx provided.
+  // Every seed below reads it; before T3.4 each of them called the `makeSettingsStore()` free
+  // function, which resolved to a module-global runtime — the thing M8 removed.
+  const settings = useSettingsStore();
   // trmx-159: the per-pane I/O observers route PTY output/input into the activity classifier. They are
   // set (below, once applyActivityTransition exists) into this ref, which the stable useBackend wiring
   // and the test-only observeOutput/observeInput seams both read — so production observes I/O through
@@ -271,10 +275,10 @@ export function App({ deps }: AppProps = {}) {
   // trmx-81/82: the tab bar's window edge + side-label orientation, seeded from the shared settings
   // snapshot (hydrated before mount), kept live over settings:changed.
   const [barPosition, setBarPosition] = useState<TabBarPosition>(() =>
-    makeSettingsStore().get("tabs.barPosition"),
+    settings.get("tabs.barPosition"),
   );
   const [sideLabelOrientation, setSideLabelOrientation] = useState<LabelOrientation>(() =>
-    makeSettingsStore().get("tabs.sideLabelOrientation"),
+    settings.get("tabs.sideLabelOrientation"),
   );
   // trmx-90: the badge watermark COLOR, seeded from the active theme's `terminal.badge` token and
   // kept live over settings:changed. Tracking the RESOLVED COLOR (not just the theme id, review-1) is
@@ -282,43 +286,43 @@ export function App({ deps }: AppProps = {}) {
   // re-registering updated tokens, so keying on the id would no-op setState and leave the badge on a
   // stale color while the terminal repaints. resolveTheme is total, so any id resolves to a color.
   const [badgeColor, setBadgeColor] = useState<string>(
-    () => resolveTheme(makeSettingsStore().get("appearance.theme")).terminal.badge,
+    () => resolveTheme(settings.get("appearance.theme")).terminal.badge,
   );
   // trmx-149: the badge's glyph-edge STROKE color — the active theme's background (bg.primary),
   // iTerm2's edge treatment so the watermark separates from same-tint glyphs beneath it. Tracked as
   // RESOLVED state exactly like badgeColor (same same-id hot-reload staleness trap, review-1).
   const [badgeOutlineColor, setBadgeOutlineColor] = useState<string>(
-    () => resolveTheme(makeSettingsStore().get("appearance.theme")).color.bg.primary,
+    () => resolveTheme(settings.get("appearance.theme")).color.bg.primary,
   );
   // trmx-91: whether the per-pane activity line is enabled (terminal.activityIndicator, default true),
   // seeded from the shared settings snapshot and kept live over settings:changed. When off, the line
   // never renders (App gates it) though the backend poller keeps running for titles.
   const [activityIndicatorOn, setActivityIndicatorOn] = useState<boolean>(() =>
-    makeSettingsStore().get("terminal.activityIndicator"),
+    settings.get("terminal.activityIndicator"),
   );
   // trmx-151: whether the tab strip prefixes the first nine titles with their ⌘N select-chord
   // (tabs.showShortcutHints, default true), seeded from the shared settings snapshot and kept
   // live over settings:changed — the exact activityIndicatorOn pattern. A pure render gate: the
   // keymap (and the chords it binds) is untouched by the toggle.
   const [shortcutHintsOn, setShortcutHintsOn] = useState<boolean>(() =>
-    makeSettingsStore().get("tabs.showShortcutHints"),
+    settings.get("tabs.showShortcutHints"),
   );
   // trmx-190: whether the title bar shows the AI-session counter (titleBar.aiCounter, default
   // true) — the exact activityIndicatorOn pattern; a pure render gate over the counting state.
   const [aiCounterOn, setAiCounterOn] = useState<boolean>(() =>
-    makeSettingsStore().get("titleBar.aiCounter"),
+    settings.get("titleBar.aiCounter"),
   );
   // trmx-160: the active theme's MODE — the busy progress bar keys its track color + sweep period on
   // it (dark: black track / 3s; light: white track / 6s). Tracked as RESOLVED state and re-derived on
   // every theme event (a trmx-89 same-id hot-reload can flip isDark under the same id), exactly like
   // the badge color. resolveTheme is total, so any id resolves.
   const [activityIsDark, setActivityIsDark] = useState<boolean>(() =>
-    activityIsDarkFor(makeSettingsStore().get("appearance.theme")),
+    activityIsDarkFor(settings.get("appearance.theme")),
   );
   // trmx-99 (FR-7b): the exit-code flash color (semantic.error at the same alpha) + the set of panes
   // currently flashing after a failed command. The flashing set drives the overlay re-render.
   const [activityErrorColor, setActivityErrorColor] = useState<string>(() =>
-    activityErrorColorFor(makeSettingsStore().get("appearance.theme")),
+    activityErrorColorFor(settings.get("appearance.theme")),
   );
   const [flashingPanes, setFlashingPanes] = useState<Set<PaneId>>(() => new Set());
   // trmx-90: the pane whose badge is being edited via the ⇧⌘B inline editor (null = not editing).
@@ -330,7 +334,7 @@ export function App({ deps }: AppProps = {}) {
   const [openSearchPanes, setOpenSearchPanes] = useState<Set<PaneId>>(() => new Set());
   // trmx-98: live search-highlight colors (theme tokens) fed to the addon decorations.
   const [searchColors, setSearchColors] = useState(
-    () => resolveTheme(makeSettingsStore().get("appearance.theme")).terminal.search,
+    () => resolveTheme(settings.get("appearance.theme")).terminal.search,
   );
   // trmx-93 (FR-5): which surface a "…with Script…" verb requested (null = the picker is closed).
   // Opening the picker; on run it creates that surface with the chosen script pending; Esc cancels.
@@ -367,7 +371,7 @@ export function App({ deps }: AppProps = {}) {
   // the last observed pointer position (the real-movement guard: reflow under a stationary
   // cursor re-targets elements without motion and must never refocus), and a ref mirror of
   // the script-picker overlay for the synchronous suspension check.
-  const ffmRef = useRef<boolean>(makeSettingsStore().get("terminal.focusFollowsMouse"));
+  const ffmRef = useRef<boolean>(settings.get("terminal.focusFollowsMouse"));
   const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
   const scriptPickerRef = useRef<"tab" | "right" | "below" | null>(null);
   const createTabRef = useRef<(cwdOverride?: string) => { tabId: number; paneId: number }>(

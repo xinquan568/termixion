@@ -8,13 +8,14 @@
 // in the settings window. Runtime wiring only; the behavior is tested in useUpdateAuthority.
 import { useUpdateAuthority } from "./useUpdateAuthority";
 import { realUpdateClient } from "./realUpdateClient";
-import { makeSettingsStore } from "../store/settingsStore";
+import { useSettingsStore } from "../store/settingsRuntimeContext";
 import { realEventBus } from "../ipc/eventBus";
 
-// Stable across renders (module scope): one store, tagged as the main window on broadcasts.
-const settingsStore = makeSettingsStore(undefined, realEventBus, "main");
-
 export function UpdateAuthorityHost() {
+  // trmx-253 (T3.3): built per MOUNT from the runtime main.tsx provides, not at module
+  // evaluation. Stable across renders all the same — `realEventBus` and the source literal
+  // are constants, so useSettingsStore memoizes on the runtime identity alone.
+  const settingsStore = useSettingsStore(realEventBus, "main");
   useUpdateAuthority({
     client: realUpdateClient,
     settings: settingsStore,

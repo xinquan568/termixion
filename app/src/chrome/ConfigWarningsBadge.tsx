@@ -17,11 +17,8 @@
 // dismissal, and an empty set renders nothing anyway.
 
 import { useEffect, useState } from "react";
-import {
-  getConfigWarnings,
-  onConfigWarningsChanged,
-  type ConfigWarningItem,
-} from "../store/settingsStore";
+import { useSettingsRuntime } from "../store/settingsRuntimeContext";
+import { type ConfigWarningItem } from "../store/settingsStore";
 
 export interface ConfigWarningsBadgeProps {
   /** Open the settings window (App wires this to the `open_settings_window` command). */
@@ -29,18 +26,22 @@ export interface ConfigWarningsBadgeProps {
 }
 
 export function ConfigWarningsBadge({ onOpenSettings }: ConfigWarningsBadgeProps) {
-  const [warnings, setWarnings] = useState<ConfigWarningItem[]>(() => getConfigWarnings());
+  // trmx-253 (T3.3): the main window's badge reads the runtime main.tsx provided.
+  const settingsRuntime = useSettingsRuntime();
+  const [warnings, setWarnings] = useState<ConfigWarningItem[]>(() =>
+    settingsRuntime.getConfigWarnings(),
+  );
   const [dismissed, setDismissed] = useState(false);
 
   useEffect(
     () =>
-      onConfigWarningsChanged((items) => {
+      settingsRuntime.onConfigWarningsChanged((items) => {
         setWarnings(items);
         // Un-dismiss on every change: a fresh non-empty set is a NEW problem, and an empty set
         // renders nothing regardless — so this can never resurrect a banner the user silenced.
         setDismissed(false);
       }),
-    [],
+    [settingsRuntime],
   );
 
   if (dismissed || warnings.length === 0) return null;

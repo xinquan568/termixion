@@ -5,7 +5,7 @@
 // the INTEGRATION is the point of the issue — config warnings were invisible from the terminal
 // window because App never mounted a consumer. This pins that App puts the badge in the title bar
 // and that clicking it actually opens Settings.
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./terminal/TerminalView", async () => {
@@ -30,11 +30,8 @@ const invokeSpy = vi.hoisted(() => vi.fn(() => Promise.resolve(null)));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeSpy }));
 
 import { App, type AppDeps } from "./App";
-import {
-  CONFIG_WARNINGS_EVENT,
-  __resetSettingsForTest,
-  hydrateSettings,
-} from "./store/settingsStore";
+import { freshSettingsRuntime, renderWithSettings } from "./test/settingsRuntime";
+import { CONFIG_WARNINGS_EVENT, type SettingsRuntime } from "./store/settingsStore";
 import type { SessionInfo } from "./ipc/backend";
 
 function obs<T>() {
@@ -60,7 +57,7 @@ function fakeListenBus() {
 }
 
 function renderApp(over: Partial<AppDeps> = {}) {
-  render(
+  renderWithSettings(
     <App
       deps={{
         attach: vi.fn(() => new Promise<SessionInfo>(() => {})),
@@ -76,11 +73,15 @@ function renderApp(over: Partial<AppDeps> = {}) {
         ...over,
       }}
     />,
+    { runtime },
   );
 }
 
+// trmx-253 (T3.4): App reads settings through the provider above it, so the runtime this test
+// hydrates IS the one the badge consumes — no module-global snapshot, nothing to reset.
+let runtime: SettingsRuntime;
 beforeEach(() => {
-  __resetSettingsForTest();
+  runtime = freshSettingsRuntime();
   invokeSpy.mockClear();
 });
 afterEach(() => vi.restoreAllMocks());
@@ -88,11 +89,9 @@ afterEach(() => vi.restoreAllMocks());
 describe("App × config warnings (trmx-238 M19)", () => {
   it("shows no badge in the title bar while the config file is clean", async () => {
     const bus = fakeListenBus();
-    await hydrateSettings({
-      invoke: () =>
-        Promise.resolve({ exists: true, path: "/c.toml", values: {}, warnings: [] }),
+    await runtime.hydrate({
+      invoke: () => Promise.resolve({ exists: true, path: "/c.toml", values: {}, warnings: [] }),
       bus,
-      storage: undefined,
     });
     renderApp();
     await waitFor(() => expect(screen.getByTestId("uah")).toBeTruthy());
@@ -101,11 +100,9 @@ describe("App × config warnings (trmx-238 M19)", () => {
 
   it("surfaces a config:warnings broadcast in the title bar and opens Settings on click", async () => {
     const bus = fakeListenBus();
-    await hydrateSettings({
-      invoke: () =>
-        Promise.resolve({ exists: true, path: "/c.toml", values: {}, warnings: [] }),
+    await runtime.hydrate({
+      invoke: () => Promise.resolve({ exists: true, path: "/c.toml", values: {}, warnings: [] }),
       bus,
-      storage: undefined,
     });
     renderApp();
     await waitFor(() => expect(screen.getByTestId("uah")).toBeTruthy());

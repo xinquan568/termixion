@@ -84,7 +84,7 @@ export async function ensureFontLoaded(family: string, timeoutMs = 2000): Promis
 }
 
 /**
- * The trmx-204 boot gate (pinned by main.order.test.ts): after settings hydration, make the
+ * The trmx-204 boot gate (executed by boot.test.tsx, trmx-250): after settings hydration, make the
  * effective family's faces available BEFORE anything can mount a terminal — mountTerminal
  * measures the cell grid synchronously, so the face must be ready by first render. A no-op for
  * the system default and custom families (nothing bundled to load).

@@ -20,7 +20,7 @@ import {
   type BusyLookup,
 } from "../panes/closeGuard";
 import type { PaneId } from "../panes/layoutTree";
-import { makeSettingsStore } from "../store/settingsStore";
+import { useSettingsStore } from "../store/settingsRuntimeContext";
 import { paneBySessionId, tabPaneIds, type TabsAction, type TabsState } from "../tabs/tabState";
 import type { CloseOpts, PendingClose } from "./closeContracts";
 import type { PaneRuntimes } from "./paneRuntime";
@@ -71,6 +71,9 @@ export function useCloseGuard(deps: CloseGuardDeps): CloseGuard {
     setPendingClose, setFlashingPanes, setOpenSearchPanes, setRenamingTabId, setBadgingPaneId,
     observeCloseRequested, observePtyExited,
   } = deps;
+  // trmx-253 (T3.4): the confirm-close preference is read off THIS window's runtime store rather
+  // than the deleted `makeSettingsStore()` free function (which resolved to a module global).
+  const settings = useSettingsStore();
 
   const disposePaneResources = (paneId: PaneId, opts?: { alreadyExited?: boolean }) => {
     // trmx-248: one call drops the record and clears BOTH timers (activity + exit-flash), and hands
@@ -139,7 +142,7 @@ export function useCloseGuard(deps: CloseGuardDeps): CloseGuard {
     if (!bypassesConfirm(opts)) {
       if (pendingCloseRef.current !== null) return; // a confirm is already up — swallow the repeat
       const report = collectBusyPanes(tab, busyLookup);
-      if (shouldConfirmClose(makeSettingsStore().get("terminal.confirmClose"), report.busy, "user")) {
+      if (shouldConfirmClose(settings.get("terminal.confirmClose"), report.busy, "user")) {
         setPendingCloseSynced({ kind: "tab", tabId, names: report.names });
         return; // the dialog's onConfirm re-enters with { confirmed: true }
       }
@@ -175,7 +178,7 @@ export function useCloseGuard(deps: CloseGuardDeps): CloseGuard {
     if (!bypassesConfirm(opts)) {
       if (pendingCloseRef.current !== null) return; // a confirm is already up — swallow the repeat
       const busy = paneIsBusy(runtimesRef.current.get(paneId)?.activity, tab.panes[paneId].activityVisible);
-      if (shouldConfirmClose(makeSettingsStore().get("terminal.confirmClose"), busy, "user")) {
+      if (shouldConfirmClose(settings.get("terminal.confirmClose"), busy, "user")) {
         const name = busy ? busyLookup.displayName(paneId)?.trim() : undefined;
         setPendingCloseSynced({ kind: "pane", tabId, paneId, names: name ? [name] : [] });
         return; // the dialog's onConfirm re-enters with { confirmed: true }
@@ -204,7 +207,7 @@ export function useCloseGuard(deps: CloseGuardDeps): CloseGuard {
   const confirmPendingClose = (dontAskAgain: boolean) => {
     const pending = pendingCloseRef.current;
     if (pending === null) return;
-    if (dontAskAgain) makeSettingsStore().set("terminal.confirmClose", "never");
+    if (dontAskAgain) settings.set("terminal.confirmClose", "never");
     setPendingCloseSynced(null);
     if (pending.kind === "quit") {
       quitAuthorizedRef.current = true;
@@ -238,7 +241,7 @@ export function useCloseGuard(deps: CloseGuardDeps): CloseGuard {
         }
         if (pendingCloseRef.current !== null) return;
         const report = collectBusyTabs(stateRef.current.tabs, busyLookup);
-        if (shouldConfirmClose(makeSettingsStore().get("terminal.confirmClose"), report.busy, "user")) {
+        if (shouldConfirmClose(settings.get("terminal.confirmClose"), report.busy, "user")) {
           setPendingCloseSynced({ kind: "quit", names: report.names, busyTabCount: report.busyTabCount });
         } else {
           seamsRef.current.quitConfirmed();

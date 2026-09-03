@@ -14,7 +14,7 @@ import { Terminal } from "@xterm/headless";
 import { emulationTerminalOptions } from "./emulationOptions";
 import { realAttachOscIntegrations } from "./TerminalView";
 import { currentCwd } from "./osc7";
-import { __resetSettingsForTest, makeSettingsStore } from "../store/settingsStore";
+import { freshSettingsStore } from "../test/settingsRuntime";
 
 function feed(term: Terminal, data: string): Promise<void> {
   return new Promise((resolve) => term.write(data, resolve));
@@ -36,7 +36,7 @@ describe("OSC integrations over the bare production slice (trmx-64 round-2 regre
   it("realAttachOscIntegrations does not throw on a slice-built terminal", () => {
     const term = openProductionLikeTerm();
     expect(() =>
-      realAttachOscIntegrations(term as never, {
+      realAttachOscIntegrations(freshSettingsStore(), term as never, {
         setTitle: vi.fn(),
         writeClipboard: vi.fn(),
       }),
@@ -47,7 +47,7 @@ describe("OSC integrations over the bare production slice (trmx-64 round-2 regre
     const term = openProductionLikeTerm();
     const setTitle = vi.fn();
     const writeClipboard = vi.fn();
-    const teardown = realAttachOscIntegrations(term as never, {
+    const teardown = realAttachOscIntegrations(freshSettingsStore(), term as never, {
       setTitle,
       writeClipboard,
     });
@@ -78,12 +78,14 @@ describe("OSC integrations over the bare production slice (trmx-64 round-2 regre
   it("reads terminal.clipboardWrite from the LIVE registry on every write, not at attach time", async () => {
     const term = openProductionLikeTerm();
     const writeClipboard = vi.fn();
-    const teardown = realAttachOscIntegrations(term as never, {
+    // trmx-253 (T3.4): the store production would hand the composition — the SAME one the test
+    // flips below, so the flip has to reach the already-attached handler to be observed.
+    const settings = freshSettingsStore();
+    const teardown = realAttachOscIntegrations(settings, term as never, {
       setTitle: vi.fn(),
       writeClipboard,
     });
     try {
-      const settings = makeSettingsStore();
       expect(settings.get("terminal.clipboardWrite")).toBe("allow"); // the default
 
       await feed(term, "\x1b]52;c;aGk=\x07");
@@ -99,7 +101,6 @@ describe("OSC integrations over the bare production slice (trmx-64 round-2 regre
       expect(writeClipboard).toHaveBeenCalledTimes(2); // and allowed again, live
     } finally {
       teardown();
-      __resetSettingsForTest();
     }
   });
 });

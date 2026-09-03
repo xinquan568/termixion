@@ -13,9 +13,23 @@
 //! queue, a [`PTY_BATCH_MAX_BYTES`] cap on one coalesced message, and a [`PTY_CREDIT_BYTES`] window
 //! the consumer refills as it parses — with a floor ([`PTY_CREDIT_FLOOR`]) so overdraw is bounded
 //! and a dead transport ends the loop rather than parking forever.
+//!
+//! trmx-250: the WAITS are behind a seam — not just the clock. The sender takes everything it
+//! needs from time and the hand-off through [`BatchIo`] (production: the `mpsc::Receiver` itself);
+//! the credit cell parks through [`Park`] (production: a `Condvar`). The unit tests script arrivals
+//! on a virtual clock and script park outcomes, and assert the DECISIONS — which chunks rode
+//! together, which deadline each wait asked for, whether a consume parked, probed or stayed parked
+//! — rather than how long a call took. A clock-only seam would have reproduced the vacuity the
+//! old tests had: they read the real clock around real blocking calls, so the "idle send is
+//! immediate-ish" test passed even with the idle path DISABLED (`recv_timeout` on a channel whose
+//! producer has hung up returns at once), and the credit tests parked real threads for real
+//! milliseconds and flaked under CI load. Both seams are std-only (R2) and, like the rest of this
+//! crate, panic-free in non-test code (R3 — `unwrap`/`expect` are denied crate-wide); the fakes
+//! live in the test module and are the only place that panics, deliberately, on a broken script.
 
-use std::sync::{Condvar, Mutex};
-use std::time::Duration;
+use std::sync::mpsc::Receiver;
+use std::sync::{Condvar, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 /// trmx-78 round 2: the natural-batching hand-off between the core pump and the IPC channel.
 /// One Tauri message per 4096-byte PTY read saturated the webview main thread under output
@@ -53,18 +67,71 @@ pub const PTY_CREDIT_WAIT: Duration = Duration::from_millis(500);
 /// forever without acking.
 pub const PTY_CREDIT_FLOOR: i64 = -PTY_CREDIT_BYTES;
 
-/// Per-session unacked-byte accounting (trmx-78 round 2b). Consumers park at <= 0; `pty_ack`
-/// refills on parse completion. Negative overdraw is bounded by one batch (PTY_BATCH_MAX_BYTES).
-pub struct CreditCell {
-    credits: Mutex<i64>,
-    refilled: Condvar,
+/// The credit cell's wait, behind a seam (trmx-250). Production is a `Condvar` ([`CondvarPark`]);
+/// the test module scripts outcomes. This is the observable trmx-241 (L4) found the cell lacked:
+/// not a return value production ignores, but the wait primitive production USES — the same
+/// shape as the `send_batch`/`on_done` closures of [`run_batch_sender`].
+pub trait Park {
+    /// Park while `exhausted(credits)` holds, for at most `slice`; returns the guard and whether
+    /// the slice timed out. Does not park at all when `exhausted` is already false (that is the
+    /// `wait_timeout_while` contract, and the scripted fake keeps it). `None` = the lock was
+    /// poisoned; the cell then degrades to unthrottled, as it always has.
+    fn park_while<'a>(
+        &self,
+        guard: MutexGuard<'a, i64>,
+        slice: Duration,
+        exhausted: fn(&mut i64) -> bool,
+    ) -> Option<(MutexGuard<'a, i64>, bool)>;
+
+    /// Wake every parked consumer (a refill arrived).
+    fn wake_all(&self);
 }
 
-impl CreditCell {
+/// The production [`Park`]: `Condvar::wait_timeout_while` / `notify_all`.
+pub struct CondvarPark(Condvar);
+
+impl Park for CondvarPark {
+    fn park_while<'a>(
+        &self,
+        guard: MutexGuard<'a, i64>,
+        slice: Duration,
+        exhausted: fn(&mut i64) -> bool,
+    ) -> Option<(MutexGuard<'a, i64>, bool)> {
+        self.0
+            .wait_timeout_while(guard, slice, exhausted)
+            .ok()
+            .map(move |(g, r)| (g, r.timed_out()))
+    }
+
+    fn wake_all(&self) {
+        self.0.notify_all();
+    }
+}
+
+/// Per-session unacked-byte accounting (trmx-78 round 2b). Consumers park at <= 0; `pty_ack`
+/// refills on parse completion. Negative overdraw is bounded by one batch (PTY_BATCH_MAX_BYTES).
+///
+/// Generic over the wait ([`Park`]) with the production default (trmx-250), so the shell's
+/// `Arc<CreditCell>` and `CreditCell::new` read exactly as before; `CreditCell<CondvarPark>` stays
+/// `Send + Sync` by auto-trait.
+pub struct CreditCell<P: Park = CondvarPark> {
+    credits: Mutex<i64>,
+    park: P,
+}
+
+impl CreditCell<CondvarPark> {
     pub fn new(initial: i64) -> Self {
+        Self::with_park(initial, CondvarPark(Condvar::new()))
+    }
+}
+
+impl<P: Park> CreditCell<P> {
+    /// A cell that parks through `park`. Production goes through [`CreditCell::new`]; the test
+    /// module passes a scripted park and reads its recorders afterwards.
+    pub fn with_park(initial: i64, park: P) -> Self {
         Self {
             credits: Mutex::new(initial),
-            refilled: Condvar::new(),
+            park,
         }
     }
 
@@ -76,21 +143,20 @@ impl CreditCell {
     /// trmx-241 (L4): returns `()`. It used to return a `ConsumeOutcome` distinguishing "proceeded"
     /// from "released by a refill", documented as something to re-evaluate on — but the sole
     /// production caller discarded it, so the type asserted a contract nothing honoured. The
-    /// distinction is not observable to a caller anyway: every arm deducts and returns, and what
-    /// matters (parking, the slice wait, floor-bounded overdraw) is timing, which the unit tests
-    /// now assert directly.
+    /// distinction is not observable to a caller anyway: every arm deducts and returns. What
+    /// matters (parking, the slice wait, floor-bounded overdraw) is the wait itself — which is
+    /// exactly what [`Park`] exposes, and what the unit tests assert as decisions (trmx-250).
     pub fn consume_floored(&self, bytes: i64, slice: Duration, floor: i64) {
         loop {
             let Ok(guard) = self.credits.lock() else {
                 return; // poisoned peer: degrade to unthrottled
             };
-            let Ok((mut guard, timeout)) =
-                self.refilled
-                    .wait_timeout_while(guard, slice, |credits| *credits <= 0)
+            let Some((mut guard, timed_out)) =
+                self.park.park_while(guard, slice, |credits| *credits <= 0)
             else {
-                return;
+                return; // poisoned while parked: degrade to unthrottled, no deduction
             };
-            if !timeout.timed_out() {
+            if !timed_out {
                 *guard -= bytes;
                 return;
             }
@@ -107,7 +173,20 @@ impl CreditCell {
         if let Ok(mut credits) = self.credits.lock() {
             *credits = (*credits + bytes).min(PTY_CREDIT_BYTES);
         }
-        self.refilled.notify_all();
+        self.park.wake_all();
+    }
+
+    /// Test-only read of the balance (lock, copy).
+    #[cfg(test)]
+    fn credits(&self) -> i64 {
+        *self.credits.lock().expect("credits lock")
+    }
+
+    /// Test-only access to the park, so a scripted park's recorders can be read after `with_park`
+    /// moved it into the cell.
+    #[cfg(test)]
+    fn park(&self) -> &P {
+        &self.park
     }
 }
 
@@ -119,15 +198,72 @@ impl CreditCell {
 /// after a quiet period (typing echoes at ≥50 ms spacing) is sent immediately.
 pub const PTY_BATCH_WINDOW_MS: u64 = 4;
 
+/// What the sender takes from the hand-off and the clock (trmx-250). Production is the channel
+/// itself (impl below); the test module scripts arrivals on a virtual clock. std-only (R2).
+///
+/// `now` takes `&mut self` on purpose: a scripted clock advances as the fake is consumed, and the
+/// trait is what makes that a legal implementation.
+pub trait BatchIo {
+    /// The clock the pacing deadlines are computed against.
+    fn now(&mut self) -> Instant;
+    /// Block for the next chunk; `None` = closed and empty.
+    fn recv(&mut self) -> Option<Vec<u8>>;
+    /// A chunk already queued, else `None` (empty right now, or closed).
+    fn try_recv(&mut self) -> Option<Vec<u8>>;
+    /// A chunk arriving before `deadline`, else `None` (deadline passed, or closed).
+    fn recv_until(&mut self, deadline: Instant) -> Option<Vec<u8>>;
+}
+
+impl BatchIo for Receiver<Vec<u8>> {
+    fn now(&mut self) -> Instant {
+        Instant::now()
+    }
+
+    fn recv(&mut self) -> Option<Vec<u8>> {
+        Receiver::recv(self).ok()
+    }
+
+    fn try_recv(&mut self) -> Option<Vec<u8>> {
+        Receiver::try_recv(self).ok()
+    }
+
+    fn recv_until(&mut self, deadline: Instant) -> Option<Vec<u8>> {
+        // Timeout and disconnect both read as `None`: either way the batch being built is complete.
+        self.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .ok()
+    }
+}
+
+/// So a test can pass `&mut scripted` and inspect the fake afterwards: the sender takes `io` by
+/// value — which is what makes the drop order in [`run_batch_sender`] hold for the owned
+/// `Receiver` — and a `&mut T` is a value.
+impl<T: BatchIo + ?Sized> BatchIo for &mut T {
+    fn now(&mut self) -> Instant {
+        (**self).now()
+    }
+
+    fn recv(&mut self) -> Option<Vec<u8>> {
+        (**self).recv()
+    }
+
+    fn try_recv(&mut self) -> Option<Vec<u8>> {
+        (**self).try_recv()
+    }
+
+    fn recv_until(&mut self, deadline: Instant) -> Option<Vec<u8>> {
+        (**self).recv_until(deadline)
+    }
+}
+
 /// One batch: block for the first chunk, then opportunistically drain the backlog up to `max`
 /// bytes (the first chunk always rides, even if larger than `max`). `None` = closed and empty.
-/// Pure over std types — unit-tested (order, cap, residue-after-close).
-fn next_batch(rx: &std::sync::mpsc::Receiver<Vec<u8>>, max: usize) -> Option<Vec<u8>> {
-    let mut batch = rx.recv().ok()?;
+/// Pure over the [`BatchIo`] seam — unit-tested (order, cap, residue-after-close).
+fn next_batch(io: &mut impl BatchIo, max: usize) -> Option<Vec<u8>> {
+    let mut batch = io.recv()?;
     while batch.len() < max {
-        match rx.try_recv() {
-            Ok(chunk) => batch.extend_from_slice(&chunk),
-            Err(_) => break, // empty right now, or closed — either way this batch is complete
+        match io.try_recv() {
+            Some(chunk) => batch.extend_from_slice(&chunk),
+            None => break, // empty right now, or closed — either way this batch is complete
         }
     }
     Some(batch)
@@ -135,19 +271,19 @@ fn next_batch(rx: &std::sync::mpsc::Receiver<Vec<u8>>, max: usize) -> Option<Vec
 
 /// The sender loop: forward coalesced batches into `send_batch` until the stream ends (producer
 /// dropped, queue drained) or the transport rejects a batch; then run `on_done` exactly once.
-/// Dropping `rx` on return releases a producer blocked on the full bounded queue (`SendError`).
+/// Dropping `io` on return releases a producer blocked on the full bounded queue (`SendError`).
 /// Tauri-free seam — unit-tested with fake callbacks (flush-before-done, exactly-once,
-/// fail-close, blocked-producer release); `open_pty` instantiates it with the real channel +
-/// reap/emit.
+/// fail-close, blocked-producer release) and, since trmx-250, with a scripted [`BatchIo`] for the
+/// pacing decisions (an idle send enters no wait; every wait asks for exactly `last_send +
+/// window`; the cap ends a wait before its deadline); `open_pty` instantiates it with the real
+/// channel + reap/emit.
 pub fn run_batch_sender(
-    rx: std::sync::mpsc::Receiver<Vec<u8>>,
+    io: impl BatchIo,
     max: usize,
     window: Duration,
     mut send_batch: impl FnMut(Vec<u8>) -> bool,
     on_done: impl FnOnce(),
 ) {
-    use std::time::Instant;
-
     /// Drop guard: `on_done` runs exactly once on EVERY exit — return AND unwind. Field evidence
     /// (round 2): a panic inside the send path killed the sender thread between the loop and the
     /// reap, orphaning the session (stale registry entry, poller spinning, webview waiting
@@ -161,51 +297,55 @@ pub fn run_batch_sender(
         }
     }
     let _guard = DoneGuard(Some(on_done));
-    // Re-bind rx AFTER the guard: locals drop in reverse order (and parameters last of all), so
+    // Re-bind io AFTER the guard: locals drop in reverse order (and parameters last of all), so
     // this makes the receiver drop BEFORE on_done fires — a producer blocked on the full hand-off
     // is already released (SendError) when the reap runs (R2 step-8 F2).
-    let rx = rx;
-    // Start "long idle" so the very first chunk (and any chunk after a quiet period) sends
-    // immediately — the pacing only bites while the producer sustains output.
-    let mut last_send = Instant::now() - window;
-    while let Some(mut batch) = next_batch(&rx, max) {
+    let mut io = io;
+    // `None` = idle: the very first chunk (and any chunk after a quiet period) sends immediately —
+    // the pacing only bites while the producer sustains output. trmx-250: this used to be
+    // `Instant::now() - window`, and its test was vacuous — it timed a real `recv_timeout` on a
+    // channel whose producer had already hung up, which returns at once, so "immediate-ish" held
+    // even with the idle path disabled. The decision is what is asserted now: an idle first send
+    // records no wait at all.
+    let mut last_send: Option<Instant> = None;
+    while let Some(mut batch) = next_batch(&mut io, max) {
         // Micro-window pacing: if the previous send was within the window, keep accumulating
         // until the window elapses (or the cap is hit / the stream ends) — forced coalescing
-        // against a transport that queues instead of backpressuring.
-        let since = last_send.elapsed();
-        if since < window {
-            let deadline = Instant::now() + (window - since);
+        // against a transport that queues instead of backpressuring. The deadline is exactly
+        // `last_send + window`, which is what the scripted tests assert.
+        let now = io.now();
+        if let Some(since) = last_send.map(|t| now.saturating_duration_since(t))
+            && since < window
+        {
+            let deadline = now + (window - since);
             while batch.len() < max {
-                let now = Instant::now();
-                if now >= deadline {
+                if io.now() >= deadline {
                     break;
                 }
-                match rx.recv_timeout(deadline - now) {
-                    Ok(chunk) => batch.extend_from_slice(&chunk),
-                    Err(_) => break, // window elapsed with no data, or producer closed
+                match io.recv_until(deadline) {
+                    Some(chunk) => batch.extend_from_slice(&chunk),
+                    None => break, // window elapsed with no data, or producer closed
                 }
             }
         }
         if !send_batch(batch) {
             break; // transport gone (webview/channel closed)
         }
-        last_send = Instant::now();
+        last_send = Some(io.now());
     }
-    // rx (re-bound local) drops first — releasing a blocked producer — then the guard fires.
+    // io (re-bound local) drops first — releasing a blocked producer — then the guard fires.
 }
 
 #[cfg(test)]
 mod tests {
-    // trmx-244: `mpsc` was imported by the shell test module these cases came from; a test-module
-    // import does not follow the code across a module boundary, so it is re-declared here.
-    use std::sync::mpsc;
+    use std::cell::{Cell, RefCell};
+    use std::collections::VecDeque;
+    use std::sync::mpsc::{Receiver, sync_channel};
     use std::sync::{Arc, Mutex};
 
     use super::*;
 
     // --- trmx-78 round 2: the natural-batching sender seam ------------------------------------
-
-    use std::sync::mpsc::{Receiver, sync_channel};
 
     fn chunks(rx_cap: usize, items: &[&[u8]]) -> Receiver<Vec<u8>> {
         let (tx, rx) = sync_channel::<Vec<u8>>(rx_cap);
@@ -218,38 +358,38 @@ mod tests {
     #[test]
     fn next_batch_forwards_a_lone_chunk_immediately() {
         // Idle path: one queued echo byte becomes one batch — zero added latency by construction.
-        let rx = chunks(8, &[b"x" as &[u8]]);
-        assert_eq!(next_batch(&rx, 1024), Some(b"x".to_vec()));
+        let mut rx = chunks(8, &[b"x" as &[u8]]);
+        assert_eq!(next_batch(&mut rx, 1024), Some(b"x".to_vec()));
     }
 
     #[test]
     fn next_batch_coalesces_a_backlog_into_one_ordered_batch() {
-        let rx = chunks(8, &[b"aa" as &[u8], b"bb", b"cc"]);
-        assert_eq!(next_batch(&rx, 1024), Some(b"aabbcc".to_vec()));
+        let mut rx = chunks(8, &[b"aa" as &[u8], b"bb", b"cc"]);
+        assert_eq!(next_batch(&mut rx, 1024), Some(b"aabbcc".to_vec()));
     }
 
     #[test]
     fn next_batch_respects_the_cap_and_leaves_the_rest_queued() {
-        let rx = chunks(8, &[b"aaaa" as &[u8], b"bbbb", b"cccc"]);
+        let mut rx = chunks(8, &[b"aaaa" as &[u8], b"bbbb", b"cccc"]);
         // Cap of 6 bytes: the first chunk always goes; the drain stops once the batch reaches it.
-        assert_eq!(next_batch(&rx, 6), Some(b"aaaabbbb".to_vec()));
-        assert_eq!(next_batch(&rx, 6), Some(b"cccc".to_vec()));
+        assert_eq!(next_batch(&mut rx, 6), Some(b"aaaabbbb".to_vec()));
+        assert_eq!(next_batch(&mut rx, 6), Some(b"cccc".to_vec()));
     }
 
     #[test]
     fn next_batch_returns_none_when_closed_and_empty() {
-        let (tx, rx) = sync_channel::<Vec<u8>>(1);
+        let (tx, mut rx) = sync_channel::<Vec<u8>>(1);
         drop(tx);
-        assert_eq!(next_batch(&rx, 1024), None);
+        assert_eq!(next_batch(&mut rx, 1024), None);
     }
 
     #[test]
     fn next_batch_drains_residue_after_close_then_none() {
-        let (tx, rx) = sync_channel::<Vec<u8>>(4);
+        let (tx, mut rx) = sync_channel::<Vec<u8>>(4);
         tx.send(b"tail".to_vec()).expect("queue");
         drop(tx);
-        assert_eq!(next_batch(&rx, 1024), Some(b"tail".to_vec()));
-        assert_eq!(next_batch(&rx, 1024), None);
+        assert_eq!(next_batch(&mut rx, 1024), Some(b"tail".to_vec()));
+        assert_eq!(next_batch(&mut rx, 1024), None);
     }
 
     /// Shared event log for the sender-lifecycle tests: send_batch and on_done both append, so
@@ -358,101 +498,6 @@ mod tests {
         assert_eq!(*log.lock().expect("log"), vec!["done".to_string()]);
     }
 
-    // --- trmx-78 round 2b: credit-based flow control -------------------------------------------
-
-    #[test]
-    fn credit_cell_deducts_while_positive_without_parking() {
-        // Positive credits never park — a batch may overdraw into negative (bounded by the batch
-        // cap), which is what makes the accounting simple: park only at <= 0.
-        let cell = CreditCell::new(8);
-        let started = std::time::Instant::now();
-        cell.consume_floored(6, Duration::from_millis(500), -100);
-        cell.consume_floored(6, Duration::from_millis(500), -100); // 2 left: positive, overdraws
-        assert!(
-            started.elapsed() < Duration::from_millis(100),
-            "no parking while positive"
-        );
-        cell.refill(100);
-        let after_refill = std::time::Instant::now();
-        cell.consume_floored(50, Duration::from_millis(50), -100);
-        assert!(
-            after_refill.elapsed() < Duration::from_millis(40),
-            "a refilled cell consumes without parking"
-        );
-    }
-
-    #[test]
-    fn credit_cell_zero_or_negative_parks_and_refill_unparks() {
-        let cell = Arc::new(CreditCell::new(4));
-        cell.consume_floored(4, Duration::from_millis(50), 0); // now 0 — the next one parks
-        let parked = Arc::clone(&cell);
-        let (tx, rx) = mpsc::channel::<bool>();
-        let waiter = std::thread::spawn(move || {
-            // floor 0: at zero credits there is no probe headroom — a pure park-until-refill.
-            parked.consume_floored(2, Duration::from_millis(200), 0);
-            tx.send(true).expect("send");
-        });
-        std::thread::sleep(Duration::from_millis(80));
-        assert!(
-            rx.try_recv().is_err(),
-            "consumer must be parked while credits are exhausted"
-        );
-        cell.refill(10);
-        let got = rx.recv_timeout(Duration::from_secs(2)).expect("unparked");
-        assert!(got, "refill unparks the consumer");
-        waiter.join().expect("waiter");
-    }
-
-    #[test]
-    fn credit_cell_timeout_probe_proceeds_above_the_floor() {
-        // A webview that stops acking: the bounded wait expires and the consumer PROBES (send
-        // failure of a dead channel ends the loop) — but only above the overdraw floor.
-        let cell = CreditCell::new(1);
-        cell.consume_floored(1, Duration::from_millis(10), -100);
-        let started = std::time::Instant::now();
-        // Above the floor, an unacked wait EXPIRES and the consumer proceeds — observable as the
-        // call returning after roughly the slice rather than parking indefinitely.
-        cell.consume_floored(1, Duration::from_millis(60), -100);
-        let waited = started.elapsed();
-        assert!(
-            waited >= Duration::from_millis(55),
-            "waited the slice: {waited:?}"
-        );
-        assert!(
-            waited < Duration::from_millis(500),
-            "but did not park: {waited:?}"
-        );
-    }
-
-    #[test]
-    fn credit_overdraw_is_floor_bounded_probes_stop_at_the_floor() {
-        // R2 step-8 F1: timeout-proceed must NOT allow unbounded overdraw against a channel that
-        // queues forever without acks. Probes proceed only while credits stay above the floor;
-        // at the floor the consumer parks (sliced, indefinitely) until a refill.
-        let cell = Arc::new(CreditCell::new(4));
-        // Drain into overdraw with timeout-probes: 4 -> 0 -> -4 (floor for this test = -4).
-        cell.consume_floored(4, Duration::from_millis(10), -4);
-        cell.consume_floored(4, Duration::from_millis(10), -4); // probe: 0 > floor
-        // credits now -4 == floor: further consumes must PARK, not proceed.
-        let parked = Arc::clone(&cell);
-        let (tx, rx) = mpsc::channel::<bool>();
-        let waiter = std::thread::spawn(move || {
-            parked.consume_floored(4, Duration::from_millis(30), -4);
-            tx.send(true).expect("send");
-        });
-        std::thread::sleep(Duration::from_millis(120));
-        assert!(
-            rx.try_recv().is_err(),
-            "at the floor the consumer must stay parked across slices"
-        );
-        cell.refill(100);
-        assert!(
-            rx.recv_timeout(Duration::from_secs(2)).expect("unparked"),
-            "refill releases it"
-        );
-        waiter.join().expect("waiter");
-    }
-
     #[test]
     fn sender_drops_the_receiver_before_on_done_runs() {
         // R2 step-8 F2: `rx` must drop BEFORE the done guard fires, so a producer blocked on the
@@ -510,68 +555,363 @@ mod tests {
         );
     }
 
-    #[test]
-    fn sender_paces_a_flood_into_windowed_batches_against_a_nonblocking_transport() {
-        // Field evidence (round 2): Tauri's channel.send returns quickly (internal queueing, no
-        // backpressure), so drain-only "natural batching" never accumulates — a `yes` flood still
-        // became millions of tiny messages. The sender must FORCE coalescing: after a send,
-        // accumulate for the window before the next send. The test uses a GENEROUS 200 ms window
-        // so CI scheduler noise (which flaked the original 4 ms-window version at 96 sends) has
-        // real slack: 50 chunks paced ~1 ms fall well inside one window even at 10× stretch.
-        let (tx, rx) = sync_channel::<Vec<u8>>(256);
-        let producer = std::thread::spawn(move || {
-            for _ in 0..50 {
-                tx.send(vec![b'y'; 2]).expect("queue");
-                std::thread::sleep(Duration::from_millis(1));
+    // --- trmx-250: the sender's pacing DECISIONS on a scripted hand-off ------------------------
+
+    /// A discrete-event hand-off: chunks arrive at virtual offsets from `base`, the clock advances
+    /// only as the sender consumes them, and every `recv_until` deadline is recorded. No threads,
+    /// no sleeps, no real clock — the assertions are on which chunks rode together and on which
+    /// deadline each wait asked for.
+    struct ScriptedIo {
+        base: Instant,
+        now: Instant,
+        arrivals: VecDeque<(Duration, Vec<u8>)>,
+        waits: Vec<Instant>,
+    }
+
+    /// An `Instant` has no constructor but the clock, so the virtual clock's origin is read ONCE,
+    /// through the production seam, and never read again: every time in a script is an offset
+    /// from it and every assertion is on offsets. Nothing here depends on the real clock advancing.
+    fn clock_anchor() -> Instant {
+        let (_tx, mut rx) = sync_channel::<Vec<u8>>(1);
+        rx.now()
+    }
+
+    impl ScriptedIo {
+        /// `arrivals` = (offset in ms from `base`, chunk), in arrival order.
+        fn new(arrivals: Vec<(u64, Vec<u8>)>) -> Self {
+            let base = clock_anchor();
+            Self {
+                base,
+                now: base,
+                arrivals: arrivals
+                    .into_iter()
+                    .map(|(ms, chunk)| (Duration::from_millis(ms), chunk))
+                    .collect(),
+                waits: Vec::new(),
             }
-        });
-        let batches: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&batches);
+        }
+
+        /// The recorded deadlines as offsets from `base`, in call order.
+        fn wait_offsets(&self) -> Vec<Duration> {
+            self.waits
+                .iter()
+                .map(|w| w.duration_since(self.base))
+                .collect()
+        }
+
+        fn next_arrives_by(&self, t: Instant) -> bool {
+            self.arrivals
+                .front()
+                .is_some_and(|(at, _)| self.base + *at <= t)
+        }
+
+        fn advance_to(&mut self, t: Instant) {
+            self.now = self.now.max(t);
+        }
+    }
+
+    impl BatchIo for ScriptedIo {
+        fn now(&mut self) -> Instant {
+            self.now
+        }
+
+        fn recv(&mut self) -> Option<Vec<u8>> {
+            let (at, chunk) = self.arrivals.pop_front()?; // exhausted = closed
+            self.advance_to(self.base + at);
+            Some(chunk)
+        }
+
+        fn try_recv(&mut self) -> Option<Vec<u8>> {
+            if self.next_arrives_by(self.now) {
+                self.recv()
+            } else {
+                None
+            }
+        }
+
+        fn recv_until(&mut self, deadline: Instant) -> Option<Vec<u8>> {
+            self.waits.push(deadline);
+            if self.next_arrives_by(deadline) {
+                self.recv()
+            } else {
+                self.advance_to(deadline);
+                None
+            }
+        }
+    }
+
+    const WINDOW: Duration = Duration::from_millis(PTY_BATCH_WINDOW_MS);
+
+    fn two_byte_chunks_at(offsets_ms: impl IntoIterator<Item = u64>) -> ScriptedIo {
+        ScriptedIo::new(
+            offsets_ms
+                .into_iter()
+                .map(|ms| (ms, vec![b'y'; 2]))
+                .collect(),
+        )
+    }
+
+    /// Run the sender over a scripted hand-off with a transport that accepts everything; returns
+    /// the batches in send order. The fake survives the call (passed as `&mut`), so its recorders
+    /// are readable afterwards.
+    fn drive(io: &mut ScriptedIo, max: usize) -> Vec<Vec<u8>> {
+        let mut sends = Vec::new();
         run_batch_sender(
-            rx,
-            1024 * 1024,
-            Duration::from_millis(200),
-            move |batch| {
-                sink.lock().expect("batches").push(batch.len());
+            io,
+            max,
+            WINDOW,
+            |batch| {
+                sends.push(batch);
                 true
             },
             || {},
         );
-        producer.join().expect("producer");
-        let sent = batches.lock().expect("batches");
-        let total: usize = sent.iter().sum();
-        assert_eq!(total, 100, "every byte arrives exactly once, in order");
+        sends
+    }
+
+    #[test]
+    fn sender_first_send_after_idle_enters_no_wait() {
+        // The pacing must never tax the idle path: a lone echo byte after a quiet period goes out
+        // without entering the window wait at all (typing latency budget). Asserted as the
+        // decision — no `recv_until` was asked for — not as "it came back quickly".
+        let mut io = ScriptedIo::new(vec![(0, b"x".to_vec())]);
+        let sends = drive(&mut io, 1024);
+        assert_eq!(sends, vec![b"x".to_vec()]);
         assert!(
-            sent.len() <= 5,
-            "a paced flood must coalesce into windowed batches (window 200ms), got {} sends",
-            sent.len()
+            io.waits.is_empty(),
+            "an idle first send must not wait: {:?}",
+            io.wait_offsets()
         );
     }
 
     #[test]
-    fn sender_first_send_after_idle_is_immediate() {
-        // The pacing must never tax the idle path: a lone echo byte after a quiet period goes out
-        // without waiting for the window (typing latency budget).
-        let (tx, rx) = sync_channel::<Vec<u8>>(4);
-        let started = std::time::Instant::now();
-        tx.send(b"x".to_vec()).expect("queue");
-        drop(tx);
-        let sent_at: Arc<Mutex<Option<Duration>>> = Arc::new(Mutex::new(None));
-        let sink = Arc::clone(&sent_at);
-        run_batch_sender(
-            rx,
-            1024,
-            Duration::from_millis(PTY_BATCH_WINDOW_MS),
-            move |_| {
-                *sink.lock().expect("sent") = Some(started.elapsed());
-                true
-            },
-            || {},
-        );
-        let elapsed = sent_at.lock().expect("sent").expect("one send happened");
+    fn sender_idle_gap_at_least_a_window_sends_without_waiting() {
+        // A chunk arriving a full window (or more) after the previous send is idle again: it is
+        // forwarded immediately, with no wait — the pacing only bites while output is sustained.
+        let mut io = ScriptedIo::new(vec![(0, b"a".to_vec()), (100, b"b".to_vec())]);
+        let sends = drive(&mut io, 1024);
+        assert_eq!(sends, vec![b"a".to_vec(), b"b".to_vec()]);
         assert!(
-            elapsed < Duration::from_millis(PTY_BATCH_WINDOW_MS * 2),
-            "idle send must be immediate-ish, took {elapsed:?}"
+            io.waits.is_empty(),
+            "neither send may wait: {:?}",
+            io.wait_offsets()
         );
+    }
+
+    #[test]
+    fn sender_paces_a_flood_into_windowed_batches() {
+        // Field evidence (round 2): Tauri's channel.send returns quickly (internal queueing, no
+        // backpressure), so drain-only "natural batching" never accumulates — a `yes` flood still
+        // became millions of tiny messages. The sender must FORCE coalescing: after a send,
+        // accumulate until `last_send + window` before the next one. 50 two-byte chunks one
+        // virtual millisecond apart: c0 rides alone (idle), then every batch closes when the clock
+        // reaches its deadline — four chunks per 4 ms window — and c49's window expires with
+        // nothing queued.
+        let mut io = two_byte_chunks_at(0..50);
+        let sends = drive(&mut io, 1024 * 1024);
+        let partition: Vec<usize> = sends.iter().map(|batch| batch.len() / 2).collect();
+        assert_eq!(
+            partition,
+            vec![1, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 1],
+            "chunks per send"
+        );
+        assert_eq!(sends.concat().len(), 100, "every byte arrives exactly once");
+        let mut deadlines = io.wait_offsets();
+        deadlines.sort();
+        deadlines.dedup();
+        let expected: Vec<Duration> = (1..=13).map(|k| Duration::from_millis(4 * k)).collect();
+        assert_eq!(
+            deadlines, expected,
+            "every wait asked for exactly last_send + window"
+        );
+    }
+
+    #[test]
+    fn sender_window_wait_ends_at_the_cap_before_the_deadline() {
+        // Four two-byte chunks at 0, 1, 2, 3 ms with a 6-byte cap. c0 is alone (idle, no wait).
+        // c1 arrives inside the window, so the PACED drain takes c2 and c3 and then stops because
+        // the batch has reached the cap — at 3 ms, before the 4 ms deadline. The script never
+        // pre-queues more than the cap, so `next_batch`'s own cap is not what closes the batch:
+        // exactly two `recv_until` calls, both for deadline 4, and no third.
+        let mut io = two_byte_chunks_at(0..4);
+        let sends = drive(&mut io, 6);
+        let partition: Vec<usize> = sends.iter().map(|batch| batch.len() / 2).collect();
+        assert_eq!(partition, vec![1, 3], "chunks per send");
+        assert_eq!(
+            io.wait_offsets(),
+            vec![Duration::from_millis(4), Duration::from_millis(4)],
+            "two waits, both for last_send + window, and no third"
+        );
+    }
+
+    // --- trmx-78 round 2b / trmx-250: the credit cell's DECISIONS on a scripted park ------------
+
+    /// What one required park resolves to.
+    enum Outcome {
+        /// A refill of this many credits arrived while parked (the wait returns, not timed out).
+        /// It does NOT go through `CreditCell::refill` — the production wake path has its own test.
+        Refill(i64),
+        /// The slice elapsed with credits still exhausted.
+        TimedOut,
+        /// The lock was poisoned while parked (`park_while` → `None`).
+        Poisoned,
+    }
+
+    /// A scripted [`Park`]. `park_while` takes `&self`, so the recorders use interior mutability
+    /// (single-threaded test code). Like the real `wait_timeout_while` it does not park — and
+    /// consumes no outcome — when `exhausted` is already false. A required park with an exhausted
+    /// script PANICS, naming the slice: a fake that silently returns is how a test passes by
+    /// accident.
+    struct ScriptedPark {
+        outcomes: RefCell<VecDeque<Outcome>>,
+        parks: RefCell<Vec<Duration>>,
+        wakes: Cell<usize>,
+    }
+
+    impl ScriptedPark {
+        fn script(outcomes: impl IntoIterator<Item = Outcome>) -> Self {
+            Self {
+                outcomes: RefCell::new(outcomes.into_iter().collect()),
+                parks: RefCell::new(Vec::new()),
+                wakes: Cell::new(0),
+            }
+        }
+
+        /// The slices actually parked, in order.
+        fn parks(&self) -> Vec<Duration> {
+            self.parks.borrow().clone()
+        }
+
+        fn wakes(&self) -> usize {
+            self.wakes.get()
+        }
+
+        /// Outcomes still unconsumed.
+        fn remaining(&self) -> usize {
+            self.outcomes.borrow().len()
+        }
+    }
+
+    impl Park for ScriptedPark {
+        fn park_while<'a>(
+            &self,
+            mut guard: MutexGuard<'a, i64>,
+            slice: Duration,
+            exhausted: fn(&mut i64) -> bool,
+        ) -> Option<(MutexGuard<'a, i64>, bool)> {
+            if !exhausted(&mut guard) {
+                return Some((guard, false));
+            }
+            self.parks.borrow_mut().push(slice);
+            let Some(outcome) = self.outcomes.borrow_mut().pop_front() else {
+                panic!(
+                    "ScriptedPark: a park of {slice:?} was required but the script is exhausted"
+                );
+            };
+            match outcome {
+                Outcome::Refill(bytes) => {
+                    *guard += bytes;
+                    Some((guard, false))
+                }
+                Outcome::TimedOut => Some((guard, true)),
+                Outcome::Poisoned => None,
+            }
+        }
+
+        fn wake_all(&self) {
+            self.wakes.set(self.wakes.get() + 1);
+        }
+    }
+
+    const SLICE: Duration = Duration::from_millis(500);
+
+    #[test]
+    fn credit_cell_positive_credits_consume_without_parking() {
+        // Positive credits never park — a batch may overdraw into negative (bounded by the batch
+        // cap), which is what makes the accounting simple: park only at <= 0. A refilled cell
+        // consumes without parking too.
+        let cell = CreditCell::with_park(8, ScriptedPark::script([]));
+        cell.consume_floored(6, SLICE, -100);
+        cell.consume_floored(6, SLICE, -100); // 2 left: positive, overdraws to -4
+        cell.refill(100);
+        cell.consume_floored(50, SLICE, -100);
+        assert!(cell.park().parks().is_empty(), "no parking while positive");
+        assert_eq!(cell.credits(), 46);
+    }
+
+    #[test]
+    fn credit_cell_parks_at_zero_and_a_refill_releases_it() {
+        // floor 0: at zero credits there is no probe headroom — a pure park-until-refill. The
+        // refill arrives during the park; the consume then deducts from the refilled balance.
+        let cell = CreditCell::with_park(4, ScriptedPark::script([Outcome::Refill(10)]));
+        cell.consume_floored(4, SLICE, 0); // now 0 — the next one parks
+        cell.consume_floored(2, SLICE, 0);
+        assert_eq!(cell.park().parks(), vec![SLICE]);
+        assert_eq!(cell.credits(), 8);
+    }
+
+    #[test]
+    fn credit_cell_timeout_probe_proceeds_above_the_floor() {
+        // A webview that stops acking: the bounded wait expires and the consumer PROBES (the send
+        // failure of a dead channel ends the loop) — one park, then the deduction goes through
+        // because credits are still above the floor.
+        let cell = CreditCell::with_park(1, ScriptedPark::script([Outcome::TimedOut]));
+        cell.consume_floored(1, SLICE, -100);
+        cell.consume_floored(1, SLICE, -100);
+        assert_eq!(
+            cell.park().parks().len(),
+            1,
+            "exactly one slice, then the probe"
+        );
+        assert_eq!(cell.credits(), -1);
+    }
+
+    #[test]
+    fn credit_cell_at_the_floor_keeps_parking_until_a_refill() {
+        // R2 step-8 F1: timeout-proceed must NOT allow unbounded overdraw against a channel that
+        // queues forever without acks. Probes proceed only while credits stay above the floor;
+        // at the floor the consumer parks slice after slice until a refill. Floor -4:
+        // 4 -> 0 (positive, no park) -> -4 (park, time out, probe: 0 > -4) -> at the floor the
+        // next consume parks, times out, is NOT above the floor, parks again, and takes the refill.
+        let cell = CreditCell::with_park(
+            4,
+            ScriptedPark::script([Outcome::TimedOut, Outcome::TimedOut, Outcome::Refill(100)]),
+        );
+        cell.consume_floored(4, SLICE, -4);
+        cell.consume_floored(4, SLICE, -4);
+        // After the probe: one park, and the overdraw reached the floor. This intermediate
+        // assertion is what separates "never probe" and "always park" from production — both
+        // consume the same three outcomes overall and end at 92.
+        assert_eq!(cell.park().parks().len(), 1, "the probe took one slice");
+        assert_eq!(cell.credits(), -4);
+        cell.consume_floored(4, SLICE, -4);
+        assert_eq!(
+            cell.park().parks().len(),
+            3,
+            "at the floor: park, park again, refill"
+        );
+        assert_eq!(cell.credits(), 92);
+    }
+
+    #[test]
+    fn credit_cell_refill_wakes_parked_consumers() {
+        // The production wake path (`pty_ack` → `refill` → `wake_all`), separate from the scripted
+        // refill above, which models a refill arriving while parked and never calls `refill`.
+        let cell = CreditCell::with_park(0, ScriptedPark::script([Outcome::TimedOut]));
+        cell.refill(1);
+        assert_eq!(cell.park().wakes(), 1, "one wake per refill");
+        assert_eq!(cell.park().remaining(), 1, "no outcome consumed");
+        assert!(cell.park().parks().is_empty(), "a refill never parks");
+        assert_eq!(cell.credits(), 1);
+    }
+
+    #[test]
+    fn credit_cell_poisoned_wait_degrades_to_unthrottled() {
+        // A poisoned lock while parked returns without deducting — the cell degrades to
+        // unthrottled rather than panicking or accounting against a balance it cannot trust.
+        let cell = CreditCell::with_park(0, ScriptedPark::script([Outcome::Poisoned]));
+        cell.consume_floored(5, SLICE, -100);
+        assert_eq!(cell.park().parks(), vec![SLICE], "the park was entered");
+        assert_eq!(cell.credits(), 0, "no deduction on the degrade path");
     }
 }

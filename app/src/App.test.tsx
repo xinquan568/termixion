@@ -10,7 +10,7 @@
 // Every runtime edge (attach / closeWindow / closePty / event subscriptions) is injected via
 // App's seam props, so this runs headless with controllable SessionInfo promises.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, act, within } from "@testing-library/react";
+import { screen, fireEvent, act, within } from "@testing-library/react";
 import { StrictMode } from "react";
 import type { SessionInfo } from "./ipc/backend";
 import type { FrameSchedule } from "./terminal/resizeCoalescer";
@@ -82,7 +82,8 @@ vi.mock("./update/UpdateAuthorityHost", () => ({
 }));
 
 import { App, type AppDeps } from "./App";
-import { makeSettingsStore, __resetSettingsForTest } from "./store/settingsStore";
+import { freshSettingsRuntime, renderWithSettings } from "./test/settingsRuntime";
+import type { SettingsRuntime } from "./store/settingsStore";
 import { clearUserThemes, registerUserThemes } from "./theme/registry";
 import { night } from "./theme/themes/night";
 import type { ThemeSpec } from "./theme/themeDerive";
@@ -252,7 +253,7 @@ function renderApp(
   ) : (
     <App deps={props} />
   );
-  const view = render(ui);
+  const view = renderWithSettings(ui, { runtime });
   return {
     view,
     attach,
@@ -290,8 +291,17 @@ function clickTab(tabId: number) {
   fireEvent.pointerUp(el, { pointerId: 1, clientX: 10, clientY: 10 });
 }
 
+// trmx-253 (T3.4): the settings runtime every renderApp() renders through, rebuilt per test. App
+// reads settings through the provider `renderWithSettings` adds, so a per-test runtime IS the
+// isolation the old global reset used to provide — and a seed written through `settings()` below
+// lands in the very snapshot the rendered App reads.
+let runtime: SettingsRuntime;
+/** A store over THIS test's runtime — how a case seeds a setting the rendered App will read. */
+const settings = () => runtime.makeStore();
+
 beforeEach(() => {
   recorder.reset();
+  runtime = freshSettingsRuntime();
 });
 
 describe("App (the tab manager, trmx-74)", () => {
@@ -1091,11 +1101,6 @@ describe("App tab-bar position (trmx-81)", () => {
   const mainEl = (view: ReturnType<typeof renderApp>["view"]) =>
     view.container.querySelector("main.app")!;
 
-  // These tests touch the module-level shared snapshot — reset it so no state leaks across tests.
-  afterEach(() => {
-    __resetSettingsForTest();
-  });
-
   it("defaults to the bottom bar: app--bar-bottom and a horizontal strip", () => {
     const { view } = renderApp();
     expect(mainEl(view).className).toBe("app app--bar-bottom");
@@ -1103,7 +1108,7 @@ describe("App tab-bar position (trmx-81)", () => {
   });
 
   it("seeds the position from the settings store snapshot", () => {
-    makeSettingsStore().set("tabs.barPosition", "left"); // the shared snapshot, as hydration would
+    settings().set("tabs.barPosition", "left"); // the shared snapshot, as hydration would
     const { view } = renderApp();
     expect(mainEl(view).className).toBe("app app--bar-left");
     // A side position renders the strip as a vertical rail.
@@ -1173,14 +1178,9 @@ describe("App side-bar label orientation (trmx-82)", () => {
   const strip = () => screen.getByTestId("tab-strip");
   const stripVar = (name: string) => strip().style.getPropertyValue(name);
 
-  // These tests touch the module-level shared snapshot — reset it so no state leaks across tests.
-  afterEach(() => {
-    __resetSettingsForTest();
-  });
-
   it("side bar + vertical setting → labelOrientation reaches the strip; narrow-rail CSS vars", () => {
-    makeSettingsStore().set("tabs.barPosition", "left");
-    makeSettingsStore().set("tabs.sideLabelOrientation", "vertical");
+    settings().set("tabs.barPosition", "left");
+    settings().set("tabs.sideLabelOrientation", "vertical");
     renderApp();
     expect(strip().className).toBe("tab-strip tab-strip--vertical tab-strip--labels-vertical");
     // The railGeometryFor tokens, verbatim, END-TO-END: TabStrip owns them, App's render carries
@@ -1197,7 +1197,7 @@ describe("App side-bar label orientation (trmx-82)", () => {
   });
 
   it("a top/bottom bar forces horizontal labels even when the setting is vertical", () => {
-    makeSettingsStore().set("tabs.sideLabelOrientation", "vertical"); // bar stays on the bottom
+    settings().set("tabs.sideLabelOrientation", "vertical"); // bar stays on the bottom
     renderApp();
     expect(strip().className).toBe("tab-strip");
     // No geometry vars outside vertical-label mode — the horizontal strip is CSS-owned.
@@ -1209,7 +1209,7 @@ describe("App side-bar label orientation (trmx-82)", () => {
   });
 
   it("a side bar with the DEFAULT setting keeps the trmx-81 rail (no vars, no label class)", () => {
-    makeSettingsStore().set("tabs.barPosition", "right");
+    settings().set("tabs.barPosition", "right");
     renderApp();
     expect(strip().className).toBe("tab-strip tab-strip--vertical");
     // The horizontal-label rail's 180px width is a CSS-owned constant, not a token. trmx-163: the
@@ -1218,7 +1218,7 @@ describe("App side-bar label orientation (trmx-82)", () => {
   });
 
   it("settings:changed flips the labels live over the ONE subscription, without remounting hosts", async () => {
-    makeSettingsStore().set("tabs.barPosition", "right");
+    settings().set("tabs.barPosition", "right");
     const { calls, settingsChanged } = renderApp();
     await resolveAttach(calls[0], { sessionId: 1, title: "one" });
     expect(settingsChanged.observe).toHaveBeenCalledTimes(1); // one subscription serves both keys
@@ -1251,7 +1251,7 @@ describe("App side-bar label orientation (trmx-82)", () => {
   });
 
   it("junk settings:changed payloads for the new key are inert", async () => {
-    makeSettingsStore().set("tabs.barPosition", "left");
+    settings().set("tabs.barPosition", "left");
     const { settingsChanged } = renderApp();
     await act(async () => {
       settingsChanged.fire({ key: "tabs.sideLabelOrientation", value: "diagonal", source: "config-file" });
@@ -1263,8 +1263,8 @@ describe("App side-bar label orientation (trmx-82)", () => {
   });
 
   it("a live position change to top/bottom drops the vertical labels (the gate re-applies)", async () => {
-    makeSettingsStore().set("tabs.barPosition", "left");
-    makeSettingsStore().set("tabs.sideLabelOrientation", "vertical");
+    settings().set("tabs.barPosition", "left");
+    settings().set("tabs.sideLabelOrientation", "vertical");
     const { settingsChanged } = renderApp();
     expect(strip().className).toBe("tab-strip tab-strip--vertical tab-strip--labels-vertical");
 
@@ -2174,12 +2174,8 @@ describe("App badge editor (trmx-90)", () => {
 // debounce reads Date.now() + setTimeout, both faked); they are enabled only AFTER the async attach so
 // every async `act` (render/attach) stays on real timers and the fake portion uses only sync `act`.
 describe("App activity indicator (trmx-91)", () => {
-  beforeEach(() => {
-    __resetSettingsForTest();
-  });
   afterEach(() => {
     vi.useRealTimers(); // a no-op when a test never enabled fake timers
-    __resetSettingsForTest();
   });
 
   const activityLineIn = (paneId: number) =>
@@ -2410,13 +2406,6 @@ describe("App activity indicator (trmx-91)", () => {
 // exactly like activityIndicatorOn (seeded from the shared snapshot, kept live over
 // settings:changed with the untrusted-payload guard).
 describe("App tab shortcut hints (trmx-151)", () => {
-  beforeEach(() => {
-    __resetSettingsForTest();
-  });
-  afterEach(() => {
-    __resetSettingsForTest();
-  });
-
   const hintIn = (tabId: number) =>
     screen.getByTestId(`tab-${tabId}`).querySelector(".tab-strip__hint");
 
@@ -2639,10 +2628,8 @@ describe("service delivery fail-soft composition (trmx-224)", () => {
 // reflow under the cursor) never refocuses; every keyboard-owning overlay / drag suspends.
 describe("focus follows mouse (trmx-225)", () => {
   beforeEach(() => {
-    __resetSettingsForTest();
-    makeSettingsStore().set("terminal.focusFollowsMouse", true);
+    settings().set("terminal.focusFollowsMouse", true);
   });
-  afterEach(() => __resetSettingsForTest());
 
   const hover = (paneId: number, x: number, y: number) =>
     fireEvent.mouseMove(screen.getByTestId(`pane-host-${paneId}`), { clientX: x, clientY: y });
@@ -2673,7 +2660,7 @@ describe("focus follows mouse (trmx-225)", () => {
   });
 
   it("stays inert with the setting OFF (the opt-in default)", async () => {
-    makeSettingsStore().set("terminal.focusFollowsMouse", false);
+    settings().set("terminal.focusFollowsMouse", false);
     const seams = renderApp();
     await splitAndFocusPane1(seams);
     const pane2Focus = recorder.mounts[1].handle.terminal.focus as ReturnType<typeof vi.fn>;

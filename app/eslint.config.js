@@ -32,8 +32,18 @@ import tseslint from "typescript-eslint";
 // them would ban the whole feature layer from talking to itself. What is banned is importing UP,
 // which is what creates a cycle.
 const LEVELS = {
+  // `test` is deliberately ABSENT from this map, and a zone absent from it is free (see the note on
+  // `app` below). src/test/ is the shared TEST FIXTURE layer: never imported by production code,
+  // excluded from the bundle and from the coverage denominator, and imported only by *.test.* files
+  // — so it cannot create a production cycle, which is the only thing this rule exists to prevent.
+  // It must be able to build any layer's real objects: trmx-253's settings fixture constructs a
+  // createSettingsRuntime() (store/, L2) for suites in settings/, terminal/, update/, chrome/ and
+  // the root. It sat at L0 when it held nothing but the vitest setup file; leaving it there would
+  // make the one directory whose job is to SERVE every zone the most constrained one in the map.
+  // Removing it loosens nothing for anybody else: at L0 every other zone could already import it.
+  //
   // L0 — leaves. Import nothing but each other and node_modules.
-  assets: 0, ipc: 0, keys: 0, ui: 0, test: 0,
+  assets: 0, ipc: 0, keys: 0, ui: 0,
   // L1 — primitives over the transport.
   panes: 1, scripts: 1, smoke: 1, theme: 1,
   // L2 — the settings store: a primitive that terminal/, update/ and startup/ all read.

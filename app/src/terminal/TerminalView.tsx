@@ -4,7 +4,7 @@
 // B-4: the React surface for a terminal. It owns a host <div>, mounts an xterm.js terminal into it
 // on mount (via the injectable WebGL→DOM strategy), and disposes on unmount. B-5/C wire the live PTY
 // across the Tauri channel into this terminal.
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { FitAddon } from "@xterm/addon-fit";
@@ -72,7 +72,8 @@ import {
   themeTerminalOptions,
   type ThemeOptionsSink,
 } from "./themeSettings";
-import { makeSettingsStore, SETTINGS_CHANGED_EVENT } from "../store/settingsStore";
+import { SETTINGS_CHANGED_EVENT, type SettingsStore } from "../store/settingsStore";
+import { useSettingsStore } from "../store/settingsRuntimeContext";
 import { realEventBus } from "../ipc/eventBus";
 
 // Is a WebGL2 context actually obtainable? Preflighting here means we throw *before* constructing
@@ -97,39 +98,40 @@ function supportsWebgl2(): boolean {
 // trmx-80 (FR-13): the settings store reads the file-backed SHARED SNAPSHOT (hydrated in boot());
 // the persisted FONT (family/size) and SCROLLBACK capacity are settings-fed here — the font slice
 // spreads AFTER iterm2TerminalOptions so a persisted font overrides the profile constants.
-export const realDeps: MountDeps = {
-  createTerminal: () => {
-    const settings = makeSettingsStore();
-    const terminal = new Terminal({
-      ...iterm2TerminalOptions(initialAppearanceFromWindow()),
-      ...themeTerminalOptions(settings),
-      ...fontTerminalOptions(settings),
-      ...cursorTerminalOptions(settings),
-      // trmx-65: scrollback capacity + smooth discrete scrolling (a user setting since trmx-80).
-      ...scrollbackTerminalOptions(settings),
-      // trmx-66: Option-drag selection while an app owns the mouse (iTerm2 convention).
-      ...clipboardTerminalOptions(),
-      // trmx-64: the emulation-semantics slice (convertEol:false — VT-correct LF handling) spreads
-      // LAST so it always wins; the conformance harness builds from this same exported slice.
-      ...emulationTerminalOptions(),
-      // trmx-64: OSC 8 hyperlinks activate on ⌘-click only, http/https only, via the opener plugin.
-      linkHandler: makeLinkHandler(realOpenUrl),
-    });
-    // trmx-97 (FR-1.4): grapheme-cluster Unicode (correct CJK/emoji/combining widths) — the conformance
-    // driver activates the SAME helper, so the harness pins this exact emulator (the trmx-64 invariant).
-    activateUnicodeGraphemes(terminal);
-    return terminal as unknown as TerminalLike;
-  },
-  createWebglAddon: () => {
-    if (!supportsWebgl2()) {
-      throw new Error("WebGL2 is not available; using the DOM renderer");
-    }
-    return new WebglAddon() as unknown as AddonLike;
-  },
-  createFitAddon: () => new FitAddon() as unknown as FitLike,
-  // trmx-98: the per-pane search addon (find bar). Renderer-agnostic; loaded unconditionally.
-  createSearchAddon: () => new SearchAddon() as unknown as SearchAddonLike,
-};
+export function realDepsFor(settings: SettingsStore): MountDeps {
+  return {
+    createTerminal: () => {
+      const terminal = new Terminal({
+        ...iterm2TerminalOptions(initialAppearanceFromWindow()),
+        ...themeTerminalOptions(settings),
+        ...fontTerminalOptions(settings),
+        ...cursorTerminalOptions(settings),
+        // trmx-65: scrollback capacity + smooth discrete scrolling (a user setting since trmx-80).
+        ...scrollbackTerminalOptions(settings),
+        // trmx-66: Option-drag selection while an app owns the mouse (iTerm2 convention).
+        ...clipboardTerminalOptions(),
+        // trmx-64: the emulation-semantics slice (convertEol:false — VT-correct LF handling) spreads
+        // LAST so it always wins; the conformance harness builds from this same exported slice.
+        ...emulationTerminalOptions(),
+        // trmx-64: OSC 8 hyperlinks activate on ⌘-click only, http/https only, via the opener plugin.
+        linkHandler: makeLinkHandler(realOpenUrl),
+      });
+      // trmx-97 (FR-1.4): grapheme-cluster Unicode (correct CJK/emoji/combining widths) — the conformance
+      // driver activates the SAME helper, so the harness pins this exact emulator (the trmx-64 invariant).
+      activateUnicodeGraphemes(terminal);
+      return terminal as unknown as TerminalLike;
+    },
+    createWebglAddon: () => {
+      if (!supportsWebgl2()) {
+        throw new Error("WebGL2 is not available; using the DOM renderer");
+      }
+      return new WebglAddon() as unknown as AddonLike;
+    },
+    createFitAddon: () => new FitAddon() as unknown as FitLike,
+    // trmx-98: the per-pane search addon (find bar). Renderer-agnostic; loaded unconditionally.
+    createSearchAddon: () => new SearchAddon() as unknown as SearchAddonLike,
+  };
+}
 
 /**
  * Observe `target` for size changes and invoke `onResize`; returns a teardown. Defaults to a
@@ -190,10 +192,17 @@ export type AttachOscIntegrations = (
  * Settings window or by hand in the config file reaches the handler that is already attached to
  * every running pane. Reading it here (at attach time) would silently require a restart.
  */
-const realClipboardWritePolicy = (): ClipboardWritePolicy =>
-  makeSettingsStore().get("terminal.clipboardWrite");
+function clipboardWritePolicyFor(settings: SettingsStore): () => ClipboardWritePolicy {
+  return () => settings.get("terminal.clipboardWrite");
+}
 
 export function realAttachOscIntegrations(
+  /**
+   * trmx-253 (T3.4): the settings store the DEFAULT write policy reads. An explicit parameter
+   * because there is no ambient runtime to fall back on any more, and it stays the FALLBACK path
+   * (a caller may still inject `sinks.clipboardWritePolicy`), so enforcement is never opt-in.
+   */
+  settings: SettingsStore,
   terminal: TerminalLike,
   sinks: {
     setTitle: (title: string) => void;
@@ -225,7 +234,7 @@ export function realAttachOscIntegrations(
     sinks.writeClipboard,
     {
       // trmx-252: read at write time (the thunk), never captured here — see the const above.
-      policy: sinks.clipboardWritePolicy ?? realClipboardWritePolicy,
+      policy: sinks.clipboardWritePolicy ?? clipboardWritePolicyFor(settings),
       onAccepted: sinks.onClipboardWrite,
     },
   );
@@ -251,40 +260,44 @@ export function realAttachOscIntegrations(
 }
 
 // The default seam value: the real integrations over the real sinks, with the caller's per-tab
-// store (or the module default) threaded through. A module-level const — an inline arrow would
-// change identity every render and remount the terminal via the effect deps (trmx-74). trmx-75:
+// store (or the module default) threaded through. trmx-253 (T3.4) made it a FACTORY over the
+// settings store — the component memoizes one per runtime, because an inline arrow would change
+// identity every render and remount the terminal via the effect deps (trmx-74). trmx-75:
 // a caller-provided title sink REPLACES realSetWindowTitle (the tab layer owns the window title
 // now — only the active tab's effective title may reach it, from App's window-title effect).
-const defaultAttachOscIntegrations: AttachOscIntegrations = (
-  terminal,
-  cwdStore,
-  onTitle,
-  onBadge,
-  onPromptMarker,
-  onClipboardWrite,
-) =>
-  realAttachOscIntegrations(
+function makeDefaultAttachOscIntegrations(settings: SettingsStore): AttachOscIntegrations {
+  return (
     terminal,
-    // No tab/pane layer at all → the full default sinks (window title, real clipboard, no-op badge).
-    // Otherwise build the sinks: onTitle REPLACES the window title (else stays realSetWindowTitle),
-    // onBadge feeds the pane's badge slot (trmx-90; absent → osc1337 no-op); onPromptMarker feeds the
-    // pane's OSC 133 activity (trmx-99; absent → no-op); onClipboardWrite feeds the pane's OSC 52
-    // notice (trmx-252; absent → no notice, but the POLICY still applies — it defaults inside
-    // realAttachOscIntegrations, so enforcement never depends on this branch).
-    onTitle === undefined &&
-      onBadge === undefined &&
-      onPromptMarker === undefined &&
-      onClipboardWrite === undefined
-      ? undefined
-      : {
-          setTitle: onTitle ?? realSetWindowTitle,
-          writeClipboard: realWriteClipboard,
-          setBadge: onBadge,
-          setPromptMarker: onPromptMarker,
-          onClipboardWrite,
-        },
     cwdStore,
-  );
+    onTitle,
+    onBadge,
+    onPromptMarker,
+    onClipboardWrite,
+  ) =>
+    realAttachOscIntegrations(
+      settings,
+      terminal,
+      // No tab/pane layer at all → the full default sinks (window title, real clipboard, no-op badge).
+      // Otherwise build the sinks: onTitle REPLACES the window title (else stays realSetWindowTitle),
+      // onBadge feeds the pane's badge slot (trmx-90; absent → osc1337 no-op); onPromptMarker feeds the
+      // pane's OSC 133 activity (trmx-99; absent → no-op); onClipboardWrite feeds the pane's OSC 52
+      // notice (trmx-252; absent → no notice, but the POLICY still applies — it defaults inside
+      // realAttachOscIntegrations, so enforcement never depends on this branch).
+      onTitle === undefined &&
+        onBadge === undefined &&
+        onPromptMarker === undefined &&
+        onClipboardWrite === undefined
+        ? undefined
+        : {
+            setTitle: onTitle ?? realSetWindowTitle,
+            writeClipboard: realWriteClipboard,
+            setBadge: onBadge,
+            setPromptMarker: onPromptMarker,
+            onClipboardWrite,
+          },
+      cwdStore,
+    );
+}
 
 /**
  * trmx-66: bind the owned ⌘C/⌘V clipboard guards (capture-phase copy/paste on the host — see
@@ -343,7 +356,8 @@ export interface TerminalViewProps {
   onReady?: (handle: TerminalHandle) => void;
   /** Injection seam for tests; defaults to the real WebGL→DOM strategy. */
   mount?: typeof mountTerminal;
-  /** Injection seam for tests; defaults to the real xterm-backed factories. */
+  /** Injection seam for tests; defaults to the real xterm-backed factories over this subtree's
+   * settings runtime (`realDepsFor`). */
   deps?: MountDeps;
   /** Injection seam for tests; defaults to a real `ResizeObserver` on the host element. */
   observeResize?: ResizeObservation;
@@ -351,7 +365,8 @@ export interface TerminalViewProps {
   attachScrollbar?: AttachScrollbar;
   /** Injection seam for tests; defaults to a real settings:changed listener (trmx-51). */
   observeSettings?: SettingsObservation;
-  /** Injection seam for tests; defaults to the real OSC title/52/7 wiring (trmx-64). */
+  /** Injection seam for tests; defaults to the real OSC title/52/7 wiring (trmx-64) over this
+   * subtree's settings runtime. */
   attachOscIntegrations?: AttachOscIntegrations;
   /**
    * Where this terminal's OSC 7 cwd reports land (trmx-74): App injects one store PER TAB so a
@@ -394,11 +409,11 @@ export interface TerminalViewProps {
 export function TerminalView({
   onReady,
   mount = mountTerminal,
-  deps = realDeps,
+  deps: depsProp,
   observeResize = realObserveResize,
   attachScrollbar = realAttachScrollbar,
   observeSettings = realObserveSettings,
-  attachOscIntegrations = defaultAttachOscIntegrations,
+  attachOscIntegrations: attachOscIntegrationsProp,
   attachClipboard = realAttachClipboard,
   attachCopyOnSelect = realAttachCopyOnSelect,
   cwdStore,
@@ -408,6 +423,16 @@ export function TerminalView({
   resizeSchedule,
 }: TerminalViewProps) {
   const hostRef = useRef<HTMLDivElement>(null);
+  // trmx-253 (T3.4): the two production defaults that used to read a module-global settings
+  // runtime are now built from THIS subtree's store. Memoized on the store identity — an
+  // identity change would remount the terminal through the effect's dep list (trmx-74), and
+  // `useSettingsStore()` is itself stable for the lifetime of the runtime.
+  const settings = useSettingsStore();
+  const deps = useMemo(() => depsProp ?? realDepsFor(settings), [depsProp, settings]);
+  const attachOscIntegrations = useMemo(
+    () => attachOscIntegrationsProp ?? makeDefaultAttachOscIntegrations(settings),
+    [attachOscIntegrationsProp, settings],
+  );
 
   useEffect(() => {
     const host = hostRef.current;
@@ -452,7 +477,7 @@ export function TerminalView({
         detachCopyOnSelect = undefined;
       }
     };
-    syncCopyOnSelect(copyOnSelectEnabled(makeSettingsStore()));
+    syncCopyOnSelect(copyOnSelectEnabled(settings));
     // Keep the grid filling the host as the window resizes (issue 2): a size change re-fits, which
     // makes xterm fire onResize → the PTY grid is resized to match (wired in useBackend). Recompute
     // the scrollbar AFTER the fit so it reads the freshly-resized rows/cols (trmx-41).
@@ -524,7 +549,7 @@ export function TerminalView({
       scrollbar.dispose();
       handle.dispose();
     };
-  }, [mount, deps, onReady, observeResize, attachScrollbar, observeSettings, attachOscIntegrations, attachClipboard, attachCopyOnSelect, cwdStore, onOscTitle, onBadge, onPromptMarker, resizeSchedule]);
+  }, [mount, deps, settings, onReady, observeResize, attachScrollbar, observeSettings, attachOscIntegrations, attachClipboard, attachCopyOnSelect, cwdStore, onOscTitle, onBadge, onPromptMarker, resizeSchedule]);
 
   return <div ref={hostRef} data-testid="terminal" className="terminal-host" />;
 }

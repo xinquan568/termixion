@@ -161,7 +161,7 @@ session, so id 1 is not reliably absent. A counterfactual about a path that coul
 taken proves nothing.
 
 `take_pending_open_paths` is the one worth noting. Its invariant was already written down
-(`main.tsx:85`) and test-pinned (`main.order.test.ts:109`), but both live in the frontend **caller** —
+(`main.tsx:85`) and test-pinned (`main.order.test.ts:109` then; executed by `boot.test.tsx` since trmx-250), but both live in the frontend **caller** —
 a compromised settings webview bypassed them by invoking the command directly. That line above is
 the first time the invariant is enforced somewhere the caller cannot reach.
 
