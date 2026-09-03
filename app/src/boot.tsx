@@ -89,8 +89,11 @@ export async function boot(deps: BootDeps): Promise<void> {
   // gone, and `useSettingsRuntime()` THROWS without a provider — so a component outside this tree
   // fails loudly instead of silently reading an un-hydrated second runtime's registry defaults.
   // (trmx-250: the trmx-253 module-state audit in settingsRuntime.moduleState.test.ts now parses
-  // THIS file too, and fails on any module-scoped mutable binding — which is what a bridge is,
-  // whatever it is called — as well as on a declaration of any of the bridge's symbols.)
+  // THIS file too, and fails on ANY module-scoped value binding here — `let`, `var` or `const`,
+  // whatever it is named or initialised with — because a runtime singleton such as
+  // `export const shared = createSettingsRuntime()` is a const the module never writes through,
+  // which the mutable-state rule alone cannot see. This module's scope is imports, an interface
+  // and function declarations, and the audit keeps it that way.)
   const settingsRuntime = deps.createSettingsRuntime();
   await settingsRuntime.hydrate();
   // trmx-89: the persisted `appearance.theme` can be a `user:<stem>` id, so the runtime theme

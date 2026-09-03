@@ -864,6 +864,31 @@ describe("trmx-253 (T3.5): the pre-M8 facade is gone, and no neighbour holds set
     expect(audit.mutated).toEqual([]);
   });
 
+  // trmx-250 (Step-9 finding 2): "no mutable state" is NOT "no singleton". A module-scoped
+  // `export const sharedRuntime = createSettingsRuntime();` is a runtime singleton, yet it is a
+  // `const` the module never writes through, and the audit treats calls as opaque — so the row above
+  // passes it. The boot module has no legitimate module-scoped VALUE at all (its module scope is
+  // imports, an interface and function declarations), so for boot.tsx the rule is the strong one:
+  // no module-scoped variable statement, whatever it is named or initialised with.
+  it("../boot.tsx declares no module-scoped values at all (a runtime singleton would be one)", () => {
+    const source = neighbours["../boot.tsx"];
+    expect(source, "boot.tsx is in the audited set").toBeTypeOf("string");
+    const audit = auditModuleState(source, "boot.tsx");
+    expect(audit.moduleScopedNames).toEqual([]);
+  });
+
+  it("the audit SEES a call-initialised module const (the shape the rule above exists for)", () => {
+    // Proof the assertion above is not vacuous: the audit reports the binding by name even though
+    // it is neither `let`/`var` nor written through.
+    const audit = auditModuleState(
+      "export const sharedRuntime = createSettingsRuntime();\nexport function boot() { return sharedRuntime; }\n",
+      "boot-singleton.tsx",
+    );
+    expect(audit.moduleScopedNames).toEqual(["sharedRuntime"]);
+    expect(audit.letOrVar).toEqual([]);
+    expect(audit.mutated).toEqual([]); // ...which is exactly why the mutable-state row cannot catch it
+  });
+
   it.each(
     declarationSources.flatMap(([file, source]) =>
       [
