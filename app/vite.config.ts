@@ -35,18 +35,11 @@ export default defineConfig({
         // counting a test harness's own lines inflates the figure without informing anyone.
         // driver.ts still has its own direct test (conformance/driver.test.ts).
         "src/conformance/**",
-        // trmx-253 (review finding 1): main.tsx is NEVER EXECUTED by a test — main.order.test.ts
-        // and main.handlers.test.ts both `import source from "./main.tsx?raw"`, i.e. they read its
-        // TEXT, because importing it under jsdom boots the real app. v8 therefore emitted an entry
-        // with FNF=0/LF=0/BRF=0 for a file holding thirteen function constructs: it contributed to
-        // NEITHER numerator nor denominator, so boot and composition-root code could grow entirely
-        // uncovered without moving any threshold, while the published percentage implied otherwise.
-        //
-        // Excluding it does not change a single number — a 0/0 entry never did — but it stops the
-        // denominator claiming a file it does not measure. THE GAP IS REAL AND REMAINS: the boot
-        // path is verified by source-text assertions, not by execution. Making main.tsx importable
-        // is the actual fix and is out of scope here.
-        "src/main.tsx",
+        // trmx-253 (review finding 1) excluded src/main.tsx here as unimportable wiring: importing it
+        // under jsdom booted the real app, so its guards read its text and v8 saw a 0/0 file.
+        // trmx-250 (L10) moved the boot path into src/boot.tsx and made main.tsx importable with
+        // `./boot` mocked, so BOTH are executed (boot.test.tsx, main.test.tsx) and both are measured;
+        // nothing under src/ is excluded for being unimportable any more.
       ],
       reporter: ["text-summary", "html", "lcov"],
       // trmx-253: a RATCHET, not a target — and deliberately not a percentage. A percentage floor

@@ -33,6 +33,15 @@ const NOW = () => new Date("2026-07-02T12:00:00Z");
 // and every test starts from a cleared key.
 const LAST_CHECK_AT_KEY = "termixion.update.lastCheckAt";
 
+// trmx-250 (M22): the negatives below used to sleep — `await new Promise((r) => setTimeout(r, 10))` —
+// and then look. A slow runner makes such an assertion pass VACUOUSLY: the check it denies simply had
+// not started yet. The hook has no timers; its startup schedule is an effect that, when it fires,
+// runs a promise chain through the fake client. One async `act` flushes pending effects and then
+// drains the scheduled work through a macrotask, so everything an effect started has settled when
+// it returns. `checks on startup by default` below is the CONTROL: it observes a check that DOES
+// run through this same `settled()` call — that is what makes a negative after `settled()` real.
+const settled = () => act(async () => {});
+
 beforeEach(() => {
   localStorage.clear();
 });
@@ -69,7 +78,9 @@ describe("useUpdateAuthority scheduling", () => {
     const { result } = renderHook(() =>
       useUpdateAuthority({ client, settings, now: NOW }),
     );
-    await waitFor(() => expect(result.current.state.status).toBe("up-to-date"));
+    // The control (see `settled` above): one flush is enough to observe a check that runs.
+    await settled();
+    expect(result.current.state.status).toBe("up-to-date");
     expect(localStorage.getItem(LAST_CHECK_AT_KEY)).toBe(NOW().toISOString());
   });
 
@@ -78,7 +89,7 @@ describe("useUpdateAuthority scheduling", () => {
     settings.set("update.autoCheck", false);
     const client = makeFakeUpdateClient({ update: INFO });
     const { result } = renderHook(() => useUpdateAuthority({ client, settings, now: NOW }));
-    await new Promise((r) => setTimeout(r, 10));
+    await settled();
     expect(result.current.state.status).toBe("idle");
   });
 
@@ -87,7 +98,7 @@ describe("useUpdateAuthority scheduling", () => {
     settings.set("update.checkFrequency", "manual");
     const client = makeFakeUpdateClient({ update: INFO });
     const { result } = renderHook(() => useUpdateAuthority({ client, settings, now: NOW }));
-    await new Promise((r) => setTimeout(r, 10));
+    await settled();
     expect(result.current.state.status).toBe("idle");
   });
 
@@ -105,7 +116,7 @@ describe("useUpdateAuthority scheduling", () => {
     const r1 = renderHook(() =>
       useUpdateAuthority({ client: makeFakeUpdateClient({ update: INFO }), settings: fresh, now: NOW }),
     );
-    await new Promise((r) => setTimeout(r, 10));
+    await settled();
     expect(r1.result.current.state.status).toBe("idle");
 
     const stale = freshSettingsStore();
@@ -153,7 +164,7 @@ describe("useUpdateAuthority auto-download", () => {
     const client = makeFakeUpdateClient({ update: INFO });
     const { result } = renderHook(() => useUpdateAuthority({ client, settings, now: NOW }));
     await waitFor(() => expect(result.current.state.status).toBe("available"));
-    await new Promise((r) => setTimeout(r, 10));
+    await settled();
     expect(result.current.state.status).toBe("available");
   });
 
@@ -172,7 +183,7 @@ describe("useUpdateAuthority auto-download", () => {
     await act(async () => {
       await result.current.checkNow();
     });
-    await new Promise((r) => setTimeout(r, 10));
+    await settled();
     expect(result.current.state.status).toBe("available"); // offered, but not downloaded
   });
 });
@@ -220,7 +231,7 @@ describe("useUpdateAuthority bus protocol", () => {
     const { result } = renderHook(() =>
       useUpdateAuthority({ client, settings, bus, now: NOW, source: "main" }),
     );
-    await new Promise((r) => setTimeout(r, 5));
+    await settled();
     act(() => {
       bus.emit(UPDATE_COMMAND_EVENT, { cmd: { type: "checkNow" }, source: "settings" });
     });
@@ -230,7 +241,7 @@ describe("useUpdateAuthority bus protocol", () => {
     act(() => {
       bus.emit(UPDATE_COMMAND_EVENT, { cmd: { type: "skip" }, source: "main" });
     });
-    await new Promise((r) => setTimeout(r, 5));
+    await settled();
     expect(result.current.state.status).toBe("available");
 
     // Malformed payloads are ignored, never throw.
@@ -257,7 +268,7 @@ describe("useUpdateAuthority bus protocol", () => {
     const { result } = renderHook(() =>
       useUpdateAuthority({ client, settings, bus, now: NOW, source: "main" }),
     );
-    await new Promise((r) => setTimeout(r, 5));
+    await settled();
     act(() => {
       bus.emit(UPDATE_COMMAND_EVENT, {
         cmd: { type: "setAutoCheck", enabled: false },
