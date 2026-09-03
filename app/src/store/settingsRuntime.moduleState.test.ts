@@ -186,9 +186,12 @@ function auditModuleState(source: string, fileName = "module.ts"): ModuleStateAu
    * The roots an expression can PROPAGATE A REFERENCE from — not every identifier it mentions.
    * That distinction is the whole difference between a usable guard and a useless one: walking the
    * entire subtree flagged `Object.keys(SETTING_KEYS)` as aliasing SETTING_KEYS, so the audit
-   * reported the real settingsStore.ts as dirty. A call RETURNS something new; it does not alias
-   * its arguments. Aliasing travels through a direct reference, a literal that wraps one, or a
-   * choice between them — and nothing else here.
+   * reported the real settingsStore.ts as dirty. So calls are treated as OPAQUE. That is a stated
+   * precision boundary, not a claim about semantics: a call can perfectly well return an existing
+   * reference (a getter, an identity helper, `array.at(0)`), and following that would need
+   * return-value tracking this guard does not do. Aliasing is followed through a direct reference,
+   * a literal that wraps one (including shorthand and spread), or a choice between them — and
+   * nothing else here.
    */
   const rootsWithin = (node: ts.Node): string[] => {
     const direct = rootIdentifier(node);
@@ -197,12 +200,18 @@ function auditModuleState(source: string, fileName = "module.ts"): ModuleStateAu
       return [];
     }
     if (ts.isArrayLiteralExpression(node)) {
-      return node.elements.flatMap((element) => rootsWithin(element));
+      return node.elements.flatMap((element) =>
+        ts.isSpreadElement(element) ? rootsWithin(element.expression) : rootsWithin(element),
+      );
     }
     if (ts.isObjectLiteralExpression(node)) {
-      return node.properties.flatMap((property) =>
-        ts.isPropertyAssignment(property) ? rootsWithin(property.initializer) : [],
-      );
+      // `{ shared }` is `{ shared: shared }`; `{ ...shared }` copies every nested reference.
+      return node.properties.flatMap((property) => {
+        if (ts.isPropertyAssignment(property)) return rootsWithin(property.initializer);
+        if (ts.isShorthandPropertyAssignment(property)) return rootsWithin(property.name);
+        if (ts.isSpreadAssignment(property)) return rootsWithin(property.expression);
+        return [];
+      });
     }
     if (ts.isConditionalExpression(node)) {
       return [...rootsWithin(node.whenTrue), ...rootsWithin(node.whenFalse)];
@@ -227,8 +236,8 @@ function auditModuleState(source: string, fileName = "module.ts"): ModuleStateAu
       if (set.size > 0) aliasOf.set(target, set);
     }
   };
-  // Two passes: aliases can be introduced after their use site, and a chain can be built in any
-  // order, so run to a fixed point rather than assuming source order.
+  // Aliases can be introduced after their use site, and a chain can be built in any order, so
+  // alias collection runs to a fixed point (below) rather than assuming source order.
   const collectAliases = (node: ts.Node): void => {
     if (ts.isVariableDeclaration(node) && node.initializer) {
       const names: string[] = [];
@@ -237,7 +246,11 @@ function auditModuleState(source: string, fileName = "module.ts"): ModuleStateAu
     }
     if (
       ts.isBinaryExpression(node) &&
-      node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      (node.operatorToken.kind === ts.SyntaxKind.EqualsToken ||
+        // `s ??= shared`, `s ||= shared`, `s &&= shared` bind a reference exactly as `=` does.
+        node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionEqualsToken ||
+        node.operatorToken.kind === ts.SyntaxKind.BarBarEqualsToken ||
+        node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandEqualsToken)
     ) {
       const names: string[] = [];
       if (ts.isIdentifier(node.left)) names.push(node.left.text);
@@ -260,12 +273,34 @@ function auditModuleState(source: string, fileName = "module.ts"): ModuleStateAu
       }
       taint(names, node.expression);
     }
+    if (ts.isTryStatement(node) && node.catchClause?.variableDeclaration) {
+      // `try { throw shared } catch (s)`: the catch binding IS whatever the block threw. Every
+      // `throw` in the block is a candidate origin — over-approximate, as everywhere here.
+      const names: string[] = [];
+      namesBoundBy(node.catchClause.variableDeclaration.name, names);
+      const throws = (n: ts.Node): void => {
+        if (ts.isThrowStatement(n)) taint(names, n.expression);
+        ts.forEachChild(n, throws);
+      };
+      throws(node.tryBlock);
+    }
     ts.forEachChild(node, collectAliases);
   };
-  let previous = -1;
-  for (let pass = 0; pass < 6 && aliasOf.size !== previous; pass += 1) {
-    previous = aliasOf.size;
+  // A TRUE fixed point. `taint` only ever ADDS (name, origin) pairs and the set of possible pairs
+  // is finite, so the first pass that adds nothing is the fixed point and the loop needs no cap.
+  // The previous version stopped after six passes and called that a fixed point; a chain built in
+  // reverse source order needs one pass per link, so its seventh link escaped. Progress is
+  // measured in pairs because pairs are the quantity `taint` grows; a key count happened to
+  // suffice, but only by an argument about which passes can add keys.
+  const pairCount = (): number => {
+    let n = 0;
+    for (const origins of aliasOf.values()) n += origins.size;
+    return n;
+  };
+  for (;;) {
+    const before = pairCount();
     ts.forEachChild(sf, collectAliases);
+    if (pairCount() === before) break;
   }
 
   const markIfOwned = (node: ts.Node): void => {
@@ -296,7 +331,8 @@ function auditModuleState(source: string, fileName = "module.ts"): ModuleStateAu
       ts.forEachChild(n, findFn);
     };
     ts.forEachChild(sf, findFn);
-    if (!fn?.body || !ts.isBlock(fn.body)) return undefined;
+    // A concise arrow body (`(m) => m.clear()`) is an expression, not a block; scan either.
+    if (!fn?.body) return undefined;
     const params = fn.parameters.map((param) =>
       ts.isIdentifier(param.name) ? param.name.text : undefined,
     );
@@ -595,9 +631,10 @@ describe("trmx-253: the module-state audit itself has teeth", () => {
     expect(audit.mutated).toContain("shared");
   });
 
-  it("does NOT taint through a CALL — a call returns something new, it does not alias its arguments", () => {
+  it("treats a CALL as OPAQUE — a stated precision boundary, not a claim that calls return something new", () => {
     // The over-approximation has to stop somewhere or the guard reports the real file as dirty:
-    // walking whole subtrees flagged `Object.keys(SETTING_KEYS)` as aliasing SETTING_KEYS.
+    // walking whole subtrees flagged `Object.keys(SETTING_KEYS)` as aliasing SETTING_KEYS. A call
+    // CAN return an existing reference; this guard simply does not follow return values.
     const audit = auditModuleState(
       [
         "const registry = { a: 1 };",
@@ -666,6 +703,67 @@ describe("trmx-253: the module-state audit itself has teeth", () => {
       ].join("\n"),
       "computed.ts",
     );
+    expect(audit.mutated).toContain("shared");
+  });
+
+  // Step-9 verify iteration 5 (the loop cap). Four more ORDINARY forms, plus one structural defect
+  // in the alias loop itself. Each fixture below fails with ONLY its own fix reverted — checked by
+  // neutering the fixes one at a time — so none of them rides on another's.
+  it.each([
+    ["object shorthand", "const box = { shared };", "box.shared.snapshot.clear();"],
+    ["object spread", "const box = { ...shared };", "box.snapshot.clear();"],
+    ["array spread", "const arr = [...[shared]];", "arr[0].snapshot.clear();"],
+    ["nullish assignment", "let s; s ??= shared;", "s.snapshot.clear();"],
+    ["or-assignment", "let s; s ||= shared;", "s.snapshot.clear();"],
+    ["and-assignment", "let s = 1 as unknown; s &&= shared;", "s.snapshot.clear();"],
+    ["a catch binding", "try { throw shared; } catch (s) {", "s.snapshot.clear(); }"],
+  ])("CATCHES an alias introduced by %s", (_label, bind, use) => {
+    const audit = auditModuleState(
+      [
+        "const shared = { snapshot: new Map<string, string>() };",
+        "function touch() {",
+        "  " + bind,
+        "  " + use,
+        "}",
+      ].join("\n"),
+      "binding-forms-2.ts",
+    );
+    expect(audit.mutated).toContain("shared");
+  });
+
+  it("CATCHES a concise-body arrow helper — the form the helper scanner's own comment used as its example", () => {
+    const audit = auditModuleState(
+      [
+        "const shared = { snapshot: new Map<string, string>() };",
+        "const wipe = (m: Map<string, string>) => m.clear();",
+        "function touch() { wipe(shared.snapshot); }",
+      ].join("\n"),
+      "concise-arrow-helper.ts",
+    );
+    expect(audit.mutated).toContain("shared");
+  });
+
+  it("runs alias collection to a TRUE fixed point: an out-of-order chain longer than any pass cap", () => {
+    // The previous loop stopped after six passes and called that a fixed point. A chain built in
+    // reverse source order needs one pass per link, so a seven-link chain escaped. Twelve links
+    // here, so no "big enough" constant can pass this by accident.
+    //
+    // The chain is built from DECLARATIONS, deliberately. Written as `let` + assignments it passed
+    // against the capped loop for an incidental reason: the mutation visitor treats an assignment
+    // whose left side is an alias as a write to the module binding, so `l0 = shared` alone flagged
+    // `shared` and the chain never had to resolve. Reverse-order `const`s (a parse-only fixture —
+    // at runtime that order is a temporal-dead-zone error) leave the alias loop as the only path.
+    const links = 12;
+    const names = Array.from({ length: links }, (_, i) => `l${i}`);
+    const lines = [
+      "const shared = { snapshot: new Map<string, string>() };",
+      "function touch() {",
+    ];
+    for (let i = links - 1; i >= 1; i -= 1) lines.push(`  const ${names[i]} = ${names[i - 1]};`);
+    lines.push(`  const ${names[0]} = shared;`);
+    lines.push(`  ${names[links - 1]}.snapshot.clear();`);
+    lines.push("}");
+    const audit = auditModuleState(lines.join("\n"), "long-chain.ts");
     expect(audit.mutated).toContain("shared");
   });
 
