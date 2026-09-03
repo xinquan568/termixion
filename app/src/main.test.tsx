@@ -22,7 +22,8 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { BootDeps } from "./boot";
 
 const h = vi.hoisted(() => ({
-  start: vi.fn(() => Promise.resolve()),
+  // Typed by call signature (not by an unused parameter): `mock.calls[0][0]` must be a BootDeps.
+  start: vi.fn<(deps: BootDeps) => Promise<void>>(() => Promise.resolve()),
   render: vi.fn(),
   createRoot: vi.fn(),
   close: vi.fn(() => Promise.resolve()),
@@ -93,7 +94,7 @@ let deps: BootDeps;
 beforeAll(async () => {
   await import("./main");
   expect(h.start).toHaveBeenCalledTimes(1);
-  deps = h.start.mock.calls[0][0] as BootDeps;
+  deps = h.start.mock.calls[0][0];
 });
 
 describe("main.tsx at import (trmx-250 L10): the ONLY startup action is one start(realBootDeps)", () => {
