@@ -65,7 +65,18 @@ describe("ByteRouter", () => {
   });
 });
 
-/** A controllable fake world: virtual clock, async rAF (+8 ms frame stamp), auto-responder PTY. */
+/** A controllable fake world: virtual clock, async rAF (+8 ms frame stamp), auto-responder PTY.
+ *
+ *  trmx-250 (M22): the WHOLE fake world schedules on the microtask queue — `delay`, `raf` and the PTY
+ *  emits alike — and nothing on real timers. Two reasons. (1) Determinism: microtasks run FIFO with
+ *  no event-loop turn, so how runPerf's awaits interleave with the fake's emits and with the rAF
+ *  re-arm chain is fixed by construction. (2) Cost: every zero-delay timer in Node has a ≥ 1 ms
+ *  floor and a full run awaits `delay` about a thousand times, so the old real-timer fake cost
+ *  seconds of wall time that grew under load — the full-suite-only flake this replaces (3.6 s → 10 ms
+ *  for this file's tests). Moving only `delay` to a microtask would have starved the macrotask
+ *  emits — the marker never arrives and the iteration cap trips — which is why all of them moved
+ *  together. If a future scenario ever needs a real macrotask boundary, `setImmediate` (also
+ *  floor-free) is the fallback; a zero-delay timer is not. */
 function fakeWorld(
   opts: { renderer?: "webgl" | "dom"; respondReady?: boolean; loseWebglAtSeq?: boolean } = {},
 ) {
@@ -108,21 +119,21 @@ function fakeWorld(
       if (data === READY_LINE) {
         // Echo the command back first (split marker — must NOT satisfy readiness), then, when
         // enabled, the real contiguous marker output.
-        setTimeout(() => {
+        queueMicrotask(() => {
           emit('echo __TXPERF""READY__ && cat > /dev/null\r\n');
           if (opts.respondReady !== false) emit("__TXPERFREADY__\r\n");
-        }, 0);
+        });
       } else if (data === "x") {
         emit("x"); // cat echo discipline: every key comes straight back
       } else if (data === SEQ_LINE) {
         if (opts.loseWebglAtSeq) rendererNow = "dom"; // mid-run context loss
-        setTimeout(() => {
+        queueMicrotask(() => {
           emit("1\r\n2\r\n3\r\n");
           emit(`${"4".repeat(80)}\r\n`);
           emit("__TXPERFSCROLLDONE__\r\n");
-        }, 0);
+        });
       } else if (data === "yes\r") {
-        setTimeout(() => emit("y\r\n".repeat(50)), 0);
+        queueMicrotask(() => emit("y\r\n".repeat(50)));
       }
       return Promise.resolve();
     },
@@ -136,13 +147,13 @@ function fakeWorld(
     },
     raf: (cb) => {
       const enqueued = clock.t;
-      setTimeout(() => cb(enqueued + 8), 0);
+      queueMicrotask(() => cb(enqueued + 8));
     },
     now: () => clock.t,
-    // The fake delay yields the event loop WITHOUT advancing the clock: a virtual-time jump would
-    // fabricate giant rAF gaps and fail the scroll budgets for the wrong reason. waitFor's
-    // iteration cap keeps timeouts meaningful under this stationary clock.
-    delay: () => new Promise((resolve) => setTimeout(resolve, 0)),
+    // The fake delay yields WITHOUT advancing the clock: a virtual-time jump would fabricate giant
+    // rAF gaps and fail the scroll budgets for the wrong reason. waitFor's iteration cap keeps
+    // timeouts meaningful under this stationary clock. A microtask, like everything else here.
+    delay: () => new Promise<void>((resolve) => queueMicrotask(resolve)),
     hasFocus: () => true,
   };
   return { deps, sent, scrolled, reports, clock, acks };
@@ -200,7 +211,7 @@ describe("runPerf (fake world)", () => {
     expect(report.pass).toBe(false);
     expect(report.error).toContain("open_pty");
     expect(world.reports).toHaveLength(1); // the report still reaches the backend
-  }, 15000);
+  });
 
   it("an echo-only world (marker never arrives) times out readiness and fails the run", async () => {
     const world = fakeWorld({ respondReady: false });
@@ -208,7 +219,7 @@ describe("runPerf (fake world)", () => {
     expect(report.pass).toBe(false);
     expect(report.error).toContain("readiness");
     expect(world.reports[0].ok).toBe(false);
-  }, 15000);
+  });
 
   it("pins the scenario parameters the watchdog derivation quotes", () => {
     expect(SCENARIO.typingKeys).toBe(1000);

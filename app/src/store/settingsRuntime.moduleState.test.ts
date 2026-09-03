@@ -837,8 +837,22 @@ describe("trmx-253 (T3.5): the pre-M8 facade is gone, and no neighbour holds set
   // bounded ONE named neighbour (settingsRuntimeAmbient.ts) because that file was known to exist;
   // now that it is deleted, the invariant generalises: NOTHING beside settingsStore.ts may hold
   // settings state at module scope either, or the ten pieces could simply move next door.
-  const neighbours = import.meta.glob("./*.{ts,tsx}", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
+  //
+  // trmx-250 (T4.3b): PLUS the boot composition root, `../boot.tsx`. Before it existed, the "no
+  // ambient bridge" property of main.tsx was a text pin (`not.toContain("adoptSettingsRuntime")`)
+  // that only ever read main.tsx. This audit is the mechanism trmx-253 chose for exactly that
+  // property, so it widens instead: a module-scoped `let`/`var`, or a `const` the module writes
+  // through, IS an ambient pointer whatever it is called. The row is simply absent until the file
+  // exists, which is what let the widening land red-first.
+  const neighbours = import.meta.glob(["./*.{ts,tsx}", "../boot.tsx"], { query: "?raw", import: "default", eager: true }) as Record<string, string>;
   const sources = Object.entries(neighbours).filter(([path]) => !path.includes(".test."));
+  // The declaration check below runs over settingsStore.ts AND (once present) boot.tsx.
+  const declarationSources: Array<[file: string, source: string]> = [
+    ["settingsStore.ts", storeSource],
+    ...Object.entries(neighbours)
+      .filter(([path]) => path === "../boot.tsx")
+      .map(([, source]): [string, string] => ["boot.tsx", source]),
+  ];
 
   it("no longer ships settingsRuntimeAmbient.ts", () => {
     expect(Object.keys(neighbours)).not.toContain("./settingsRuntimeAmbient.ts");
@@ -850,23 +864,52 @@ describe("trmx-253 (T3.5): the pre-M8 facade is gone, and no neighbour holds set
     expect(audit.mutated).toEqual([]);
   });
 
-  it.each([
-    "makeLegacyStorageStore",
-    "makeSettingsStore",
-    "__resetSettingsForTest",
-    "hydrateSettings",
-    "ambientSettingsRuntime",
-    "adoptSettingsRuntime",
-  ])("settingsStore.ts declares no `%s`", (name) => {
+  // trmx-250 (Step-9 finding 2): "no mutable state" is NOT "no singleton". A module-scoped
+  // `export const sharedRuntime = createSettingsRuntime();` is a runtime singleton, yet it is a
+  // `const` the module never writes through, and the audit treats calls as opaque — so the row above
+  // passes it. The boot module has no legitimate module-scoped VALUE at all (its module scope is
+  // imports, an interface and function declarations), so for boot.tsx the rule is the strong one:
+  // no module-scoped variable statement, whatever it is named or initialised with.
+  it("../boot.tsx declares no module-scoped values at all (a runtime singleton would be one)", () => {
+    const source = neighbours["../boot.tsx"];
+    expect(source, "boot.tsx is in the audited set").toBeTypeOf("string");
+    const audit = auditModuleState(source, "boot.tsx");
+    expect(audit.moduleScopedNames).toEqual([]);
+  });
+
+  it("the audit SEES a call-initialised module const (the shape the rule above exists for)", () => {
+    // Proof the assertion above is not vacuous: the audit reports the binding by name even though
+    // it is neither `let`/`var` nor written through.
+    const audit = auditModuleState(
+      "export const sharedRuntime = createSettingsRuntime();\nexport function boot() { return sharedRuntime; }\n",
+      "boot-singleton.tsx",
+    );
+    expect(audit.moduleScopedNames).toEqual(["sharedRuntime"]);
+    expect(audit.letOrVar).toEqual([]);
+    expect(audit.mutated).toEqual([]); // ...which is exactly why the mutable-state row cannot catch it
+  });
+
+  it.each(
+    declarationSources.flatMap(([file, source]) =>
+      [
+        "makeLegacyStorageStore",
+        "makeSettingsStore",
+        "__resetSettingsForTest",
+        "hydrateSettings",
+        "ambientSettingsRuntime",
+        "adoptSettingsRuntime",
+      ].map((name): [string, string, string] => [file, name, source]),
+    ),
+  )("%s declares no `%s`", (file, name, source) => {
     // A declaration check, not a text search: the names appear in this file's own prose and in
     // settingsStore.ts's header comment explaining what T3.5 removed, and prose must not be able
     // to fail — or pass — a guard about code.
     const sf = ts.createSourceFile(
-      "settingsStore.ts",
-      storeSource,
+      file,
+      source,
       ts.ScriptTarget.Latest,
       true,
-      ts.ScriptKind.TS,
+      file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
     );
     const declared = sf.statements.flatMap((statement) => {
       if (ts.isFunctionDeclaration(statement)) return statement.name ? [statement.name.text] : [];

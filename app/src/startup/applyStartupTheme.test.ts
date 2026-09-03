@@ -5,7 +5,7 @@
 // persisted theme, so startup reads it through the settings registry and paints the body — plus
 // the settings surface's --tx-* vars — before anything renders. trmx-80 (FR-13): settings are
 // file-backed now, so the read goes through the snapshot-backed store (seeded by the runtime's
-// hydrate() in boot(), BEFORE this runs — ordering guarded by main.order.test.ts); the old
+// hydrate() in boot(), BEFORE this runs — ordering guarded by boot.test.tsx (trmx-250)); the old
 // `storage` seam is meaningless for the theme value and became an injectable settings store. Theme
 // materialization also moved into hydration (settingsStore.test.ts covers it) — this spec covers
 // the paint only. trmx-253 (T3.4): the store is a REQUIRED option, so every case here names the

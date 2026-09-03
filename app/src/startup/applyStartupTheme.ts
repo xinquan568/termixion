@@ -5,7 +5,7 @@
 // runtime override before render). Static CSS cannot know the PERSISTED theme, so main.tsx calls
 // this from boot() — since trmx-80 (FR-13) immediately AFTER `await hydrateSettings()`, because
 // the theme now lives in the backend's config file and needs one IPC read before the themed first
-// paint (ordering guarded by main.order.test.ts). It reads through the snapshot-backed settings
+// paint (ordering executed by boot.test.tsx since trmx-250). It reads through the snapshot-backed settings
 // registry (hydration already materialized the first-run derivation: dark OS → Night, light →
 // Catppuccin Latte, trmx-202) and applies the theme via applyTxTheme. trmx-173: BOTH surfaces get the --tx-* vars (not
 // just the body) — the main/terminal window's chrome is themed only via them, so painting just the
