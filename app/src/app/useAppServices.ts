@@ -19,10 +19,10 @@ import { listScripts } from "../scripts/scriptsBackend";
 import {
   isLabelOrientation,
   isTabBarPosition,
-  makeSettingsStore,
   type LabelOrientation,
   type TabBarPosition,
 } from "../store/settingsStore";
+import { useSettingsStore } from "../store/settingsRuntimeContext";
 import { paneBySessionId, type TabsState } from "../tabs/tabState";
 import { writePaneNotice } from "../terminal/appSeams";
 import { activityErrorColorFor, activityIsDarkFor } from "../theme/activityColors";
@@ -93,6 +93,10 @@ export function useAppServices(deps: AppServicesDeps): AppServices {
     setShortcutHintsOn, setAiCounterOn, setBadgeColor, setBadgeOutlineColor, setActivityIsDark,
     setActivityErrorColor, setSearchColors,
   } = deps;
+  // trmx-253 (T3.4): both settings reads below come off THIS window's runtime — the startup-script
+  // path through a plain store, the theme hot-reload through one that broadcasts on the real bus.
+  const settings = useSettingsStore();
+  const themeReloadSettings = useSettingsStore(realEventBus, "themes-reload");
 
   const boot = () => {
     if (bootedRef.current) return;
@@ -105,7 +109,7 @@ export function useAppServices(deps: AppServicesDeps): AppServices {
         deliverServicePathsRef.current(serviceBootPaths);
         return;
       }
-      const startupPath = makeSettingsStore().get("scripts.startup");
+      const startupPath = settings.get("scripts.startup");
       // The boot default tab goes through the shared creation primitive (one reservation
       // per dispatch; at boot there is no active tab, so the inherited cwd is undefined —
       // identical to the pre-trmx-224 unseeded open), and the startup script keys off the
@@ -249,7 +253,7 @@ export function useAppServices(deps: AppServicesDeps): AppServices {
 
   const installThemeHotReload = () => {
     return installHotReload({
-      settings: makeSettingsStore(undefined, realEventBus, "themes-reload"),
+      settings: themeReloadSettings,
     });
   };
 

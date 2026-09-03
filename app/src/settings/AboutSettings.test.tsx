@@ -10,20 +10,19 @@
 // secondary text; a plain browser (null path) hides it. trmx-148: the row opens BACKEND-side
 // through the injected openConfigFile seam (config_open_file — the webview opener plugin command
 // is capability-denied in the packaged app) and surfaces a rejection as an inline error pill.
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import { AboutSettings } from "./AboutSettings";
 import { makeFakeAppInfo } from "../update/appInfo";
 import { makeFakeOpener } from "../update/opener";
 import type { UseUpdate } from "../update/useUpdate";
 import { initialUpdateState, type UpdateState } from "../update/updateState";
+import type { SettingsRuntime, SettingsStore } from "../store/settingsStore";
 import {
-  __resetSettingsForTest,
-  hydrateSettings,
-  makeSettingsStore,
-  type KeyValueStore,
-  type SettingsStore,
-} from "../store/settingsStore";
+  freshSettingsRuntime,
+  freshSettingsStore,
+  renderWithSettings,
+} from "../test/settingsRuntime";
 
 const GITHUB_URL = "https://github.com/xinquan568/termixion";
 
@@ -38,35 +37,30 @@ function fakeUpdate(state: Partial<UpdateState> = {}): UseUpdate {
   };
 }
 
-function fakeStorage(initial: Record<string, string> = {}): KeyValueStore {
-  const data = new Map(Object.entries(initial));
-  return {
-    getItem: (k) => (data.has(k) ? data.get(k)! : null),
-    setItem: (k, v) => void data.set(k, v),
-    removeItem: (k) => void data.delete(k),
-  };
-}
-
 function renderAbout(
   update: UseUpdate,
   opener = makeFakeOpener(),
-  settings: SettingsStore = makeSettingsStore(fakeStorage()),
+  settings?: SettingsStore,
   // trmx-148: the backend-side config-file open seam; defaults to a resolving fake.
   openConfigFile: () => Promise<void> = vi.fn(async () => {}),
   // trmx-236: the log-folder seams (backend-resolved path + backend-side open).
   getLogDir: () => Promise<string> = vi.fn(async () => LOG_DIR),
   openLogDir: () => Promise<void> = vi.fn(async () => {}),
+  // trmx-253 (T3.4): the runtime the page reads getConfigFilePath() through. A fresh one has no
+  // path (the plain-browser case); the config-file tests hand in the one they hydrated.
+  runtime: SettingsRuntime = freshSettingsRuntime(),
 ) {
-  render(
+  renderWithSettings(
     <AboutSettings
       update={update}
       appInfo={makeFakeAppInfo("0.0.1")}
       opener={opener}
-      settings={settings}
+      settings={settings ?? runtime.makeStore()}
       openConfigFile={openConfigFile}
       getLogDir={getLogDir}
       openLogDir={openLogDir}
     />,
+    { runtime },
   );
   return opener;
 }
@@ -152,7 +146,7 @@ describe("AboutSettings Updates rows (vmark 0.8.18 parity)", () => {
   });
 
   it("the frequency select defaults to On startup and persists a change", () => {
-    const store = makeSettingsStore(fakeStorage());
+    const store = freshSettingsStore();
     renderAbout(fakeUpdate(), makeFakeOpener(), store);
     const select = screen.getByRole("combobox", { name: "Check frequency" }) as HTMLSelectElement;
     expect(select.value).toBe("on-startup");
@@ -168,7 +162,7 @@ describe("AboutSettings Updates rows (vmark 0.8.18 parity)", () => {
   });
 
   it("the auto-download toggle defaults on and persists a change", () => {
-    const store = makeSettingsStore(fakeStorage());
+    const store = freshSettingsStore();
     renderAbout(fakeUpdate(), makeFakeOpener(), store);
     const toggle = screen.getByRole("switch", { name: "Download updates automatically" });
     expect(toggle).toHaveAttribute("aria-checked", "true");
@@ -240,7 +234,7 @@ describe("AboutSettings Reset section", () => {
   });
 
   it("arms an inline confirmation; confirming resets everything and re-enables auto-check", () => {
-    const store = makeSettingsStore(fakeStorage());
+    const store = freshSettingsStore();
     const resetAll = vi.spyOn(store, "resetAll");
     const update = fakeUpdate();
     store.set("update.checkFrequency", "weekly");
@@ -260,7 +254,7 @@ describe("AboutSettings Reset section", () => {
   });
 
   it("cancel disarms without resetting", () => {
-    const store = makeSettingsStore(fakeStorage());
+    const store = freshSettingsStore();
     const resetAll = vi.spyOn(store, "resetAll");
     renderAbout(fakeUpdate(), makeFakeOpener(), store);
     fireEvent.click(screen.getByRole("button", { name: "Reset to Defaults" }));
@@ -270,15 +264,13 @@ describe("AboutSettings Reset section", () => {
   });
 });
 
-// trmx-80 (FR-13): the "Open config file" affordance, driven by the hydrated module state
-// (getConfigFilePath) — so these tests hydrate with a fake backend, or don't (plain browser).
+// trmx-80 (FR-13): the "Open config file" affordance, driven by the runtime the page is rendered
+// under (runtime.getConfigFilePath()) — so these tests hydrate one with a fake backend and render
+// through it, or render under a fresh un-hydrated one (the plain-browser case).
 // trmx-148: the row opens BACKEND-side through the injected openConfigFile seam — the webview
 // opener plugin command is capability-denied in the packaged app — and a rejection surfaces as
 // an inline error pill instead of vanishing into a discarded void.
 describe("AboutSettings config file (trmx-80 / trmx-148)", () => {
-  beforeEach(() => __resetSettingsForTest());
-  afterEach(() => __resetSettingsForTest());
-
   const CONFIG_PATH = "/Users/me/Library/Application Support/termixion/config.toml";
 
   /** The minimal T2 backend: config_read resolves the path; everything else resolves null. */
@@ -296,22 +288,27 @@ describe("AboutSettings config file (trmx-80 / trmx-148)", () => {
     };
   }
 
-  /** Hydrate the module state so getConfigFilePath() serves CONFIG_PATH (the group shows). */
-  async function hydrateWithPath() {
-    await hydrateSettings({
+  /** A runtime hydrated so ITS getConfigFilePath() serves CONFIG_PATH (the group shows). */
+  async function hydrateWithPath(): Promise<SettingsRuntime> {
+    const runtime = freshSettingsRuntime();
+    await runtime.hydrate({
       invoke: fakeConfigInvoke(CONFIG_PATH),
       bus: { listen: () => Promise.resolve(() => {}) },
     });
+    return runtime;
   }
 
   it("shows the config path and opens the file through the BACKEND seam (trmx-148)", async () => {
-    await hydrateWithPath();
+    const runtime = await hydrateWithPath();
     const openConfigFile = vi.fn(async () => {});
     const opener = renderAbout(
       fakeUpdate(),
       makeFakeOpener(),
-      makeSettingsStore(fakeStorage()),
+      undefined,
       openConfigFile,
+      undefined,
+      undefined,
+      runtime,
     );
     expect(screen.getByText("Open config file")).toBeInTheDocument();
     // The path shows as the row's secondary text so the user can see where the file lives.
@@ -322,9 +319,17 @@ describe("AboutSettings config file (trmx-80 / trmx-148)", () => {
   });
 
   it("surfaces a rejected open as an inline error pill (trmx-148 — no silent discard)", async () => {
-    await hydrateWithPath();
+    const runtime = await hydrateWithPath();
     const openConfigFile = vi.fn(() => Promise.reject(new Error("opener denied by capability")));
-    renderAbout(fakeUpdate(), makeFakeOpener(), makeSettingsStore(fakeStorage()), openConfigFile);
+    renderAbout(
+      fakeUpdate(),
+      makeFakeOpener(),
+      undefined,
+      openConfigFile,
+      undefined,
+      undefined,
+      runtime,
+    );
     fireEvent.click(screen.getByRole("button", { name: "Open" }));
     await waitFor(() =>
       expect(screen.getByText("opener denied by capability")).toBeInTheDocument(),
@@ -332,12 +337,20 @@ describe("AboutSettings config file (trmx-80 / trmx-148)", () => {
   });
 
   it("a later successful open clears the error pill (trmx-148)", async () => {
-    await hydrateWithPath();
+    const runtime = await hydrateWithPath();
     let fail = true;
     const openConfigFile = vi.fn(() =>
       fail ? Promise.reject(new Error("opener denied by capability")) : Promise.resolve(),
     );
-    renderAbout(fakeUpdate(), makeFakeOpener(), makeSettingsStore(fakeStorage()), openConfigFile);
+    renderAbout(
+      fakeUpdate(),
+      makeFakeOpener(),
+      undefined,
+      openConfigFile,
+      undefined,
+      undefined,
+      runtime,
+    );
     fireEvent.click(screen.getByRole("button", { name: "Open" }));
     await waitFor(() =>
       expect(screen.getByText("opener denied by capability")).toBeInTheDocument(),

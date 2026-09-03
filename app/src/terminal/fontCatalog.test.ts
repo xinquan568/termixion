@@ -14,16 +14,7 @@ import {
   isBundledFamily,
 } from "./fontCatalog";
 import { ITERM2_FONT_FAMILY } from "./iterm2Theme";
-import { makeSettingsStore, type KeyValueStore } from "../store/settingsStore";
-
-function fakeStorage(initial: Record<string, string> = {}): KeyValueStore {
-  const data = new Map(Object.entries(initial));
-  return {
-    getItem: (k) => (data.has(k) ? data.get(k)! : null),
-    setItem: (k, v) => void data.set(k, v),
-    removeItem: (k) => void data.delete(k),
-  };
-}
+import { freshSettingsStore } from "../test/settingsRuntime";
 
 /** Install a fake FontFaceSet on jsdom's document (which ships none); restore in afterEach. */
 function stubFonts(load: (spec: string) => Promise<unknown>) {
@@ -114,23 +105,23 @@ describe("ensureFontLoaded", () => {
 describe("ensureStartupFontLoaded (the boot gate)", () => {
   it("loads the effective family when it is bundled (the fresh-profile default)", async () => {
     const fonts = stubFonts(() => Promise.resolve([]));
-    await ensureStartupFontLoaded(makeSettingsStore(fakeStorage()));
+    await ensureStartupFontLoaded(freshSettingsStore());
     expect(fonts.load).toHaveBeenCalledWith(`12px "${DEFAULT_FONT_FAMILY}"`);
   });
 
   it("is a no-op for the system default ('')", async () => {
     const fonts = stubFonts(() => Promise.resolve([]));
-    await ensureStartupFontLoaded(
-      makeSettingsStore(fakeStorage({ "termixion.terminal.fontFamily": "" })),
-    );
+    const settings = freshSettingsStore();
+    settings.set("terminal.fontFamily", "");
+    await ensureStartupFontLoaded(settings);
     expect(fonts.load).not.toHaveBeenCalled();
   });
 
   it("is a no-op for a custom family", async () => {
     const fonts = stubFonts(() => Promise.resolve([]));
-    await ensureStartupFontLoaded(
-      makeSettingsStore(fakeStorage({ "termixion.terminal.fontFamily": "Menlo" })),
-    );
+    const settings = freshSettingsStore();
+    settings.set("terminal.fontFamily", "Menlo");
+    await ensureStartupFontLoaded(settings);
     expect(fonts.load).not.toHaveBeenCalled();
   });
 });

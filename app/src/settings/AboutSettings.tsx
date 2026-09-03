@@ -21,8 +21,8 @@ import type { AppInfo } from "../update/appInfo";
 import type { Opener } from "../update/opener";
 import type { UseUpdate } from "../update/useUpdate";
 import { isCardVisible, progressPercent, type UpdateState } from "../update/updateState";
+import { useSettingsRuntime } from "../store/settingsRuntimeContext";
 import {
-  getConfigFilePath,
   SETTING_DEFAULTS,
   type CheckFrequency,
   type SettingsStore,
@@ -65,7 +65,8 @@ export function AboutSettings({
 }: AboutSettingsProps) {
   const { state } = update;
   // Hydrated before any window renders (main.tsx boot order); null in a plain browser.
-  const configPath = getConfigFilePath();
+  // trmx-253 (T3.3): read through this subtree's runtime, not a module-global accessor.
+  const configPath = useSettingsRuntime().getConfigFilePath();
   const [version, setVersion] = useState<string>("");
   const [frequency, setFrequency] = useState<CheckFrequency>(() =>
     settings.get("update.checkFrequency"),

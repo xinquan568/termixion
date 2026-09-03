@@ -17,12 +17,8 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppearanceSettings } from "./AppearanceSettings";
-import {
-  makeSettingsStore,
-  SETTINGS_CHANGED_EVENT,
-  type KeyValueStore,
-  type SettingsBus,
-} from "../store/settingsStore";
+import { SETTINGS_CHANGED_EVENT, type SettingsBus } from "../store/settingsStore";
+import { freshSettingsRuntime, freshSettingsStore } from "../test/settingsRuntime";
 import { themes } from "../theme/themes";
 import { clearUserThemes, registerUserThemes, type UserThemeEntry } from "../theme/registry";
 import type { ThemeSpec } from "../theme/themeDerive";
@@ -68,18 +64,6 @@ function invalidUserEntry(id: string, message: string): UserThemeEntry {
   };
 }
 
-function fakeStorage(initial: Record<string, string> = {}): KeyValueStore & {
-  data: Map<string, string>;
-} {
-  const data = new Map(Object.entries(initial));
-  return {
-    data,
-    getItem: (k) => (data.has(k) ? data.get(k)! : null),
-    setItem: (k, v) => void data.set(k, v),
-    removeItem: (k) => void data.delete(k),
-  };
-}
-
 function fakeBus(): SettingsBus & { events: Array<{ event: string; payload: unknown }> } {
   const events: Array<{ event: string; payload: unknown }> = [];
   return { events, emit: (event, payload) => void events.push({ event, payload }) };
@@ -96,7 +80,7 @@ describe("AppearanceSettings", () => {
   it("renders the Theme group with the eight labeled swatches, lightest to darkest (trmx-202)", () => {
     render(
       <AppearanceSettings
-        settings={makeSettingsStore(fakeStorage())}
+        settings={freshSettingsStore()}
         selected="night"
         barPosition="bottom"
       />,
@@ -121,7 +105,7 @@ describe("AppearanceSettings", () => {
   it("marks the SELECTED prop's swatch (aria-checked + ring class) — controlled by the shell", () => {
     const { rerender } = render(
       <AppearanceSettings
-        settings={makeSettingsStore(fakeStorage())}
+        settings={freshSettingsStore()}
         selected="solarized"
         barPosition="bottom"
       />,
@@ -134,7 +118,7 @@ describe("AppearanceSettings", () => {
     // The shell moving the selection (e.g. a cross-window broadcast) moves the ring.
     rerender(
       <AppearanceSettings
-        settings={makeSettingsStore(fakeStorage())}
+        settings={freshSettingsStore()}
         selected="gruvbox"
         barPosition="bottom"
       />,
@@ -146,7 +130,7 @@ describe("AppearanceSettings", () => {
   it("fills each swatch circle with that theme's background color", () => {
     render(
       <AppearanceSettings
-        settings={makeSettingsStore(fakeStorage())}
+        settings={freshSettingsStore()}
         selected="night"
         barPosition="bottom"
       />,
@@ -160,8 +144,7 @@ describe("AppearanceSettings", () => {
   });
 
   it("persists the choice and notifies the shell on click", () => {
-    const storage = fakeStorage();
-    const settings = makeSettingsStore(storage);
+    const settings = freshSettingsStore();
     const onThemeChange = vi.fn();
     render(
       <AppearanceSettings
@@ -174,7 +157,7 @@ describe("AppearanceSettings", () => {
 
     fireEvent.click(screen.getByRole("radio", { name: "Gruvbox" }));
 
-    expect(storage.data.get("termixion.appearance.theme")).toBe("gruvbox");
+    expect(settings.get("appearance.theme")).toBe("gruvbox");
     expect(onThemeChange).toHaveBeenCalledWith("gruvbox");
   });
 });
@@ -183,7 +166,7 @@ describe("AppearanceSettings — Tab bar (trmx-81, FR-2.2)", () => {
   it("renders the Tab bar group BELOW Theme with the four Position segments", () => {
     const { container } = render(
       <AppearanceSettings
-        settings={makeSettingsStore(fakeStorage())}
+        settings={freshSettingsStore()}
         selected="night"
         barPosition="bottom"
       />,
@@ -209,7 +192,7 @@ describe("AppearanceSettings — Tab bar (trmx-81, FR-2.2)", () => {
   });
 
   it("reflects the barPosition PROP — controlled by the shell (trmx-82 D5 lift)", () => {
-    const settings = makeSettingsStore(fakeStorage());
+    const settings = freshSettingsStore();
     const { rerender } = render(
       <AppearanceSettings settings={settings} selected="night" barPosition="left" />,
     );
@@ -223,9 +206,8 @@ describe("AppearanceSettings — Tab bar (trmx-81, FR-2.2)", () => {
   });
 
   it("clicking a segment writes through settings.set (persist + broadcast) and notifies the shell", () => {
-    const storage = fakeStorage();
     const bus = fakeBus();
-    const settings = makeSettingsStore(storage, bus, "settings-window");
+    const settings = freshSettingsStore(bus, "settings-window");
     const onBarPositionChange = vi.fn();
     const { rerender } = render(
       <AppearanceSettings
@@ -239,7 +221,7 @@ describe("AppearanceSettings — Tab bar (trmx-81, FR-2.2)", () => {
     fireEvent.click(screen.getByRole("radio", { name: "Top" }));
 
     // Persisted through the registry…
-    expect(storage.data.get("termixion.tabs.barPosition")).toBe("top");
+    expect(settings.get("tabs.barPosition")).toBe("top");
     // …broadcast for the main window's live application (the store owns the emit)…
     expect(bus.events).toContainEqual({
       event: SETTINGS_CHANGED_EVENT,
@@ -260,9 +242,9 @@ describe("AppearanceSettings — Tab bar (trmx-81, FR-2.2)", () => {
   });
 
   it("re-clicking the selected segment writes nothing (the SegmentedControl no-op contract)", () => {
-    const storage = fakeStorage();
     const bus = fakeBus();
-    const settings = makeSettingsStore(storage, bus, "settings-window");
+    const settings = freshSettingsStore(bus, "settings-window");
+    const setSpy = vi.spyOn(settings, "set");
     const onBarPositionChange = vi.fn();
     render(
       <AppearanceSettings
@@ -275,7 +257,7 @@ describe("AppearanceSettings — Tab bar (trmx-81, FR-2.2)", () => {
 
     fireEvent.click(screen.getByRole("radio", { name: "Bottom" }));
 
-    expect(storage.data.has("termixion.tabs.barPosition")).toBe(false);
+    expect(setSpy).not.toHaveBeenCalled();
     expect(bus.events).toEqual([]);
     expect(onBarPositionChange).not.toHaveBeenCalled();
   });
@@ -285,7 +267,7 @@ describe("AppearanceSettings — Orientation (trmx-82, FR-2.3)", () => {
   it("renders the Orientation row below Position, enabled on a LEFT bar, Horizontal by default", () => {
     const { container } = render(
       <AppearanceSettings
-        settings={makeSettingsStore(fakeStorage())}
+        settings={freshSettingsStore()}
         selected="night"
         barPosition="left"
       />,
@@ -310,14 +292,9 @@ describe("AppearanceSettings — Orientation (trmx-82, FR-2.3)", () => {
   });
 
   it("is enabled on a RIGHT bar and reads the persisted orientation from the injected store", () => {
-    const storage = fakeStorage({ "termixion.tabs.sideLabelOrientation": "vertical" });
-    render(
-      <AppearanceSettings
-        settings={makeSettingsStore(storage)}
-        selected="night"
-        barPosition="right"
-      />,
-    );
+    const settings = freshSettingsStore();
+    settings.set("tabs.sideLabelOrientation", "vertical");
+    render(<AppearanceSettings settings={settings} selected="night" barPosition="right" />);
     const group = screen.getByRole("radiogroup", { name: "Tab label orientation" });
     expect(group).not.toHaveAttribute("aria-disabled");
     expect(within(group).getByRole("radio", { name: "Vertical" })).toHaveAttribute(
@@ -331,7 +308,7 @@ describe("AppearanceSettings — Orientation (trmx-82, FR-2.3)", () => {
     (position) => {
       render(
         <AppearanceSettings
-          settings={makeSettingsStore(fakeStorage())}
+          settings={freshSettingsStore()}
           selected="night"
           barPosition={position}
         />,
@@ -346,7 +323,7 @@ describe("AppearanceSettings — Orientation (trmx-82, FR-2.3)", () => {
   );
 
   it("flips live when the barPosition prop changes (derived purely — no own subscription)", () => {
-    const settings = makeSettingsStore(fakeStorage());
+    const settings = freshSettingsStore();
     const { rerender } = render(
       <AppearanceSettings settings={settings} selected="night" barPosition="bottom" />,
     );
@@ -364,14 +341,13 @@ describe("AppearanceSettings — Orientation (trmx-82, FR-2.3)", () => {
   });
 
   it("writes through settings.set (persist + broadcast) when enabled", () => {
-    const storage = fakeStorage();
     const bus = fakeBus();
-    const settings = makeSettingsStore(storage, bus, "settings-window");
+    const settings = freshSettingsStore(bus, "settings-window");
     render(<AppearanceSettings settings={settings} selected="night" barPosition="left" />);
 
     fireEvent.click(screen.getByRole("radio", { name: "Vertical" }));
 
-    expect(storage.data.get("termixion.tabs.sideLabelOrientation")).toBe("vertical");
+    expect(settings.get("tabs.sideLabelOrientation")).toBe("vertical");
     expect(bus.events).toContainEqual({
       event: SETTINGS_CHANGED_EVENT,
       payload: { key: "tabs.sideLabelOrientation", value: "vertical", source: "settings-window" },
@@ -383,9 +359,12 @@ describe("AppearanceSettings — Orientation (trmx-82, FR-2.3)", () => {
   });
 
   it("never writes while disabled: store.set is not called and the persisted value is untouched", () => {
-    const storage = fakeStorage({ "termixion.tabs.sideLabelOrientation": "horizontal" });
+    const runtime = freshSettingsRuntime();
+    // Seed the persisted starting point through a BUS-LESS store on the same runtime, so the
+    // seed's own write never lands in the bus log this test asserts is empty.
+    runtime.makeStore().set("tabs.sideLabelOrientation", "horizontal");
     const bus = fakeBus();
-    const settings = makeSettingsStore(storage, bus, "settings-window");
+    const settings = runtime.makeStore(bus, "settings-window");
     const setSpy = vi.spyOn(settings, "set");
     render(<AppearanceSettings settings={settings} selected="night" barPosition="bottom" />);
 
@@ -396,7 +375,7 @@ describe("AppearanceSettings — Orientation (trmx-82, FR-2.3)", () => {
     });
 
     expect(setSpy).not.toHaveBeenCalled();
-    expect(storage.data.get("termixion.tabs.sideLabelOrientation")).toBe("horizontal");
+    expect(settings.get("tabs.sideLabelOrientation")).toBe("horizontal");
     expect(bus.events).toEqual([]);
     expect(within(group).getByRole("radio", { name: "Horizontal" })).toHaveAttribute(
       "aria-checked",
@@ -415,7 +394,7 @@ describe("AppearanceSettings — Shortcut hints (trmx-151)", () => {
   it("renders the row in the Tab bar group with its description, ON by default", () => {
     render(
       <AppearanceSettings
-        settings={makeSettingsStore(fakeStorage())}
+        settings={freshSettingsStore()}
         selected="night"
         barPosition="bottom"
       />,
@@ -427,27 +406,20 @@ describe("AppearanceSettings — Shortcut hints (trmx-151)", () => {
   });
 
   it("reflects a persisted OFF from the injected store", () => {
-    render(
-      <AppearanceSettings
-        settings={makeSettingsStore(
-          fakeStorage({ "termixion.tabs.showShortcutHints": "false" }),
-        )}
-        selected="night"
-        barPosition="bottom"
-      />,
-    );
+    const settings = freshSettingsStore();
+    settings.set("tabs.showShortcutHints", false);
+    render(<AppearanceSettings settings={settings} selected="night" barPosition="bottom" />);
     expect(toggle()).toHaveAttribute("aria-checked", "false");
   });
 
   it("a toggle writes through settings.set (persist + broadcast) and flips the switch", () => {
-    const storage = fakeStorage();
     const bus = fakeBus();
-    const settings = makeSettingsStore(storage, bus, "settings-window");
+    const settings = freshSettingsStore(bus, "settings-window");
     render(<AppearanceSettings settings={settings} selected="night" barPosition="bottom" />);
 
     fireEvent.click(toggle());
 
-    expect(storage.data.get("termixion.tabs.showShortcutHints")).toBe("false");
+    expect(settings.get("tabs.showShortcutHints")).toBe(false);
     expect(bus.events).toContainEqual({
       event: SETTINGS_CHANGED_EVENT,
       payload: { key: "tabs.showShortcutHints", value: false, source: "settings-window" },
@@ -455,7 +427,7 @@ describe("AppearanceSettings — Shortcut hints (trmx-151)", () => {
     expect(toggle()).toHaveAttribute("aria-checked", "false");
 
     fireEvent.click(toggle()); // …and back on
-    expect(storage.data.get("termixion.tabs.showShortcutHints")).toBe("true");
+    expect(settings.get("tabs.showShortcutHints")).toBe(true);
     expect(toggle()).toHaveAttribute("aria-checked", "true");
   });
 });
@@ -481,7 +453,7 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
     ]);
     const { container } = render(
       <AppearanceSettings
-        settings={makeSettingsStore(fakeStorage())}
+        settings={freshSettingsStore()}
         selected="night"
         barPosition="bottom"
       />,
@@ -498,7 +470,7 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
     registerUserThemes([validUserEntry("user:cool"), validUserEntry("user:zed")]);
     render(
       <AppearanceSettings
-        settings={makeSettingsStore(fakeStorage())}
+        settings={freshSettingsStore()}
         selected="night"
         barPosition="bottom"
       />,
@@ -520,8 +492,7 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
 
   it("fills a user swatch with its resolved background color and selects it exactly like a built-in", () => {
     registerUserThemes([validUserEntry("user:cool")]);
-    const storage = fakeStorage();
-    const settings = makeSettingsStore(storage);
+    const settings = freshSettingsStore();
     const onThemeChange = vi.fn();
     render(
       <AppearanceSettings
@@ -539,13 +510,13 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
     expect(circle.style.background).toBe(probe.style.background);
 
     fireEvent.click(cool);
-    expect(storage.data.get("termixion.appearance.theme")).toBe("user:cool");
+    expect(settings.get("appearance.theme")).toBe("user:cool");
     expect(onThemeChange).toHaveBeenCalledWith("user:cool");
   });
 
   it("an INVALID user theme shows an 'invalid' badge + tooltip and is NOT selectable", () => {
     registerUserThemes([invalidUserEntry("user:bad", "invalid color at color.bg.primary")]);
-    const settings = makeSettingsStore(fakeStorage());
+    const settings = freshSettingsStore();
     const setSpy = vi.spyOn(settings, "set");
     const onThemeChange = vi.fn();
     render(
@@ -575,8 +546,7 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
 
   it("a low-contrast user theme is SELECTABLE and shows a 'warning' badge + tooltip", () => {
     registerUserThemes([lowContrastUserEntry("user:dim")]);
-    const storage = fakeStorage();
-    const settings = makeSettingsStore(storage);
+    const settings = freshSettingsStore();
     const onThemeChange = vi.fn();
     render(
       <AppearanceSettings
@@ -593,7 +563,7 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
 
     // Still selectable — warnings never block.
     fireEvent.click(dim);
-    expect(storage.data.get("termixion.appearance.theme")).toBe("user:dim");
+    expect(settings.get("appearance.theme")).toBe("user:dim");
     expect(onThemeChange).toHaveBeenCalledWith("user:dim");
   });
 
@@ -601,7 +571,7 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
     const invoke = vi.fn<InvokeFn>().mockResolvedValue(undefined);
     render(
       <AppearanceSettings
-        settings={makeSettingsStore(fakeStorage())}
+        settings={freshSettingsStore()}
         selected="night"
         barPosition="bottom"
         invoke={invoke}
@@ -612,8 +582,7 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
   });
 
   it("'Duplicate' (via the context menu) on a built-in writes a TOML copy, re-hydrates, and selects the new user id", async () => {
-    const storage = fakeStorage();
-    const settings = makeSettingsStore(storage);
+    const settings = freshSettingsStore();
     const onThemeChange = vi.fn();
     // themes_read returns [] (the file watcher will re-read for real); themes_write resolves the id.
     const invoke = vi
@@ -647,7 +616,7 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
     // … then a re-hydrate (themes_read) and the selection of the new user id.
     expect(invoke).toHaveBeenCalledWith("themes_read");
     await waitFor(() => expect(onThemeChange).toHaveBeenCalledWith("user:night-copy"));
-    expect(storage.data.get("termixion.appearance.theme")).toBe("user:night-copy");
+    expect(settings.get("appearance.theme")).toBe("user:night-copy");
   });
 
   it("'Duplicate' auto-increments the stem past an existing user:<stem> copy", async () => {
@@ -657,7 +626,7 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
       .mockImplementation((cmd) => Promise.resolve(cmd === "themes_read" ? [] : "user:x"));
     render(
       <AppearanceSettings
-        settings={makeSettingsStore(fakeStorage())}
+        settings={freshSettingsStore()}
         selected="night"
         barPosition="bottom"
         invoke={invoke}
@@ -674,7 +643,7 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
   });
 
   it("surfaces nothing fatal when the Duplicate write rejects", async () => {
-    const settings = makeSettingsStore(fakeStorage());
+    const settings = freshSettingsStore();
     const setSpy = vi.spyOn(settings, "set");
     const onThemeChange = vi.fn();
     const invoke = vi
@@ -708,7 +677,7 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
   it("renders NO 'Duplicate' button — the action moved to the right-click context menu", () => {
     const { container } = render(
       <AppearanceSettings
-        settings={makeSettingsStore(fakeStorage())}
+        settings={freshSettingsStore()}
         selected="night"
         barPosition="bottom"
       />,
@@ -722,7 +691,7 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
   it("right-clicking a BUILT-IN swatch opens the menu AND prevents the browser default menu", () => {
     render(
       <AppearanceSettings
-        settings={makeSettingsStore(fakeStorage())}
+        settings={freshSettingsStore()}
         selected="night"
         barPosition="bottom"
       />,
@@ -738,7 +707,7 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
     registerUserThemes([validUserEntry("user:cool")]);
     render(
       <AppearanceSettings
-        settings={makeSettingsStore(fakeStorage())}
+        settings={freshSettingsStore()}
         selected="night"
         barPosition="bottom"
       />,
@@ -752,7 +721,7 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
     registerUserThemes([invalidUserEntry("user:bad", "invalid color at color.bg.primary")]);
     const { container } = render(
       <AppearanceSettings
-        settings={makeSettingsStore(fakeStorage())}
+        settings={freshSettingsStore()}
         selected="night"
         barPosition="bottom"
       />,
@@ -767,7 +736,7 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
   it("opens only ONE menu at a time (right-clicking a second built-in replaces the first)", () => {
     render(
       <AppearanceSettings
-        settings={makeSettingsStore(fakeStorage())}
+        settings={freshSettingsStore()}
         selected="night"
         barPosition="bottom"
       />,
@@ -781,7 +750,7 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
   it("shows the right-click duplicate tip", () => {
     render(
       <AppearanceSettings
-        settings={makeSettingsStore(fakeStorage())}
+        settings={freshSettingsStore()}
         selected="night"
         barPosition="bottom"
       />,
@@ -794,7 +763,7 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
   it("shows the theme-file-format docs hint", () => {
     render(
       <AppearanceSettings
-        settings={makeSettingsStore(fakeStorage())}
+        settings={freshSettingsStore()}
         selected="night"
         barPosition="bottom"
       />,
@@ -806,7 +775,7 @@ describe("AppearanceSettings — user themes (trmx-89, 4b)", () => {
     registerUserThemes([validUserEntry("user:cool"), invalidUserEntry("user:bad", "bad")]);
     const { container } = render(
       <AppearanceSettings
-        settings={makeSettingsStore(fakeStorage())}
+        settings={freshSettingsStore()}
         selected="night"
         barPosition="bottom"
       />,

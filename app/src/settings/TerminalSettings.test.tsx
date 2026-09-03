@@ -12,21 +12,8 @@ import { describe, expect, it, vi } from "vitest";
 import { TerminalSettings } from "./TerminalSettings";
 import { ITERM2_FONT_FAMILY } from "../terminal/iterm2Theme";
 import { BUNDLED_FONTS, DEFAULT_FONT_FAMILY } from "../terminal/fontCatalog";
-import {
-  makeSettingsStore,
-  SETTINGS_CHANGED_EVENT,
-  type KeyValueStore,
-  type SettingsBus,
-} from "../store/settingsStore";
-
-function fakeStorage(initial: Record<string, string> = {}): KeyValueStore {
-  const data = new Map(Object.entries(initial));
-  return {
-    getItem: (k) => (data.has(k) ? data.get(k)! : null),
-    setItem: (k, v) => void data.set(k, v),
-    removeItem: (k) => void data.delete(k),
-  };
-}
+import { SETTINGS_CHANGED_EVENT, type SettingsBus } from "../store/settingsStore";
+import { freshSettingsStore } from "../test/settingsRuntime";
 
 function fakeBus(): SettingsBus & { events: Array<{ event: string; payload: unknown }> } {
   const events: Array<{ event: string; payload: unknown }> = [];
@@ -35,7 +22,7 @@ function fakeBus(): SettingsBus & { events: Array<{ event: string; payload: unkn
 
 describe("TerminalSettings", () => {
   it("renders the cursor rows plus the FR-13 trio — Scrollback, Font Family, Font Size", () => {
-    const store = makeSettingsStore(fakeStorage());
+    const store = freshSettingsStore();
     const { container } = render(<TerminalSettings settings={store} />);
     expect(screen.getByText("Cursor Style")).toBeInTheDocument();
     expect(screen.getByText("Shape of the terminal cursor")).toBeInTheDocument();
@@ -100,7 +87,7 @@ describe("TerminalSettings", () => {
       cmd === "enhancements_status" ? Promise.resolve(status) : Promise.resolve(null);
 
     it("renders nothing for notObserved (every bypass path, and before the first session)", async () => {
-      const store = makeSettingsStore(fakeStorage());
+      const store = freshSettingsStore();
       render(
         <TerminalSettings
           settings={store}
@@ -112,7 +99,7 @@ describe("TerminalSettings", () => {
     });
 
     it("shows the reason when the last session went bare", async () => {
-      const store = makeSettingsStore(fakeStorage());
+      const store = freshSettingsStore();
       render(
         <TerminalSettings
           settings={store}
@@ -125,7 +112,7 @@ describe("TerminalSettings", () => {
     });
 
     it("refreshes on enhancements:status — an Unavailable → Active recovery reaches an open page", async () => {
-      const store = makeSettingsStore(fakeStorage());
+      const store = freshSettingsStore();
       let status: unknown = { state: "unavailable", reason: "plugins dir is read-only" };
       let fire = () => {};
       render(
@@ -152,7 +139,7 @@ describe("TerminalSettings", () => {
   });
 
   it("offers vmark's glyphed options and defaults to Underline", () => {
-    const store = makeSettingsStore(fakeStorage());
+    const store = freshSettingsStore();
     render(<TerminalSettings settings={store} />);
     const select = screen.getByRole("combobox", { name: "Cursor Style" }) as HTMLSelectElement;
     const labels = [...select.options].map((o) => o.label);
@@ -161,7 +148,7 @@ describe("TerminalSettings", () => {
   });
 
   it("defaults Cursor Blink to off (trmx-55, iTerm2-default parity)", () => {
-    const store = makeSettingsStore(fakeStorage());
+    const store = freshSettingsStore();
     render(<TerminalSettings settings={store} />);
     expect(screen.getByRole("switch", { name: "Cursor Blink" })).toHaveAttribute(
       "aria-checked",
@@ -170,7 +157,7 @@ describe("TerminalSettings", () => {
   });
 
   it("defaults Activity Indicator to ON and persists a toggle (trmx-91)", () => {
-    const store = makeSettingsStore(fakeStorage());
+    const store = freshSettingsStore();
     render(<TerminalSettings settings={store} />);
     const toggle = screen.getByRole("switch", { name: "Activity Indicator" });
     expect(toggle).toHaveAttribute("aria-checked", "true"); // default on
@@ -179,7 +166,7 @@ describe("TerminalSettings", () => {
   });
 
   it("defaults AI Session Counter to ON and persists a toggle (trmx-190)", () => {
-    const store = makeSettingsStore(fakeStorage());
+    const store = freshSettingsStore();
     render(<TerminalSettings settings={store} />);
     const toggle = screen.getByRole("switch", { name: "AI Session Counter" });
     expect(toggle).toHaveAttribute("aria-checked", "true"); // default on
@@ -188,7 +175,7 @@ describe("TerminalSettings", () => {
   });
 
   it("defaults Copy on Select to ON and persists a toggle (trmx-95)", () => {
-    const store = makeSettingsStore(fakeStorage());
+    const store = freshSettingsStore();
     render(<TerminalSettings settings={store} />);
     const toggle = screen.getByRole("switch", { name: "Copy on Select" });
     expect(toggle).toHaveAttribute("aria-checked", "true"); // default on (iTerm2 parity)
@@ -197,7 +184,7 @@ describe("TerminalSettings", () => {
   });
 
   it("defaults Focus Follows Mouse to OFF and persists a toggle (trmx-225)", () => {
-    const store = makeSettingsStore(fakeStorage());
+    const store = freshSettingsStore();
     render(<TerminalSettings settings={store} />);
     const toggle = screen.getByRole("switch", { name: "Focus Follows Mouse" });
     expect(toggle).toHaveAttribute("aria-checked", "false"); // opt-in: default off
@@ -206,9 +193,8 @@ describe("TerminalSettings", () => {
   });
 
   it("persists a cursor style change and broadcasts it for the live terminal", () => {
-    const storage = fakeStorage();
     const bus = fakeBus();
-    const store = makeSettingsStore(storage, bus, "settings-window");
+    const store = freshSettingsStore(bus, "settings-window");
     render(<TerminalSettings settings={store} />);
     const select = screen.getByRole("combobox", { name: "Cursor Style" }) as HTMLSelectElement;
     fireEvent.change(select, { target: { value: "bar" } });
@@ -222,7 +208,7 @@ describe("TerminalSettings", () => {
 
   it("persists and broadcasts a blink toggle (off-by-default → on)", () => {
     const bus = fakeBus();
-    const store = makeSettingsStore(fakeStorage(), bus, "settings-window");
+    const store = freshSettingsStore(bus, "settings-window");
     render(<TerminalSettings settings={store} />);
     screen.getByRole("switch", { name: "Cursor Blink" }).click();
     expect(store.get("terminal.cursorBlink")).toBe(true);
@@ -233,12 +219,9 @@ describe("TerminalSettings", () => {
   });
 
   it("reflects persisted values on mount", () => {
-    const store = makeSettingsStore(
-      fakeStorage({
-        "termixion.terminal.cursorStyle": "block",
-        "termixion.terminal.cursorBlink": "true",
-      }),
-    );
+    const store = freshSettingsStore();
+    store.set("terminal.cursorStyle", "block");
+    store.set("terminal.cursorBlink", true);
     render(<TerminalSettings settings={store} />);
     expect((screen.getByRole("combobox", { name: "Cursor Style" }) as HTMLSelectElement).value).toBe(
       "block",
@@ -255,7 +238,7 @@ describe("TerminalSettings", () => {
 // a tab, or quitting; "When busy" prompts only when a program is still running.
 describe("TerminalSettings confirm-before-closing row (trmx-144)", () => {
   it("renders the three options as a radiogroup and defaults to When busy", () => {
-    render(<TerminalSettings settings={makeSettingsStore(fakeStorage())} />);
+    render(<TerminalSettings settings={freshSettingsStore()} />);
     const group = screen.getByRole("radiogroup", { name: "Confirm before closing" });
     expect(group).toBeInTheDocument();
     // Scoped to THIS group — trmx-252 added a second radiogroup to the page.
@@ -271,7 +254,7 @@ describe("TerminalSettings confirm-before-closing row (trmx-144)", () => {
 
   it("persists a selection via settings.set, broadcasts it, and reflects the new value", () => {
     const bus = fakeBus();
-    const store = makeSettingsStore(fakeStorage(), bus, "settings-window");
+    const store = freshSettingsStore(bus, "settings-window");
     render(<TerminalSettings settings={store} />);
     fireEvent.click(screen.getByRole("radio", { name: "Always" }));
     expect(store.get("terminal.confirmClose")).toBe("always");
@@ -294,7 +277,8 @@ describe("TerminalSettings confirm-before-closing row (trmx-144)", () => {
   });
 
   it("reflects a persisted value on mount", () => {
-    const store = makeSettingsStore(fakeStorage({ "termixion.terminal.confirmClose": "never" }));
+    const store = freshSettingsStore();
+    store.set("terminal.confirmClose", "never");
     render(<TerminalSettings settings={store} />);
     expect(screen.getByRole("radio", { name: "Never" })).toHaveAttribute("aria-checked", "true");
     expect(screen.getByRole("radio", { name: "When busy" })).toHaveAttribute(
@@ -309,7 +293,7 @@ describe("TerminalSettings confirm-before-closing row (trmx-144)", () => {
 // a UI the key is config-file-only, and the fan-out has a hole no other test would catch.
 describe("TerminalSettings clipboard-write row (trmx-252)", () => {
   it("renders both options as a radiogroup and defaults to Allow", () => {
-    render(<TerminalSettings settings={makeSettingsStore(fakeStorage())} />);
+    render(<TerminalSettings settings={freshSettingsStore()} />);
     expect(
       screen.getByRole("radiogroup", { name: "Program clipboard writes" }),
     ).toBeInTheDocument();
@@ -319,7 +303,7 @@ describe("TerminalSettings clipboard-write row (trmx-252)", () => {
 
   it("persists a selection via settings.set, broadcasts it, and reflects the new value", () => {
     const bus = fakeBus();
-    const store = makeSettingsStore(fakeStorage(), bus, "settings-window");
+    const store = freshSettingsStore(bus, "settings-window");
     render(<TerminalSettings settings={store} />);
     fireEvent.click(screen.getByRole("radio", { name: "Deny" }));
     expect(store.get("terminal.clipboardWrite")).toBe("deny");
@@ -332,7 +316,8 @@ describe("TerminalSettings clipboard-write row (trmx-252)", () => {
   });
 
   it("reflects a persisted value on mount", () => {
-    const store = makeSettingsStore(fakeStorage({ "termixion.terminal.clipboardWrite": "deny" }));
+    const store = freshSettingsStore();
+    store.set("terminal.clipboardWrite", "deny");
     render(<TerminalSettings settings={store} />);
     expect(screen.getByRole("radio", { name: "Deny" })).toHaveAttribute("aria-checked", "true");
   });
@@ -341,7 +326,7 @@ describe("TerminalSettings clipboard-write row (trmx-252)", () => {
 // trmx-80 (FR-13): the scrollback/font trio below the cursor rows.
 describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
   it("shows the registry defaults: 10000 lines, the bundled SauceCodePro face (trmx-204), 12 pt", () => {
-    render(<TerminalSettings settings={makeSettingsStore(fakeStorage())} />);
+    render(<TerminalSettings settings={freshSettingsStore()} />);
     expect((screen.getByRole("textbox", { name: "Scrollback" }) as HTMLInputElement).value).toBe(
       "10000",
     );
@@ -355,7 +340,7 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
   });
 
   it("offers the five bundled families plus System default plus Custom… (trmx-204)", () => {
-    render(<TerminalSettings settings={makeSettingsStore(fakeStorage())} />);
+    render(<TerminalSettings settings={freshSettingsStore()} />);
     const select = screen.getByRole("combobox", { name: "Font Family" }) as HTMLSelectElement;
     const labels = [...select.options].map((o) => o.label);
     expect(labels).toEqual([
@@ -367,7 +352,7 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
 
   it("selecting a bundled family persists the exact family string and broadcasts", async () => {
     const bus = fakeBus();
-    const store = makeSettingsStore(fakeStorage(), bus, "settings-window");
+    const store = freshSettingsStore(bus, "settings-window");
     render(<TerminalSettings settings={store} />);
     const select = screen.getByRole("combobox", { name: "Font Family" }) as HTMLSelectElement;
     fireEvent.change(select, { target: { value: "MesloLGS NF" } });
@@ -379,9 +364,8 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
   });
 
   it("selecting System default persists '' (the platform stack)", async () => {
-    const store = makeSettingsStore(
-      fakeStorage({ "termixion.terminal.fontFamily": "MesloLGS NF" }),
-    );
+    const store = freshSettingsStore();
+    store.set("terminal.fontFamily", "MesloLGS NF");
     render(<TerminalSettings settings={store} />);
     const select = screen.getByRole("combobox", { name: "Font Family" }) as HTMLSelectElement;
     fireEvent.change(select, { target: { value: "__system__" } });
@@ -390,7 +374,7 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
   });
 
   it("Custom… reveals the free-text field (platform stack as placeholder) and commits verbatim", () => {
-    const store = makeSettingsStore(fakeStorage());
+    const store = freshSettingsStore();
     render(<TerminalSettings settings={store} />);
     const select = screen.getByRole("combobox", { name: "Font Family" }) as HTMLSelectElement;
     fireEvent.change(select, { target: { value: "__custom__" } });
@@ -411,7 +395,7 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
     const load = vi.fn(() => pending);
     Object.defineProperty(document, "fonts", { value: { load }, configurable: true });
     try {
-      const store = makeSettingsStore(fakeStorage());
+      const store = freshSettingsStore();
       render(<TerminalSettings settings={store} />);
       const select = screen.getByRole("combobox", { name: "Font Family" }) as HTMLSelectElement;
       fireEvent.change(select, { target: { value: "MesloLGS NF" } }); // load pending…
@@ -436,7 +420,7 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
           ])
         : Promise.resolve(),
     );
-    const store = makeSettingsStore(fakeStorage());
+    const store = freshSettingsStore();
     render(<TerminalSettings settings={store} invoke={invoke} />);
     const select = screen.getByRole("combobox", { name: "Shell" }) as HTMLSelectElement;
     expect(select.value).toBe("__system__");
@@ -457,7 +441,7 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
 
   it("trmx-205: a rejected shells_list degrades to System default + Custom path…", async () => {
     const invoke = vi.fn(() => Promise.reject(new Error("no backend")));
-    render(<TerminalSettings settings={makeSettingsStore(fakeStorage())} invoke={invoke} />);
+    render(<TerminalSettings settings={freshSettingsStore()} invoke={invoke} />);
     const select = screen.getByRole("combobox", { name: "Shell" }) as HTMLSelectElement;
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("shells_list"));
     const labels = [...select.options].map((o) => o.label);
@@ -465,9 +449,8 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
   });
 
   it("trmx-205: Custom path… reveals the field, commits verbatim, and unknown persisted paths land there", () => {
-    const store = makeSettingsStore(
-      fakeStorage({ "termixion.terminal.shell": "/opt/odd/bin/xonsh" }),
-    );
+    const store = freshSettingsStore();
+    store.set("terminal.shell", "/opt/odd/bin/xonsh");
     render(<TerminalSettings settings={store} invoke={vi.fn(() => Promise.resolve([]))} />);
     const select = screen.getByRole("combobox", { name: "Shell" }) as HTMLSelectElement;
     // Unknown persisted path (not in the — empty — installed list) lands on Custom with the value.
@@ -481,7 +464,7 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
   });
 
   it("trmx-206: enhancement toggles default on, master-off disables the sub-toggles", () => {
-    const store = makeSettingsStore(fakeStorage());
+    const store = freshSettingsStore();
     render(<TerminalSettings settings={store} invoke={vi.fn(() => Promise.resolve())} />);
     const master = screen.getByRole("switch", { name: "Shell Enhancements" });
     const auto = screen.getByRole("switch", { name: "Autosuggestions" });
@@ -501,7 +484,7 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
         ? Promise.resolve({ path: "/opt/homebrew/bin/fish", kind: "fish" })
         : Promise.resolve([]),
     );
-    render(<TerminalSettings settings={makeSettingsStore(fakeStorage())} invoke={invoke} />);
+    render(<TerminalSettings settings={freshSettingsStore()} invoke={invoke} />);
     await waitFor(() =>
       expect(screen.queryByRole("switch", { name: "Shell Enhancements" })).toBeNull(),
     );
@@ -513,12 +496,12 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
         ? Promise.resolve({ path: "/bin/zsh", kind: "zsh" })
         : Promise.resolve([]),
     );
-    render(<TerminalSettings settings={makeSettingsStore(fakeStorage())} invoke={invoke} />);
+    render(<TerminalSettings settings={freshSettingsStore()} invoke={invoke} />);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("effective_shell"));
     expect(screen.getByRole("switch", { name: "Shell Enhancements" })).toBeInTheDocument();
 
     const rejecting = vi.fn(() => Promise.reject(new Error("no backend")));
-    render(<TerminalSettings settings={makeSettingsStore(fakeStorage())} invoke={rejecting} />);
+    render(<TerminalSettings settings={freshSettingsStore()} invoke={rejecting} />);
     await waitFor(() => expect(rejecting).toHaveBeenCalledWith("effective_shell"));
     expect(screen.getAllByRole("switch", { name: "Shell Enhancements" }).length).toBeGreaterThan(0);
   });
@@ -531,7 +514,7 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
         return Promise.resolve([{ id: "fish", label: "fish", path: "/opt/homebrew/bin/fish" }]);
       return Promise.resolve();
     });
-    const store = makeSettingsStore(fakeStorage());
+    const store = freshSettingsStore();
     render(<TerminalSettings settings={store} invoke={invoke} />);
     await waitFor(() =>
       expect(screen.getByRole("switch", { name: "Shell Enhancements" })).toBeInTheDocument(),
@@ -554,7 +537,7 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
   });
 
   it("trmx-207: the Prompt dropdown defaults to existing, persists choices, disables with the master", () => {
-    const store = makeSettingsStore(fakeStorage());
+    const store = freshSettingsStore();
     render(<TerminalSettings settings={store} invoke={vi.fn(() => Promise.resolve())} />);
     const select = screen.getByRole("combobox", { name: "Prompt" }) as HTMLSelectElement;
     expect(select.value).toBe("existing");
@@ -574,7 +557,7 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
   });
 
   it("notes the FiraCode ligature caveat in the row helper text when FiraCode is selected", async () => {
-    const store = makeSettingsStore(fakeStorage());
+    const store = freshSettingsStore();
     render(<TerminalSettings settings={store} />);
     const select = screen.getByRole("combobox", { name: "Font Family" }) as HTMLSelectElement;
     expect(screen.queryByText(/ligatures are not rendered/i)).toBeNull();
@@ -584,7 +567,7 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
 
   it("commits a scrollback change on blur, CLAMPED into the registry range, and broadcasts", () => {
     const bus = fakeBus();
-    const store = makeSettingsStore(fakeStorage(), bus, "settings-window");
+    const store = freshSettingsStore(bus, "settings-window");
     render(<TerminalSettings settings={store} />);
     const input = screen.getByRole("textbox", { name: "Scrollback" }) as HTMLInputElement;
     fireEvent.change(input, { target: { value: "999999" } }); // above the 200000 max
@@ -599,7 +582,7 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
 
   it("reverts junk scrollback input to the current value without persisting", () => {
     const bus = fakeBus();
-    const store = makeSettingsStore(fakeStorage(), bus, "settings-window");
+    const store = freshSettingsStore(bus, "settings-window");
     render(<TerminalSettings settings={store} />);
     const input = screen.getByRole("textbox", { name: "Scrollback" }) as HTMLInputElement;
     fireEvent.change(input, { target: { value: "lots" } });
@@ -611,7 +594,7 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
 
   it("commits a custom font family on Enter and broadcasts (Custom… mode, trmx-204)", () => {
     const bus = fakeBus();
-    const store = makeSettingsStore(fakeStorage(), bus, "settings-window");
+    const store = freshSettingsStore(bus, "settings-window");
     render(<TerminalSettings settings={store} />);
     const select = screen.getByRole("combobox", { name: "Font Family" }) as HTMLSelectElement;
     fireEvent.change(select, { target: { value: "__custom__" } });
@@ -626,7 +609,7 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
   });
 
   it("steps the font size with the ± stepper, persisting each step", () => {
-    const store = makeSettingsStore(fakeStorage());
+    const store = freshSettingsStore();
     render(<TerminalSettings settings={store} />);
     fireEvent.click(screen.getByRole("button", { name: "Increase Font Size" }));
     expect(store.get("terminal.fontSize")).toBe(13);
@@ -639,23 +622,18 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
   });
 
   it("disables the stepper at the registry bounds (6–72)", () => {
-    render(
-      <TerminalSettings
-        settings={makeSettingsStore(fakeStorage({ "termixion.terminal.fontSize": "72" }))}
-      />,
-    );
+    const store = freshSettingsStore();
+    store.set("terminal.fontSize", 72);
+    render(<TerminalSettings settings={store} />);
     expect(screen.getByRole("button", { name: "Increase Font Size" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Decrease Font Size" })).not.toBeDisabled();
   });
 
   it("reflects persisted values on mount (an unknown family lands in Custom… with the value shown)", () => {
-    const store = makeSettingsStore(
-      fakeStorage({
-        "termixion.terminal.scrollbackLines": "50000",
-        "termixion.terminal.fontFamily": "Menlo",
-        "termixion.terminal.fontSize": "16",
-      }),
-    );
+    const store = freshSettingsStore();
+    store.set("terminal.scrollbackLines", 50_000);
+    store.set("terminal.fontFamily", "Menlo");
+    store.set("terminal.fontSize", 16);
     render(<TerminalSettings settings={store} />);
     expect((screen.getByRole("textbox", { name: "Scrollback" }) as HTMLInputElement).value).toBe(
       "50000",
@@ -673,9 +651,8 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
   });
 
   it("a persisted bundled family lands on its dropdown entry with no custom field", () => {
-    const store = makeSettingsStore(
-      fakeStorage({ "termixion.terminal.fontFamily": "Hack Nerd Font Mono" }),
-    );
+    const store = freshSettingsStore();
+    store.set("terminal.fontFamily", "Hack Nerd Font Mono");
     render(<TerminalSettings settings={store} />);
     expect(
       (screen.getByRole("combobox", { name: "Font Family" }) as HTMLSelectElement).value,
@@ -685,7 +662,7 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
 
   it("the Shell integration Reveal button invokes shell_integration_reveal (trmx-99)", () => {
     const invoke = vi.fn(() => Promise.resolve());
-    render(<TerminalSettings settings={makeSettingsStore(fakeStorage())} invoke={invoke} />);
+    render(<TerminalSettings settings={freshSettingsStore()} invoke={invoke} />);
     expect(screen.getByText("Shell integration")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Reveal snippets" }));
     expect(invoke).toHaveBeenCalledWith("shell_integration_reveal");
@@ -695,7 +672,7 @@ describe("TerminalSettings scrollback + font rows (trmx-80)", () => {
 // trmx-225: the toggle reflects EXTERNAL changes live (config watcher / cross-window edits).
 describe("Focus Follows Mouse external liveness (trmx-225)", () => {
   it("updates aria-checked when settings:changed delivers the key from outside", () => {
-    const store = makeSettingsStore(fakeStorage());
+    const store = freshSettingsStore();
     let handler: ((payload: unknown) => void) | undefined;
     const observeChanges = vi.fn((h: (payload: unknown) => void) => {
       handler = h;

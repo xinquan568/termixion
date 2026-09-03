@@ -4,8 +4,11 @@
 // B-4 (test-first): the React wrapper mounts a terminal into its own DOM node on mount and tears it
 // down on unmount. The mount strategy and the resize-observation seam are injected, so this stays a
 // real-DOM-but-no-xterm unit test (jsdom has no ResizeObserver).
+//
+// trmx-253 (T3.4): TerminalView reads its settings from the subtree's runtime, so every render goes
+// through `renderWithSettings` — a runtime per test IS the isolation, and a test that seeds a
+// setting seeds the SAME runtime the mounted terminal then reads.
 import { describe, it, expect, vi } from "vitest";
-import { render } from "@testing-library/react";
 import {
   TerminalView,
   realAttachOscIntegrations,
@@ -19,7 +22,11 @@ import type { MountDeps, TerminalHandle } from "./mountTerminal";
 import type { AttachScrollbarHandle } from "./scrollbar";
 import { buildXtermTheme } from "../theme/buildXtermTheme";
 import { currentCwd, makeCwdStore } from "./osc7";
-import { __resetSettingsForTest, makeSettingsStore } from "../store/settingsStore";
+import {
+  freshSettingsRuntime,
+  freshSettingsStore,
+  renderWithSettings,
+} from "../test/settingsRuntime";
 
 // A no-op resize seam for tests that don't care about the resize path.
 const noopObserve: ResizeObservation = () => () => {};
@@ -69,7 +76,7 @@ describe("TerminalView", () => {
       () => handle,
     );
 
-    const { container, unmount } = render(
+    const { container, unmount } = renderWithSettings(
       <TerminalView
         mount={mount}
         observeResize={noopObserve}
@@ -93,13 +100,12 @@ describe("TerminalView", () => {
   // trmx-95 (FR-8): auto-copy-on-select is attached per pane, gated by terminal.copyOnSelect (default
   // on) and live-toggled via settings:changed.
   it("attaches auto-copy-on-select when the setting is on (default) and detaches on unmount", () => {
-    __resetSettingsForTest();
     const handle: TerminalHandle = { terminal: {} as never, renderer: "webgl", search: {} as never, fit: vi.fn(), dispose: vi.fn() };
     const mount = vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(() => handle);
     const detach = vi.fn();
     const attachCopyOnSelect = vi.fn<AttachCopyOnSelect>(() => detach);
 
-    const { unmount } = render(
+    const { unmount } = renderWithSettings(
       <TerminalView
         mount={mount}
         observeResize={noopObserve}
@@ -116,11 +122,12 @@ describe("TerminalView", () => {
   });
 
   it("does NOT attach auto-copy-on-select when terminal.copyOnSelect is off", () => {
-    __resetSettingsForTest();
-    makeSettingsStore().set("terminal.copyOnSelect", false);
+    // Seeded on THIS test's runtime and rendered through it — nothing to leak, nothing to reset.
+    const runtime = freshSettingsRuntime();
+    runtime.makeStore().set("terminal.copyOnSelect", false);
     const handle: TerminalHandle = { terminal: {} as never, renderer: "webgl", search: {} as never, fit: vi.fn(), dispose: vi.fn() };
     const attachCopyOnSelect = vi.fn<AttachCopyOnSelect>(() => () => {});
-    render(
+    renderWithSettings(
       <TerminalView
         mount={vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(() => handle)}
         observeResize={noopObserve}
@@ -129,13 +136,12 @@ describe("TerminalView", () => {
         attachClipboard={noopAttachClipboard}
         attachCopyOnSelect={attachCopyOnSelect}
       />,
+      { runtime },
     );
     expect(attachCopyOnSelect).not.toHaveBeenCalled();
-    __resetSettingsForTest(); // don't leak the off value to other tests
   });
 
   it("live-toggles auto-copy-on-select via settings:changed (detach off, re-attach on)", () => {
-    __resetSettingsForTest();
     // A minimal `.options` so the sibling settings handlers (theme/font/…) don't crash on the fire below.
     const handle: TerminalHandle = { terminal: { options: {} } as never, renderer: "webgl", search: {} as never, fit: vi.fn(), dispose: vi.fn() };
     let fireSettings: ((payload: unknown) => void) | undefined;
@@ -146,7 +152,7 @@ describe("TerminalView", () => {
     const detach = vi.fn();
     const attachCopyOnSelect = vi.fn<AttachCopyOnSelect>(() => detach);
 
-    render(
+    renderWithSettings(
       <TerminalView
         mount={vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(() => handle)}
         observeResize={noopObserve}
@@ -182,7 +188,7 @@ describe("TerminalView", () => {
     );
     const onReady = vi.fn();
 
-    render(
+    renderWithSettings(
       <TerminalView
         mount={mount}
         onReady={onReady}
@@ -218,7 +224,7 @@ describe("TerminalView", () => {
       return disconnect;
     });
 
-    const { unmount } = render(
+    const { unmount } = renderWithSettings(
       <TerminalView
         mount={mount}
         observeResize={observeResize}
@@ -261,7 +267,7 @@ describe("TerminalView", () => {
       dispose,
     }));
 
-    const { unmount } = render(
+    const { unmount } = renderWithSettings(
       <TerminalView
         mount={mount}
         observeResize={noopObserve}
@@ -306,7 +312,7 @@ describe("TerminalView", () => {
       dispose: vi.fn(),
     }));
 
-    render(
+    renderWithSettings(
       <TerminalView
         mount={mount}
         observeResize={observeResize}
@@ -357,7 +363,7 @@ describe("TerminalView", () => {
       return () => {};
     };
 
-    render(
+    renderWithSettings(
       <TerminalView
         mount={mount}
         observeResize={observeResize}
@@ -410,7 +416,7 @@ describe("TerminalView", () => {
       return () => {};
     };
 
-    render(
+    renderWithSettings(
       <TerminalView
         mount={mount}
         observeResize={observeResize}
@@ -455,7 +461,7 @@ describe("TerminalView", () => {
       return () => {};
     };
 
-    const { unmount } = render(
+    const { unmount } = renderWithSettings(
       <TerminalView
         mount={mount}
         observeResize={observeResize}
@@ -505,7 +511,7 @@ describe("TerminalView", () => {
       dispose: vi.fn(),
     }));
 
-    render(
+    renderWithSettings(
       <TerminalView
         mount={mount}
         observeResize={noopObserve}
@@ -571,7 +577,7 @@ describe("TerminalView", () => {
       recompute: vi.fn(),
       dispose: vi.fn(),
     }));
-    render(
+    renderWithSettings(
       <TerminalView
         mount={mount}
         observeResize={noopObserve}
@@ -618,7 +624,7 @@ describe("TerminalView", () => {
     const stopSettings = vi.fn();
     const observeSettings = vi.fn(() => stopSettings);
 
-    const { unmount } = render(
+    const { unmount } = renderWithSettings(
       <TerminalView
         mount={mount}
         observeResize={noopObserve}
@@ -648,7 +654,7 @@ describe("TerminalView", () => {
     );
     const attachOsc = vi.fn<AttachOscIntegrations>(() => teardown);
 
-    const { unmount } = render(
+    const { unmount } = renderWithSettings(
       <TerminalView
         mount={mount}
         observeResize={noopObserve}
@@ -686,7 +692,7 @@ describe("TerminalView", () => {
     const setTitle = vi.fn();
     const writeClipboard = vi.fn();
 
-    const teardown = realAttachOscIntegrations(fakeTerminal as never, {
+    const teardown = realAttachOscIntegrations(freshSettingsStore(), fakeTerminal as never, {
       setTitle,
       writeClipboard,
     });
@@ -720,7 +726,7 @@ describe("TerminalView", () => {
     };
     const setBadge = vi.fn();
 
-    const teardown = realAttachOscIntegrations(fakeTerminal as never, {
+    const teardown = realAttachOscIntegrations(freshSettingsStore(), fakeTerminal as never, {
       setTitle: vi.fn(),
       writeClipboard: vi.fn(),
       setBadge,
@@ -755,7 +761,7 @@ describe("TerminalView", () => {
     const mount = vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(() => handle);
     const onBadge = vi.fn();
 
-    render(
+    renderWithSettings(
       <TerminalView
         mount={mount}
         observeResize={noopObserve}
@@ -782,7 +788,7 @@ describe("TerminalView", () => {
     const attachOsc = vi.fn<AttachOscIntegrations>(() => () => {});
     const onBadge = vi.fn();
 
-    render(
+    renderWithSettings(
       <TerminalView
         mount={mount}
         observeResize={noopObserve}
@@ -798,7 +804,7 @@ describe("TerminalView", () => {
 
     // Without the prop the seam sees undefined — the badge simply has no destination.
     const attachOscAbsent = vi.fn<AttachOscIntegrations>(() => () => {});
-    render(
+    renderWithSettings(
       <TerminalView
         mount={mount}
         observeResize={noopObserve}
@@ -825,7 +831,7 @@ describe("TerminalView", () => {
     const attachOsc = vi.fn<AttachOscIntegrations>(() => () => {});
     const store = makeCwdStore();
 
-    render(
+    renderWithSettings(
       <TerminalView
         mount={mount}
         observeResize={noopObserve}
@@ -857,6 +863,7 @@ describe("TerminalView", () => {
     const store = makeCwdStore();
 
     realAttachOscIntegrations(
+      freshSettingsStore(),
       fakeTerminal as never,
       { setTitle: vi.fn(), writeClipboard: vi.fn() },
       store,
@@ -890,7 +897,7 @@ describe("TerminalView", () => {
     );
     const onOscTitle = vi.fn();
 
-    render(
+    renderWithSettings(
       <TerminalView
         mount={mount}
         observeResize={noopObserve}
@@ -919,7 +926,7 @@ describe("TerminalView", () => {
     const attachOsc = vi.fn<AttachOscIntegrations>(() => () => {});
     const onOscTitle = vi.fn();
 
-    render(
+    renderWithSettings(
       <TerminalView
         mount={mount}
         observeResize={noopObserve}
@@ -935,7 +942,7 @@ describe("TerminalView", () => {
 
     // Without the prop the seam sees undefined — the standalone (window-title) default persists.
     const attachOscAbsent = vi.fn<AttachOscIntegrations>(() => () => {});
-    render(
+    renderWithSettings(
       <TerminalView
         mount={mount}
         observeResize={noopObserve}
@@ -961,7 +968,7 @@ describe("TerminalView", () => {
       const mount = vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(() => handle);
       const recompute = vi.fn();
       const attachScrollbar = vi.fn<AttachScrollbar>(() => ({ recompute, dispose: vi.fn() }));
-      render(
+      renderWithSettings(
         <TerminalView
           mount={mount}
           observeResize={noopObserve}
@@ -995,7 +1002,7 @@ describe("TerminalView", () => {
       const fit = vi.fn();
       const handle: TerminalHandle = { terminal: {} as never, renderer: "webgl", search: {} as never, fit, dispose: vi.fn() };
       const mount = vi.fn<(el: HTMLElement, deps: MountDeps) => TerminalHandle>(() => handle);
-      const { unmount } = render(
+      const { unmount } = renderWithSettings(
         <TerminalView
           mount={mount}
           observeResize={noopObserve}
@@ -1045,7 +1052,7 @@ describe("TerminalView", () => {
       dispose: vi.fn(),
     }));
 
-    render(
+    renderWithSettings(
       <TerminalView
         mount={mount}
         observeResize={noopObserve}
@@ -1100,7 +1107,7 @@ describe("TerminalView", () => {
     );
     const attachClipboard = vi.fn<AttachClipboard>(() => teardown);
 
-    const { unmount } = render(
+    const { unmount } = renderWithSettings(
       <TerminalView
         mount={mount}
         observeResize={noopObserve}

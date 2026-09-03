@@ -8,7 +8,7 @@
 // link opener. It holds no logic of its own; like the other hosts it is exercised by the app while
 // the tested pieces live behind the seams.
 import { SettingsApp } from "./SettingsApp";
-import { getLogDir, makeSettingsStore, openConfigFile, openLogDir } from "../store/settingsStore";
+import { useSettingsRuntime, useSettingsStore } from "../store/settingsRuntimeContext";
 import { realEventBus } from "../ipc/eventBus";
 import { autoCheckSourceFrom, useUpdate } from "../update/useUpdate";
 import { useUpdateMirror } from "../update/useUpdateMirror";
@@ -17,14 +17,16 @@ import { realAppInfo } from "../update/appInfo";
 import { realOpener } from "../update/opener";
 import type { SettingsSection } from "../ipc/surface";
 
-// Stable across renders (module scope): one store, tagged as this window on broadcasts.
-const settingsStore = makeSettingsStore(undefined, realEventBus, "settings");
-
 export interface SettingsWindowHostProps {
   initialSection: SettingsSection | null;
 }
 
 export function SettingsWindowHost({ initialSection }: SettingsWindowHostProps) {
+  // trmx-253 (T3.3): the runtime main.tsx provided, instead of a module-evaluation-time store.
+  // The config-file/log-folder openers ride the SAME runtime, so they write through the invoke
+  // channel that hydration installed rather than a second, module-global one.
+  const runtime = useSettingsRuntime();
+  const settingsStore = useSettingsStore(realEventBus, "settings");
   const mirror = useUpdateMirror({
     bus: realEventBus,
     settings: settingsStore,
@@ -41,9 +43,9 @@ export function SettingsWindowHost({ initialSection }: SettingsWindowHostProps) 
       appInfo={realAppInfo}
       opener={realOpener}
       settings={settingsStore}
-      openConfigFile={openConfigFile}
-      getLogDir={getLogDir}
-      openLogDir={openLogDir}
+      openConfigFile={runtime.openConfigFile}
+      getLogDir={runtime.getLogDir}
+      openLogDir={runtime.openLogDir}
       listen={realEventBus.listen}
     />
   );

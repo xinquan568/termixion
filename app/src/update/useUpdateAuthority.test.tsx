@@ -5,10 +5,14 @@
 // lastCheckAt), auto-download, the PendingUpdate handle, and serves other windows over the bus
 // (update:state broadcasts, update:request-state snapshots, update:command execution). R8: these
 // failing tests specify the authority before it exists.
+//
+// trmx-253 (T3.4): the settings stores come from `freshSettingsStore()` — one runtime per store,
+// on the production (config-file) backend — instead of the deleted per-instance localStorage
+// backend. Preferences are seeded with typed `set()` calls rather than raw storage strings.
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { makeFakeUpdateClient } from "./updateClient";
-import { makeSettingsStore, type KeyValueStore } from "../store/settingsStore";
+import { freshSettingsStore } from "../test/settingsRuntime";
 import { useUpdateAuthority } from "./useUpdateAuthority";
 import {
   UPDATE_COMMAND_EVENT,
@@ -22,14 +26,16 @@ import type { EventBus } from "../ipc/eventBus";
 const INFO: UpdateInfo = { version: "0.0.2", currentVersion: "0.0.1", notes: "notes" };
 const NOW = () => new Date("2026-07-02T12:00:00Z");
 
-function fakeStorage(initial: Record<string, string> = {}): KeyValueStore {
-  const data = new Map(Object.entries(initial));
-  return {
-    getItem: (k) => (data.has(k) ? data.get(k)! : null),
-    setItem: (k, v) => void data.set(k, v),
-    removeItem: (k) => void data.delete(k),
-  };
-}
+// `update.lastCheckAt` is the ONE piece of state a settings runtime deliberately does NOT own: it
+// is internal scheduler bookkeeping, not user configuration, so it never enters the config file and
+// stays on the real localStorage forever (docs/config.md). That makes it a per-FILE global here —
+// a fresh runtime does not isolate it — so seeding and asserting go through localStorage directly,
+// and every test starts from a cleared key.
+const LAST_CHECK_AT_KEY = "termixion.update.lastCheckAt";
+
+beforeEach(() => {
+  localStorage.clear();
+});
 
 /** One bus shared by "both windows": emit delivers synchronously to every listener. */
 function fakeBus(): EventBus & { events: Array<{ event: string; payload: unknown }> } {
@@ -58,20 +64,18 @@ function stateBroadcasts(bus: ReturnType<typeof fakeBus>): UpdateStateBroadcast[
 
 describe("useUpdateAuthority scheduling", () => {
   it("checks on startup by default (on-startup frequency) and records lastCheckAt", async () => {
-    const storage = fakeStorage();
-    const settings = makeSettingsStore(storage);
+    const settings = freshSettingsStore();
     const client = makeFakeUpdateClient({ update: null });
     const { result } = renderHook(() =>
       useUpdateAuthority({ client, settings, now: NOW }),
     );
     await waitFor(() => expect(result.current.state.status).toBe("up-to-date"));
-    expect(settings.loadLastCheckAt()).toBe(NOW().toISOString());
+    expect(localStorage.getItem(LAST_CHECK_AT_KEY)).toBe(NOW().toISOString());
   });
 
   it("does not check on startup when the master toggle is off", async () => {
-    const settings = makeSettingsStore(
-      fakeStorage({ "termixion.update.autoCheck": "false" }),
-    );
+    const settings = freshSettingsStore();
+    settings.set("update.autoCheck", false);
     const client = makeFakeUpdateClient({ update: INFO });
     const { result } = renderHook(() => useUpdateAuthority({ client, settings, now: NOW }));
     await new Promise((r) => setTimeout(r, 10));
@@ -79,9 +83,8 @@ describe("useUpdateAuthority scheduling", () => {
   });
 
   it("does not check on startup under manual-only frequency", async () => {
-    const settings = makeSettingsStore(
-      fakeStorage({ "termixion.update.checkFrequency": "manual" }),
-    );
+    const settings = freshSettingsStore();
+    settings.set("update.checkFrequency", "manual");
     const client = makeFakeUpdateClient({ update: INFO });
     const { result } = renderHook(() => useUpdateAuthority({ client, settings, now: NOW }));
     await new Promise((r) => setTimeout(r, 10));
@@ -89,12 +92,15 @@ describe("useUpdateAuthority scheduling", () => {
   });
 
   it("under daily frequency, skips a fresh lastCheckAt and checks a stale one", async () => {
-    const fresh = makeSettingsStore(
-      fakeStorage({
-        "termixion.update.checkFrequency": "daily",
-        "termixion.update.lastCheckAt": new Date(NOW().getTime() - 2 * 3600_000).toISOString(),
-        "termixion.update.autoDownload": "false",
-      }),
+    const fresh = freshSettingsStore();
+    fresh.set("update.checkFrequency", "daily");
+    fresh.set("update.autoDownload", false);
+    // Both halves share the one localStorage key (see LAST_CHECK_AT_KEY above): seed it fresh,
+    // mount, then re-seed it stale before the second mount. The first authority has already made
+    // its at-most-once schedule decision by then, so re-seeding cannot disturb it.
+    localStorage.setItem(
+      LAST_CHECK_AT_KEY,
+      new Date(NOW().getTime() - 2 * 3600_000).toISOString(),
     );
     const r1 = renderHook(() =>
       useUpdateAuthority({ client: makeFakeUpdateClient({ update: INFO }), settings: fresh, now: NOW }),
@@ -102,12 +108,12 @@ describe("useUpdateAuthority scheduling", () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(r1.result.current.state.status).toBe("idle");
 
-    const stale = makeSettingsStore(
-      fakeStorage({
-        "termixion.update.checkFrequency": "daily",
-        "termixion.update.lastCheckAt": new Date(NOW().getTime() - 25 * 3600_000).toISOString(),
-        "termixion.update.autoDownload": "false",
-      }),
+    const stale = freshSettingsStore();
+    stale.set("update.checkFrequency", "daily");
+    stale.set("update.autoDownload", false);
+    localStorage.setItem(
+      LAST_CHECK_AT_KEY,
+      new Date(NOW().getTime() - 25 * 3600_000).toISOString(),
     );
     const r2 = renderHook(() =>
       useUpdateAuthority({ client: makeFakeUpdateClient({ update: INFO }), settings: stale, now: NOW }),
@@ -116,21 +122,20 @@ describe("useUpdateAuthority scheduling", () => {
   });
 
   it("manual checkNow also records lastCheckAt", async () => {
-    const settings = makeSettingsStore(
-      fakeStorage({ "termixion.update.checkFrequency": "manual" }),
-    );
+    const settings = freshSettingsStore();
+    settings.set("update.checkFrequency", "manual");
     const client = makeFakeUpdateClient({ update: null });
     const { result } = renderHook(() => useUpdateAuthority({ client, settings, now: NOW }));
     await act(async () => {
       await result.current.checkNow();
     });
-    expect(settings.loadLastCheckAt()).toBe(NOW().toISOString());
+    expect(localStorage.getItem(LAST_CHECK_AT_KEY)).toBe(NOW().toISOString());
   });
 });
 
 describe("useUpdateAuthority auto-download", () => {
   it("flows available → downloading → ready automatically when auto-download is on (default)", async () => {
-    const settings = makeSettingsStore(fakeStorage());
+    const settings = freshSettingsStore();
     const client = makeFakeUpdateClient({
       update: INFO,
       progressTicks: [
@@ -143,9 +148,8 @@ describe("useUpdateAuthority auto-download", () => {
   });
 
   it("stays at available when auto-download is off", async () => {
-    const settings = makeSettingsStore(
-      fakeStorage({ "termixion.update.autoDownload": "false" }),
-    );
+    const settings = freshSettingsStore();
+    settings.set("update.autoDownload", false);
     const client = makeFakeUpdateClient({ update: INFO });
     const { result } = renderHook(() => useUpdateAuthority({ client, settings, now: NOW }));
     await waitFor(() => expect(result.current.state.status).toBe("available"));
@@ -154,12 +158,9 @@ describe("useUpdateAuthority auto-download", () => {
   });
 
   it("does not auto-download a version the user skipped", async () => {
-    const settings = makeSettingsStore(
-      fakeStorage({
-        "termixion.update.autoDownload": "false",
-        "termixion.update.checkFrequency": "manual",
-      }),
-    );
+    const settings = freshSettingsStore();
+    settings.set("update.autoDownload", false);
+    settings.set("update.checkFrequency", "manual");
     const client = makeFakeUpdateClient({ update: INFO });
     const { result } = renderHook(() => useUpdateAuthority({ client, settings, now: NOW }));
     await act(async () => {
@@ -179,9 +180,8 @@ describe("useUpdateAuthority auto-download", () => {
 describe("useUpdateAuthority bus protocol", () => {
   it("broadcasts update:state (tagged with its source) on every transition", async () => {
     const bus = fakeBus();
-    const settings = makeSettingsStore(
-      fakeStorage({ "termixion.update.autoDownload": "false" }),
-    );
+    const settings = freshSettingsStore();
+    settings.set("update.autoDownload", false);
     const client = makeFakeUpdateClient({ update: INFO });
     const { result } = renderHook(() =>
       useUpdateAuthority({ client, settings, bus, now: NOW, source: "main" }),
@@ -195,9 +195,8 @@ describe("useUpdateAuthority bus protocol", () => {
 
   it("answers update:request-state with the current state", async () => {
     const bus = fakeBus();
-    const settings = makeSettingsStore(
-      fakeStorage({ "termixion.update.checkFrequency": "manual" }),
-    );
+    const settings = freshSettingsStore();
+    settings.set("update.checkFrequency", "manual");
     const client = makeFakeUpdateClient({ update: null });
     renderHook(() => useUpdateAuthority({ client, settings, bus, now: NOW, source: "main" }));
     await waitFor(() =>
@@ -214,12 +213,9 @@ describe("useUpdateAuthority bus protocol", () => {
 
   it("executes update:command from another window and ignores its own echoes", async () => {
     const bus = fakeBus();
-    const settings = makeSettingsStore(
-      fakeStorage({
-        "termixion.update.checkFrequency": "manual",
-        "termixion.update.autoDownload": "false",
-      }),
-    );
+    const settings = freshSettingsStore();
+    settings.set("update.checkFrequency", "manual");
+    settings.set("update.autoDownload", false);
     const client = makeFakeUpdateClient({ update: INFO });
     const { result } = renderHook(() =>
       useUpdateAuthority({ client, settings, bus, now: NOW, source: "main" }),
@@ -255,8 +251,8 @@ describe("useUpdateAuthority bus protocol", () => {
 
   it("setAutoCheck via command persists through the settings store", async () => {
     const bus = fakeBus();
-    const storage = fakeStorage({ "termixion.update.checkFrequency": "manual" });
-    const settings = makeSettingsStore(storage);
+    const settings = freshSettingsStore();
+    settings.set("update.checkFrequency", "manual");
     const client = makeFakeUpdateClient({ update: null });
     const { result } = renderHook(() =>
       useUpdateAuthority({ client, settings, bus, now: NOW, source: "main" }),

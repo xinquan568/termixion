@@ -18,7 +18,8 @@ import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import { Terminal } from "@xterm/headless";
 import { scrollbackTerminalOptions, SCROLLBACK_LINES } from "./scrollbackSettings";
 import { emulationTerminalOptions } from "./emulationOptions";
-import { makeSettingsStore, __resetSettingsForTest } from "../store/settingsStore";
+import { freshSettingsRuntime } from "../test/settingsRuntime";
+import type { SettingsStore } from "../store/settingsStore";
 
 const ROWS = 24;
 const WIDE = 80;
@@ -59,10 +60,12 @@ function logicalLines(term: Terminal): string[] {
 
 describe("resize reflow + viewport stability (trmx-67)", () => {
   const terms: Terminal[] = [];
+  let settings: SettingsStore;
   beforeEach(() => {
-    // trmx-80: the slice reads terminal.scrollbackLines from the shared snapshot; an empty
-    // snapshot serves the registry default (= SCROLLBACK_LINES), which the at-cap test pins.
-    __resetSettingsForTest();
+    // trmx-80: the slice reads terminal.scrollbackLines from the runtime's snapshot; a fresh
+    // runtime's empty snapshot serves the registry default (= SCROLLBACK_LINES), which the at-cap
+    // test pins. trmx-253 (T3.4): a runtime per test IS the isolation — nothing to reset.
+    settings = freshSettingsRuntime().makeStore();
   });
   afterEach(() => {
     while (terms.length) terms.pop()?.dispose();
@@ -70,7 +73,7 @@ describe("resize reflow + viewport stability (trmx-67)", () => {
 
   function openTerm(): Terminal {
     const term = new Terminal({
-      ...scrollbackTerminalOptions(makeSettingsStore()),
+      ...scrollbackTerminalOptions(settings),
       ...emulationTerminalOptions(),
       cols: WIDE,
       rows: ROWS,

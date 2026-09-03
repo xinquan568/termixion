@@ -13,27 +13,20 @@ import {
   SMOOTH_SCROLL_DURATION_MS,
   type ScrollbackOptionsSink,
 } from "./scrollbackSettings";
-import { makeSettingsStore, SETTING_DEFAULTS, type KeyValueStore } from "../store/settingsStore";
-
-function fakeStorage(initial: Record<string, string> = {}): KeyValueStore {
-  const data = new Map(Object.entries(initial));
-  return {
-    getItem: (k) => (data.has(k) ? data.get(k)! : null),
-    setItem: (k, v) => void data.set(k, v),
-    removeItem: (k) => void data.delete(k),
-  };
-}
+import { SETTING_DEFAULTS } from "../store/settingsStore";
+import { freshSettingsStore } from "../test/settingsRuntime";
 
 describe("scrollbackTerminalOptions", () => {
   it("defaults to the registry's 10k cap with smooth discrete scrolling (trmx-65)", () => {
-    expect(scrollbackTerminalOptions(makeSettingsStore(fakeStorage()))).toEqual({
+    expect(scrollbackTerminalOptions(freshSettingsStore())).toEqual({
       scrollback: 10_000,
       smoothScrollDuration: SMOOTH_SCROLL_DURATION_MS,
     });
   });
 
   it("prefers the persisted capacity", () => {
-    const store = makeSettingsStore(fakeStorage({ "termixion.terminal.scrollbackLines": "50000" }));
+    const store = freshSettingsStore();
+    store.set("terminal.scrollbackLines", 50_000);
     expect(scrollbackTerminalOptions(store).scrollback).toBe(50_000);
   });
 

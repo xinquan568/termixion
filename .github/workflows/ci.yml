@@ -230,8 +230,48 @@ jobs:
         run: pnpm --filter app lint
       - name: cargo test (workspace — incl. macOS PTY + integration)
         run: cargo test --workspace --locked
-      - name: pnpm test (vitest)
-        run: pnpm --filter app test
+      # trmx-253 (M20): the vitest step REPLACED by its coverage-enabled form, not run beside it —
+      # two runs of the same suite would double the job's slowest step for no extra signal.
+      # Thresholds are negative (maximum uncovered counts), so this fails on NEW uncovered code
+      # rather than on a percentage that drifts as files are added.
+      - name: pnpm test (vitest, with coverage)
+        run: pnpm --filter app exec vitest run --coverage
+      # `!cancelled()`, NOT `success()`: a threshold failure is exactly when someone needs to read
+      # the report. Uploading only on success is the trap trmx-303 already fixed for Playwright
+      # traces. The report is written under app/coverage (the vitest root is app/), not repo-root.
+      - name: Upload coverage report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-frontend
+          path: app/coverage
+          if-no-files-found: warn
+          retention-days: 14
+      # ADVISORY, and advisory includes FAILING TO INSTALL — a step that can fail the build is not
+      # advisory, so install and run share one continue-on-error step.
+      #
+      # The binary IS cached, and it needs its own step: Swatinem/rust-cache covers the target dir
+      # and the registry, NOT ~/.cargo/bin. An earlier version of this comment claimed the binary
+      # was "cached separately" while nothing cached it and `cargo install` ran on every job — the
+      # comment asserted something the workflow did not do (review finding 2).
+      #
+      # It re-runs the whole workspace suite instrumented, so if it crowds the job's 60-minute
+      # budget it moves to its own job rather than being trimmed.
+      - name: Cache cargo-llvm-cov binary (advisory)
+        id: llvmcov-cache
+        continue-on-error: true
+        # SHA-pinned like every other action here (trmx-234 supply-chain hardening).
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-llvm-cov
+          key: cargo-llvm-cov-0.6.20-${{ runner.os }}-${{ runner.arch }}
+      - name: cargo llvm-cov (advisory — never fails the build)
+        continue-on-error: true
+        run: |
+          if ! cargo llvm-cov --version 2>/dev/null | grep -q '0\.6\.20'; then
+            cargo install cargo-llvm-cov --version 0.6.20 --locked
+          fi
+          cargo llvm-cov --workspace --locked --summary-only
 
       # --- build + end-to-end ---
       # trmx-207: the sidecar ships only in BUNDLED builds (tauri.sidecar.conf.json overlay);

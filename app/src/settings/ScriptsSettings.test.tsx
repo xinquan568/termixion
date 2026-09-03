@@ -8,21 +8,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ScriptsSettings } from "./ScriptsSettings";
-import { makeSettingsStore, type KeyValueStore } from "../store/settingsStore";
+import { freshSettingsStore } from "../test/settingsRuntime";
 import type { InvokeFn } from "../ipc/backend";
-
-function memStore(): KeyValueStore {
-  const m = new Map<string, string>();
-  return {
-    getItem: (k) => m.get(k) ?? null,
-    setItem: (k, v) => {
-      m.set(k, v);
-    },
-    removeItem: (k) => {
-      m.delete(k);
-    },
-  };
-}
 
 const SCRIPTS = [
   { relPath: "tools/build.sh", name: "build", sourceLine: "source '/x/tools/build.sh'" },
@@ -38,7 +25,7 @@ function fakeInvoke(): InvokeFn {
 
 describe("ScriptsSettings (trmx-93)", () => {
   it("renders the startup Select with None first and the discovered scripts", async () => {
-    const settings = makeSettingsStore(memStore());
+    const settings = freshSettingsStore();
     render(<ScriptsSettings settings={settings} invoke={fakeInvoke()} />);
     const select = screen.getByLabelText("Startup script") as HTMLSelectElement;
     await waitFor(() => {
@@ -50,7 +37,7 @@ describe("ScriptsSettings (trmx-93)", () => {
   });
 
   it("persists the chosen startup script through settings.set", async () => {
-    const settings = makeSettingsStore(memStore());
+    const settings = freshSettingsStore();
     const setSpy = vi.spyOn(settings, "set");
     render(<ScriptsSettings settings={settings} invoke={fakeInvoke()} />);
     const select = screen.getByLabelText("Startup script") as HTMLSelectElement;
@@ -61,7 +48,7 @@ describe("ScriptsSettings (trmx-93)", () => {
   });
 
   it("clearing back to None persists the empty value", async () => {
-    const settings = makeSettingsStore(memStore());
+    const settings = freshSettingsStore();
     settings.set("scripts.startup", "work/proj-x.sh");
     render(<ScriptsSettings settings={settings} invoke={fakeInvoke()} />);
     const select = screen.getByLabelText("Startup script") as HTMLSelectElement;
@@ -71,7 +58,7 @@ describe("ScriptsSettings (trmx-93)", () => {
   });
 
   it("Open scripts folder invokes scripts_open_dir", async () => {
-    const settings = makeSettingsStore(memStore());
+    const settings = freshSettingsStore();
     const invoke = fakeInvoke();
     render(<ScriptsSettings settings={settings} invoke={invoke} />);
     fireEvent.click(screen.getByRole("button", { name: "Open scripts folder" }));

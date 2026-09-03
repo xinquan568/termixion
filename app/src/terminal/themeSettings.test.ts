@@ -6,26 +6,22 @@
 // untrusted input: junk must be inert (same discipline as cursorSettings).
 import { describe, expect, it } from "vitest";
 import { buildXtermTheme } from "../theme/buildXtermTheme";
-import { makeSettingsStore, type KeyValueStore } from "../store/settingsStore";
+import { freshSettingsStore } from "../test/settingsRuntime";
 import { applyThemeSettingsChange, themeTerminalOptions, type ThemeOptionsSink } from "./themeSettings";
 
-function fakeStorage(initial: Record<string, string> = {}): KeyValueStore {
-  const data = new Map(Object.entries(initial));
-  return {
-    getItem: (k) => (data.has(k) ? data.get(k)! : null),
-    setItem: (k, v) => void data.set(k, v),
-    removeItem: (k) => void data.delete(k),
-  };
-}
-
 describe("themeTerminalOptions", () => {
+  // trmx-253 (T3.4): the persisted id is a REGISTERED built-in ("solarized"). It used to be
+  // "sepia", which trmx-202 removed from the catalog — so the store coerced it back to the derived
+  // default and `buildXtermTheme("sepia")` resolved there too, leaving the case indistinguishable
+  // from the fallback one below. A live id makes it pin what its name claims.
   it("builds the xterm theme from the persisted setting", () => {
-    const settings = makeSettingsStore(fakeStorage({ "termixion.appearance.theme": "sepia" }));
-    expect(themeTerminalOptions(settings)).toEqual({ theme: buildXtermTheme("sepia") });
+    const settings = freshSettingsStore();
+    settings.set("appearance.theme", "solarized");
+    expect(themeTerminalOptions(settings)).toEqual({ theme: buildXtermTheme("solarized") });
   });
 
   it("falls back to the derived default when nothing is persisted (jsdom → night)", () => {
-    const settings = makeSettingsStore(fakeStorage());
+    const settings = freshSettingsStore();
     expect(themeTerminalOptions(settings)).toEqual({ theme: buildXtermTheme("night") });
   });
 });

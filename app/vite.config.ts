@@ -19,6 +19,64 @@ export default defineConfig({
   // so they are excluded from the production bundle.
   test: {
     environment: "jsdom",
+    // trmx-253 (M20): coverage measurement. The repo's near 1:1 source-to-test FILE parity was never
+    // evidence of coverage — it counts files, not lines or branches.
+    coverage: {
+      provider: "v8",
+      // Extension-qualified on purpose: a bare `src/**` also matches css/json/png/md and would put
+      // non-code in the denominator.
+      include: ["src/**/*.{ts,tsx}"],
+      exclude: [
+        "src/**/*.test.*",
+        "src/**/*.d.ts",
+        "src/test/**",
+        // DELIBERATE, and recorded as a choice rather than an oversight: this removes
+        // conformance/driver.ts — the file trmx-253 singles out — from the denominator, because
+        // counting a test harness's own lines inflates the figure without informing anyone.
+        // driver.ts still has its own direct test (conformance/driver.test.ts).
+        "src/conformance/**",
+        // trmx-253 (review finding 1): main.tsx is NEVER EXECUTED by a test — main.order.test.ts
+        // and main.handlers.test.ts both `import source from "./main.tsx?raw"`, i.e. they read its
+        // TEXT, because importing it under jsdom boots the real app. v8 therefore emitted an entry
+        // with FNF=0/LF=0/BRF=0 for a file holding thirteen function constructs: it contributed to
+        // NEITHER numerator nor denominator, so boot and composition-root code could grow entirely
+        // uncovered without moving any threshold, while the published percentage implied otherwise.
+        //
+        // Excluding it does not change a single number — a 0/0 entry never did — but it stops the
+        // denominator claiming a file it does not measure. THE GAP IS REAL AND REMAINS: the boot
+        // path is verified by source-text assertions, not by execution. Making main.tsx importable
+        // is the actual fix and is out of scope here.
+        "src/main.tsx",
+      ],
+      reporter: ["text-summary", "html", "lcov"],
+      // trmx-253: a RATCHET, not a target — and deliberately not a percentage. A percentage floor
+      // drifts as files are added or deleted, and a lines-only floor lets branch and function
+      // coverage collapse while lines hold (branches trail lines by ~6 points here, which is
+      // exactly the gap 1:1 source-to-test FILE parity concealed). Negative thresholds are Vitest's
+      // MAXIMUM UNCOVERED COUNTS: these are the measured uncovered totals at the trmx-253 baseline,
+      // so new uncovered code fails the build while refactors that delete covered code do not.
+      // Lower them when coverage improves; raising one is a reviewed decision, not a convenience.
+      //
+      // BRANCHES has NO cushion (-433 = the measured value). The one-run variance affected only
+      // statements, functions and lines; branches were identical across every run, so slack there
+      // would be unexplained slack — and an undocumented three-branch allowance is exactly the kind
+      // of quiet headroom a ratchet exists to prevent.
+      //
+      // The +1 on statements/functions/lines is MEASURED, not padding. Four of five baseline runs
+      // reported 4937/2843/1260/4318 covered; one reported exactly one fewer statement, function
+      // and line (branches unchanged), i.e. one small function went unexecuted in that run. Three
+      // consecutive runs since have been byte-identical, so the variance is rare rather than
+      // constant — but a floor set at the best observed value would have failed that run, and a
+      // gate that fails one CI run in five is the flake trmx-302 spent a whole issue removing.
+      // The source of the variance is UNIDENTIFIED; if it widens, this threshold reports it as a
+      // failure rather than absorbing it silently.
+      thresholds: {
+        statements: -508,
+        branches: -433,
+        functions: -198,
+        lines: -360,
+      },
+    },
     globals: false,
     setupFiles: ["./src/test/setup.ts"],
     include: ["src/**/*.test.{ts,tsx}"],

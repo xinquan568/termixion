@@ -6,7 +6,7 @@
 // startup fail-soft (a missing script sources nothing + warns), and the "…with Script…" verbs
 // opening the picker. Uses the App.test controllable-attach harness so the test decides WHEN the
 // backend answers, which is exactly what the race case needs.
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Stub TerminalView (mirrors App.test.tsx): a real xterm mount needs matchMedia/canvas the jsdom
@@ -30,7 +30,8 @@ vi.mock("./update/UpdateAuthorityHost", () => ({
 }));
 
 import { App, type AppDeps } from "./App";
-import { makeSettingsStore, __resetSettingsForTest } from "./store/settingsStore";
+import { freshSettingsRuntime, renderWithSettings } from "./test/settingsRuntime";
+import type { SettingsRuntime } from "./store/settingsStore";
 import type { InvokeFn, SessionInfo } from "./ipc/backend";
 
 const ENTRY = {
@@ -80,16 +81,24 @@ function renderScriptsApp(over: Partial<AppDeps>) {
     installHotReload: vi.fn(() => vi.fn()),
     ...over,
   };
-  render(<App deps={props} />);
+  renderWithSettings(<App deps={props} />, { runtime });
   return { calls, tabsAction };
 }
 
-beforeEach(() => __resetSettingsForTest());
+// trmx-253 (T3.4): one runtime per test. `seedSettings()` writes through the SAME runtime the
+// render reads from, which is the point — the seed and the component are provably one instance.
+let runtime: SettingsRuntime;
+const seedStartupScript = (relPath: string) =>
+  runtime.makeStore().set("scripts.startup", relPath);
+
+beforeEach(() => {
+  runtime = freshSettingsRuntime();
+});
 afterEach(() => vi.restoreAllMocks());
 
 describe("App scripting orchestration (trmx-93)", () => {
   it("sources the startup script on the first pane's attach", async () => {
-    makeSettingsStore().set("scripts.startup", "work/proj-x.sh");
+    seedStartupScript("work/proj-x.sh");
     const invoke = vi.fn(async (cmd: string) =>
       cmd === "scripts_list" ? [ENTRY] : undefined,
     ) as unknown as InvokeFn;
@@ -103,7 +112,7 @@ describe("App scripting orchestration (trmx-93)", () => {
   });
 
   it("does not lose the startup script when attach resolves BEFORE listScripts (race)", async () => {
-    makeSettingsStore().set("scripts.startup", "work/proj-x.sh");
+    seedStartupScript("work/proj-x.sh");
     let resolveList: ((v: unknown) => void) | undefined;
     const invoke = vi.fn(
       () => new Promise((resolve) => { resolveList = resolve; }),
@@ -123,7 +132,7 @@ describe("App scripting orchestration (trmx-93)", () => {
   });
 
   it("sources nothing and warns when the configured startup script is missing", async () => {
-    makeSettingsStore().set("scripts.startup", "gone.sh");
+    seedStartupScript("gone.sh");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const invoke = vi.fn(async () => [ENTRY]) as unknown as InvokeFn; // only work/proj-x.sh exists
     const sendInput = vi.fn(() => Promise.resolve());
@@ -210,7 +219,7 @@ describe("App scripting orchestration (trmx-93)", () => {
 // belongs to the plain-boot default tab, which a service launch never creates).
 describe("service cold launch × startup script (trmx-224)", () => {
   it("never sources the startup script on a service launch", async () => {
-    makeSettingsStore().set("scripts.startup", "work/proj-x.sh");
+    seedStartupScript("work/proj-x.sh");
     const invoke = vi.fn(async (cmd: string) =>
       cmd === "scripts_list" ? [ENTRY] : undefined,
     ) as unknown as InvokeFn;

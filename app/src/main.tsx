@@ -10,21 +10,23 @@ import { realInvoke, takePendingOpenPaths } from "./ipc/backend";
 import { log } from "./ipc/logSink";
 import { runPerf, runPerfMultipane, realPerfDeps, type PerfLaunchConfig } from "./perf/runPerf";
 import { runSmoke, realSmokeDeps } from "./smoke/runSmoke";
-import { hydrateSettings, makeSettingsStore } from "./store/settingsStore";
+import { createSettingsRuntime } from "./store/settingsStore";
+import { SettingsRuntimeProvider } from "./store/settingsRuntimeContext";
 import { hydrateUserThemes } from "./theme/themesBackend";
 import { applyStartupTheme } from "./startup/applyStartupTheme";
 import { ensureStartupFontLoaded } from "./terminal/fontCatalog";
 import "./index.css";
 import "./fonts.css";
 
-// The pinned startup order (trmx-80, guarded by main.order.test.ts): hydrate → theme → gates →
-// mount — ONE code path for all launches. Settings are file-backed (FR-13), so exactly one
-// config_read must land before the themed first paint: hydrateSettings seeds the shared settings
-// snapshot (and runs the one-time legacy-localStorage migration), then applyStartupTheme paints
-// the persisted theme from it, superseding trmx-53's module-evaluation paint (which could read
-// localStorage synchronously — a file-backed theme cannot be read without the IPC round-trip).
-// index.css's static fallback covers the hydrate await; hydrateSettings never throws (a plain
-// browser falls back to the registry defaults).
+// The pinned startup order (trmx-80, guarded by main.order.test.ts): create the settings runtime
+// → hydrate → theme → gates → mount — ONE code path for all launches. Settings are file-backed
+// (FR-13), so exactly one config_read must land before the themed first paint:
+// the boot runtime's hydrate step seeds that runtime's snapshot (and runs the one-time
+// legacy-localStorage migration), then applyStartupTheme paints the persisted theme from it,
+// superseding trmx-53's module-evaluation paint (which could read localStorage synchronously —
+// a file-backed theme cannot be read without the IPC round-trip). index.css's static fallback
+// covers the hydrate await; hydrate() never throws (a plain browser falls back to the registry
+// defaults). trmx-253 (T3.3/T3.5) made the runtime explicit — see the composition-root note in boot().
 //
 // After the paint, boot() asks the backend whether this is a `--smoke` launch (C-3). If so, drive
 // the deterministic sentinel sequence over the production channel and let the backend exit 0/1 —
@@ -32,19 +34,36 @@ import "./fonts.css";
 // window at `?window=settings[&section=…]`; everything else — the main window, `pnpm dev` in a
 // plain browser — is the terminal. A plain browser has no backend, so smoke_config rejects → app.
 async function boot() {
-  await hydrateSettings();
+  // trmx-253 (T3.3): THE COMPOSITION ROOT. Exactly one settings runtime exists per boot and this
+  // is where it is made — before hydration, because hydration is a method ON it. Everything that
+  // reads settings is fed from this one instance, by two routes and no hidden third:
+  //
+  //   1. DIRECT INJECTION for what boot() itself calls (the font gate, the startup theme paint).
+  //   2. A REACT CONTEXT wrapping BOTH surfaces below, so UpdateAuthorityHost (deep inside AppView)
+  //      and SettingsWindowHost build their stores per mount instead of at module-evaluation time.
+  //      That was the blocker: a module-evaluation-time store can only close over state that
+  //      already exists, which is why the ten pieces had to be module-global to begin with.
+  //
+  // T3.5 removed the third route. A transitional bridge used to publish this object to the pre-M8
+  // free functions for the call sites not yet threaded; they are threaded now, those functions are
+  // gone, and `useSettingsRuntime()` THROWS without a provider — so a component outside this tree
+  // fails loudly instead of silently reading an un-hydrated second runtime's registry defaults.
+  // (main.order.test.ts asserts the bridge's symbols do not reappear in this file, in code OR in
+  // prose, which is why this paragraph names none of them.)
+  const settingsRuntime = createSettingsRuntime();
+  await settingsRuntime.hydrate();
   // trmx-89: the persisted `appearance.theme` can be a `user:<stem>` id, so the runtime theme
   // registry must be populated (themes_read → registerUserThemes) BEFORE the startup theme paint
   // resolves that id — otherwise resolveTheme can't find a valid persisted user theme yet and it
   // paints as the derived-default fallback on the very first frame (trmx-202). A no-op without a backend (the read
   // rejects and nothing registers), so it stays safe on every launch surface.
   await hydrateUserThemes();
-  applyStartupTheme();
+  applyStartupTheme({ settings: settingsRuntime.makeStore() });
   // trmx-204: the bundled-font gate, AFTER the themed paint (first frame stays fast) and BEFORE
   // anything can mount a terminal — mountTerminal measures the cell grid synchronously, so the
   // effective bundled face must be ready (or timed out into the fallback stack) by first render.
   // A no-op for the System default ("") and custom families. Guarded by main.order.test.ts.
-  await ensureStartupFontLoaded(makeSettingsStore());
+  await ensureStartupFontLoaded(settingsRuntime.makeStore());
 
   let smokeDir: string | null = null;
   try {
@@ -75,9 +94,9 @@ async function boot() {
     // trmx-103: the backend's `scenario` picks the driver — `multipane` runs the v0.0.9
     // Beta-hardening multi-pane load; anything else keeps the unchanged single-pane default.
     if (perfConfig.scenario === "multipane") {
-      await runPerfMultipane(perfConfig, realPerfDeps());
+      await runPerfMultipane(perfConfig, realPerfDeps(settingsRuntime.makeStore()));
     } else {
-      await runPerf(perfConfig, realPerfDeps());
+      await runPerf(perfConfig, realPerfDeps(settingsRuntime.makeStore()));
     }
     return; // the backend exits via perf_done
   }
@@ -90,18 +109,22 @@ async function boot() {
   const serviceBootPaths = surface.kind === "settings" ? [] : await takePendingOpenPaths();
   ReactDOM.createRoot(document.getElementById("root")!).render(
     <React.StrictMode>
-      {surface.kind === "settings" ? (
-        // trmx-237 (H3): the settings boundary offers "Close window", never Quit — `quit_confirmed`
-        // refuses non-PTY-owner callers, so a Quit button here would be inert while the main window's
-        // shells stayed alive.
-        <ErrorBoundary surface="settings" onReload={reloadWebview} onCloseWindow={closeThisWindow} onError={reportFatal}>
-          <SettingsWindowHost initialSection={surface.section} />
-        </ErrorBoundary>
-      ) : (
-        <ErrorBoundary surface="main" onReload={reloadWebview} onQuit={quitApp} onError={reportFatal}>
-          <App deps={{ serviceBootPaths }} />
-        </ErrorBoundary>
-      )}
+      {/* trmx-253 (T3.3): ONE provider above BOTH branches — the same runtime instance supplies
+          the settings window's host and the main window's UpdateAuthorityHost. */}
+      <SettingsRuntimeProvider runtime={settingsRuntime}>
+        {surface.kind === "settings" ? (
+          // trmx-237 (H3): the settings boundary offers "Close window", never Quit — `quit_confirmed`
+          // refuses non-PTY-owner callers, so a Quit button here would be inert while the main window's
+          // shells stayed alive.
+          <ErrorBoundary surface="settings" onReload={reloadWebview} onCloseWindow={closeThisWindow} onError={reportFatal}>
+            <SettingsWindowHost initialSection={surface.section} />
+          </ErrorBoundary>
+        ) : (
+          <ErrorBoundary surface="main" onReload={reloadWebview} onQuit={quitApp} onError={reportFatal}>
+            <App deps={{ serviceBootPaths }} />
+          </ErrorBoundary>
+        )}
+      </SettingsRuntimeProvider>
     </React.StrictMode>,
   );
 }

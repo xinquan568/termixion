@@ -57,3 +57,7 @@ crates/termixion-tauri/binaries/
 
 # trmx-251: CI-only, collected from $HOME before the failure-path artifact upload
 /smoke-logs
+
+# trmx-253 (M20): vitest writes the coverage report under app/ (its vitest root).
+# CI uploads it as an artifact; it is never committed.
+app/coverage/

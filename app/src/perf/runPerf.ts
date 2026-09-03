@@ -22,7 +22,8 @@ import {
   type SessionInfo,
 } from "../ipc/backend";
 import { mountTerminal, type RendererKind, type TerminalLike } from "../terminal/mountTerminal";
-import { realDeps } from "../terminal/TerminalView";
+import { realDepsFor } from "../terminal/TerminalView";
+import type { SettingsStore } from "../store/settingsStore";
 import { BUDGETS, evaluatePerf, type PerfReportBody } from "./evaluatePerf";
 import { missedFrames, summarize, type LatencySummary } from "./stats";
 
@@ -525,8 +526,8 @@ export async function runPerfMultipane(
 
 /** Mount the real xterm/WebGL pipeline into `container` (the production chokepoint), wrapped in the
  *  PerfMount seam. Shared by `mount()` and `mountPane()` so every pane is a REAL terminal. */
-function mountPerfInto(container: HTMLElement): PerfMount {
-  const handle = mountTerminal(container, realDeps);
+function mountPerfInto(container: HTMLElement, settings: SettingsStore): PerfMount {
+  const handle = mountTerminal(container, realDepsFor(settings));
   // Scrollback paging is an xterm capability the narrow seam deliberately does not carry for
   // one consumer — the same localized-adapter pattern as useBackend's rows/cols read.
   const t = handle.terminal as unknown as { scrollPages?: (pages: number) => void };
@@ -569,10 +570,16 @@ function perfGridSlot(index: number): HTMLElement {
   return slot;
 }
 
-export function realPerfDeps(): PerfDeps {
+/**
+ * trmx-253 (T3.4): `settings` is explicit. The perf harness mounts the SAME xterm chokepoint the
+ * app does, so it must measure the user's persisted font/scrollback/theme — main.tsx passes a store
+ * over the runtime it has just hydrated. It used to reach a module-global one, which is exactly the
+ * ambient coupling M8 removed.
+ */
+export function realPerfDeps(settings: SettingsStore): PerfDeps {
   return {
     invoke: realInvoke,
-    mount: () => mountPerfInto(rootContainer()),
+    mount: () => mountPerfInto(rootContainer(), settings),
     // trmx-103: mount pane `index` into a REAL, sized grid slot so the load scenario measures a genuinely
     // visible six-pane layout — never a zero-size/off-screen pane. The grid (3 cols × 2 rows filling the
     // viewport) is built lazily on the first mountPane call; each slot is a flex cell so xterm's fit gives
@@ -580,7 +587,7 @@ export function realPerfDeps(): PerfDeps {
     // otherwise (a collapsed layout must fail the run honestly, not silently measure a 0×0 terminal).
     mountPane: (index) => {
       const slot = perfGridSlot(index);
-      const mount = mountPerfInto(slot);
+      const mount = mountPerfInto(slot, settings);
       const rect = slot.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) {
         throw new Error(

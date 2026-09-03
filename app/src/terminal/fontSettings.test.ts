@@ -7,49 +7,38 @@ import { describe, expect, it } from "vitest";
 import { applyFontSettingsChange, fontTerminalOptions, type FontOptionsSink } from "./fontSettings";
 import { ITERM2_FONT_FAMILY } from "./iterm2Theme";
 import { DEFAULT_FONT_FAMILY } from "./fontCatalog";
-import { makeSettingsStore, type KeyValueStore } from "../store/settingsStore";
-
-function fakeStorage(initial: Record<string, string> = {}): KeyValueStore {
-  const data = new Map(Object.entries(initial));
-  return {
-    getItem: (k) => (data.has(k) ? data.get(k)! : null),
-    setItem: (k, v) => void data.set(k, v),
-    removeItem: (k) => void data.delete(k),
-  };
-}
+import { freshSettingsStore } from "../test/settingsRuntime";
 
 describe("fontTerminalOptions", () => {
   it("defaults to the bundled SauceCodePro face (trmx-204) with the platform stack as fallback, at 12 pt", () => {
-    expect(fontTerminalOptions(makeSettingsStore(fakeStorage()))).toEqual({
+    expect(fontTerminalOptions(freshSettingsStore())).toEqual({
       fontFamily: `"${DEFAULT_FONT_FAMILY}", ${ITERM2_FONT_FAMILY}`,
       fontSize: 12,
     });
   });
 
   it("an explicit '' (System default) still resolves to the platform stack", () => {
-    const store = makeSettingsStore(fakeStorage({ "termixion.terminal.fontFamily": "" }));
+    const store = freshSettingsStore();
+    store.set("terminal.fontFamily", "");
     expect(fontTerminalOptions(store).fontFamily).toBe(ITERM2_FONT_FAMILY);
   });
 
   it("treats a whitespace-only family as 'use the platform default stack' too", () => {
-    const store = makeSettingsStore(fakeStorage({ "termixion.terminal.fontFamily": "   " }));
+    const store = freshSettingsStore();
+    store.set("terminal.fontFamily", "   ");
     expect(fontTerminalOptions(store).fontFamily).toBe(ITERM2_FONT_FAMILY);
   });
 
   it("a persisted bundled family composes family-first with the platform stack appended", () => {
-    const store = makeSettingsStore(
-      fakeStorage({ "termixion.terminal.fontFamily": "MesloLGS NF" }),
-    );
+    const store = freshSettingsStore();
+    store.set("terminal.fontFamily", "MesloLGS NF");
     expect(fontTerminalOptions(store).fontFamily).toBe(`"MesloLGS NF", ${ITERM2_FONT_FAMILY}`);
   });
 
   it("prefers the persisted values (a custom family passes through verbatim)", () => {
-    const store = makeSettingsStore(
-      fakeStorage({
-        "termixion.terminal.fontFamily": "JetBrains Mono",
-        "termixion.terminal.fontSize": "16",
-      }),
-    );
+    const store = freshSettingsStore();
+    store.set("terminal.fontFamily", "JetBrains Mono");
+    store.set("terminal.fontSize", 16);
     expect(fontTerminalOptions(store)).toEqual({ fontFamily: "JetBrains Mono", fontSize: 16 });
   });
 });
