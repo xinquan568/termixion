@@ -118,7 +118,9 @@ describe("useUpdate", () => {
   it("never checks on its own — mounting stays idle (scheduling lives in useUpdateAuthority)", async () => {
     const client = makeFakeUpdateClient({ update: INFO });
     const { result } = renderHook(() => useUpdate({ client, store: fakeStore(true) }));
-    await new Promise((r) => setTimeout(r, 10));
+    // trmx-250 (M22): settle effects + promise chains instead of sleeping (a sleep-based negative
+    // passes vacuously on a slow runner). See the `settled` note in useUpdateAuthority.test.tsx.
+    await act(async () => {});
     expect(result.current.state.status).toBe("idle");
   });
 });
