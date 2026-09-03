@@ -35,17 +35,17 @@ export default defineConfig({
         // counting a test harness's own lines inflates the figure without informing anyone.
         // driver.ts still has its own direct test (conformance/driver.test.ts).
         "src/conformance/**",
-        // trmx-253 (review finding 1): main.tsx is NEVER EXECUTED by a test — main.order.test.ts
-        // and main.handlers.test.ts both `import source from "./main.tsx?raw"`, i.e. they read its
-        // TEXT, because importing it under jsdom boots the real app. v8 therefore emitted an entry
-        // with FNF=0/LF=0/BRF=0 for a file holding thirteen function constructs: it contributed to
-        // NEITHER numerator nor denominator, so boot and composition-root code could grow entirely
-        // uncovered without moving any threshold, while the published percentage implied otherwise.
+        // trmx-253 (review finding 1) excluded main.tsx because it is NEVER EXECUTED by a test:
+        // importing it under jsdom boots the real app, so its tests read its TEXT, and v8 emitted a
+        // 0/0 entry for a file holding thirteen function constructs — boot and composition-root code
+        // could grow entirely uncovered without moving any threshold.
         //
-        // Excluding it does not change a single number — a 0/0 entry never did — but it stops the
-        // denominator claiming a file it does not measure. THE GAP IS REAL AND REMAINS: the boot
-        // path is verified by source-text assertions, not by execution. Making main.tsx importable
-        // is the actual fix and is out of scope here.
+        // trmx-250 (L10) CLOSED THAT GAP: the boot path — the startup order, the composition root,
+        // the launch gates, the mount, the global handlers and the fatal surface — now lives in
+        // src/boot.tsx, which IS measured (boot.test.tsx executes it against a recorder). What is
+        // left in main.tsx is wiring: the `realBootDeps` object of real implementations and one
+        // `start` call, still unimportable under jsdom for the same reason, and pinned by the one
+        // textual assertion in main.shim.test.ts. The exclusion stays for that file alone.
         "src/main.tsx",
       ],
       reporter: ["text-summary", "html", "lcov"],

@@ -3,7 +3,7 @@
 //
 // trmx-253 (T3.3) — the seam that lets a BOOT-LOCAL runtime reach the React tree.
 //
-// main.order.test.ts pins the wiring at the source level (one construction, before hydration, one
+// boot.test.tsx executes the wiring (trmx-250; one construction, before hydration, one
 // provider above both surfaces); this pins the mechanism's behaviour: what a consumer under a
 // provider gets, what one without a provider gets, and that a store built through the hook does not
 // churn on re-render (both hosts hold theirs across the lifetime of the window).
