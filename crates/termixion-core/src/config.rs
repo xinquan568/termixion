@@ -602,35 +602,7 @@ pub fn parse_registry_pairs(text: &str) -> (Vec<(String, RegistryValue)>, Vec<Co
 /// The TOML `(table, key)` for a registry key (e.g. `"terminal.fontSize"` →
 /// `("terminal", "font_size")`), or `None` for an unknown registry key.
 pub fn toml_path_for(registry_key: &str) -> Option<(&'static str, &'static str)> {
-    match registry_key {
-        "update.autoCheck" => Some(("update", "auto_check")),
-        "update.checkFrequency" => Some(("update", "check_frequency")),
-        "update.autoDownload" => Some(("update", "auto_download")),
-        "terminal.cursorStyle" => Some(("terminal", "cursor_style")),
-        "terminal.cursorBlink" => Some(("terminal", "cursor_blink")),
-        "terminal.scrollbackLines" => Some(("terminal", "scrollback_lines")),
-        "terminal.fontFamily" => Some(("terminal", "font_family")),
-        "terminal.shell" => Some(("terminal", "shell")),
-        "shell.enhancements" => Some(("shell", "enhancements")),
-        "shell.autosuggestions" => Some(("shell", "autosuggestions")),
-        "shell.syntaxHighlighting" => Some(("shell", "syntax_highlighting")),
-        "shell.prompt" => Some(("shell", "prompt")),
-        "terminal.fontSize" => Some(("terminal", "font_size")),
-        "terminal.activityIndicator" => Some(("terminal", "activity_indicator")),
-        "terminal.copyOnSelect" => Some(("terminal", "copy_on_select")),
-        "terminal.focusFollowsMouse" => Some(("terminal", "focus_follows_mouse")),
-        "terminal.confirmClose" => Some(("terminal", "confirm_close")),
-        "terminal.clipboardWrite" => Some(("terminal", "clipboard_write")),
-        "appearance.theme" => Some(("appearance", "theme")),
-        "tabs.barPosition" => Some(("tabs", "bar_position")),
-        "tabs.sideLabelOrientation" => Some(("tabs", "side_label_orientation")),
-        "tabs.showShortcutHints" => Some(("tabs", "show_shortcut_hints")),
-        "titleBar.aiCounter" => Some(("title_bar", "ai_counter")),
-        "scripts.startup" => Some(("scripts", "startup")),
-        "remote_control.enabled" => Some(("remote_control", "enabled")),
-        "remote_control.socketPath" => Some(("remote_control", "socket_path")),
-        _ => None,
-    }
+    setting_def(registry_key).map(|def| (def.table, def.key))
 }
 
 /// The registry pairs that changed between `old` and `new` (new values), registry-keyed,
