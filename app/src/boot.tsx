@@ -21,6 +21,11 @@
 // falls back to the registry defaults). trmx-253 (T3.3/T3.5) made the runtime explicit — see the
 // composition-root note in boot().
 //
+// This order is a WEBVIEW concern — the themed first paint and the font gate need the hydrated
+// store. It is not what makes the Rust side correct any more: since trmx-246 the shell hydrates
+// its own config cache in setup() before any command can run, so a PTY spawn sees the configured
+// shell whether or not the webview has read the file yet.
+//
 // After the paint, boot() asks the backend whether this is a `--smoke` launch (C-3). If so, drive
 // the deterministic sentinel sequence over the production channel and let the backend exit 0/1 —
 // no UI. Otherwise render the surface this window is for (trmx-51): the shell opens the settings
