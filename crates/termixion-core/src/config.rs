@@ -14,7 +14,6 @@ use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::ops::RangeInclusive;
 
 use serde::{Deserialize, Serialize};
 
@@ -1034,11 +1033,9 @@ pub fn schema_json() -> serde_json::Value {
 // ---------------------------------------------------------------------------
 // The tolerant walk: parse to a toml::Table, then read each KNOWN field
 // explicitly (serde's deny_unknown_fields aborts instead of warning, so the
-// walk is hand-rolled). Unreadable parts warn and keep their defaults.
+// walk is hand-rolled) — since trmx-246 driven by SCHEMA rather than by one
+// hand-written function per table. Unreadable parts warn and keep their defaults.
 // ---------------------------------------------------------------------------
-
-const SCROLLBACK_LINES_RANGE: RangeInclusive<u32> = 0..=200_000;
-const FONT_SIZE_RANGE: RangeInclusive<u32> = 6..=72;
 
 /// Collects the walk's outputs so field readers stay small.
 struct Sink {
@@ -1079,191 +1076,23 @@ fn parse_full(text: &str) -> (Config, Vec<(String, RegistryValue)>, Vec<ConfigWa
             }
             continue;
         }
-        let walk_table: Option<fn(&toml::Table, &mut Config, &mut Sink)> = match name.as_str() {
-            "update" => Some(walk_update),
-            "terminal" => Some(walk_terminal),
-            "shell" => Some(walk_shell),
-            "appearance" => Some(walk_appearance),
-            "tabs" => Some(walk_tabs),
-            "title_bar" => Some(walk_title_bar),
-            "scripts" => Some(walk_scripts),
-            "remote_control" => Some(walk_remote_control),
-            _ => None,
-        };
-        match walk_table {
-            Some(walk_table) => match value.as_table() {
-                Some(inner) => walk_table(inner, &mut config, &mut sink),
-                None => sink.warnings.push(ConfigWarning::InvalidValue {
-                    key: name.clone(),
-                    got: describe_value(value),
-                    expected: "a table of settings".to_string(),
-                }),
-            },
-            None => sink
-                .warnings
-                .push(ConfigWarning::UnknownKey { key: name.clone() }),
+        // trmx-246: a fixed-schema table is any table SCHEMA declares; its keys are walked by
+        // SCHEMA too. An unknown table warns (forward compat), a non-table value warns.
+        if !SCHEMA.iter().any(|def| def.table == name) {
+            sink.warnings
+                .push(ConfigWarning::UnknownKey { key: name.clone() });
+            continue;
+        }
+        match value.as_table() {
+            Some(inner) => walk_table(name, inner, &mut config, &mut sink),
+            None => sink.warnings.push(ConfigWarning::InvalidValue {
+                key: name.clone(),
+                got: describe_value(value),
+                expected: "a table of settings".to_string(),
+            }),
         }
     }
     (config, sink.pairs, sink.warnings)
-}
-
-fn walk_update(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
-    for (key, value) in table {
-        match key.as_str() {
-            "auto_check" => read_bool(
-                value,
-                ("update.auto_check", "update.autoCheck"),
-                &mut config.update.auto_check,
-                sink,
-            ),
-            "check_frequency" => read_enum(
-                value,
-                ("update.check_frequency", "update.checkFrequency"),
-                CheckFrequency::from_toml,
-                CheckFrequency::as_str,
-                r#"one of "on-startup", "daily", "weekly", "manual""#,
-                &mut config.update.check_frequency,
-                sink,
-            ),
-            "auto_download" => read_bool(
-                value,
-                ("update.auto_download", "update.autoDownload"),
-                &mut config.update.auto_download,
-                sink,
-            ),
-            _ => sink.warnings.push(ConfigWarning::UnknownKey {
-                key: format!("update.{key}"),
-            }),
-        }
-    }
-}
-
-// trmx-101 (FR-9.4): the `[remote_control]` table. Mirrors walk_update; the socket itself lives in the tauri shell.
-fn walk_remote_control(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
-    for (key, value) in table {
-        match key.as_str() {
-            "enabled" => read_bool(
-                value,
-                ("remote_control.enabled", "remote_control.enabled"),
-                &mut config.remote_control.enabled,
-                sink,
-            ),
-            "socket_path" => read_string(
-                value,
-                ("remote_control.socket_path", "remote_control.socketPath"),
-                &mut config.remote_control.socket_path,
-                sink,
-            ),
-            _ => sink.warnings.push(ConfigWarning::UnknownKey {
-                key: format!("remote_control.{key}"),
-            }),
-        }
-    }
-}
-
-fn walk_terminal(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
-    for (key, value) in table {
-        match key.as_str() {
-            "cursor_style" => read_enum(
-                value,
-                ("terminal.cursor_style", "terminal.cursorStyle"),
-                CursorStyle::from_toml,
-                CursorStyle::as_str,
-                r#"one of "bar", "block", "underline""#,
-                &mut config.terminal.cursor_style,
-                sink,
-            ),
-            "cursor_blink" => read_bool(
-                value,
-                ("terminal.cursor_blink", "terminal.cursorBlink"),
-                &mut config.terminal.cursor_blink,
-                sink,
-            ),
-            "scrollback_lines" => read_clamped_int(
-                value,
-                ("terminal.scrollback_lines", "terminal.scrollbackLines"),
-                SCROLLBACK_LINES_RANGE,
-                &mut config.terminal.scrollback_lines,
-                sink,
-            ),
-            "font_family" => read_string(
-                value,
-                ("terminal.font_family", "terminal.fontFamily"),
-                &mut config.terminal.font_family,
-                sink,
-            ),
-            "shell" => read_string(
-                value,
-                ("terminal.shell", "terminal.shell"),
-                &mut config.terminal.shell,
-                sink,
-            ),
-            "font_size" => read_clamped_int(
-                value,
-                ("terminal.font_size", "terminal.fontSize"),
-                FONT_SIZE_RANGE,
-                &mut config.terminal.font_size,
-                sink,
-            ),
-            "activity_indicator" => read_bool(
-                value,
-                ("terminal.activity_indicator", "terminal.activityIndicator"),
-                &mut config.terminal.activity_indicator,
-                sink,
-            ),
-            "copy_on_select" => read_bool(
-                value,
-                ("terminal.copy_on_select", "terminal.copyOnSelect"),
-                &mut config.terminal.copy_on_select,
-                sink,
-            ),
-            "focus_follows_mouse" => read_bool(
-                value,
-                ("terminal.focus_follows_mouse", "terminal.focusFollowsMouse"),
-                &mut config.terminal.focus_follows_mouse,
-                sink,
-            ),
-            "confirm_close" => read_enum(
-                value,
-                ("terminal.confirm_close", "terminal.confirmClose"),
-                ConfirmClose::from_toml,
-                ConfirmClose::as_str,
-                r#"one of "never", "when-busy", "always""#,
-                &mut config.terminal.confirm_close,
-                sink,
-            ),
-            // trmx-252: the OSC 52 clipboard-write policy. Core only STORES it (R1/R2) — the
-            // webview's OSC 52 handler reads it at write time and enforces.
-            "clipboard_write" => read_enum(
-                value,
-                ("terminal.clipboard_write", "terminal.clipboardWrite"),
-                ClipboardWrite::from_toml,
-                ClipboardWrite::as_str,
-                r#"one of "allow", "deny""#,
-                &mut config.terminal.clipboard_write,
-                sink,
-            ),
-            _ => sink.warnings.push(ConfigWarning::UnknownKey {
-                key: format!("terminal.{key}"),
-            }),
-        }
-    }
-}
-
-fn walk_scripts(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
-    for (key, value) in table {
-        match key.as_str() {
-            "startup" => read_string(
-                value,
-                ("scripts.startup", "scripts.startup"),
-                &mut config.scripts.startup,
-                sink,
-            ),
-            _ => sink.warnings.push(ConfigWarning::UnknownKey {
-                key: format!("scripts.{key}"),
-            }),
-        }
-    }
 }
 
 /// Read the `[keys]` map (trmx-94): each entry is `chord = command-id` (or `"none"` to unbind). Any
@@ -1284,202 +1113,70 @@ fn walk_keys(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
     }
 }
 
-fn walk_shell(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
-    for (key, value) in table {
-        match key.as_str() {
-            "enhancements" => read_bool(
-                value,
-                ("shell.enhancements", "shell.enhancements"),
-                &mut config.shell.enhancements,
-                sink,
-            ),
-            "autosuggestions" => read_bool(
-                value,
-                ("shell.autosuggestions", "shell.autosuggestions"),
-                &mut config.shell.autosuggestions,
-                sink,
-            ),
-            "syntax_highlighting" => read_bool(
-                value,
-                ("shell.syntax_highlighting", "shell.syntaxHighlighting"),
-                &mut config.shell.syntax_highlighting,
-                sink,
-            ),
-            "prompt" => read_enum(
-                value,
-                ("shell.prompt", "shell.prompt"),
-                PromptChoice::from_toml,
-                PromptChoice::as_str,
-                r#"one of "existing", "starship", "powerlevel10k", "pure""#,
-                &mut config.shell.prompt,
-                sink,
-            ),
-            _ => sink.warnings.push(ConfigWarning::UnknownKey {
-                key: format!("shell.{key}"),
-            }),
-        }
-    }
-}
-
-fn walk_appearance(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
-    for (key, value) in table {
-        match key.as_str() {
-            "theme" => read_string(
-                value,
-                ("appearance.theme", "appearance.theme"),
-                &mut config.appearance.theme,
-                sink,
-            ),
-            _ => sink.warnings.push(ConfigWarning::UnknownKey {
-                key: format!("appearance.{key}"),
-            }),
-        }
-    }
-}
-
-fn walk_tabs(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
-    for (key, value) in table {
-        match key.as_str() {
-            "bar_position" => read_enum(
-                value,
-                ("tabs.bar_position", "tabs.barPosition"),
-                TabBarPosition::from_toml,
-                TabBarPosition::as_str,
-                r#"one of "top", "bottom", "left", "right""#,
-                &mut config.tabs.bar_position,
-                sink,
-            ),
-            "side_label_orientation" => read_enum(
-                value,
-                ("tabs.side_label_orientation", "tabs.sideLabelOrientation"),
-                LabelOrientation::from_toml,
-                LabelOrientation::as_str,
-                r#"one of "horizontal", "vertical""#,
-                &mut config.tabs.side_label_orientation,
-                sink,
-            ),
-            // trmx-151: the ⌘1–⌘9 tab-prefix toggle (tolerant read_bool, like activity_indicator).
-            "show_shortcut_hints" => read_bool(
-                value,
-                ("tabs.show_shortcut_hints", "tabs.showShortcutHints"),
-                &mut config.tabs.show_shortcut_hints,
-                sink,
-            ),
-            _ => sink.warnings.push(ConfigWarning::UnknownKey {
-                key: format!("tabs.{key}"),
-            }),
-        }
-    }
-}
-
-/// trmx-190: the `[title_bar]` table — the AI-session counter gate.
-fn walk_title_bar(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
-    for (key, value) in table {
-        match key.as_str() {
-            "ai_counter" => read_bool(
-                value,
-                ("title_bar.ai_counter", "titleBar.aiCounter"),
-                &mut config.title_bar.ai_counter,
-                sink,
-            ),
-            _ => sink.warnings.push(ConfigWarning::UnknownKey {
-                key: format!("title_bar.{key}"),
-            }),
-        }
-    }
-}
-
-/// Read a boolean field; `keys` is `(toml_path, registry_key)`.
-fn read_bool(value: &toml::Value, keys: (&str, &str), target: &mut bool, sink: &mut Sink) {
-    match value.as_bool() {
-        Some(parsed) => {
-            *target = parsed;
-            sink.pairs
-                .push((keys.1.to_string(), RegistryValue::Bool(parsed)));
-        }
-        None => sink.warnings.push(ConfigWarning::InvalidValue {
-            key: keys.0.to_string(),
-            got: describe_value(value),
-            expected: "a boolean (true or false)".to_string(),
-        }),
-    }
-}
-
-/// Read a free-string field; `keys` is `(toml_path, registry_key)`.
-fn read_string(value: &toml::Value, keys: (&str, &str), target: &mut String, sink: &mut Sink) {
-    match value.as_str() {
-        Some(parsed) => {
-            *target = parsed.to_string();
-            sink.pairs
-                .push((keys.1.to_string(), RegistryValue::Str(parsed.to_string())));
-        }
-        None => sink.warnings.push(ConfigWarning::InvalidValue {
-            key: keys.0.to_string(),
-            got: describe_value(value),
-            expected: "a string".to_string(),
-        }),
-    }
-}
-
-/// Read an integer field, clamping into `range` (out-of-range warns but the clamped
-/// value is used and surfaces in the pairs); `keys` is `(toml_path, registry_key)`.
-fn read_clamped_int(
-    value: &toml::Value,
-    keys: (&str, &str),
-    range: RangeInclusive<u32>,
-    target: &mut u32,
-    sink: &mut Sink,
-) {
-    let (min, max) = (*range.start(), *range.end());
-    match value.as_integer() {
-        Some(raw) => {
-            let clamped_i64 = raw.clamp(i64::from(min), i64::from(max));
-            // In-range by construction; the fallback can never be hit.
-            let clamped = u32::try_from(clamped_i64).unwrap_or(max);
-            if raw != clamped_i64 {
-                sink.warnings.push(ConfigWarning::OutOfRange {
-                    key: keys.0.to_string(),
-                    got: raw,
-                    clamped_to: clamped,
-                });
+/// Read one known setting from its TOML value by its SCHEMA kind: the same tolerance and the same
+/// wording the four hand-written readers had (trmx-246). A readable value is written through the
+/// definition's accessor and surfaces in the pairs as the accessor reports it (so a clamped
+/// integer and a canonical enum spelling come back clamped / canonical); an unreadable one warns
+/// with the TOML path and keeps the default.
+fn read_setting(def: &SettingDef, value: &toml::Value, config: &mut Config, sink: &mut Sink) {
+    let parsed = match def.kind {
+        SettingKind::Bool => value
+            .as_bool()
+            .map(RegistryValue::Bool)
+            .ok_or_else(|| "a boolean (true or false)".to_string()),
+        SettingKind::Str => value
+            .as_str()
+            .map(|s| RegistryValue::Str(s.to_string()))
+            .ok_or_else(|| "a string".to_string()),
+        SettingKind::Int { min, max } => match value.as_integer() {
+            Some(raw) => {
+                let clamped_i64 = raw.clamp(i64::from(min), i64::from(max));
+                // In-range by construction; the fallback can never be hit.
+                let clamped = u32::try_from(clamped_i64).unwrap_or(max);
+                if raw != clamped_i64 {
+                    sink.warnings.push(ConfigWarning::OutOfRange {
+                        key: def.toml_path(),
+                        got: raw,
+                        clamped_to: clamped,
+                    });
+                }
+                Ok(RegistryValue::Int(clamped))
             }
-            *target = clamped;
+            None => Err(format!("an integer in {min}..={max}")),
+        },
+        SettingKind::Enum(values) => value
+            .as_str()
+            .filter(|s| values.contains(s))
+            .map(|s| RegistryValue::Str(s.to_string()))
+            .ok_or_else(|| {
+                let listed: Vec<String> = values.iter().map(|v| format!("\"{v}\"")).collect();
+                format!("one of {}", listed.join(", "))
+            }),
+    };
+    match parsed {
+        Ok(value) => {
+            def.set(config, &value);
             sink.pairs
-                .push((keys.1.to_string(), RegistryValue::Int(clamped)));
+                .push((def.registry_key.to_string(), def.get(config)));
         }
-        None => sink.warnings.push(ConfigWarning::InvalidValue {
-            key: keys.0.to_string(),
+        Err(expected) => sink.warnings.push(ConfigWarning::InvalidValue {
+            key: def.toml_path(),
             got: describe_value(value),
-            expected: format!("an integer in {min}..={max}"),
+            expected,
         }),
     }
 }
 
-/// Read an enum-valued field via its `parse`/`render` pair; `keys` is
-/// `(toml_path, registry_key)` and `expected` lists the valid spellings for the warning.
-fn read_enum<T: Copy>(
-    value: &toml::Value,
-    keys: (&str, &str),
-    parse: fn(&str) -> Option<T>,
-    render: fn(T) -> &'static str,
-    expected: &str,
-    target: &mut T,
-    sink: &mut Sink,
-) {
-    let parsed = value.as_str().and_then(parse);
-    match parsed {
-        Some(parsed) => {
-            *target = parsed;
-            sink.pairs.push((
-                keys.1.to_string(),
-                RegistryValue::Str(render(parsed).to_string()),
-            ));
+/// Walk one fixed-schema table: every key is looked up in SCHEMA; an unknown key warns with its
+/// `table.key` path (forward compat: ignored, not fatal), as the eight per-table walks did.
+fn walk_table(table_name: &str, table: &toml::Table, config: &mut Config, sink: &mut Sink) {
+    for (key, value) in table {
+        match setting_def_at(table_name, key) {
+            Some(def) => read_setting(def, value, config, sink),
+            None => sink.warnings.push(ConfigWarning::UnknownKey {
+                key: format!("{table_name}.{key}"),
+            }),
         }
-        None => sink.warnings.push(ConfigWarning::InvalidValue {
-            key: keys.0.to_string(),
-            got: describe_value(value),
-            expected: expected.to_string(),
-        }),
     }
 }
 
@@ -3254,6 +2951,200 @@ show_shortcut_hints = false
         assert_eq!(
             keys, expected,
             "diff_configs must report changes in SCHEMA order"
+        );
+    }
+
+    // --- trmx-246: the walk's observable behaviour, byte for byte, before it is derived -----
+
+    /// Every warning shape and wording the hand-written readers produce, one witness per
+    /// branch. Written against the CURRENT implementation (a characterisation), so the derived
+    /// walk has to reproduce each string exactly; its teeth were shown by mutating one reader's
+    /// wording before the replacement (see the run's evidence).
+    #[test]
+    fn walk_warnings_are_byte_identical_to_the_readers() {
+        let cases: &[(&str, ConfigWarning)] = &[
+            (
+                "[update]\nauto_check = \"yes\"\n",
+                ConfigWarning::InvalidValue {
+                    key: "update.auto_check".to_string(),
+                    got: "\"yes\"".to_string(),
+                    expected: "a boolean (true or false)".to_string(),
+                },
+            ),
+            (
+                "[terminal]\nfont_family = 12\n",
+                ConfigWarning::InvalidValue {
+                    key: "terminal.font_family".to_string(),
+                    got: "12".to_string(),
+                    expected: "a string".to_string(),
+                },
+            ),
+            (
+                "[terminal]\nfont_size = \"big\"\n",
+                ConfigWarning::InvalidValue {
+                    key: "terminal.font_size".to_string(),
+                    got: "\"big\"".to_string(),
+                    expected: "an integer in 6..=72".to_string(),
+                },
+            ),
+            (
+                "[terminal]\nscrollback_lines = true\n",
+                ConfigWarning::InvalidValue {
+                    key: "terminal.scrollback_lines".to_string(),
+                    got: "true".to_string(),
+                    expected: "an integer in 0..=200000".to_string(),
+                },
+            ),
+            (
+                "[terminal]\nfont_size = 500\n",
+                ConfigWarning::OutOfRange {
+                    key: "terminal.font_size".to_string(),
+                    got: 500,
+                    clamped_to: 72,
+                },
+            ),
+            (
+                "[terminal]\nfont_size = -1\n",
+                ConfigWarning::OutOfRange {
+                    key: "terminal.font_size".to_string(),
+                    got: -1,
+                    clamped_to: 6,
+                },
+            ),
+            (
+                "[terminal]\ncursor_style = \"wide\"\n",
+                ConfigWarning::InvalidValue {
+                    key: "terminal.cursor_style".to_string(),
+                    got: "\"wide\"".to_string(),
+                    expected: "one of \"bar\", \"block\", \"underline\"".to_string(),
+                },
+            ),
+            (
+                "[update]\ncheck_frequency = 3\n",
+                ConfigWarning::InvalidValue {
+                    key: "update.check_frequency".to_string(),
+                    got: "3".to_string(),
+                    expected: "one of \"on-startup\", \"daily\", \"weekly\", \"manual\""
+                        .to_string(),
+                },
+            ),
+            (
+                "[terminal]\nconfirm_close = \"sometimes\"\n",
+                ConfigWarning::InvalidValue {
+                    key: "terminal.confirm_close".to_string(),
+                    got: "\"sometimes\"".to_string(),
+                    expected: "one of \"never\", \"when-busy\", \"always\"".to_string(),
+                },
+            ),
+            (
+                "[terminal]\nclipboard_write = \"ask\"\n",
+                ConfigWarning::InvalidValue {
+                    key: "terminal.clipboard_write".to_string(),
+                    got: "\"ask\"".to_string(),
+                    expected: "one of \"allow\", \"deny\"".to_string(),
+                },
+            ),
+            (
+                "[tabs]\nbar_position = \"middle\"\n",
+                ConfigWarning::InvalidValue {
+                    key: "tabs.bar_position".to_string(),
+                    got: "\"middle\"".to_string(),
+                    expected: "one of \"top\", \"bottom\", \"left\", \"right\"".to_string(),
+                },
+            ),
+            (
+                "[tabs]\nside_label_orientation = \"diagonal\"\n",
+                ConfigWarning::InvalidValue {
+                    key: "tabs.side_label_orientation".to_string(),
+                    got: "\"diagonal\"".to_string(),
+                    expected: "one of \"horizontal\", \"vertical\"".to_string(),
+                },
+            ),
+            (
+                "[shell]\nprompt = \"fish\"\n",
+                ConfigWarning::InvalidValue {
+                    key: "shell.prompt".to_string(),
+                    got: "\"fish\"".to_string(),
+                    expected: "one of \"existing\", \"starship\", \"powerlevel10k\", \"pure\""
+                        .to_string(),
+                },
+            ),
+            (
+                "[terminal]\nbogus = 1\n",
+                ConfigWarning::UnknownKey {
+                    key: "terminal.bogus".to_string(),
+                },
+            ),
+            (
+                "[remote_control]\nport = 8080\n",
+                ConfigWarning::UnknownKey {
+                    key: "remote_control.port".to_string(),
+                },
+            ),
+            (
+                "[nonsense]\nx = 1\n",
+                ConfigWarning::UnknownKey {
+                    key: "nonsense".to_string(),
+                },
+            ),
+            (
+                "terminal = 42\n",
+                ConfigWarning::InvalidValue {
+                    key: "terminal".to_string(),
+                    got: "42".to_string(),
+                    expected: "a table of settings".to_string(),
+                },
+            ),
+            (
+                "keys = \"cmd+t\"\n",
+                ConfigWarning::InvalidValue {
+                    key: "keys".to_string(),
+                    got: "\"cmd+t\"".to_string(),
+                    expected: "a table of chord = command entries".to_string(),
+                },
+            ),
+            (
+                "[keys]\n\"cmd+t\" = 7\n",
+                ConfigWarning::InvalidValue {
+                    key: "keys.cmd+t".to_string(),
+                    got: "7".to_string(),
+                    expected: "a command id string".to_string(),
+                },
+            ),
+        ];
+        for (text, expected) in cases {
+            let (_, warnings) = parse_config(text);
+            assert_eq!(warnings, vec![expected.clone()], "for {text:?}");
+        }
+        // The clamped value is used AND surfaces clamped in the pairs (an OutOfRange, not a reject).
+        let (config, pairs, warnings) = parse_full("[terminal]\nfont_size = 500\n");
+        assert_eq!(config.terminal.font_size, 72);
+        assert_eq!(
+            pairs,
+            vec![("terminal.fontSize".to_string(), RegistryValue::Int(72))]
+        );
+        assert_eq!(warnings.len(), 1);
+    }
+
+    /// Pairs come out in the parsed TOML map's order — `toml::Table` iterates its tables and keys
+    /// ALPHABETICALLY, whatever the document's order — not in schema order. Characterised against
+    /// the hand-written walk before it was derived (the first draft of this test assumed file
+    /// order and failed against the old walk, which is the point of characterising first).
+    #[test]
+    fn walk_pairs_follow_the_toml_map_order() {
+        let text = "[update]\nauto_download = false\nauto_check = false\n\n[tabs]\nshow_shortcut_hints = false\nbar_position = \"top\"\n";
+        let (pairs, warnings) = parse_registry_pairs(text);
+        assert_eq!(warnings, Vec::new());
+        let keys: Vec<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec![
+                "tabs.barPosition",
+                "tabs.showShortcutHints",
+                "update.autoCheck",
+                "update.autoDownload"
+            ],
+            "alphabetical by table then key (the toml map order), regardless of the document"
         );
     }
 
