@@ -36,7 +36,8 @@ jobs:
     # A fork with schedules enabled would measure the fork; only the upstream repository is meaningful.
     if: github.repository == 'xinquan568/termixion'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The live baseline took ~6 min for 174 runs (~190 REST calls); 30 leaves headroom for a slow API day.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Measure (gh api, read-only; ~200 REST calls for a 90-day window)
