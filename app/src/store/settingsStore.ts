@@ -336,6 +336,10 @@ function parse<K extends SettingKey>(key: K, raw: string): SettingsValues[K] {
     // spawn/read time, never here.
     return raw as SettingsValues[K];
   }
+  if (key === "remote_control.socketPath") {
+    // trmx-246: a free-form socket path ("" = the default path); validated by the backend.
+    return raw as SettingsValues[K];
+  }
   if (key === "shell.prompt") {
     // trmx-207: a closed enum — junk re-derives the default (mirror tabs.barPosition).
     return (PROMPT_CHOICES as readonly string[]).includes(raw)
@@ -400,6 +404,7 @@ function coerce<K extends SettingKey>(key: K, value: unknown): SettingsValues[K]
   if (key === "terminal.fontFamily") return value as SettingsValues[K];
   if (key === "scripts.startup") return value as SettingsValues[K];
   if (key === "terminal.shell") return value as SettingsValues[K]; // trmx-205
+  if (key === "remote_control.socketPath") return value as SettingsValues[K]; // trmx-246
   if (key === "shell.prompt") {
     return typeof value === "string" && (PROMPT_CHOICES as readonly string[]).includes(value)
       ? (value as SettingsValues[K])
