@@ -48,7 +48,7 @@ plist = "1"
 # traversal. Declared EXPLICITLY rather than relied upon through feature unification: another
 # crate in the graph may enable it today and stop tomorrow, and the failure would be a compile
 # error in a security gate. Same crate, no new supply-chain surface.
-syn = { version = "2", features = ["full", "parsing", "visit"] }
+syn = { version = "3", features = ["full", "parsing", "visit"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
