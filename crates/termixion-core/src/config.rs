@@ -776,6 +776,382 @@ pub fn diff_configs(old: &Config, new: &Config) -> Vec<(String, RegistryValue)> 
 }
 
 // ---------------------------------------------------------------------------
+// trmx-246 (grill M6): the ONE declarative schema. Every other description of a
+// setting — the TOML path, the registry pairs a diff emits, the tolerant walk,
+// the shell's write-side type gate, the golden the frontend asserts against —
+// is derived from this table. The typed structs above stay hand-written; each
+// definition carries the accessor pair that binds it to its field.
+// ---------------------------------------------------------------------------
+
+/// The value class of a setting, as the config file and the registry see it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingKind {
+    Bool,
+    /// An integer clamped into `min..=max` (out-of-range warns and clamps).
+    Int {
+        min: u32,
+        max: u32,
+    },
+    /// A free string ("" is a valid value; meaning is the consumer's business).
+    Str,
+    /// A closed set of spellings, listed in the order warnings enumerate them.
+    Enum(&'static [&'static str]),
+}
+
+/// A setting's built-in default, in const-constructible form (a `RegistryValue`
+/// carries an owned `String`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingDefault {
+    Bool(bool),
+    Int(u32),
+    Str(&'static str),
+}
+
+impl SettingDefault {
+    /// The default as the registry would report it.
+    pub fn to_registry_value(self) -> RegistryValue {
+        match self {
+            Self::Bool(b) => RegistryValue::Bool(b),
+            Self::Int(i) => RegistryValue::Int(i),
+            Self::Str(s) => RegistryValue::Str(s.to_string()),
+        }
+    }
+}
+
+/// One setting: where it lives in the file, how the registry names it, what it
+/// accepts, what it defaults to, and how to read/write its typed field.
+pub struct SettingDef {
+    /// The camelCase dotted registry key (`"terminal.fontSize"`).
+    pub registry_key: &'static str,
+    /// The TOML table (`"terminal"`).
+    pub table: &'static str,
+    /// The snake_case TOML key inside the table (`"font_size"`).
+    pub key: &'static str,
+    pub kind: SettingKind,
+    pub default: SettingDefault,
+    get: fn(&Config) -> RegistryValue,
+    /// Writes an ALREADY-VALIDATED value (clamped / a listed enum spelling). A
+    /// value of the wrong variant, or an enum spelling `from_toml` rejects,
+    /// leaves the field untouched — never a panic (R3).
+    set: fn(&mut Config, &RegistryValue),
+}
+
+impl SettingDef {
+    /// The field's current value in registry form.
+    pub fn get(&self, config: &Config) -> RegistryValue {
+        (self.get)(config)
+    }
+
+    /// Write a validated value; see the field doc for what "validated" means.
+    pub fn set(&self, config: &mut Config, value: &RegistryValue) {
+        (self.set)(config, value)
+    }
+
+    /// The `"table.key"` spelling warnings use (the path the user edits).
+    pub fn toml_path(&self) -> String {
+        format!("{}.{}", self.table, self.key)
+    }
+}
+
+impl fmt::Debug for SettingDef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SettingDef")
+            .field("registry_key", &self.registry_key)
+            .field("table", &self.table)
+            .field("key", &self.key)
+            .field("kind", &self.kind)
+            .field("default", &self.default)
+            .finish()
+    }
+}
+
+macro_rules! bool_def {
+    ($rk:literal, $table:literal, $key:literal, $default:literal, $($field:ident).+) => {
+        SettingDef {
+            registry_key: $rk,
+            table: $table,
+            key: $key,
+            kind: SettingKind::Bool,
+            default: SettingDefault::Bool($default),
+            get: |c| RegistryValue::Bool(c.$($field).+),
+            set: |c, v| {
+                if let RegistryValue::Bool(b) = v {
+                    c.$($field).+ = *b;
+                }
+            },
+        }
+    };
+}
+
+macro_rules! int_def {
+    ($rk:literal, $table:literal, $key:literal, $default:literal, $min:literal ..= $max:literal, $($field:ident).+) => {
+        SettingDef {
+            registry_key: $rk,
+            table: $table,
+            key: $key,
+            kind: SettingKind::Int { min: $min, max: $max },
+            default: SettingDefault::Int($default),
+            get: |c| RegistryValue::Int(c.$($field).+),
+            set: |c, v| {
+                if let RegistryValue::Int(i) = v {
+                    c.$($field).+ = *i;
+                }
+            },
+        }
+    };
+}
+
+macro_rules! str_def {
+    ($rk:literal, $table:literal, $key:literal, $default:literal, $($field:ident).+) => {
+        SettingDef {
+            registry_key: $rk,
+            table: $table,
+            key: $key,
+            kind: SettingKind::Str,
+            default: SettingDefault::Str($default),
+            get: |c| RegistryValue::Str(c.$($field).+.clone()),
+            set: |c, v| {
+                if let RegistryValue::Str(s) = v {
+                    c.$($field).+ = s.clone();
+                }
+            },
+        }
+    };
+}
+
+macro_rules! enum_def {
+    ($rk:literal, $table:literal, $key:literal, $ty:ident, $default:literal, [$($value:literal),+ $(,)?], $($field:ident).+) => {
+        SettingDef {
+            registry_key: $rk,
+            table: $table,
+            key: $key,
+            kind: SettingKind::Enum(&[$($value),+]),
+            default: SettingDefault::Str($default),
+            get: |c| RegistryValue::Str(c.$($field).+.as_str().to_string()),
+            set: |c, v| {
+                if let RegistryValue::Str(s) = v {
+                    if let Some(parsed) = $ty::from_toml(s) {
+                        c.$($field).+ = parsed;
+                    }
+                }
+            },
+        }
+    };
+}
+
+/// The schema, in struct order (`Config`'s fields, then each table's fields).
+/// This order is the canonical order: the golden, `diff_configs` and the
+/// frontend's `settings:changed` batches all follow it.
+pub const SCHEMA: &[SettingDef] = &[
+    // [update]
+    bool_def!(
+        "update.autoCheck",
+        "update",
+        "auto_check",
+        true,
+        update.auto_check
+    ),
+    enum_def!(
+        "update.checkFrequency",
+        "update",
+        "check_frequency",
+        CheckFrequency,
+        "on-startup",
+        ["on-startup", "daily", "weekly", "manual"],
+        update.check_frequency
+    ),
+    bool_def!(
+        "update.autoDownload",
+        "update",
+        "auto_download",
+        true,
+        update.auto_download
+    ),
+    // [terminal]
+    enum_def!(
+        "terminal.cursorStyle",
+        "terminal",
+        "cursor_style",
+        CursorStyle,
+        "underline",
+        ["bar", "block", "underline"],
+        terminal.cursor_style
+    ),
+    bool_def!(
+        "terminal.cursorBlink",
+        "terminal",
+        "cursor_blink",
+        false,
+        terminal.cursor_blink
+    ),
+    int_def!(
+        "terminal.scrollbackLines",
+        "terminal",
+        "scrollback_lines",
+        10_000,
+        0..=200_000,
+        terminal.scrollback_lines
+    ),
+    str_def!(
+        "terminal.fontFamily",
+        "terminal",
+        "font_family",
+        "SauceCodePro Nerd Font Mono",
+        terminal.font_family
+    ),
+    int_def!(
+        "terminal.fontSize",
+        "terminal",
+        "font_size",
+        12,
+        6..=72,
+        terminal.font_size
+    ),
+    bool_def!(
+        "terminal.activityIndicator",
+        "terminal",
+        "activity_indicator",
+        true,
+        terminal.activity_indicator
+    ),
+    bool_def!(
+        "terminal.copyOnSelect",
+        "terminal",
+        "copy_on_select",
+        true,
+        terminal.copy_on_select
+    ),
+    bool_def!(
+        "terminal.focusFollowsMouse",
+        "terminal",
+        "focus_follows_mouse",
+        false,
+        terminal.focus_follows_mouse
+    ),
+    enum_def!(
+        "terminal.confirmClose",
+        "terminal",
+        "confirm_close",
+        ConfirmClose,
+        "when-busy",
+        ["never", "when-busy", "always"],
+        terminal.confirm_close
+    ),
+    enum_def!(
+        "terminal.clipboardWrite",
+        "terminal",
+        "clipboard_write",
+        ClipboardWrite,
+        "allow",
+        ["allow", "deny"],
+        terminal.clipboard_write
+    ),
+    str_def!("terminal.shell", "terminal", "shell", "", terminal.shell),
+    // [shell]
+    bool_def!(
+        "shell.enhancements",
+        "shell",
+        "enhancements",
+        true,
+        shell.enhancements
+    ),
+    bool_def!(
+        "shell.autosuggestions",
+        "shell",
+        "autosuggestions",
+        true,
+        shell.autosuggestions
+    ),
+    bool_def!(
+        "shell.syntaxHighlighting",
+        "shell",
+        "syntax_highlighting",
+        true,
+        shell.syntax_highlighting
+    ),
+    enum_def!(
+        "shell.prompt",
+        "shell",
+        "prompt",
+        PromptChoice,
+        "existing",
+        ["existing", "starship", "powerlevel10k", "pure"],
+        shell.prompt
+    ),
+    // [appearance]
+    str_def!(
+        "appearance.theme",
+        "appearance",
+        "theme",
+        "white",
+        appearance.theme
+    ),
+    // [tabs]
+    enum_def!(
+        "tabs.barPosition",
+        "tabs",
+        "bar_position",
+        TabBarPosition,
+        "bottom",
+        ["top", "bottom", "left", "right"],
+        tabs.bar_position
+    ),
+    enum_def!(
+        "tabs.sideLabelOrientation",
+        "tabs",
+        "side_label_orientation",
+        LabelOrientation,
+        "horizontal",
+        ["horizontal", "vertical"],
+        tabs.side_label_orientation
+    ),
+    bool_def!(
+        "tabs.showShortcutHints",
+        "tabs",
+        "show_shortcut_hints",
+        true,
+        tabs.show_shortcut_hints
+    ),
+    // [title_bar]
+    bool_def!(
+        "titleBar.aiCounter",
+        "title_bar",
+        "ai_counter",
+        true,
+        title_bar.ai_counter
+    ),
+    // [scripts]
+    str_def!("scripts.startup", "scripts", "startup", "", scripts.startup),
+    // [remote_control]
+    bool_def!(
+        "remote_control.enabled",
+        "remote_control",
+        "enabled",
+        false,
+        remote_control.enabled
+    ),
+    str_def!(
+        "remote_control.socketPath",
+        "remote_control",
+        "socket_path",
+        "",
+        remote_control.socket_path
+    ),
+];
+
+/// The definition behind a registry key, or `None` for an unknown key.
+pub fn setting_def(registry_key: &str) -> Option<&'static SettingDef> {
+    SCHEMA.iter().find(|def| def.registry_key == registry_key)
+}
+
+/// The definition behind a `(table, key)` TOML path, or `None` if no such setting.
+pub fn setting_def_at(table: &str, key: &str) -> Option<&'static SettingDef> {
+    SCHEMA
+        .iter()
+        .find(|def| def.table == table && def.key == key)
+}
+
+// ---------------------------------------------------------------------------
 // The tolerant walk: parse to a toml::Table, then read each KNOWN field
 // explicitly (serde's deny_unknown_fields aborts instead of warning, so the
 // walk is hand-rolled). Unreadable parts warn and keep their defaults.
@@ -2844,5 +3220,172 @@ show_shortcut_hints = false
         );
         assert_eq!(application.config, Config::default());
         assert!(application.warnings.is_empty());
+    }
+
+    // --- trmx-246: the declarative SCHEMA agrees with everything it will replace -------------
+
+    /// A value that differs from `config`'s current one for `def`, within `def.kind`.
+    fn flipped_value(def: &SettingDef, config: &Config) -> RegistryValue {
+        match (def.kind, def.get(config)) {
+            (SettingKind::Bool, RegistryValue::Bool(b)) => RegistryValue::Bool(!b),
+            (SettingKind::Int { min, max }, RegistryValue::Int(i)) => {
+                RegistryValue::Int(if i == min { max } else { min })
+            }
+            (SettingKind::Str, RegistryValue::Str(s)) => {
+                RegistryValue::Str(format!("{s}-changed-{}", def.registry_key))
+            }
+            (SettingKind::Enum(values), RegistryValue::Str(current)) => RegistryValue::Str(
+                values
+                    .iter()
+                    .find(|v| **v != current)
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| panic!("{} has a single spelling", def.registry_key)),
+            ),
+            (kind, got) => panic!("{}: kind {kind:?} vs value {got:?}", def.registry_key),
+        }
+    }
+
+    #[test]
+    fn schema_keys_are_unique() {
+        let mut registry: Vec<&str> = SCHEMA.iter().map(|d| d.registry_key).collect();
+        let mut paths: Vec<(&str, &str)> = SCHEMA.iter().map(|d| (d.table, d.key)).collect();
+        let (n, m) = (registry.len(), paths.len());
+        registry.sort_unstable();
+        registry.dedup();
+        paths.sort_unstable();
+        paths.dedup();
+        assert_eq!(registry.len(), n, "duplicate registry key in SCHEMA");
+        assert_eq!(paths.len(), m, "duplicate (table, key) in SCHEMA");
+        assert!(!SCHEMA.is_empty());
+    }
+
+    #[test]
+    fn schema_defaults_equal_config_default() {
+        let config = Config::default();
+        for def in SCHEMA {
+            assert_eq!(
+                def.get(&config),
+                def.default.to_registry_value(),
+                "{}: SCHEMA default vs Config::default()",
+                def.registry_key
+            );
+        }
+    }
+
+    #[test]
+    fn schema_enum_values_are_the_enum_domain() {
+        for def in SCHEMA {
+            let SettingKind::Enum(values) = def.kind else {
+                continue;
+            };
+            let mut config = Config::default();
+            for value in values {
+                def.set(&mut config, &RegistryValue::Str(value.to_string()));
+                assert_eq!(
+                    def.get(&config),
+                    RegistryValue::Str(value.to_string()),
+                    "{}: {value:?} must round-trip through set/get",
+                    def.registry_key
+                );
+            }
+            let before = def.get(&config);
+            def.set(
+                &mut config,
+                &RegistryValue::Str("zzz-not-a-spelling".to_string()),
+            );
+            assert_eq!(
+                def.get(&config),
+                before,
+                "{}: an unlisted spelling is ignored",
+                def.registry_key
+            );
+            def.set(&mut config, &RegistryValue::Bool(true));
+            assert_eq!(
+                def.get(&config),
+                before,
+                "{}: a wrong variant is ignored",
+                def.registry_key
+            );
+            assert!(
+                values.contains(&match def.default {
+                    SettingDefault::Str(s) => s,
+                    other => panic!("{}: enum default {other:?}", def.registry_key),
+                }),
+                "{}: the default is one of the listed spellings",
+                def.registry_key
+            );
+        }
+    }
+
+    #[test]
+    fn schema_agrees_with_toml_path_for() {
+        for def in SCHEMA {
+            assert_eq!(
+                toml_path_for(def.registry_key),
+                Some((def.table, def.key)),
+                "{}: toml_path_for disagrees with SCHEMA",
+                def.registry_key
+            );
+            assert!(setting_def(def.registry_key).is_some());
+            assert!(setting_def_at(def.table, def.key).is_some());
+        }
+        assert!(setting_def("junk").is_none());
+        assert!(
+            setting_def("terminal.font_size").is_none(),
+            "registry keys are camelCase"
+        );
+        assert!(
+            setting_def_at("terminal", "fontSize").is_none(),
+            "toml keys are snake_case"
+        );
+    }
+
+    #[test]
+    fn schema_agrees_with_diff_configs() {
+        let base = Config::default();
+        for def in SCHEMA {
+            let mut changed = Config::default();
+            let flipped = flipped_value(def, &base);
+            def.set(&mut changed, &flipped);
+            assert_eq!(def.get(&changed), flipped, "{}: set/get", def.registry_key);
+            let diff = diff_configs(&base, &changed);
+            assert_eq!(
+                diff,
+                vec![(def.registry_key.to_string(), flipped)],
+                "{}: diff_configs must report exactly this key",
+                def.registry_key
+            );
+        }
+    }
+
+    #[test]
+    fn template_documents_every_schema_key() {
+        for def in SCHEMA {
+            let table_line = format!("# [{}]", def.table);
+            assert!(
+                DEFAULT_TEMPLATE.lines().any(|l| l.starts_with(&table_line)),
+                "{}: template lacks {table_line}",
+                def.registry_key
+            );
+            let key_prefix = format!("# {} = ", def.key);
+            assert!(
+                DEFAULT_TEMPLATE.lines().any(|l| l.starts_with(&key_prefix)),
+                "{}: template lacks a `{key_prefix}` line",
+                def.registry_key
+            );
+        }
+    }
+
+    /// Characterisation, not a fix: the template's theme comment says "night" while the typed
+    /// default is "white" (the frontend derives the real first-run theme from the OS appearance).
+    /// A later decision to align them should have to change this test on purpose.
+    #[test]
+    fn template_theme_comment_disagrees_with_the_default() {
+        assert!(DEFAULT_TEMPLATE.contains("# theme = \"night\""));
+        assert_eq!(Config::default().appearance.theme, "white");
+        assert_eq!(
+            setting_def("appearance.theme").map(|d| d.default),
+            Some(SettingDefault::Str("white"))
+        );
     }
 }

@@ -1217,6 +1217,27 @@ mod tests {
         assert_eq!(value_kind_for("terminal.font_size"), None);
     }
 
+    /// trmx-246 (temporary — deleted when value_kind_for goes): the shell's type gate agrees
+    /// with core's SCHEMA kinds for every key, in both directions.
+    #[test]
+    fn schema_kinds_agree_with_value_kind_for() {
+        use termixion_core::config::{SCHEMA, SettingKind};
+        for def in SCHEMA {
+            let expected = match def.kind {
+                SettingKind::Bool => ValueKind::Bool,
+                SettingKind::Int { .. } => ValueKind::Int,
+                SettingKind::Str | SettingKind::Enum(_) => ValueKind::Str,
+            };
+            assert_eq!(
+                value_kind_for(def.registry_key),
+                Some(expected),
+                "for {}",
+                def.registry_key
+            );
+        }
+        assert_eq!(value_kind_for("junk"), None);
+    }
+
     // --- read_response_from ------------------------------------------------------------------
 
     #[test]
