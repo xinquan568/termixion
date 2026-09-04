@@ -1,0 +1,227 @@
+{
+  "schema": 1,
+  "settings": [
+    {
+      "default": true,
+      "key": "auto_check",
+      "kind": "bool",
+      "registryKey": "update.autoCheck",
+      "table": "update"
+    },
+    {
+      "default": "on-startup",
+      "key": "check_frequency",
+      "kind": "enum",
+      "registryKey": "update.checkFrequency",
+      "table": "update",
+      "values": [
+        "on-startup",
+        "daily",
+        "weekly",
+        "manual"
+      ]
+    },
+    {
+      "default": true,
+      "key": "auto_download",
+      "kind": "bool",
+      "registryKey": "update.autoDownload",
+      "table": "update"
+    },
+    {
+      "default": "underline",
+      "key": "cursor_style",
+      "kind": "enum",
+      "registryKey": "terminal.cursorStyle",
+      "table": "terminal",
+      "values": [
+        "bar",
+        "block",
+        "underline"
+      ]
+    },
+    {
+      "default": false,
+      "key": "cursor_blink",
+      "kind": "bool",
+      "registryKey": "terminal.cursorBlink",
+      "table": "terminal"
+    },
+    {
+      "default": 10000,
+      "key": "scrollback_lines",
+      "kind": "int",
+      "max": 200000,
+      "min": 0,
+      "registryKey": "terminal.scrollbackLines",
+      "table": "terminal"
+    },
+    {
+      "default": "SauceCodePro Nerd Font Mono",
+      "key": "font_family",
+      "kind": "str",
+      "registryKey": "terminal.fontFamily",
+      "table": "terminal"
+    },
+    {
+      "default": 12,
+      "key": "font_size",
+      "kind": "int",
+      "max": 72,
+      "min": 6,
+      "registryKey": "terminal.fontSize",
+      "table": "terminal"
+    },
+    {
+      "default": true,
+      "key": "activity_indicator",
+      "kind": "bool",
+      "registryKey": "terminal.activityIndicator",
+      "table": "terminal"
+    },
+    {
+      "default": true,
+      "key": "copy_on_select",
+      "kind": "bool",
+      "registryKey": "terminal.copyOnSelect",
+      "table": "terminal"
+    },
+    {
+      "default": false,
+      "key": "focus_follows_mouse",
+      "kind": "bool",
+      "registryKey": "terminal.focusFollowsMouse",
+      "table": "terminal"
+    },
+    {
+      "default": "when-busy",
+      "key": "confirm_close",
+      "kind": "enum",
+      "registryKey": "terminal.confirmClose",
+      "table": "terminal",
+      "values": [
+        "never",
+        "when-busy",
+        "always"
+      ]
+    },
+    {
+      "default": "allow",
+      "key": "clipboard_write",
+      "kind": "enum",
+      "registryKey": "terminal.clipboardWrite",
+      "table": "terminal",
+      "values": [
+        "allow",
+        "deny"
+      ]
+    },
+    {
+      "default": "",
+      "key": "shell",
+      "kind": "str",
+      "registryKey": "terminal.shell",
+      "table": "terminal"
+    },
+    {
+      "default": true,
+      "key": "enhancements",
+      "kind": "bool",
+      "registryKey": "shell.enhancements",
+      "table": "shell"
+    },
+    {
+      "default": true,
+      "key": "autosuggestions",
+      "kind": "bool",
+      "registryKey": "shell.autosuggestions",
+      "table": "shell"
+    },
+    {
+      "default": true,
+      "key": "syntax_highlighting",
+      "kind": "bool",
+      "registryKey": "shell.syntaxHighlighting",
+      "table": "shell"
+    },
+    {
+      "default": "existing",
+      "key": "prompt",
+      "kind": "enum",
+      "registryKey": "shell.prompt",
+      "table": "shell",
+      "values": [
+        "existing",
+        "starship",
+        "powerlevel10k",
+        "pure"
+      ]
+    },
+    {
+      "default": "white",
+      "key": "theme",
+      "kind": "str",
+      "registryKey": "appearance.theme",
+      "table": "appearance"
+    },
+    {
+      "default": "bottom",
+      "key": "bar_position",
+      "kind": "enum",
+      "registryKey": "tabs.barPosition",
+      "table": "tabs",
+      "values": [
+        "top",
+        "bottom",
+        "left",
+        "right"
+      ]
+    },
+    {
+      "default": "horizontal",
+      "key": "side_label_orientation",
+      "kind": "enum",
+      "registryKey": "tabs.sideLabelOrientation",
+      "table": "tabs",
+      "values": [
+        "horizontal",
+        "vertical"
+      ]
+    },
+    {
+      "default": true,
+      "key": "show_shortcut_hints",
+      "kind": "bool",
+      "registryKey": "tabs.showShortcutHints",
+      "table": "tabs"
+    },
+    {
+      "default": true,
+      "key": "ai_counter",
+      "kind": "bool",
+      "registryKey": "titleBar.aiCounter",
+      "table": "title_bar"
+    },
+    {
+      "default": "",
+      "key": "startup",
+      "kind": "str",
+      "registryKey": "scripts.startup",
+      "table": "scripts"
+    },
+    {
+      "default": false,
+      "key": "enabled",
+      "kind": "bool",
+      "registryKey": "remote_control.enabled",
+      "table": "remote_control"
+    },
+    {
+      "default": "",
+      "key": "socket_path",
+      "kind": "str",
+      "registryKey": "remote_control.socketPath",
+      "table": "remote_control"
+    }
+  ]
+}

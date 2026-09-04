@@ -1151,6 +1151,44 @@ pub fn setting_def_at(table: &str, key: &str) -> Option<&'static SettingDef> {
         .find(|def| def.table == table && def.key == key)
 }
 
+/// The schema as the golden JSON the frontend asserts against (trmx-246): one entry per
+/// setting in SCHEMA order — `registryKey`, `table`, `key`, `kind` (`"bool"` | `"int"` |
+/// `"str"` | `"enum"`), `default`, plus `min`/`max` for integers and `values` (in warning
+/// order) for enums. `tests/config_schema_golden.rs` pins the committed fixture to this.
+pub fn schema_json() -> serde_json::Value {
+    let settings: Vec<serde_json::Value> = SCHEMA
+        .iter()
+        .map(|def| {
+            let mut entry = serde_json::Map::new();
+            entry.insert("registryKey".to_string(), def.registry_key.into());
+            entry.insert("table".to_string(), def.table.into());
+            entry.insert("key".to_string(), def.key.into());
+            let kind = match def.kind {
+                SettingKind::Bool => "bool",
+                SettingKind::Int { min, max } => {
+                    entry.insert("min".to_string(), min.into());
+                    entry.insert("max".to_string(), max.into());
+                    "int"
+                }
+                SettingKind::Str => "str",
+                SettingKind::Enum(values) => {
+                    entry.insert("values".to_string(), values.iter().copied().collect());
+                    "enum"
+                }
+            };
+            entry.insert("kind".to_string(), kind.into());
+            let default = match def.default {
+                SettingDefault::Bool(b) => serde_json::Value::Bool(b),
+                SettingDefault::Int(i) => serde_json::Value::from(i),
+                SettingDefault::Str(s) => serde_json::Value::from(s),
+            };
+            entry.insert("default".to_string(), default);
+            serde_json::Value::Object(entry)
+        })
+        .collect();
+    serde_json::json!({ "schema": 1, "settings": settings })
+}
+
 // ---------------------------------------------------------------------------
 // The tolerant walk: parse to a toml::Table, then read each KNOWN field
 // explicitly (serde's deny_unknown_fields aborts instead of warning, so the
