@@ -183,7 +183,12 @@ fn main() -> ExitCode {
                     installed.file_disabled_reason.as_deref().unwrap_or("unknown")
                 );
             }
-            let menu = menu::build_menu(app.handle())?;
+            // trmx-246 (grill L5): the ONE initial config read, from the Rust side — before the
+            // menu (its accelerators need the `[keys]` map) and before any command can run. The
+            // cache used to wait for the webview's first config_read; the JS boot order was the
+            // only thing making a spawn see the configured shell.
+            let config = config_io::hydrate(app.handle());
+            let menu = menu::build_menu(app.handle(), &config.keys)?;
             app.set_menu(menu)?;
             let state = app.state::<PtyState>();
             let registry = Arc::clone(&state.registry);
@@ -229,11 +234,9 @@ fn main() -> ExitCode {
             let special = app.state::<SpecialLaunch>();
             let deterministic = special.smoke.is_some() || special.perf.is_some();
             if !deterministic {
-                let text = std::fs::read_to_string(config_io::config_path()).unwrap_or_default();
-                let cfg = termixion_core::config::parse_config(&text).0;
                 control::apply_remote_control(
                     &app.handle().clone(),
-                    &cfg.remote_control,
+                    &config.remote_control,
                     &app.state::<control::ControlState>(),
                 );
             }

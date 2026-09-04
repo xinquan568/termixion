@@ -25,9 +25,10 @@ use crate::ipc_error::IpcError;
 use serde_json::{Map, Value as JsonValue};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
+use termixion_core::config::{SettingKind, setting_def};
 use termixion_core::{
     Config, ConfigWarning, DEFAULT_TEMPLATE, FileApplication, RegistryValue, apply_file_text,
-    parse_config, parse_registry_pairs, text_hash, toml_path_for,
+    parse_config, parse_registry_pairs, text_hash,
 };
 
 /// The config file's basename, shared by the path resolver and the watcher's event filter.
@@ -80,54 +81,14 @@ struct ConfigInner {
     last_unreadable: Option<String>,
 }
 
-/// The TOML value class a registry key expects — the shell-side type gate for writes.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum ValueKind {
-    Bool,
-    Int,
-    Str,
-}
-
-impl ValueKind {
-    fn expected(self) -> &'static str {
-        match self {
-            Self::Bool => "a boolean",
-            Self::Int => "an integer",
-            Self::Str => "a string",
-        }
-    }
-}
-
-/// The value class for a registry key; `None` for unknown keys. Must stay in lockstep with
-/// core's `toml_path_for` (pinned by test).
-fn value_kind_for(registry_key: &str) -> Option<ValueKind> {
-    match registry_key {
-        "update.autoCheck"
-        | "update.autoDownload"
-        | "terminal.cursorBlink"
-        | "terminal.activityIndicator"
-        | "terminal.copyOnSelect"
-        | "terminal.focusFollowsMouse" // trmx-225
-        | "tabs.showShortcutHints" // trmx-151
-        | "titleBar.aiCounter" // trmx-190
-        | "shell.enhancements" // trmx-206
-        | "shell.autosuggestions"
-        | "shell.syntaxHighlighting"
-        | "remote_control.enabled" => Some(ValueKind::Bool),
-        "terminal.scrollbackLines" | "terminal.fontSize" => Some(ValueKind::Int),
-        "update.checkFrequency"
-        | "terminal.cursorStyle"
-        | "terminal.fontFamily"
-        | "terminal.shell" // trmx-205
-        | "shell.prompt" // trmx-207
-        | "terminal.confirmClose"
-        | "terminal.clipboardWrite" // trmx-252
-        | "appearance.theme"
-        | "tabs.barPosition"
-        | "tabs.sideLabelOrientation"
-        | "scripts.startup"
-        | "remote_control.socketPath" => Some(ValueKind::Str),
-        _ => None,
+/// The JSON value class a SCHEMA kind expects on the write path, in the trmx-249 wording of the
+/// rejection (`expected a boolean|an integer|a string`). trmx-246: the shell used to keep its own
+/// 26-key copy of this mapping "in lockstep with core"; the kind now comes from core's SCHEMA.
+fn expected_json(kind: SettingKind) -> &'static str {
+    match kind {
+        SettingKind::Bool => "a boolean",
+        SettingKind::Int { .. } => "an integer",
+        SettingKind::Str | SettingKind::Enum(_) => "a string",
     }
 }
 
@@ -147,24 +108,26 @@ fn describe_json(value: &JsonValue) -> String {
 /// rejection otherwise (fractional/overflowing JSON numbers are NOT integers).
 fn toml_item_for(
     key: &str,
-    kind: ValueKind,
+    kind: SettingKind,
     value: &JsonValue,
 ) -> Result<toml_edit::Item, IpcError> {
     // trmx-249: a caller-supplied value we reject on inspection — `invalid`, not `io`.
     let mismatch = || {
         IpcError::invalid(format!(
             "wrong value type for `{key}`: expected {}, got {}",
-            kind.expected(),
+            expected_json(kind),
             describe_json(value)
         ))
     };
     match (kind, value) {
-        (ValueKind::Bool, JsonValue::Bool(flag)) => Ok(toml_edit::value(*flag)),
-        (ValueKind::Int, JsonValue::Number(number)) => {
+        (SettingKind::Bool, JsonValue::Bool(flag)) => Ok(toml_edit::value(*flag)),
+        (SettingKind::Int { .. }, JsonValue::Number(number)) => {
             let int = number.as_i64().ok_or_else(mismatch)?;
             Ok(toml_edit::value(int))
         }
-        (ValueKind::Str, JsonValue::String(text)) => Ok(toml_edit::value(text.as_str())),
+        (SettingKind::Str | SettingKind::Enum(_), JsonValue::String(text)) => {
+            Ok(toml_edit::value(text.as_str()))
+        }
         _ => Err(mismatch()),
     }
 }
@@ -173,11 +136,10 @@ fn toml_item_for(
 /// `(table, key)` to `value` (creating a missing table), and render the document back.
 /// Unknown registry key or a JSON value of the wrong type for the key → `Err`, nothing written.
 fn edit_document(text: &str, key: &str, value: &JsonValue) -> Result<String, IpcError> {
-    let (table_name, toml_key) = toml_path_for(key)
+    let def = setting_def(key)
         .ok_or_else(|| IpcError::invalid(format!("unknown settings key `{key}`")))?;
-    let kind = value_kind_for(key)
-        .ok_or_else(|| IpcError::invalid(format!("unknown settings key `{key}`")))?;
-    let item = toml_item_for(key, kind, value)?;
+    let (table_name, toml_key) = (def.table, def.key);
+    let item = toml_item_for(key, def.kind, value)?;
 
     // Refuse to clobber a file we cannot parse losslessly: a broken file is the user's to fix
     // (config_read surfaces the SyntaxError warning), not ours to silently rewrite.
@@ -271,17 +233,6 @@ fn emissions_for(application: &FileApplication) -> Vec<(&'static str, JsonValue)
         .unwrap_or_else(|_| JsonValue::Array(Vec::new()));
     emissions.push(("config:warnings", warnings));
     emissions
-}
-
-/// trmx-94 (FR-9.3): the `[keys]` map read pieces. The map is NOT a flat registry pair (it's a
-/// dynamic chord→command map), so it rides its own read command + `keys:changed` watcher signal,
-/// mirroring themes:changed/scripts:changed. Pure: `read_keys_from` parses text → the raw map;
-/// `keys_map_changed` is the watcher's emit decision.
-fn read_keys_from(text: Option<&str>) -> BTreeMap<String, String> {
-    match text {
-        Some(text) => parse_config(text).0.keys,
-        None => BTreeMap::new(),
-    }
 }
 
 /// Whether the `[keys]` map differs between two configs — the `keys:changed` emit decision. The
@@ -554,10 +505,10 @@ fn shell_validity_warning(config: &Config, valid: impl Fn(&str) -> bool) -> Opti
 }
 
 /// trmx-205: the configured shell for the spawn path — `None` for empty/unset (System default).
-/// Reads the cached `last` config; before the first `config_read`/watch apply this is the
-/// default (empty), which is benign: the frontend hydrates before any terminal mounts.
-/// trmx-206: the [shell] enhancement config for the spawn path (defaults before hydration —
-/// benign for the same reason as configured_shell below).
+/// Reads the cached `last` config, which `hydrate` seeds in `setup()` (trmx-246) before any
+/// command can run and which writes, resets and the watcher keep current — a spawn no longer
+/// depends on the webview's boot order to see the configured shell.
+/// trmx-206: the [shell] enhancement config for the spawn path, from the same cache.
 pub fn shell_config(state: &ConfigState) -> termixion_core::config::ShellConfig {
     state
         .0
@@ -673,12 +624,56 @@ pub fn config_read(app: tauri::AppHandle, state: State<'_, ConfigState>) -> Conf
     response
 }
 
-/// trmx-94 (FR-9.3): read the `[keys]` map for the frontend keymap (chord → command id, or `"none"`).
-/// A missing file is an empty map. Re-read by the frontend on the `keys:changed` watcher signal.
+/// trmx-246 (grill L5): the ONE initial config read, from the Rust side, in `setup()` before the
+/// menu is built and before any command can run. Classifies the read exactly as `config_read`
+/// does (absent → defaults; unreadable → defaults with the read health in `last_unreadable`,
+/// trmx-238; text → parse), seeds the cache — `last`, the PARSE-ONLY `last_warnings`,
+/// `last_unreadable` — clears the self-echo latch, and returns the parsed config so
+/// `apply_remote_control` consumes the same parse. `config_read` stays a projection that
+/// re-reads to rebase; the watcher keeps the cache current afterwards.
+pub fn hydrate(app: &tauri::AppHandle) -> Config {
+    hydrate_at(&config_path(), &app.state::<ConfigState>())
+}
+
+/// The path-parameterised half of [`hydrate`] (tests drive it against a temp dir).
+pub fn hydrate_at(path: &Path, state: &ConfigState) -> Config {
+    let (text, unreadable) = match classify_read(std::fs::read_to_string(path)) {
+        FileRead::Text(text) => (text, None),
+        FileRead::Absent => (String::new(), None),
+        FileRead::Unreadable(message) => (String::new(), Some(message)),
+    };
+    let (config, parse_warnings) = parse_config(&text);
+    match state.0.lock() {
+        Ok(mut inner) => {
+            inner.last = config.clone();
+            inner.last_warnings = parse_warnings;
+            inner.last_unreadable = unreadable;
+            inner.last_write_hash = None;
+        }
+        Err(_) => log::warn!("termixion: config state poisoned; hydration not cached"),
+    }
+    config
+}
+
+/// trmx-246: the cached `[keys]` map — what the last hydration / write / reset / watcher apply
+/// left in the state. The native menu and the `keys_read` command read THIS, never the file
+/// (the watcher updates the cache before it emits `keys:changed`, so the frontend's re-read
+/// sees what the watcher saw; with the watcher disabled the cache is as stale as the spawn
+/// path's shell config already is).
+pub fn keys_from_state(state: &ConfigState) -> BTreeMap<String, String> {
+    state
+        .0
+        .lock()
+        .ok()
+        .map(|inner| inner.last.keys.clone())
+        .unwrap_or_default()
+}
+
+/// trmx-94 (FR-9.3): the `[keys]` map for the frontend keymap (chord → command id, or `"none"`),
+/// served from the cache (trmx-246). Re-requested by the frontend on `keys:changed`.
 #[tauri::command]
-pub fn keys_read() -> BTreeMap<String, String> {
-    let text = std::fs::read_to_string(config_path()).ok();
-    read_keys_from(text.as_deref())
+pub fn keys_read(state: State<'_, ConfigState>) -> BTreeMap<String, String> {
+    keys_from_state(&state)
 }
 
 /// Persist one registry-keyed setting into the config file (comment-preserving, atomic,
@@ -898,16 +893,6 @@ mod tests {
     // trmx-94: the [keys] read + the keys:changed emit decision (the map is invisible to the scalar
     // diff, so the watcher needs keys_map_changed).
     #[test]
-    fn read_keys_from_parses_the_map_and_missing_is_empty() {
-        assert!(read_keys_from(None).is_empty());
-        let keys = read_keys_from(Some(
-            "[keys]\n\"cmd+d\" = \"pane.split-below\"\n\"cmd+j\" = \"none\"\n",
-        ));
-        assert_eq!(keys.get("cmd+d"), Some(&"pane.split-below".to_string()));
-        assert_eq!(keys.get("cmd+j"), Some(&"none".to_string()));
-    }
-
-    #[test]
     fn keys_map_changed_detects_a_binding_edit_the_scalar_diff_misses() {
         let old = parse_config("[terminal]\nfont_size = 12\n").0;
         // Same scalars, but a [keys] entry added → scalar diff is empty, keys_map_changed is true.
@@ -1004,8 +989,8 @@ mod tests {
 
     #[test]
     fn edit_document_persists_terminal_shell() {
-        // trmx-205 write-path lockstep: the registry key routes through value_kind_for
-        // (ValueKind::Str) into a comment-preserving [terminal] shell = "…" edit.
+        // trmx-205 write path: the registry key routes through core's SCHEMA (a Str kind)
+        // into a comment-preserving [terminal] shell = "…" edit.
         let out = edit_document(
             "# my config\n[terminal]\nfont_size = 14\n",
             "terminal.shell",
@@ -1175,46 +1160,35 @@ mod tests {
         assert!(!err.message.is_empty());
     }
 
+    /// trmx-246: every SCHEMA key is writable through edit_document with a value of its kind —
+    /// the write path has no key list of its own any more, so this is the only place a key could
+    /// still be missing, and it cannot be: the loop IS the schema.
     #[test]
-    fn value_kind_covers_exactly_the_registry_keys() {
-        // The shell-side type gate must stay in lockstep with core's key map.
-        let keys = [
-            ("update.autoCheck", ValueKind::Bool),
-            ("update.checkFrequency", ValueKind::Str),
-            ("update.autoDownload", ValueKind::Bool),
-            ("terminal.cursorStyle", ValueKind::Str),
-            ("terminal.cursorBlink", ValueKind::Bool),
-            ("terminal.activityIndicator", ValueKind::Bool),
-            ("terminal.copyOnSelect", ValueKind::Bool),
-            ("terminal.focusFollowsMouse", ValueKind::Bool),
-            ("terminal.confirmClose", ValueKind::Str),
-            ("terminal.clipboardWrite", ValueKind::Str), // trmx-252
-            ("terminal.scrollbackLines", ValueKind::Int),
-            ("terminal.fontFamily", ValueKind::Str),
-            ("terminal.shell", ValueKind::Str),      // trmx-205
-            ("shell.enhancements", ValueKind::Bool), // trmx-206
-            ("shell.autosuggestions", ValueKind::Bool),
-            ("shell.syntaxHighlighting", ValueKind::Bool),
-            ("shell.prompt", ValueKind::Str), // trmx-207
-            ("terminal.fontSize", ValueKind::Int),
-            ("appearance.theme", ValueKind::Str),
-            ("tabs.barPosition", ValueKind::Str),
-            ("tabs.sideLabelOrientation", ValueKind::Str),
-            ("tabs.showShortcutHints", ValueKind::Bool), // trmx-151
-            ("titleBar.aiCounter", ValueKind::Bool),     // trmx-190
-            ("scripts.startup", ValueKind::Str),
-            ("remote_control.enabled", ValueKind::Bool),
-            ("remote_control.socketPath", ValueKind::Str),
-        ];
-        for (key, kind) in keys {
-            assert_eq!(value_kind_for(key), Some(kind), "for {key}");
-            assert!(
-                toml_path_for(key).is_some(),
-                "core must know {key} too (lockstep)"
-            );
+    fn every_schema_key_is_writable_with_a_value_of_its_kind() {
+        use termixion_core::config::SCHEMA;
+        for def in SCHEMA {
+            let (value, expected) = match def.kind {
+                SettingKind::Bool => (json!(true), RegistryValue::Bool(true)),
+                SettingKind::Int { min, .. } => (json!(min), RegistryValue::Int(min)),
+                SettingKind::Str => (
+                    json!("written-by-the-test"),
+                    RegistryValue::Str("written-by-the-test".to_string()),
+                ),
+                SettingKind::Enum(values) => {
+                    (json!(values[0]), RegistryValue::Str(values[0].to_string()))
+                }
+            };
+            let out = edit_document(DEFAULT_TEMPLATE, def.registry_key, &value)
+                .unwrap_or_else(|e| panic!("{}: {e:?}", def.registry_key));
+            let (config, warnings) = parse_config(&out);
+            assert_eq!(warnings, Vec::new(), "for {}", def.registry_key);
+            assert_eq!(def.get(&config), expected, "for {}", def.registry_key);
         }
-        assert_eq!(value_kind_for("junk"), None);
-        assert_eq!(value_kind_for("terminal.font_size"), None);
+        let err = edit_document("", "junk", &json!(true)).expect_err("unknown key");
+        assert_eq!(err.kind, IpcErrorKind::Invalid);
+        let err = edit_document("", "terminal.font_size", &json!(1))
+            .expect_err("snake_case is not a registry key");
+        assert_eq!(err.kind, IpcErrorKind::Invalid);
     }
 
     // --- read_response_from ------------------------------------------------------------------
@@ -1598,6 +1572,110 @@ mod tests {
         let err = write_atomic(Path::new("/"), "x").expect_err("`/` has no parent");
         assert_eq!(err.kind, IpcErrorKind::Internal, "{err}");
         assert!(err.message.contains("no parent directory"), "{err}");
+    }
+
+    // --- trmx-246 (grill L5): the initial hydration seeds the cache from the Rust side --------
+
+    #[test]
+    fn hydrate_at_seeds_the_cache() {
+        let dir = test_dir("hydrate-seeds");
+        let path = dir.join(CONFIG_FILE_NAME);
+        std::fs::write(
+            &path,
+            "[terminal]\nshell = \"/bin/zsh\"\nfont_size = 500\n\n[shell]\nenhancements = false\n\n[keys]\n\"ctrl+alt+shift+f13\" = \"tab.new\"\n",
+        )
+        .expect("write the config");
+        let state = ConfigState::default();
+        state.0.lock().expect("lock").last_write_hash = Some(7); // a stale self-echo latch
+        let config = hydrate_at(&path, &state);
+        assert_eq!(config.terminal.shell, "/bin/zsh");
+        assert_eq!(
+            config.terminal.font_size, 72,
+            "clamped, as the parser clamps"
+        );
+        // The spawn-path readers see the file's values with no webview involved.
+        assert_eq!(configured_shell(&state).as_deref(), Some("/bin/zsh"));
+        assert!(!shell_config(&state).enhancements);
+        assert_eq!(
+            keys_from_state(&state)
+                .get("ctrl+alt+shift+f13")
+                .map(String::as_str),
+            Some("tab.new")
+        );
+        let inner = state.0.lock().expect("lock");
+        assert_eq!(inner.last, config);
+        assert_eq!(
+            inner.last_warnings,
+            vec![ConfigWarning::OutOfRange {
+                key: "terminal.font_size".to_string(),
+                got: 500,
+                clamped_to: 72,
+            }],
+            "the cached warnings are the parse-only set"
+        );
+        assert_eq!(
+            inner.last_write_hash, None,
+            "hydration clears the self-echo latch"
+        );
+        assert_eq!(inner.last_unreadable, None);
+    }
+
+    #[test]
+    fn hydrate_at_absent_file_is_defaults() {
+        let dir = test_dir("hydrate-absent");
+        let path = dir.join(CONFIG_FILE_NAME);
+        let state = ConfigState::default();
+        let config = hydrate_at(&path, &state);
+        assert_eq!(config, Config::default());
+        let inner = state.0.lock().expect("lock");
+        assert_eq!(inner.last, Config::default());
+        assert!(inner.last_warnings.is_empty());
+        assert_eq!(
+            inner.last_unreadable, None,
+            "absent is the first-launch case, not a failure"
+        );
+        drop(inner);
+        assert_eq!(configured_shell(&state), None);
+    }
+
+    #[test]
+    fn hydrate_at_unreadable_sets_last_unreadable() {
+        let dir = test_dir("hydrate-unreadable");
+        let path = dir.join(CONFIG_FILE_NAME);
+        std::fs::create_dir_all(&path).expect("a directory in the file's way");
+        let state = ConfigState::default();
+        let config = hydrate_at(&path, &state);
+        // Exactly what config_read does with an unreadable file: defaults, and the read health
+        // tracked separately so the M15 banner survives later wholesale rebuilds (trmx-238).
+        assert_eq!(config, Config::default());
+        let inner = state.0.lock().expect("lock");
+        assert!(
+            inner.last_unreadable.is_some(),
+            "{:?}",
+            inner.last_unreadable
+        );
+        assert_eq!(inner.last, Config::default());
+        assert!(
+            inner.last_warnings.is_empty(),
+            "the parse-only set stays parse-only"
+        );
+    }
+
+    #[test]
+    fn keys_from_state_serves_the_cache() {
+        let state = ConfigState::default();
+        state.0.lock().expect("lock").last.keys.insert(
+            "ctrl+alt+shift+f13".to_string(),
+            "pane.split-right".to_string(),
+        );
+        // A chord no config file on this machine plausibly binds: a file-reading mutant cannot
+        // produce it, the cache can only.
+        let keys = keys_from_state(&state);
+        assert_eq!(
+            keys.get("ctrl+alt+shift+f13").map(String::as_str),
+            Some("pane.split-right")
+        );
+        assert_eq!(keys.len(), 1);
     }
 
     // --- filesystem glue (deterministic: private temp dirs, no watcher, no races) -------------

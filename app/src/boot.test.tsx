@@ -257,6 +257,9 @@ const perfConfig = (scenario?: string): PerfLaunchConfig => ({
 // boot(deps)
 // ================================================================================================
 
+// The hydrate-before-mount pin below is owned by the webview (theme paint, font gate). trmx-246
+// moved the Rust side's correctness off it: the shell hydrates its own cache in setup(), which the
+// Rust tests (config_io hydrate_at_*) prove without any webview involved.
 describe("boot(deps): the pinned startup order, executed (trmx-80/89/204/224/253)", () => {
   it("runs runtime → hydrate → themes → theme paint → font gate → smoke → perf → surface → take → render, and nothing else", async () => {
     const rec = makeRecorder();

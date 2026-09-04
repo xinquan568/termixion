@@ -14,7 +14,6 @@ use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::ops::RangeInclusive;
 
 use serde::{Deserialize, Serialize};
 
@@ -602,187 +601,441 @@ pub fn parse_registry_pairs(text: &str) -> (Vec<(String, RegistryValue)>, Vec<Co
 /// The TOML `(table, key)` for a registry key (e.g. `"terminal.fontSize"` →
 /// `("terminal", "font_size")`), or `None` for an unknown registry key.
 pub fn toml_path_for(registry_key: &str) -> Option<(&'static str, &'static str)> {
-    match registry_key {
-        "update.autoCheck" => Some(("update", "auto_check")),
-        "update.checkFrequency" => Some(("update", "check_frequency")),
-        "update.autoDownload" => Some(("update", "auto_download")),
-        "terminal.cursorStyle" => Some(("terminal", "cursor_style")),
-        "terminal.cursorBlink" => Some(("terminal", "cursor_blink")),
-        "terminal.scrollbackLines" => Some(("terminal", "scrollback_lines")),
-        "terminal.fontFamily" => Some(("terminal", "font_family")),
-        "terminal.shell" => Some(("terminal", "shell")),
-        "shell.enhancements" => Some(("shell", "enhancements")),
-        "shell.autosuggestions" => Some(("shell", "autosuggestions")),
-        "shell.syntaxHighlighting" => Some(("shell", "syntax_highlighting")),
-        "shell.prompt" => Some(("shell", "prompt")),
-        "terminal.fontSize" => Some(("terminal", "font_size")),
-        "terminal.activityIndicator" => Some(("terminal", "activity_indicator")),
-        "terminal.copyOnSelect" => Some(("terminal", "copy_on_select")),
-        "terminal.focusFollowsMouse" => Some(("terminal", "focus_follows_mouse")),
-        "terminal.confirmClose" => Some(("terminal", "confirm_close")),
-        "terminal.clipboardWrite" => Some(("terminal", "clipboard_write")),
-        "appearance.theme" => Some(("appearance", "theme")),
-        "tabs.barPosition" => Some(("tabs", "bar_position")),
-        "tabs.sideLabelOrientation" => Some(("tabs", "side_label_orientation")),
-        "tabs.showShortcutHints" => Some(("tabs", "show_shortcut_hints")),
-        "titleBar.aiCounter" => Some(("title_bar", "ai_counter")),
-        "scripts.startup" => Some(("scripts", "startup")),
-        "remote_control.enabled" => Some(("remote_control", "enabled")),
-        "remote_control.socketPath" => Some(("remote_control", "socket_path")),
-        _ => None,
-    }
+    setting_def(registry_key).map(|def| (def.table, def.key))
 }
 
 /// The registry pairs that changed between `old` and `new` (new values), registry-keyed,
-/// in schema order.
+/// in SCHEMA order.
 pub fn diff_configs(old: &Config, new: &Config) -> Vec<(String, RegistryValue)> {
-    let mut changed = Vec::new();
-    let mut push = |differs: bool, key: &str, value: RegistryValue| {
-        if differs {
-            changed.push((key.to_string(), value));
+    SCHEMA
+        .iter()
+        .filter_map(|def| {
+            let after = def.get(new);
+            (def.get(old) != after).then(|| (def.registry_key.to_string(), after))
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// trmx-246 (grill M6): the ONE declarative schema. Every other description of a
+// setting — the TOML path, the registry pairs a diff emits, the tolerant walk,
+// the shell's write-side type gate, the golden the frontend asserts against —
+// is derived from this table. The typed structs above stay hand-written; each
+// definition carries the accessor pair that binds it to its field.
+// ---------------------------------------------------------------------------
+
+/// The value class of a setting, as the config file and the registry see it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingKind {
+    Bool,
+    /// An integer clamped into `min..=max` (out-of-range warns and clamps).
+    Int {
+        min: u32,
+        max: u32,
+    },
+    /// A free string ("" is a valid value; meaning is the consumer's business).
+    Str,
+    /// A closed set of spellings, listed in the order warnings enumerate them.
+    Enum(&'static [&'static str]),
+}
+
+/// A setting's built-in default, in const-constructible form (a `RegistryValue`
+/// carries an owned `String`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingDefault {
+    Bool(bool),
+    Int(u32),
+    Str(&'static str),
+}
+
+impl SettingDefault {
+    /// The default as the registry would report it.
+    pub fn to_registry_value(self) -> RegistryValue {
+        match self {
+            Self::Bool(b) => RegistryValue::Bool(b),
+            Self::Int(i) => RegistryValue::Int(i),
+            Self::Str(s) => RegistryValue::Str(s.to_string()),
+        }
+    }
+}
+
+/// One setting: where it lives in the file, how the registry names it, what it
+/// accepts, what it defaults to, and how to read/write its typed field.
+pub struct SettingDef {
+    /// The camelCase dotted registry key (`"terminal.fontSize"`).
+    pub registry_key: &'static str,
+    /// The TOML table (`"terminal"`).
+    pub table: &'static str,
+    /// The snake_case TOML key inside the table (`"font_size"`).
+    pub key: &'static str,
+    pub kind: SettingKind,
+    pub default: SettingDefault,
+    get: fn(&Config) -> RegistryValue,
+    /// Writes an ALREADY-VALIDATED value (clamped / a listed enum spelling). A
+    /// value of the wrong variant, or an enum spelling `from_toml` rejects,
+    /// leaves the field untouched — never a panic (R3).
+    set: fn(&mut Config, &RegistryValue),
+}
+
+impl SettingDef {
+    /// The field's current value in registry form.
+    pub fn get(&self, config: &Config) -> RegistryValue {
+        (self.get)(config)
+    }
+
+    /// Write a validated value; see the field doc for what "validated" means.
+    pub fn set(&self, config: &mut Config, value: &RegistryValue) {
+        (self.set)(config, value)
+    }
+
+    /// The `"table.key"` spelling warnings use (the path the user edits).
+    pub fn toml_path(&self) -> String {
+        format!("{}.{}", self.table, self.key)
+    }
+}
+
+impl fmt::Debug for SettingDef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SettingDef")
+            .field("registry_key", &self.registry_key)
+            .field("table", &self.table)
+            .field("key", &self.key)
+            .field("kind", &self.kind)
+            .field("default", &self.default)
+            .finish()
+    }
+}
+
+macro_rules! bool_def {
+    ($rk:literal, $table:literal, $key:literal, $default:literal, $($field:ident).+) => {
+        SettingDef {
+            registry_key: $rk,
+            table: $table,
+            key: $key,
+            kind: SettingKind::Bool,
+            default: SettingDefault::Bool($default),
+            get: |c| RegistryValue::Bool(c.$($field).+),
+            set: |c, v| {
+                if let RegistryValue::Bool(b) = v {
+                    c.$($field).+ = *b;
+                }
+            },
         }
     };
-    push(
-        old.update.auto_check != new.update.auto_check,
+}
+
+macro_rules! int_def {
+    ($rk:literal, $table:literal, $key:literal, $default:literal, $min:literal ..= $max:literal, $($field:ident).+) => {
+        SettingDef {
+            registry_key: $rk,
+            table: $table,
+            key: $key,
+            kind: SettingKind::Int { min: $min, max: $max },
+            default: SettingDefault::Int($default),
+            get: |c| RegistryValue::Int(c.$($field).+),
+            set: |c, v| {
+                if let RegistryValue::Int(i) = v {
+                    c.$($field).+ = *i;
+                }
+            },
+        }
+    };
+}
+
+macro_rules! str_def {
+    ($rk:literal, $table:literal, $key:literal, $default:literal, $($field:ident).+) => {
+        SettingDef {
+            registry_key: $rk,
+            table: $table,
+            key: $key,
+            kind: SettingKind::Str,
+            default: SettingDefault::Str($default),
+            get: |c| RegistryValue::Str(c.$($field).+.clone()),
+            set: |c, v| {
+                if let RegistryValue::Str(s) = v {
+                    c.$($field).+ = s.clone();
+                }
+            },
+        }
+    };
+}
+
+macro_rules! enum_def {
+    ($rk:literal, $table:literal, $key:literal, $ty:ident, $default:literal, [$($value:literal),+ $(,)?], $($field:ident).+) => {
+        SettingDef {
+            registry_key: $rk,
+            table: $table,
+            key: $key,
+            kind: SettingKind::Enum(&[$($value),+]),
+            default: SettingDefault::Str($default),
+            get: |c| RegistryValue::Str(c.$($field).+.as_str().to_string()),
+            set: |c, v| {
+                if let RegistryValue::Str(s) = v {
+                    if let Some(parsed) = $ty::from_toml(s) {
+                        c.$($field).+ = parsed;
+                    }
+                }
+            },
+        }
+    };
+}
+
+/// The schema, in struct order (`Config`'s fields, then each table's fields).
+/// This order is the canonical order: the golden, `diff_configs` and the
+/// frontend's `settings:changed` batches all follow it.
+pub const SCHEMA: &[SettingDef] = &[
+    // [update]
+    bool_def!(
         "update.autoCheck",
-        RegistryValue::Bool(new.update.auto_check),
-    );
-    push(
-        old.update.check_frequency != new.update.check_frequency,
+        "update",
+        "auto_check",
+        true,
+        update.auto_check
+    ),
+    enum_def!(
         "update.checkFrequency",
-        RegistryValue::Str(new.update.check_frequency.as_str().to_string()),
-    );
-    push(
-        old.update.auto_download != new.update.auto_download,
+        "update",
+        "check_frequency",
+        CheckFrequency,
+        "on-startup",
+        ["on-startup", "daily", "weekly", "manual"],
+        update.check_frequency
+    ),
+    bool_def!(
         "update.autoDownload",
-        RegistryValue::Bool(new.update.auto_download),
-    );
-    push(
-        old.terminal.cursor_style != new.terminal.cursor_style,
+        "update",
+        "auto_download",
+        true,
+        update.auto_download
+    ),
+    // [terminal]
+    enum_def!(
         "terminal.cursorStyle",
-        RegistryValue::Str(new.terminal.cursor_style.as_str().to_string()),
-    );
-    push(
-        old.terminal.cursor_blink != new.terminal.cursor_blink,
+        "terminal",
+        "cursor_style",
+        CursorStyle,
+        "underline",
+        ["bar", "block", "underline"],
+        terminal.cursor_style
+    ),
+    bool_def!(
         "terminal.cursorBlink",
-        RegistryValue::Bool(new.terminal.cursor_blink),
-    );
-    push(
-        old.terminal.scrollback_lines != new.terminal.scrollback_lines,
+        "terminal",
+        "cursor_blink",
+        false,
+        terminal.cursor_blink
+    ),
+    int_def!(
         "terminal.scrollbackLines",
-        RegistryValue::Int(new.terminal.scrollback_lines),
-    );
-    push(
-        old.terminal.font_family != new.terminal.font_family,
+        "terminal",
+        "scrollback_lines",
+        10_000,
+        0..=200_000,
+        terminal.scrollback_lines
+    ),
+    str_def!(
         "terminal.fontFamily",
-        RegistryValue::Str(new.terminal.font_family.clone()),
-    );
-    push(
-        old.terminal.font_size != new.terminal.font_size,
+        "terminal",
+        "font_family",
+        "SauceCodePro Nerd Font Mono",
+        terminal.font_family
+    ),
+    int_def!(
         "terminal.fontSize",
-        RegistryValue::Int(new.terminal.font_size),
-    );
-    push(
-        old.terminal.activity_indicator != new.terminal.activity_indicator,
+        "terminal",
+        "font_size",
+        12,
+        6..=72,
+        terminal.font_size
+    ),
+    bool_def!(
         "terminal.activityIndicator",
-        RegistryValue::Bool(new.terminal.activity_indicator),
-    );
-    push(
-        old.terminal.copy_on_select != new.terminal.copy_on_select,
+        "terminal",
+        "activity_indicator",
+        true,
+        terminal.activity_indicator
+    ),
+    bool_def!(
         "terminal.copyOnSelect",
-        RegistryValue::Bool(new.terminal.copy_on_select),
-    );
-    push(
-        old.terminal.focus_follows_mouse != new.terminal.focus_follows_mouse,
+        "terminal",
+        "copy_on_select",
+        true,
+        terminal.copy_on_select
+    ),
+    bool_def!(
         "terminal.focusFollowsMouse",
-        RegistryValue::Bool(new.terminal.focus_follows_mouse),
-    );
-    push(
-        old.terminal.shell != new.terminal.shell,
-        "terminal.shell",
-        RegistryValue::Str(new.terminal.shell.clone()),
-    );
-    push(
-        old.shell.enhancements != new.shell.enhancements,
-        "shell.enhancements",
-        RegistryValue::Bool(new.shell.enhancements),
-    );
-    push(
-        old.shell.autosuggestions != new.shell.autosuggestions,
-        "shell.autosuggestions",
-        RegistryValue::Bool(new.shell.autosuggestions),
-    );
-    push(
-        old.shell.syntax_highlighting != new.shell.syntax_highlighting,
-        "shell.syntaxHighlighting",
-        RegistryValue::Bool(new.shell.syntax_highlighting),
-    );
-    push(
-        old.shell.prompt != new.shell.prompt,
-        "shell.prompt",
-        RegistryValue::Str(new.shell.prompt.as_str().to_string()),
-    );
-    push(
-        old.terminal.confirm_close != new.terminal.confirm_close,
+        "terminal",
+        "focus_follows_mouse",
+        false,
+        terminal.focus_follows_mouse
+    ),
+    enum_def!(
         "terminal.confirmClose",
-        RegistryValue::Str(new.terminal.confirm_close.as_str().to_string()),
-    );
-    push(
-        old.terminal.clipboard_write != new.terminal.clipboard_write,
+        "terminal",
+        "confirm_close",
+        ConfirmClose,
+        "when-busy",
+        ["never", "when-busy", "always"],
+        terminal.confirm_close
+    ),
+    enum_def!(
         "terminal.clipboardWrite",
-        RegistryValue::Str(new.terminal.clipboard_write.as_str().to_string()),
-    );
-    push(
-        old.appearance.theme != new.appearance.theme,
+        "terminal",
+        "clipboard_write",
+        ClipboardWrite,
+        "allow",
+        ["allow", "deny"],
+        terminal.clipboard_write
+    ),
+    str_def!("terminal.shell", "terminal", "shell", "", terminal.shell),
+    // [shell]
+    bool_def!(
+        "shell.enhancements",
+        "shell",
+        "enhancements",
+        true,
+        shell.enhancements
+    ),
+    bool_def!(
+        "shell.autosuggestions",
+        "shell",
+        "autosuggestions",
+        true,
+        shell.autosuggestions
+    ),
+    bool_def!(
+        "shell.syntaxHighlighting",
+        "shell",
+        "syntax_highlighting",
+        true,
+        shell.syntax_highlighting
+    ),
+    enum_def!(
+        "shell.prompt",
+        "shell",
+        "prompt",
+        PromptChoice,
+        "existing",
+        ["existing", "starship", "powerlevel10k", "pure"],
+        shell.prompt
+    ),
+    // [appearance]
+    str_def!(
         "appearance.theme",
-        RegistryValue::Str(new.appearance.theme.clone()),
-    );
-    push(
-        old.tabs.bar_position != new.tabs.bar_position,
+        "appearance",
+        "theme",
+        "white",
+        appearance.theme
+    ),
+    // [tabs]
+    enum_def!(
         "tabs.barPosition",
-        RegistryValue::Str(new.tabs.bar_position.as_str().to_string()),
-    );
-    push(
-        old.tabs.side_label_orientation != new.tabs.side_label_orientation,
+        "tabs",
+        "bar_position",
+        TabBarPosition,
+        "bottom",
+        ["top", "bottom", "left", "right"],
+        tabs.bar_position
+    ),
+    enum_def!(
         "tabs.sideLabelOrientation",
-        RegistryValue::Str(new.tabs.side_label_orientation.as_str().to_string()),
-    );
-    push(
-        old.tabs.show_shortcut_hints != new.tabs.show_shortcut_hints,
+        "tabs",
+        "side_label_orientation",
+        LabelOrientation,
+        "horizontal",
+        ["horizontal", "vertical"],
+        tabs.side_label_orientation
+    ),
+    bool_def!(
         "tabs.showShortcutHints",
-        RegistryValue::Bool(new.tabs.show_shortcut_hints),
-    );
-    push(
-        old.title_bar.ai_counter != new.title_bar.ai_counter,
+        "tabs",
+        "show_shortcut_hints",
+        true,
+        tabs.show_shortcut_hints
+    ),
+    // [title_bar]
+    bool_def!(
         "titleBar.aiCounter",
-        RegistryValue::Bool(new.title_bar.ai_counter),
-    );
-    push(
-        old.scripts.startup != new.scripts.startup,
-        "scripts.startup",
-        RegistryValue::Str(new.scripts.startup.clone()),
-    );
-    push(
-        old.remote_control.enabled != new.remote_control.enabled,
+        "title_bar",
+        "ai_counter",
+        true,
+        title_bar.ai_counter
+    ),
+    // [scripts]
+    str_def!("scripts.startup", "scripts", "startup", "", scripts.startup),
+    // [remote_control]
+    bool_def!(
         "remote_control.enabled",
-        RegistryValue::Bool(new.remote_control.enabled),
-    );
-    push(
-        old.remote_control.socket_path != new.remote_control.socket_path,
+        "remote_control",
+        "enabled",
+        false,
+        remote_control.enabled
+    ),
+    str_def!(
         "remote_control.socketPath",
-        RegistryValue::Str(new.remote_control.socket_path.clone()),
-    );
-    changed
+        "remote_control",
+        "socket_path",
+        "",
+        remote_control.socket_path
+    ),
+];
+
+/// The definition behind a registry key, or `None` for an unknown key.
+pub fn setting_def(registry_key: &str) -> Option<&'static SettingDef> {
+    SCHEMA.iter().find(|def| def.registry_key == registry_key)
+}
+
+/// The definition behind a `(table, key)` TOML path, or `None` if no such setting.
+pub fn setting_def_at(table: &str, key: &str) -> Option<&'static SettingDef> {
+    SCHEMA
+        .iter()
+        .find(|def| def.table == table && def.key == key)
+}
+
+/// The schema as the golden JSON the frontend asserts against (trmx-246): one entry per
+/// setting in SCHEMA order — `registryKey`, `table`, `key`, `kind` (`"bool"` | `"int"` |
+/// `"str"` | `"enum"`), `default`, plus `min`/`max` for integers and `values` (in warning
+/// order) for enums. `tests/config_schema_golden.rs` pins the committed fixture to this.
+pub fn schema_json() -> serde_json::Value {
+    let settings: Vec<serde_json::Value> = SCHEMA
+        .iter()
+        .map(|def| {
+            let mut entry = serde_json::Map::new();
+            entry.insert("registryKey".to_string(), def.registry_key.into());
+            entry.insert("table".to_string(), def.table.into());
+            entry.insert("key".to_string(), def.key.into());
+            let kind = match def.kind {
+                SettingKind::Bool => "bool",
+                SettingKind::Int { min, max } => {
+                    entry.insert("min".to_string(), min.into());
+                    entry.insert("max".to_string(), max.into());
+                    "int"
+                }
+                SettingKind::Str => "str",
+                SettingKind::Enum(values) => {
+                    entry.insert("values".to_string(), values.iter().copied().collect());
+                    "enum"
+                }
+            };
+            entry.insert("kind".to_string(), kind.into());
+            let default = match def.default {
+                SettingDefault::Bool(b) => serde_json::Value::Bool(b),
+                SettingDefault::Int(i) => serde_json::Value::from(i),
+                SettingDefault::Str(s) => serde_json::Value::from(s),
+            };
+            entry.insert("default".to_string(), default);
+            serde_json::Value::Object(entry)
+        })
+        .collect();
+    serde_json::json!({ "schema": 1, "settings": settings })
 }
 
 // ---------------------------------------------------------------------------
 // The tolerant walk: parse to a toml::Table, then read each KNOWN field
 // explicitly (serde's deny_unknown_fields aborts instead of warning, so the
-// walk is hand-rolled). Unreadable parts warn and keep their defaults.
+// walk is hand-rolled) — since trmx-246 driven by SCHEMA rather than by one
+// hand-written function per table. Unreadable parts warn and keep their defaults.
 // ---------------------------------------------------------------------------
-
-const SCROLLBACK_LINES_RANGE: RangeInclusive<u32> = 0..=200_000;
-const FONT_SIZE_RANGE: RangeInclusive<u32> = 6..=72;
 
 /// Collects the walk's outputs so field readers stay small.
 struct Sink {
@@ -823,191 +1076,23 @@ fn parse_full(text: &str) -> (Config, Vec<(String, RegistryValue)>, Vec<ConfigWa
             }
             continue;
         }
-        let walk_table: Option<fn(&toml::Table, &mut Config, &mut Sink)> = match name.as_str() {
-            "update" => Some(walk_update),
-            "terminal" => Some(walk_terminal),
-            "shell" => Some(walk_shell),
-            "appearance" => Some(walk_appearance),
-            "tabs" => Some(walk_tabs),
-            "title_bar" => Some(walk_title_bar),
-            "scripts" => Some(walk_scripts),
-            "remote_control" => Some(walk_remote_control),
-            _ => None,
-        };
-        match walk_table {
-            Some(walk_table) => match value.as_table() {
-                Some(inner) => walk_table(inner, &mut config, &mut sink),
-                None => sink.warnings.push(ConfigWarning::InvalidValue {
-                    key: name.clone(),
-                    got: describe_value(value),
-                    expected: "a table of settings".to_string(),
-                }),
-            },
-            None => sink
-                .warnings
-                .push(ConfigWarning::UnknownKey { key: name.clone() }),
+        // trmx-246: a fixed-schema table is any table SCHEMA declares; its keys are walked by
+        // SCHEMA too. An unknown table warns (forward compat), a non-table value warns.
+        if !SCHEMA.iter().any(|def| def.table == name) {
+            sink.warnings
+                .push(ConfigWarning::UnknownKey { key: name.clone() });
+            continue;
+        }
+        match value.as_table() {
+            Some(inner) => walk_table(name, inner, &mut config, &mut sink),
+            None => sink.warnings.push(ConfigWarning::InvalidValue {
+                key: name.clone(),
+                got: describe_value(value),
+                expected: "a table of settings".to_string(),
+            }),
         }
     }
     (config, sink.pairs, sink.warnings)
-}
-
-fn walk_update(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
-    for (key, value) in table {
-        match key.as_str() {
-            "auto_check" => read_bool(
-                value,
-                ("update.auto_check", "update.autoCheck"),
-                &mut config.update.auto_check,
-                sink,
-            ),
-            "check_frequency" => read_enum(
-                value,
-                ("update.check_frequency", "update.checkFrequency"),
-                CheckFrequency::from_toml,
-                CheckFrequency::as_str,
-                r#"one of "on-startup", "daily", "weekly", "manual""#,
-                &mut config.update.check_frequency,
-                sink,
-            ),
-            "auto_download" => read_bool(
-                value,
-                ("update.auto_download", "update.autoDownload"),
-                &mut config.update.auto_download,
-                sink,
-            ),
-            _ => sink.warnings.push(ConfigWarning::UnknownKey {
-                key: format!("update.{key}"),
-            }),
-        }
-    }
-}
-
-// trmx-101 (FR-9.4): the `[remote_control]` table. Mirrors walk_update; the socket itself lives in the tauri shell.
-fn walk_remote_control(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
-    for (key, value) in table {
-        match key.as_str() {
-            "enabled" => read_bool(
-                value,
-                ("remote_control.enabled", "remote_control.enabled"),
-                &mut config.remote_control.enabled,
-                sink,
-            ),
-            "socket_path" => read_string(
-                value,
-                ("remote_control.socket_path", "remote_control.socketPath"),
-                &mut config.remote_control.socket_path,
-                sink,
-            ),
-            _ => sink.warnings.push(ConfigWarning::UnknownKey {
-                key: format!("remote_control.{key}"),
-            }),
-        }
-    }
-}
-
-fn walk_terminal(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
-    for (key, value) in table {
-        match key.as_str() {
-            "cursor_style" => read_enum(
-                value,
-                ("terminal.cursor_style", "terminal.cursorStyle"),
-                CursorStyle::from_toml,
-                CursorStyle::as_str,
-                r#"one of "bar", "block", "underline""#,
-                &mut config.terminal.cursor_style,
-                sink,
-            ),
-            "cursor_blink" => read_bool(
-                value,
-                ("terminal.cursor_blink", "terminal.cursorBlink"),
-                &mut config.terminal.cursor_blink,
-                sink,
-            ),
-            "scrollback_lines" => read_clamped_int(
-                value,
-                ("terminal.scrollback_lines", "terminal.scrollbackLines"),
-                SCROLLBACK_LINES_RANGE,
-                &mut config.terminal.scrollback_lines,
-                sink,
-            ),
-            "font_family" => read_string(
-                value,
-                ("terminal.font_family", "terminal.fontFamily"),
-                &mut config.terminal.font_family,
-                sink,
-            ),
-            "shell" => read_string(
-                value,
-                ("terminal.shell", "terminal.shell"),
-                &mut config.terminal.shell,
-                sink,
-            ),
-            "font_size" => read_clamped_int(
-                value,
-                ("terminal.font_size", "terminal.fontSize"),
-                FONT_SIZE_RANGE,
-                &mut config.terminal.font_size,
-                sink,
-            ),
-            "activity_indicator" => read_bool(
-                value,
-                ("terminal.activity_indicator", "terminal.activityIndicator"),
-                &mut config.terminal.activity_indicator,
-                sink,
-            ),
-            "copy_on_select" => read_bool(
-                value,
-                ("terminal.copy_on_select", "terminal.copyOnSelect"),
-                &mut config.terminal.copy_on_select,
-                sink,
-            ),
-            "focus_follows_mouse" => read_bool(
-                value,
-                ("terminal.focus_follows_mouse", "terminal.focusFollowsMouse"),
-                &mut config.terminal.focus_follows_mouse,
-                sink,
-            ),
-            "confirm_close" => read_enum(
-                value,
-                ("terminal.confirm_close", "terminal.confirmClose"),
-                ConfirmClose::from_toml,
-                ConfirmClose::as_str,
-                r#"one of "never", "when-busy", "always""#,
-                &mut config.terminal.confirm_close,
-                sink,
-            ),
-            // trmx-252: the OSC 52 clipboard-write policy. Core only STORES it (R1/R2) — the
-            // webview's OSC 52 handler reads it at write time and enforces.
-            "clipboard_write" => read_enum(
-                value,
-                ("terminal.clipboard_write", "terminal.clipboardWrite"),
-                ClipboardWrite::from_toml,
-                ClipboardWrite::as_str,
-                r#"one of "allow", "deny""#,
-                &mut config.terminal.clipboard_write,
-                sink,
-            ),
-            _ => sink.warnings.push(ConfigWarning::UnknownKey {
-                key: format!("terminal.{key}"),
-            }),
-        }
-    }
-}
-
-fn walk_scripts(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
-    for (key, value) in table {
-        match key.as_str() {
-            "startup" => read_string(
-                value,
-                ("scripts.startup", "scripts.startup"),
-                &mut config.scripts.startup,
-                sink,
-            ),
-            _ => sink.warnings.push(ConfigWarning::UnknownKey {
-                key: format!("scripts.{key}"),
-            }),
-        }
-    }
 }
 
 /// Read the `[keys]` map (trmx-94): each entry is `chord = command-id` (or `"none"` to unbind). Any
@@ -1028,202 +1113,70 @@ fn walk_keys(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
     }
 }
 
-fn walk_shell(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
-    for (key, value) in table {
-        match key.as_str() {
-            "enhancements" => read_bool(
-                value,
-                ("shell.enhancements", "shell.enhancements"),
-                &mut config.shell.enhancements,
-                sink,
-            ),
-            "autosuggestions" => read_bool(
-                value,
-                ("shell.autosuggestions", "shell.autosuggestions"),
-                &mut config.shell.autosuggestions,
-                sink,
-            ),
-            "syntax_highlighting" => read_bool(
-                value,
-                ("shell.syntax_highlighting", "shell.syntaxHighlighting"),
-                &mut config.shell.syntax_highlighting,
-                sink,
-            ),
-            "prompt" => read_enum(
-                value,
-                ("shell.prompt", "shell.prompt"),
-                PromptChoice::from_toml,
-                PromptChoice::as_str,
-                r#"one of "existing", "starship", "powerlevel10k", "pure""#,
-                &mut config.shell.prompt,
-                sink,
-            ),
-            _ => sink.warnings.push(ConfigWarning::UnknownKey {
-                key: format!("shell.{key}"),
-            }),
-        }
-    }
-}
-
-fn walk_appearance(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
-    for (key, value) in table {
-        match key.as_str() {
-            "theme" => read_string(
-                value,
-                ("appearance.theme", "appearance.theme"),
-                &mut config.appearance.theme,
-                sink,
-            ),
-            _ => sink.warnings.push(ConfigWarning::UnknownKey {
-                key: format!("appearance.{key}"),
-            }),
-        }
-    }
-}
-
-fn walk_tabs(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
-    for (key, value) in table {
-        match key.as_str() {
-            "bar_position" => read_enum(
-                value,
-                ("tabs.bar_position", "tabs.barPosition"),
-                TabBarPosition::from_toml,
-                TabBarPosition::as_str,
-                r#"one of "top", "bottom", "left", "right""#,
-                &mut config.tabs.bar_position,
-                sink,
-            ),
-            "side_label_orientation" => read_enum(
-                value,
-                ("tabs.side_label_orientation", "tabs.sideLabelOrientation"),
-                LabelOrientation::from_toml,
-                LabelOrientation::as_str,
-                r#"one of "horizontal", "vertical""#,
-                &mut config.tabs.side_label_orientation,
-                sink,
-            ),
-            // trmx-151: the ⌘1–⌘9 tab-prefix toggle (tolerant read_bool, like activity_indicator).
-            "show_shortcut_hints" => read_bool(
-                value,
-                ("tabs.show_shortcut_hints", "tabs.showShortcutHints"),
-                &mut config.tabs.show_shortcut_hints,
-                sink,
-            ),
-            _ => sink.warnings.push(ConfigWarning::UnknownKey {
-                key: format!("tabs.{key}"),
-            }),
-        }
-    }
-}
-
-/// trmx-190: the `[title_bar]` table — the AI-session counter gate.
-fn walk_title_bar(table: &toml::Table, config: &mut Config, sink: &mut Sink) {
-    for (key, value) in table {
-        match key.as_str() {
-            "ai_counter" => read_bool(
-                value,
-                ("title_bar.ai_counter", "titleBar.aiCounter"),
-                &mut config.title_bar.ai_counter,
-                sink,
-            ),
-            _ => sink.warnings.push(ConfigWarning::UnknownKey {
-                key: format!("title_bar.{key}"),
-            }),
-        }
-    }
-}
-
-/// Read a boolean field; `keys` is `(toml_path, registry_key)`.
-fn read_bool(value: &toml::Value, keys: (&str, &str), target: &mut bool, sink: &mut Sink) {
-    match value.as_bool() {
-        Some(parsed) => {
-            *target = parsed;
-            sink.pairs
-                .push((keys.1.to_string(), RegistryValue::Bool(parsed)));
-        }
-        None => sink.warnings.push(ConfigWarning::InvalidValue {
-            key: keys.0.to_string(),
-            got: describe_value(value),
-            expected: "a boolean (true or false)".to_string(),
-        }),
-    }
-}
-
-/// Read a free-string field; `keys` is `(toml_path, registry_key)`.
-fn read_string(value: &toml::Value, keys: (&str, &str), target: &mut String, sink: &mut Sink) {
-    match value.as_str() {
-        Some(parsed) => {
-            *target = parsed.to_string();
-            sink.pairs
-                .push((keys.1.to_string(), RegistryValue::Str(parsed.to_string())));
-        }
-        None => sink.warnings.push(ConfigWarning::InvalidValue {
-            key: keys.0.to_string(),
-            got: describe_value(value),
-            expected: "a string".to_string(),
-        }),
-    }
-}
-
-/// Read an integer field, clamping into `range` (out-of-range warns but the clamped
-/// value is used and surfaces in the pairs); `keys` is `(toml_path, registry_key)`.
-fn read_clamped_int(
-    value: &toml::Value,
-    keys: (&str, &str),
-    range: RangeInclusive<u32>,
-    target: &mut u32,
-    sink: &mut Sink,
-) {
-    let (min, max) = (*range.start(), *range.end());
-    match value.as_integer() {
-        Some(raw) => {
-            let clamped_i64 = raw.clamp(i64::from(min), i64::from(max));
-            // In-range by construction; the fallback can never be hit.
-            let clamped = u32::try_from(clamped_i64).unwrap_or(max);
-            if raw != clamped_i64 {
-                sink.warnings.push(ConfigWarning::OutOfRange {
-                    key: keys.0.to_string(),
-                    got: raw,
-                    clamped_to: clamped,
-                });
+/// Read one known setting from its TOML value by its SCHEMA kind: the same tolerance and the same
+/// wording the four hand-written readers had (trmx-246). A readable value is written through the
+/// definition's accessor and surfaces in the pairs as the accessor reports it (so a clamped
+/// integer and a canonical enum spelling come back clamped / canonical); an unreadable one warns
+/// with the TOML path and keeps the default.
+fn read_setting(def: &SettingDef, value: &toml::Value, config: &mut Config, sink: &mut Sink) {
+    let parsed = match def.kind {
+        SettingKind::Bool => value
+            .as_bool()
+            .map(RegistryValue::Bool)
+            .ok_or_else(|| "a boolean (true or false)".to_string()),
+        SettingKind::Str => value
+            .as_str()
+            .map(|s| RegistryValue::Str(s.to_string()))
+            .ok_or_else(|| "a string".to_string()),
+        SettingKind::Int { min, max } => match value.as_integer() {
+            Some(raw) => {
+                let clamped_i64 = raw.clamp(i64::from(min), i64::from(max));
+                // In-range by construction; the fallback can never be hit.
+                let clamped = u32::try_from(clamped_i64).unwrap_or(max);
+                if raw != clamped_i64 {
+                    sink.warnings.push(ConfigWarning::OutOfRange {
+                        key: def.toml_path(),
+                        got: raw,
+                        clamped_to: clamped,
+                    });
+                }
+                Ok(RegistryValue::Int(clamped))
             }
-            *target = clamped;
+            None => Err(format!("an integer in {min}..={max}")),
+        },
+        SettingKind::Enum(values) => value
+            .as_str()
+            .filter(|s| values.contains(s))
+            .map(|s| RegistryValue::Str(s.to_string()))
+            .ok_or_else(|| {
+                let listed: Vec<String> = values.iter().map(|v| format!("\"{v}\"")).collect();
+                format!("one of {}", listed.join(", "))
+            }),
+    };
+    match parsed {
+        Ok(value) => {
+            def.set(config, &value);
             sink.pairs
-                .push((keys.1.to_string(), RegistryValue::Int(clamped)));
+                .push((def.registry_key.to_string(), def.get(config)));
         }
-        None => sink.warnings.push(ConfigWarning::InvalidValue {
-            key: keys.0.to_string(),
+        Err(expected) => sink.warnings.push(ConfigWarning::InvalidValue {
+            key: def.toml_path(),
             got: describe_value(value),
-            expected: format!("an integer in {min}..={max}"),
+            expected,
         }),
     }
 }
 
-/// Read an enum-valued field via its `parse`/`render` pair; `keys` is
-/// `(toml_path, registry_key)` and `expected` lists the valid spellings for the warning.
-fn read_enum<T: Copy>(
-    value: &toml::Value,
-    keys: (&str, &str),
-    parse: fn(&str) -> Option<T>,
-    render: fn(T) -> &'static str,
-    expected: &str,
-    target: &mut T,
-    sink: &mut Sink,
-) {
-    let parsed = value.as_str().and_then(parse);
-    match parsed {
-        Some(parsed) => {
-            *target = parsed;
-            sink.pairs.push((
-                keys.1.to_string(),
-                RegistryValue::Str(render(parsed).to_string()),
-            ));
+/// Walk one fixed-schema table: every key is looked up in SCHEMA; an unknown key warns with its
+/// `table.key` path (forward compat: ignored, not fatal), as the eight per-table walks did.
+fn walk_table(table_name: &str, table: &toml::Table, config: &mut Config, sink: &mut Sink) {
+    for (key, value) in table {
+        match setting_def_at(table_name, key) {
+            Some(def) => read_setting(def, value, config, sink),
+            None => sink.warnings.push(ConfigWarning::UnknownKey {
+                key: format!("{table_name}.{key}"),
+            }),
         }
-        None => sink.warnings.push(ConfigWarning::InvalidValue {
-            key: keys.0.to_string(),
-            got: describe_value(value),
-            expected: expected.to_string(),
-        }),
     }
 }
 
@@ -2844,5 +2797,385 @@ show_shortcut_hints = false
         );
         assert_eq!(application.config, Config::default());
         assert!(application.warnings.is_empty());
+    }
+
+    // --- trmx-246: the declarative SCHEMA agrees with everything it will replace -------------
+
+    /// A value that differs from `config`'s current one for `def`, within `def.kind`.
+    fn flipped_value(def: &SettingDef, config: &Config) -> RegistryValue {
+        match (def.kind, def.get(config)) {
+            (SettingKind::Bool, RegistryValue::Bool(b)) => RegistryValue::Bool(!b),
+            (SettingKind::Int { min, max }, RegistryValue::Int(i)) => {
+                RegistryValue::Int(if i == min { max } else { min })
+            }
+            (SettingKind::Str, RegistryValue::Str(s)) => {
+                RegistryValue::Str(format!("{s}-changed-{}", def.registry_key))
+            }
+            (SettingKind::Enum(values), RegistryValue::Str(current)) => RegistryValue::Str(
+                values
+                    .iter()
+                    .find(|v| **v != current)
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| panic!("{} has a single spelling", def.registry_key)),
+            ),
+            (kind, got) => panic!("{}: kind {kind:?} vs value {got:?}", def.registry_key),
+        }
+    }
+
+    #[test]
+    fn schema_keys_are_unique() {
+        let mut registry: Vec<&str> = SCHEMA.iter().map(|d| d.registry_key).collect();
+        let mut paths: Vec<(&str, &str)> = SCHEMA.iter().map(|d| (d.table, d.key)).collect();
+        let (n, m) = (registry.len(), paths.len());
+        registry.sort_unstable();
+        registry.dedup();
+        paths.sort_unstable();
+        paths.dedup();
+        assert_eq!(registry.len(), n, "duplicate registry key in SCHEMA");
+        assert_eq!(paths.len(), m, "duplicate (table, key) in SCHEMA");
+        assert!(!SCHEMA.is_empty());
+    }
+
+    #[test]
+    fn schema_defaults_equal_config_default() {
+        let config = Config::default();
+        for def in SCHEMA {
+            assert_eq!(
+                def.get(&config),
+                def.default.to_registry_value(),
+                "{}: SCHEMA default vs Config::default()",
+                def.registry_key
+            );
+        }
+    }
+
+    #[test]
+    fn schema_enum_values_are_the_enum_domain() {
+        for def in SCHEMA {
+            let SettingKind::Enum(values) = def.kind else {
+                continue;
+            };
+            let mut config = Config::default();
+            for value in values {
+                def.set(&mut config, &RegistryValue::Str(value.to_string()));
+                assert_eq!(
+                    def.get(&config),
+                    RegistryValue::Str(value.to_string()),
+                    "{}: {value:?} must round-trip through set/get",
+                    def.registry_key
+                );
+            }
+            let before = def.get(&config);
+            def.set(
+                &mut config,
+                &RegistryValue::Str("zzz-not-a-spelling".to_string()),
+            );
+            assert_eq!(
+                def.get(&config),
+                before,
+                "{}: an unlisted spelling is ignored",
+                def.registry_key
+            );
+            def.set(&mut config, &RegistryValue::Bool(true));
+            assert_eq!(
+                def.get(&config),
+                before,
+                "{}: a wrong variant is ignored",
+                def.registry_key
+            );
+            assert!(
+                values.contains(&match def.default {
+                    SettingDefault::Str(s) => s,
+                    other => panic!("{}: enum default {other:?}", def.registry_key),
+                }),
+                "{}: the default is one of the listed spellings",
+                def.registry_key
+            );
+        }
+    }
+
+    #[test]
+    fn schema_agrees_with_toml_path_for() {
+        for def in SCHEMA {
+            assert_eq!(
+                toml_path_for(def.registry_key),
+                Some((def.table, def.key)),
+                "{}: toml_path_for disagrees with SCHEMA",
+                def.registry_key
+            );
+            assert!(setting_def(def.registry_key).is_some());
+            assert!(setting_def_at(def.table, def.key).is_some());
+        }
+        assert!(setting_def("junk").is_none());
+        assert!(
+            setting_def("terminal.font_size").is_none(),
+            "registry keys are camelCase"
+        );
+        assert!(
+            setting_def_at("terminal", "fontSize").is_none(),
+            "toml keys are snake_case"
+        );
+    }
+
+    #[test]
+    fn schema_agrees_with_diff_configs() {
+        let base = Config::default();
+        for def in SCHEMA {
+            let mut changed = Config::default();
+            let flipped = flipped_value(def, &base);
+            def.set(&mut changed, &flipped);
+            assert_eq!(def.get(&changed), flipped, "{}: set/get", def.registry_key);
+            let diff = diff_configs(&base, &changed);
+            assert_eq!(
+                diff,
+                vec![(def.registry_key.to_string(), flipped)],
+                "{}: diff_configs must report exactly this key",
+                def.registry_key
+            );
+        }
+    }
+
+    /// trmx-246: the canonical order is SCHEMA (struct) order — the golden, the diff and the
+    /// frontend's `settings:changed` batches all follow it.
+    #[test]
+    fn diff_order_is_schema_order() {
+        let base = Config::default();
+        let mut all = Config::default();
+        for def in SCHEMA {
+            let flipped = flipped_value(def, &base);
+            def.set(&mut all, &flipped);
+        }
+        let diff = diff_configs(&base, &all);
+        let keys: Vec<&str> = diff.iter().map(|(k, _)| k.as_str()).collect();
+        let expected: Vec<&str> = SCHEMA.iter().map(|d| d.registry_key).collect();
+        assert_eq!(
+            keys, expected,
+            "diff_configs must report changes in SCHEMA order"
+        );
+    }
+
+    // --- trmx-246: the walk's observable behaviour, byte for byte, before it is derived -----
+
+    /// Every warning shape and wording the hand-written readers produce, one witness per
+    /// branch. Written against the CURRENT implementation (a characterisation), so the derived
+    /// walk has to reproduce each string exactly; its teeth were shown by mutating one reader's
+    /// wording before the replacement (see the run's evidence).
+    #[test]
+    fn walk_warnings_are_byte_identical_to_the_readers() {
+        let cases: &[(&str, ConfigWarning)] = &[
+            (
+                "[update]\nauto_check = \"yes\"\n",
+                ConfigWarning::InvalidValue {
+                    key: "update.auto_check".to_string(),
+                    got: "\"yes\"".to_string(),
+                    expected: "a boolean (true or false)".to_string(),
+                },
+            ),
+            (
+                "[terminal]\nfont_family = 12\n",
+                ConfigWarning::InvalidValue {
+                    key: "terminal.font_family".to_string(),
+                    got: "12".to_string(),
+                    expected: "a string".to_string(),
+                },
+            ),
+            (
+                "[terminal]\nfont_size = \"big\"\n",
+                ConfigWarning::InvalidValue {
+                    key: "terminal.font_size".to_string(),
+                    got: "\"big\"".to_string(),
+                    expected: "an integer in 6..=72".to_string(),
+                },
+            ),
+            (
+                "[terminal]\nscrollback_lines = true\n",
+                ConfigWarning::InvalidValue {
+                    key: "terminal.scrollback_lines".to_string(),
+                    got: "true".to_string(),
+                    expected: "an integer in 0..=200000".to_string(),
+                },
+            ),
+            (
+                "[terminal]\nfont_size = 500\n",
+                ConfigWarning::OutOfRange {
+                    key: "terminal.font_size".to_string(),
+                    got: 500,
+                    clamped_to: 72,
+                },
+            ),
+            (
+                "[terminal]\nfont_size = -1\n",
+                ConfigWarning::OutOfRange {
+                    key: "terminal.font_size".to_string(),
+                    got: -1,
+                    clamped_to: 6,
+                },
+            ),
+            (
+                "[terminal]\ncursor_style = \"wide\"\n",
+                ConfigWarning::InvalidValue {
+                    key: "terminal.cursor_style".to_string(),
+                    got: "\"wide\"".to_string(),
+                    expected: "one of \"bar\", \"block\", \"underline\"".to_string(),
+                },
+            ),
+            (
+                "[update]\ncheck_frequency = 3\n",
+                ConfigWarning::InvalidValue {
+                    key: "update.check_frequency".to_string(),
+                    got: "3".to_string(),
+                    expected: "one of \"on-startup\", \"daily\", \"weekly\", \"manual\""
+                        .to_string(),
+                },
+            ),
+            (
+                "[terminal]\nconfirm_close = \"sometimes\"\n",
+                ConfigWarning::InvalidValue {
+                    key: "terminal.confirm_close".to_string(),
+                    got: "\"sometimes\"".to_string(),
+                    expected: "one of \"never\", \"when-busy\", \"always\"".to_string(),
+                },
+            ),
+            (
+                "[terminal]\nclipboard_write = \"ask\"\n",
+                ConfigWarning::InvalidValue {
+                    key: "terminal.clipboard_write".to_string(),
+                    got: "\"ask\"".to_string(),
+                    expected: "one of \"allow\", \"deny\"".to_string(),
+                },
+            ),
+            (
+                "[tabs]\nbar_position = \"middle\"\n",
+                ConfigWarning::InvalidValue {
+                    key: "tabs.bar_position".to_string(),
+                    got: "\"middle\"".to_string(),
+                    expected: "one of \"top\", \"bottom\", \"left\", \"right\"".to_string(),
+                },
+            ),
+            (
+                "[tabs]\nside_label_orientation = \"diagonal\"\n",
+                ConfigWarning::InvalidValue {
+                    key: "tabs.side_label_orientation".to_string(),
+                    got: "\"diagonal\"".to_string(),
+                    expected: "one of \"horizontal\", \"vertical\"".to_string(),
+                },
+            ),
+            (
+                "[shell]\nprompt = \"fish\"\n",
+                ConfigWarning::InvalidValue {
+                    key: "shell.prompt".to_string(),
+                    got: "\"fish\"".to_string(),
+                    expected: "one of \"existing\", \"starship\", \"powerlevel10k\", \"pure\""
+                        .to_string(),
+                },
+            ),
+            (
+                "[terminal]\nbogus = 1\n",
+                ConfigWarning::UnknownKey {
+                    key: "terminal.bogus".to_string(),
+                },
+            ),
+            (
+                "[remote_control]\nport = 8080\n",
+                ConfigWarning::UnknownKey {
+                    key: "remote_control.port".to_string(),
+                },
+            ),
+            (
+                "[nonsense]\nx = 1\n",
+                ConfigWarning::UnknownKey {
+                    key: "nonsense".to_string(),
+                },
+            ),
+            (
+                "terminal = 42\n",
+                ConfigWarning::InvalidValue {
+                    key: "terminal".to_string(),
+                    got: "42".to_string(),
+                    expected: "a table of settings".to_string(),
+                },
+            ),
+            (
+                "keys = \"cmd+t\"\n",
+                ConfigWarning::InvalidValue {
+                    key: "keys".to_string(),
+                    got: "\"cmd+t\"".to_string(),
+                    expected: "a table of chord = command entries".to_string(),
+                },
+            ),
+            (
+                "[keys]\n\"cmd+t\" = 7\n",
+                ConfigWarning::InvalidValue {
+                    key: "keys.cmd+t".to_string(),
+                    got: "7".to_string(),
+                    expected: "a command id string".to_string(),
+                },
+            ),
+        ];
+        for (text, expected) in cases {
+            let (_, warnings) = parse_config(text);
+            assert_eq!(warnings, vec![expected.clone()], "for {text:?}");
+        }
+        // The clamped value is used AND surfaces clamped in the pairs (an OutOfRange, not a reject).
+        let (config, pairs, warnings) = parse_full("[terminal]\nfont_size = 500\n");
+        assert_eq!(config.terminal.font_size, 72);
+        assert_eq!(
+            pairs,
+            vec![("terminal.fontSize".to_string(), RegistryValue::Int(72))]
+        );
+        assert_eq!(warnings.len(), 1);
+    }
+
+    /// Pairs come out in the parsed TOML map's order — `toml::Table` iterates its tables and keys
+    /// ALPHABETICALLY, whatever the document's order — not in schema order. Characterised against
+    /// the hand-written walk before it was derived (the first draft of this test assumed file
+    /// order and failed against the old walk, which is the point of characterising first).
+    #[test]
+    fn walk_pairs_follow_the_toml_map_order() {
+        let text = "[update]\nauto_download = false\nauto_check = false\n\n[tabs]\nshow_shortcut_hints = false\nbar_position = \"top\"\n";
+        let (pairs, warnings) = parse_registry_pairs(text);
+        assert_eq!(warnings, Vec::new());
+        let keys: Vec<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec![
+                "tabs.barPosition",
+                "tabs.showShortcutHints",
+                "update.autoCheck",
+                "update.autoDownload"
+            ],
+            "alphabetical by table then key (the toml map order), regardless of the document"
+        );
+    }
+
+    #[test]
+    fn template_documents_every_schema_key() {
+        for def in SCHEMA {
+            let table_line = format!("# [{}]", def.table);
+            assert!(
+                DEFAULT_TEMPLATE.lines().any(|l| l.starts_with(&table_line)),
+                "{}: template lacks {table_line}",
+                def.registry_key
+            );
+            let key_prefix = format!("# {} = ", def.key);
+            assert!(
+                DEFAULT_TEMPLATE.lines().any(|l| l.starts_with(&key_prefix)),
+                "{}: template lacks a `{key_prefix}` line",
+                def.registry_key
+            );
+        }
+    }
+
+    /// Characterisation, not a fix: the template's theme comment says "night" while the typed
+    /// default is "white" (the frontend derives the real first-run theme from the OS appearance).
+    /// A later decision to align them should have to change this test on purpose.
+    #[test]
+    fn template_theme_comment_disagrees_with_the_default() {
+        assert!(DEFAULT_TEMPLATE.contains("# theme = \"night\""));
+        assert_eq!(Config::default().appearance.theme, "white");
+        assert_eq!(
+            setting_def("appearance.theme").map(|d| d.default),
+            Some(SettingDefault::Str("white"))
+        );
     }
 }

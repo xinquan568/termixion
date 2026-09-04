@@ -281,6 +281,41 @@ export const CLIPBOARD_WRITE_VALUES: readonly ClipboardWrite[] = ["allow", "deny
 const TAB_BAR_POSITIONS: readonly TabBarPosition[] = ["top", "bottom", "left", "right"];
 const LABEL_ORIENTATIONS: readonly LabelOrientation[] = ["horizontal", "vertical"];
 
+/**
+ * trmx-246: the closed enums, keyed by setting, in the spelling order core's SCHEMA lists them —
+ * parse()/coerce() consult this instead of one hand-written branch per enum, and
+ * settingsSchemaGolden.test.ts pins it to `crates/termixion-core/tests/fixtures/config-schema-golden.json`.
+ */
+export const SETTING_ENUM_VALUES: Partial<Record<SettingKey, readonly string[]>> = {
+  "update.checkFrequency": FREQUENCIES,
+  "terminal.cursorStyle": CURSOR_STYLES,
+  "terminal.confirmClose": CONFIRM_CLOSE_VALUES,
+  "terminal.clipboardWrite": CLIPBOARD_WRITE_VALUES,
+  "tabs.barPosition": TAB_BAR_POSITIONS,
+  "tabs.sideLabelOrientation": LABEL_ORIENTATIONS,
+  "shell.prompt": PROMPT_CHOICES,
+};
+
+/**
+ * trmx-246: the free strings — any value is valid here ("" is the documented sentinel for each);
+ * validation, where it exists, is the backend's (a shell path at spawn time, a script at launch).
+ * appearance.theme is a string too but keeps its own validated branch. Pinned to the golden.
+ */
+export const SETTING_FREE_STRING_KEYS = [
+  "terminal.fontFamily",
+  "scripts.startup",
+  "terminal.shell",
+  "remote_control.socketPath",
+] as const;
+
+function enumValuesFor(key: SettingKey): readonly string[] | undefined {
+  return SETTING_ENUM_VALUES[key];
+}
+
+function isFreeStringKey(key: SettingKey): boolean {
+  return (SETTING_FREE_STRING_KEYS as readonly string[]).includes(key);
+}
+
 /** Type guard for tabs.barPosition values (trmx-81) — App's payload guard uses it too. */
 export function isTabBarPosition(value: unknown): value is TabBarPosition {
   return typeof value === "string" && TAB_BAR_POSITIONS.includes(value as TabBarPosition);
@@ -310,11 +345,6 @@ function parse<K extends SettingKey>(key: K, raw: string): SettingsValues[K] {
     if (!Number.isInteger(n)) return fallback as SettingsValues[K];
     return clampNumberSetting(key as NumberSettingKey, n) as SettingsValues[K];
   }
-  if (key === "update.checkFrequency") {
-    return (FREQUENCIES.includes(raw as CheckFrequency)
-      ? raw
-      : fallback) as SettingsValues[K];
-  }
   if (key === "appearance.theme") {
     // trmx-53: junk falls back to the DERIVED default (read-time fallback, not a repair).
     // trmx-89 C1: a registered id OR a shape-valid `user:<stem>` id is kept (a persisted user
@@ -323,47 +353,16 @@ function parse<K extends SettingKey>(key: K, raw: string): SettingsValues[K] {
       ? raw
       : defaultFor(key)) as SettingsValues[K];
   }
-  if (key === "terminal.fontFamily") {
-    // A free-form string: any value is a valid font stack ("" = platform default).
-    return raw as SettingsValues[K];
-  }
-  if (key === "scripts.startup") {
-    // trmx-93: a free-form scripts-root relative path ("" = none); validated at launch, not here.
-    return raw as SettingsValues[K];
-  }
-  if (key === "terminal.shell") {
-    // trmx-205: a free-form shell path ("" = System default); validated by the backend at
-    // spawn/read time, never here.
-    return raw as SettingsValues[K];
-  }
-  if (key === "shell.prompt") {
-    // trmx-207: a closed enum — junk re-derives the default (mirror tabs.barPosition).
-    return (PROMPT_CHOICES as readonly string[]).includes(raw)
-      ? (raw as SettingsValues[K])
-      : defaultFor(key);
-  }
-  if (key === "tabs.barPosition") {
-    // trmx-81: enum parse-with-fallback, exactly like terminal.cursorStyle below.
-    return (isTabBarPosition(raw) ? raw : fallback) as SettingsValues[K];
-  }
-  if (key === "tabs.sideLabelOrientation") {
-    // trmx-82: enum parse-with-fallback, mirroring tabs.barPosition above.
-    return (isLabelOrientation(raw) ? raw : fallback) as SettingsValues[K];
-  }
-  if (key === "terminal.confirmClose") {
-    // trmx-144: enum parse-with-fallback, exactly like terminal.cursorStyle below.
-    return (CONFIRM_CLOSE_VALUES.includes(raw as ConfirmClose)
-      ? raw
-      : fallback) as SettingsValues[K];
-  }
-  if (key === "terminal.clipboardWrite") {
-    // trmx-252: enum parse-with-fallback. Junk falls back to "allow" — the DEFAULT, not a
-    // fail-closed "deny": a broken value must not silently disable a working feature.
-    return (CLIPBOARD_WRITE_VALUES.includes(raw as ClipboardWrite)
-      ? raw
-      : fallback) as SettingsValues[K];
-  }
-  return (CURSOR_STYLES.includes(raw as CursorStyle) ? raw : fallback) as SettingsValues[K];
+  // A free string (font stack, script path, shell path, socket path): any value is valid; "" is the
+  // documented sentinel of each; the backend validates where validation exists.
+  if (isFreeStringKey(key)) return raw as SettingsValues[K];
+  // A closed enum: parse-with-fallback — junk falls back to the DEFAULT (for clipboardWrite that is
+  // "allow", not a fail-closed "deny": a broken value must not silently disable a working feature).
+  const values = enumValuesFor(key);
+  if (values) return (values.includes(raw) ? raw : fallback) as SettingsValues[K];
+  // Unreachable once every string key is either a free string or an enum (the golden test pins
+  // that); kept as the defensive answer for a key this function does not know how to read.
+  return fallback as SettingsValues[K];
 }
 
 /**
@@ -384,9 +383,6 @@ function coerce<K extends SettingKey>(key: K, value: unknown): SettingsValues[K]
     return clampNumberSetting(key as NumberSettingKey, value) as SettingsValues[K];
   }
   if (typeof value !== "string") return undefined;
-  if (key === "update.checkFrequency") {
-    return FREQUENCIES.includes(value as CheckFrequency) ? (value as SettingsValues[K]) : undefined;
-  }
   if (key === "appearance.theme") {
     // trmx-89 C1: accept a REGISTERED id (built-in or a resolved user theme) OR a shape-valid
     // `user:<stem>` id. The shape branch is load-bearing: themes_read() populates the registry
@@ -397,32 +393,14 @@ function coerce<K extends SettingKey>(key: K, value: unknown): SettingsValues[K]
       ? (value as SettingsValues[K])
       : undefined;
   }
-  if (key === "terminal.fontFamily") return value as SettingsValues[K];
-  if (key === "scripts.startup") return value as SettingsValues[K];
-  if (key === "terminal.shell") return value as SettingsValues[K]; // trmx-205
-  if (key === "shell.prompt") {
-    return typeof value === "string" && (PROMPT_CHOICES as readonly string[]).includes(value)
-      ? (value as SettingsValues[K])
-      : undefined; // trmx-207
-  }
-  if (key === "tabs.barPosition") {
-    return isTabBarPosition(value) ? (value as SettingsValues[K]) : undefined;
-  }
-  if (key === "tabs.sideLabelOrientation") {
-    return isLabelOrientation(value) ? (value as SettingsValues[K]) : undefined;
-  }
-  if (key === "terminal.confirmClose") {
-    return CONFIRM_CLOSE_VALUES.includes(value as ConfirmClose)
-      ? (value as SettingsValues[K])
-      : undefined;
-  }
-  if (key === "terminal.clipboardWrite") {
-    // trmx-252: a closed enum — anything else is unusable, and the caller decides the fallback.
-    return CLIPBOARD_WRITE_VALUES.includes(value as ClipboardWrite)
-      ? (value as SettingsValues[K])
-      : undefined;
-  }
-  return CURSOR_STYLES.includes(value as CursorStyle) ? (value as SettingsValues[K]) : undefined;
+  // Free strings: any string is usable (see parse()).
+  if (isFreeStringKey(key)) return value as SettingsValues[K];
+  // Closed enums: anything outside the listed spellings is unusable — the caller decides the
+  // fallback (for clipboardWrite the default "allow", never a fail-closed "deny").
+  const values = enumValuesFor(key);
+  if (values) return values.includes(value) ? (value as SettingsValues[K]) : undefined;
+  // Unreachable once every string key is a free string or an enum (pinned by the golden test).
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------------------------

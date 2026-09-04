@@ -2036,3 +2036,24 @@ describe("log folder adapters (trmx-236)", () => {
     await expect(runtime.openLogDir()).rejects.toThrow("opener denied");
   });
 });
+
+// trmx-246: remote_control.socketPath is a FREE STRING (like terminal.shell) — before this fix,
+// neither parse() nor coerce() had a branch for it, so both fell through to the cursor-style check
+// and a configured socket path came back as the default "". The backend accepted the value all
+// along; the store silently dropped it.
+describe("remote_control.socketPath is a free string (trmx-246)", () => {
+  it("hydration keeps a configured socket path instead of coercing it to the default", async () => {
+    const backend = fakeConfigBackend({ values: { "remote_control.socketPath": "/tmp/tx.sock" } });
+    await runtime.hydrate({ invoke: backend.invoke, bus: fakeListenBus(), storage: fakeStorage() });
+    expect(runtime.makeStore().get("remote_control.socketPath")).toBe("/tmp/tx.sock");
+    expect(runtime.getConfigWarnings().filter((w) => w.source === "client")).toHaveLength(0);
+  });
+
+  it("the legacy-storage migration parses the path as written", async () => {
+    const storage = fakeStorage({ "termixion.remote_control.socketPath": "/tmp/legacy.sock" });
+    const backend = fakeConfigBackend({ exists: false, values: {} });
+    await runtime.hydrate({ invoke: backend.invoke, bus: fakeListenBus(), storage });
+    expect(backend.writes()).toContainEqual({ key: "remote_control.socketPath", value: "/tmp/legacy.sock" });
+    expect(runtime.makeStore().get("remote_control.socketPath")).toBe("/tmp/legacy.sock");
+  });
+});
