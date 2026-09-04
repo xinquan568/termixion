@@ -26,6 +26,63 @@ const LAUNCH_RS: &str = include_str!("../src/launch.rs");
 const DEFAULT_CAPABILITY: &str = include_str!("../capabilities/default.json");
 const MAIN_WINDOW_CAPABILITY: &str = include_str!("../capabilities/main-window.json");
 
+const CONFIG_IO_RS: &str = include_str!("../src/config_io.rs");
+
+/// trmx-246 (grill L5): the `keys_read` command serves the CACHE, never the file — its body is
+/// exactly the one call `keys_from_state(&state)`. A hermetic runtime test of a Tauri command
+/// needs the `test` feature; the census already parses real signatures, so the same AST walk
+/// pins the body: a mutant that re-reads the filesystem inside the command fails here.
+#[test]
+fn keys_read_is_pure_delegation() {
+    let file = syn::parse_file(CONFIG_IO_RS).expect("config_io.rs parses");
+    let function = file
+        .items
+        .iter()
+        .find_map(|item| match item {
+            syn::Item::Fn(f) if f.sig.ident == "keys_read" => Some(f),
+            _ => None,
+        })
+        .expect("a top-level fn keys_read");
+    assert!(
+        function.attrs.iter().any(|a| a
+            .path()
+            .segments
+            .iter()
+            .map(|s| s.ident.to_string())
+            .collect::<Vec<_>>()
+            == ["tauri", "command"]),
+        "keys_read is a #[tauri::command]"
+    );
+    assert_eq!(
+        function.sig.inputs.len(),
+        1,
+        "keys_read takes exactly the managed state"
+    );
+    assert_eq!(
+        function.block.stmts.len(),
+        1,
+        "keys_read's body is one expression"
+    );
+    let syn::Stmt::Expr(syn::Expr::Call(call), None) = &function.block.stmts[0] else {
+        panic!("keys_read's body must be a single call expression");
+    };
+    let syn::Expr::Path(callee) = &*call.func else {
+        panic!("the call must name a function");
+    };
+    assert!(
+        callee.path.is_ident("keys_from_state"),
+        "the call must be keys_from_state"
+    );
+    assert_eq!(call.args.len(), 1);
+    let syn::Expr::Reference(arg) = &call.args[0] else {
+        panic!("the argument must be `&state`");
+    };
+    let syn::Expr::Path(state) = &*arg.expr else {
+        panic!("the argument must be `&state`");
+    };
+    assert!(state.path.is_ident("state"));
+}
+
 /// The commands only the PTY-owning main window may invoke, named rather than merely counted.
 ///
 /// Naming them is the point: a "each command appears in exactly one file" check would pass while a

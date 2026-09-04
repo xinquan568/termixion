@@ -235,17 +235,6 @@ fn emissions_for(application: &FileApplication) -> Vec<(&'static str, JsonValue)
     emissions
 }
 
-/// trmx-94 (FR-9.3): the `[keys]` map read pieces. The map is NOT a flat registry pair (it's a
-/// dynamic chord→command map), so it rides its own read command + `keys:changed` watcher signal,
-/// mirroring themes:changed/scripts:changed. Pure: `read_keys_from` parses text → the raw map;
-/// `keys_map_changed` is the watcher's emit decision.
-fn read_keys_from(text: Option<&str>) -> BTreeMap<String, String> {
-    match text {
-        Some(text) => parse_config(text).0.keys,
-        None => BTreeMap::new(),
-    }
-}
-
 /// Whether the `[keys]` map differs between two configs — the `keys:changed` emit decision. The
 /// scalar `diff_configs`/`settings:changed` path is blind to the map, so the watcher needs this.
 fn keys_map_changed(old: &Config, new: &Config) -> bool {
@@ -516,10 +505,10 @@ fn shell_validity_warning(config: &Config, valid: impl Fn(&str) -> bool) -> Opti
 }
 
 /// trmx-205: the configured shell for the spawn path — `None` for empty/unset (System default).
-/// Reads the cached `last` config; before the first `config_read`/watch apply this is the
-/// default (empty), which is benign: the frontend hydrates before any terminal mounts.
-/// trmx-206: the [shell] enhancement config for the spawn path (defaults before hydration —
-/// benign for the same reason as configured_shell below).
+/// Reads the cached `last` config, which `hydrate` seeds in `setup()` (trmx-246) before any
+/// command can run and which writes, resets and the watcher keep current — a spawn no longer
+/// depends on the webview's boot order to see the configured shell.
+/// trmx-206: the [shell] enhancement config for the spawn path, from the same cache.
 pub fn shell_config(state: &ConfigState) -> termixion_core::config::ShellConfig {
     state
         .0
@@ -635,12 +624,56 @@ pub fn config_read(app: tauri::AppHandle, state: State<'_, ConfigState>) -> Conf
     response
 }
 
-/// trmx-94 (FR-9.3): read the `[keys]` map for the frontend keymap (chord → command id, or `"none"`).
-/// A missing file is an empty map. Re-read by the frontend on the `keys:changed` watcher signal.
+/// trmx-246 (grill L5): the ONE initial config read, from the Rust side, in `setup()` before the
+/// menu is built and before any command can run. Classifies the read exactly as `config_read`
+/// does (absent → defaults; unreadable → defaults with the read health in `last_unreadable`,
+/// trmx-238; text → parse), seeds the cache — `last`, the PARSE-ONLY `last_warnings`,
+/// `last_unreadable` — clears the self-echo latch, and returns the parsed config so
+/// `apply_remote_control` consumes the same parse. `config_read` stays a projection that
+/// re-reads to rebase; the watcher keeps the cache current afterwards.
+pub fn hydrate(app: &tauri::AppHandle) -> Config {
+    hydrate_at(&config_path(), &app.state::<ConfigState>())
+}
+
+/// The path-parameterised half of [`hydrate`] (tests drive it against a temp dir).
+pub fn hydrate_at(path: &Path, state: &ConfigState) -> Config {
+    let (text, unreadable) = match classify_read(std::fs::read_to_string(path)) {
+        FileRead::Text(text) => (text, None),
+        FileRead::Absent => (String::new(), None),
+        FileRead::Unreadable(message) => (String::new(), Some(message)),
+    };
+    let (config, parse_warnings) = parse_config(&text);
+    match state.0.lock() {
+        Ok(mut inner) => {
+            inner.last = config.clone();
+            inner.last_warnings = parse_warnings;
+            inner.last_unreadable = unreadable;
+            inner.last_write_hash = None;
+        }
+        Err(_) => log::warn!("termixion: config state poisoned; hydration not cached"),
+    }
+    config
+}
+
+/// trmx-246: the cached `[keys]` map — what the last hydration / write / reset / watcher apply
+/// left in the state. The native menu and the `keys_read` command read THIS, never the file
+/// (the watcher updates the cache before it emits `keys:changed`, so the frontend's re-read
+/// sees what the watcher saw; with the watcher disabled the cache is as stale as the spawn
+/// path's shell config already is).
+pub fn keys_from_state(state: &ConfigState) -> BTreeMap<String, String> {
+    state
+        .0
+        .lock()
+        .ok()
+        .map(|inner| inner.last.keys.clone())
+        .unwrap_or_default()
+}
+
+/// trmx-94 (FR-9.3): the `[keys]` map for the frontend keymap (chord → command id, or `"none"`),
+/// served from the cache (trmx-246). Re-requested by the frontend on `keys:changed`.
 #[tauri::command]
-pub fn keys_read() -> BTreeMap<String, String> {
-    let text = std::fs::read_to_string(config_path()).ok();
-    read_keys_from(text.as_deref())
+pub fn keys_read(state: State<'_, ConfigState>) -> BTreeMap<String, String> {
+    keys_from_state(&state)
 }
 
 /// Persist one registry-keyed setting into the config file (comment-preserving, atomic,
@@ -859,16 +892,6 @@ mod tests {
 
     // trmx-94: the [keys] read + the keys:changed emit decision (the map is invisible to the scalar
     // diff, so the watcher needs keys_map_changed).
-    #[test]
-    fn read_keys_from_parses_the_map_and_missing_is_empty() {
-        assert!(read_keys_from(None).is_empty());
-        let keys = read_keys_from(Some(
-            "[keys]\n\"cmd+d\" = \"pane.split-below\"\n\"cmd+j\" = \"none\"\n",
-        ));
-        assert_eq!(keys.get("cmd+d"), Some(&"pane.split-below".to_string()));
-        assert_eq!(keys.get("cmd+j"), Some(&"none".to_string()));
-    }
-
     #[test]
     fn keys_map_changed_detects_a_binding_edit_the_scalar_diff_misses() {
         let old = parse_config("[terminal]\nfont_size = 12\n").0;
@@ -1549,6 +1572,110 @@ mod tests {
         let err = write_atomic(Path::new("/"), "x").expect_err("`/` has no parent");
         assert_eq!(err.kind, IpcErrorKind::Internal, "{err}");
         assert!(err.message.contains("no parent directory"), "{err}");
+    }
+
+    // --- trmx-246 (grill L5): the initial hydration seeds the cache from the Rust side --------
+
+    #[test]
+    fn hydrate_at_seeds_the_cache() {
+        let dir = test_dir("hydrate-seeds");
+        let path = dir.join(CONFIG_FILE_NAME);
+        std::fs::write(
+            &path,
+            "[terminal]\nshell = \"/bin/zsh\"\nfont_size = 500\n\n[shell]\nenhancements = false\n\n[keys]\n\"ctrl+alt+shift+f13\" = \"tab.new\"\n",
+        )
+        .expect("write the config");
+        let state = ConfigState::default();
+        state.0.lock().expect("lock").last_write_hash = Some(7); // a stale self-echo latch
+        let config = hydrate_at(&path, &state);
+        assert_eq!(config.terminal.shell, "/bin/zsh");
+        assert_eq!(
+            config.terminal.font_size, 72,
+            "clamped, as the parser clamps"
+        );
+        // The spawn-path readers see the file's values with no webview involved.
+        assert_eq!(configured_shell(&state).as_deref(), Some("/bin/zsh"));
+        assert!(!shell_config(&state).enhancements);
+        assert_eq!(
+            keys_from_state(&state)
+                .get("ctrl+alt+shift+f13")
+                .map(String::as_str),
+            Some("tab.new")
+        );
+        let inner = state.0.lock().expect("lock");
+        assert_eq!(inner.last, config);
+        assert_eq!(
+            inner.last_warnings,
+            vec![ConfigWarning::OutOfRange {
+                key: "terminal.font_size".to_string(),
+                got: 500,
+                clamped_to: 72,
+            }],
+            "the cached warnings are the parse-only set"
+        );
+        assert_eq!(
+            inner.last_write_hash, None,
+            "hydration clears the self-echo latch"
+        );
+        assert_eq!(inner.last_unreadable, None);
+    }
+
+    #[test]
+    fn hydrate_at_absent_file_is_defaults() {
+        let dir = test_dir("hydrate-absent");
+        let path = dir.join(CONFIG_FILE_NAME);
+        let state = ConfigState::default();
+        let config = hydrate_at(&path, &state);
+        assert_eq!(config, Config::default());
+        let inner = state.0.lock().expect("lock");
+        assert_eq!(inner.last, Config::default());
+        assert!(inner.last_warnings.is_empty());
+        assert_eq!(
+            inner.last_unreadable, None,
+            "absent is the first-launch case, not a failure"
+        );
+        drop(inner);
+        assert_eq!(configured_shell(&state), None);
+    }
+
+    #[test]
+    fn hydrate_at_unreadable_sets_last_unreadable() {
+        let dir = test_dir("hydrate-unreadable");
+        let path = dir.join(CONFIG_FILE_NAME);
+        std::fs::create_dir_all(&path).expect("a directory in the file's way");
+        let state = ConfigState::default();
+        let config = hydrate_at(&path, &state);
+        // Exactly what config_read does with an unreadable file: defaults, and the read health
+        // tracked separately so the M15 banner survives later wholesale rebuilds (trmx-238).
+        assert_eq!(config, Config::default());
+        let inner = state.0.lock().expect("lock");
+        assert!(
+            inner.last_unreadable.is_some(),
+            "{:?}",
+            inner.last_unreadable
+        );
+        assert_eq!(inner.last, Config::default());
+        assert!(
+            inner.last_warnings.is_empty(),
+            "the parse-only set stays parse-only"
+        );
+    }
+
+    #[test]
+    fn keys_from_state_serves_the_cache() {
+        let state = ConfigState::default();
+        state.0.lock().expect("lock").last.keys.insert(
+            "ctrl+alt+shift+f13".to_string(),
+            "pane.split-right".to_string(),
+        );
+        // A chord no config file on this machine plausibly binds: a file-reading mutant cannot
+        // produce it, the cache can only.
+        let keys = keys_from_state(&state);
+        assert_eq!(
+            keys.get("ctrl+alt+shift+f13").map(String::as_str),
+            Some("pane.split-right")
+        );
+        assert_eq!(keys.len(), 1);
     }
 
     // --- filesystem glue (deterministic: private temp dirs, no watcher, no races) -------------

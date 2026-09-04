@@ -210,16 +210,20 @@ fn accel_for(menu_id: &str, keys: &BTreeMap<String, String>) -> Option<String> {
 /// Shell carries the trmx-74 tab lifecycle (new/close tab, close window); Edit and Window carry
 /// the predefined items a terminal window expects (copy/paste, minimize) plus the trmx-74 tab
 /// cycling — but NOT the predefined close item, whose ⌘W accelerator belongs to Close Tab now.
-pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+pub fn build_menu<R: Runtime>(
+    handle: &AppHandle<R>,
+    keys: &BTreeMap<String, String>,
+) -> tauri::Result<Menu<R>> {
     // trmx-94: native accelerators come from the EFFECTIVE keymap (defaults ⊕ user [keys]).
-    let keys = crate::config_io::keys_read();
+    // trmx-246: the map is a PARAMETER — the caller hands over the hydrated config's `[keys]`,
+    // so a menu cannot be built before the config is read (setup() order, by construction).
     let about = MenuItem::with_id(handle, "about", "About Termixion", true, None::<&str>)?;
     let settings = MenuItem::with_id(
         handle,
         "settings",
         "Settings…",
         true,
-        accel_for("settings", &keys).as_deref(),
+        accel_for("settings", keys).as_deref(),
     )?;
 
     // trmx-144: a CUSTOM quit item, not PredefinedMenuItem::quit — the predefined one calls
@@ -253,7 +257,7 @@ pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         "shell-new-tab",
         "New Tab",
         true,
-        accel_for("shell-new-tab", &keys).as_deref(),
+        accel_for("shell-new-tab", keys).as_deref(),
     )?;
     // trmx-93 (FR-5): open the script picker, then run the chosen script in a fresh tab (⇧⌘T).
     let new_tab_with_script = MenuItem::with_id(
@@ -261,14 +265,14 @@ pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         "shell-new-tab-with-script",
         "New Tab with Script…",
         true,
-        accel_for("shell-new-tab-with-script", &keys).as_deref(),
+        accel_for("shell-new-tab-with-script", keys).as_deref(),
     )?;
     let close_tab = MenuItem::with_id(
         handle,
         "shell-close-tab",
         "Close Tab",
         true,
-        accel_for("shell-close-tab", &keys).as_deref(),
+        accel_for("shell-close-tab", keys).as_deref(),
     )?;
     // trmx-75: manual rename, directly below Close Tab. Deliberately NO accelerator — the fast
     // path is double-clicking the tab label; the menu item exists for discoverability and for
@@ -287,7 +291,7 @@ pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         "shell-set-badge",
         "Set Badge…",
         true,
-        accel_for("shell-set-badge", &keys).as_deref(),
+        accel_for("shell-set-badge", keys).as_deref(),
     )?;
     // trmx-84 (FR-3.2): split the focused pane. ⌘D adds a pane to the right, ⇧⌘D below. The
     // frontend pane manager owns the layout tree; the menu only announces the split intent.
@@ -296,14 +300,14 @@ pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         "shell-split-right",
         "Split Right",
         true,
-        accel_for("shell-split-right", &keys).as_deref(),
+        accel_for("shell-split-right", keys).as_deref(),
     )?;
     let split_below = MenuItem::with_id(
         handle,
         "shell-split-below",
         "Split Below",
         true,
-        accel_for("shell-split-below", &keys).as_deref(),
+        accel_for("shell-split-below", keys).as_deref(),
     )?;
     // trmx-93 (FR-5): split, then run the chosen script in the new pane. Un-accelerated for now —
     // the FR-9 command palette (#94) is the fast path; these stay discoverable menu items.
@@ -326,7 +330,7 @@ pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         "shell-close-window",
         "Close Window",
         true,
-        accel_for("shell-close-window", &keys).as_deref(),
+        accel_for("shell-close-window", keys).as_deref(),
     )?;
     // trmx-94 (FR-9.2): the command palette (⇧⌘P, keymap-driven) + Clear Scrollback (palette/menu-only).
     let command_palette = MenuItem::with_id(
@@ -334,7 +338,7 @@ pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         "shell-command-palette",
         "Command Palette…",
         true,
-        accel_for("shell-command-palette", &keys).as_deref(),
+        accel_for("shell-command-palette", keys).as_deref(),
     )?;
     let clear_scrollback = MenuItem::with_id(
         handle,
@@ -388,14 +392,14 @@ pub fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         "window-prev-tab",
         "Show Previous Tab",
         true,
-        accel_for("window-prev-tab", &keys).as_deref(),
+        accel_for("window-prev-tab", keys).as_deref(),
     )?;
     let next_tab = MenuItem::with_id(
         handle,
         "window-next-tab",
         "Show Next Tab",
         true,
-        accel_for("window-next-tab", &keys).as_deref(),
+        accel_for("window-next-tab", keys).as_deref(),
     )?;
     // trmx-86 (FR-3.5): keyboard pane navigation. Directional focus with ⌥⌘-arrows, cyclic with ⌘] / ⌘[
     // (shift-free, so distinct from the ⇧⌘[ / ⇧⌘] tab cycling above). The frontend pane manager owns
