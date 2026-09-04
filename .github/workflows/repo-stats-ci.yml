@@ -1,0 +1,57 @@
+# repo-stats --ci (trmx-265, grill Add-on 5 metrics 2-5): the weekly MEASUREMENT of CI flake rate on
+# main, per-job gate duration p50/p90, release lead time and escaped defects per release.
+#
+# A measurement, never a gate: it runs on a schedule (and on demand) and has NO pull_request or push
+# trigger, so nothing here can ever fail a PR (the issue's explicit non-goal). The unit tests that pin
+# the metric definitions run on the PR path in ci.yml's shell-integration job (repo-stats.test.py),
+# where they belong. scripts/repo-stats.test.py also pins this file's shape (triggers, read-only
+# permissions, the fork guard, the SINCE wiring, SHA pins).
+#
+# Least privilege (trmx-234): the token reads Actions runs/jobs, issues and releases and writes nothing;
+# every action is pinned to a full commit SHA (Dependabot bumps the pin and the version comment together).
+name: repo-stats ci (trmx-265)
+
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "Window start (YYYY-MM-DD). Empty = 90 days ago."
+        required: false
+        default: ""
+
+permissions:
+  actions: read
+  contents: read
+  issues: read
+
+concurrency:
+  group: repo-stats-ci
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    name: measure (repo-stats --ci)
+    # A fork with schedules enabled would measure the fork; only the upstream repository is meaningful.
+    if: github.repository == 'xinquan568/termixion'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Measure (gh api, read-only; ~200 REST calls for a 90-day window)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SINCE: ${{ inputs.since }}
+        # Under `schedule` the input is empty and the ${SINCE:+…} expansion adds nothing.
+        run: python3 scripts/repo-stats.py --ci ${SINCE:+--since "$SINCE"} --out reports/repo-stats
+      - name: Job summary (the Markdown report)
+        run: cat reports/repo-stats/ci-stats.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the report + JSON artifact (diffable release over release)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: repo-stats-ci
+          path: |
+            reports/repo-stats/ci-stats.md
+            reports/repo-stats/ci-stats.json
+          retention-days: 90
