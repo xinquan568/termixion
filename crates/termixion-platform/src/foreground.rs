@@ -20,7 +20,17 @@
 //! **FR-7a (`v0.0.7`).** The activity indicator + "close busy tab?" confirmation define *busy* as
 //! `foreground leader pid != shell pid`: [`is_busy`] is exactly that — a pure map over
 //! [`foreground_process`] comparing [`ForegroundProcess::pid`] against the shell pid.
+//!
+//! **trmx-263 (grill A3).** The per-pid functions above cost one `ps` fork EACH, and the poller
+//! called them once per session per 250 ms iteration (plus two per session on every 4th) — 6N forks
+//! per four-tick cycle, sequentially, so the poller's cycle stretched linearly with the pane count
+//! (measured: ~7.5 ms per fork on the reference Mac; 3.6 s of resolution work per cycle at 50
+//! sessions). [`foreground_leaders`] and [`process_names`] resolve MANY pids with one `ps -p a,b,c`
+//! each, so the periodic cost is flat in N. The per-pid functions stay for the rise path and the
+//! real-shell tests; the batched ones agree with them on the same processes (pinned in
+//! `tests/foreground_batch.rs`).
 
+use std::collections::HashMap;
 use std::process::Command;
 
 /// The foreground process-group leader on a shell's controlling terminal: its pid (the group id —
@@ -436,6 +446,111 @@ fn parse_comm(raw: &str) -> Option<String> {
     }
 }
 
+// ============================================================================================
+// trmx-263 (grill A3): batched resolution — one `ps -p a,b,c` for many pids. The `ps` edge is
+// injectable ([`ps_rows_via`]) so a unit test can COUNT executions; the parsers are pure over the
+// row shapes measured on macOS `ps` (rows sorted by pid regardless of list order; a dead pid
+// silently omitted with exit 0; ALL dead → exit 1 with no rows; `comm` is the launched path and
+// may contain spaces).
+// ============================================================================================
+
+/// One `ps -o pid=,tpgid= -p <pids>` for MANY shells. Map entry per pid `ps` printed a row for:
+/// `Some(tpgid)` when it parses to a positive group id, `None` when the row's tpgid is `0`/`-1`
+/// (no controlling terminal / no foreground group — [`is_busy`]'s `None`). A pid with NO row is
+/// absent (gone). Outer `None` only when `ps` could not be spawned; an empty `shell_pids` spawns
+/// nothing and returns `Some(empty)`; a list whose pids are ALL gone returns `Some(empty)` (macOS
+/// `ps` exits 1 with no rows there — measured — but it RAN, which is the distinction the caller
+/// needs: every session unknown this iteration, not a broken machine).
+pub fn foreground_leaders(shell_pids: &[u32]) -> Option<HashMap<u32, Option<u32>>> {
+    ps_rows("pid=,tpgid=", shell_pids).map(|raw| parse_leader_rows(&raw))
+}
+
+/// One `ps -o pid=,comm= -p <pids>`: pid → `comm` basename for each pid with a row (same absence
+/// and outer-`None` rules as [`foreground_leaders`]). The title poller passes the DISTINCT leader
+/// pids from a [`foreground_leaders`] result.
+pub fn process_names(pids: &[u32]) -> Option<HashMap<u32, String>> {
+    ps_rows("pid=,comm=", pids).map(|raw| parse_name_rows(&raw))
+}
+
+/// The subprocess edge for the batched functions: production runs `ps` with the argv built by
+/// [`ps_rows_via`]. Unlike [`ps_column`], a non-zero exit is NOT a failure — for a list it means
+/// "some (or all) of these pids are gone", and the rows that were printed are still the answer.
+fn spawn_ps(argv: &[String]) -> Option<String> {
+    let out = Command::new("ps").args(argv).output().ok()?;
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// One `ps -o <columns> -p a,b,c` over a de-duplicated, sorted pid list (`ps` collapses duplicates
+/// and sorts its output anyway; sorting the input makes the argv deterministic for the tests).
+/// Empty list → `Some(String::new())` without spawning. Argument length is ~6 bytes per pid and
+/// is not chunked: a thousand sessions is ~6 KB against a 1 MiB `ARG_MAX`.
+fn ps_rows(columns: &str, pids: &[u32]) -> Option<String> {
+    ps_rows_via(spawn_ps, columns, pids)
+}
+
+/// [`ps_rows`] with the runner injected: `run` receives the exact argv
+/// (`["-o", <columns>, "-p", "a,b,c"]`) and returns the raw stdout whenever `ps` RAN (any exit
+/// code), `None` on spawn failure. The seam exists so a test can prove one non-empty call executes
+/// `ps` exactly once and an empty list never does.
+fn ps_rows_via<F: FnOnce(&[String]) -> Option<String>>(
+    run: F,
+    columns: &str,
+    pids: &[u32],
+) -> Option<String> {
+    let mut sorted: Vec<u32> = pids.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    if sorted.is_empty() {
+        return Some(String::new());
+    }
+    let list = sorted
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    run(&[
+        "-o".to_string(),
+        columns.to_string(),
+        "-p".to_string(),
+        list,
+    ])
+}
+
+/// Parse `ps -o pid=,tpgid=` rows: `"  123   456"` → `123: Some(456)`; a tpgid of `0`/`-1` (or
+/// anything that is not a positive integer) → `123: None`; a line whose first token is not a pid
+/// (a header, junk, a blank line) is skipped. Keyed by the pid COLUMN, never by position: `ps`
+/// sorts rows by pid and omits dead ones. Pure — unit-tested on canned strings.
+fn parse_leader_rows(raw: &str) -> HashMap<u32, Option<u32>> {
+    raw.lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid = fields.next()?.parse::<u32>().ok()?;
+            let tpgid = fields.next()?;
+            let leader = tpgid
+                .parse::<i64>()
+                .ok()
+                .filter(|t| *t > 0)
+                .and_then(|t| u32::try_from(t).ok());
+            Some((pid, leader))
+        })
+        .collect()
+}
+
+/// Parse `ps -o pid=,comm=` rows: the first token is the pid, EVERYTHING after it is `comm` (the
+/// launched path, which may contain spaces — `/Applications/Visual Studio Code.app/…/Code Helper`),
+/// reduced to its basename by [`parse_comm`]; a row with an empty name, or a non-pid first token,
+/// is skipped. Pure — unit-tested on canned strings.
+fn parse_name_rows(raw: &str) -> HashMap<u32, String> {
+    raw.lines()
+        .filter_map(|line| {
+            let (pid, rest) = line.trim_start().split_once(char::is_whitespace)?;
+            let pid = pid.parse::<u32>().ok()?;
+            let name = parse_comm(rest)?;
+            Some((pid, name))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -480,6 +595,141 @@ mod tests {
     fn is_busy_is_none_without_a_determinable_foreground_group() {
         assert_eq!(is_busy(u32::MAX), None);
         assert_eq!(is_busy(1), None);
+    }
+
+    // ---- trmx-263 (T1): batched resolution — pure parsers over `ps -p a,b,c` output, and the
+    // countable runner seam. RED first: written before the functions existed. The row shapes are
+    // the ones MEASURED on macOS `ps` (Step-1 evidence): rows sorted by pid regardless of list order,
+    // a dead pid silently omitted, tpgid `0`/`-1` for a process without a foreground group, `comm`
+    // as the launched path (which may contain spaces).
+
+    #[test]
+    fn parse_leader_rows_keys_by_pid_whatever_the_order() {
+        let map = parse_leader_rows("  300     1\n  100   100\n  200    77\n");
+        let mut keys: Vec<u32> = map.keys().copied().collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec![100, 200, 300]);
+        assert_eq!(map[&100], Some(100));
+        assert_eq!(map[&200], Some(77));
+        assert_eq!(map[&300], Some(1));
+    }
+
+    #[test]
+    fn parse_leader_rows_omits_pids_without_a_row() {
+        // 200 was in the list; `ps` printed nothing for it (gone), exit 0 — measured.
+        let map = parse_leader_rows("  100   100\n  300   300\n");
+        assert!(!map.contains_key(&200));
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn parse_leader_rows_maps_tpgid_0_and_minus_1_to_none() {
+        let map = parse_leader_rows("   55     0\n   66    -1\n");
+        assert_eq!(map[&55], None);
+        assert_eq!(map[&66], None);
+    }
+
+    #[test]
+    fn parse_leader_rows_skips_junk_and_blank_lines() {
+        let map = parse_leader_rows("  PID TPGID\n\n  123   456\n  abc   def\n");
+        assert_eq!(map.len(), 1);
+        assert_eq!(map[&123], Some(456));
+    }
+
+    #[test]
+    fn parse_name_rows_takes_the_basename_and_keeps_spaces_inside_comm() {
+        let map = parse_name_rows(
+            "   77 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper\n   78 sleep\n",
+        );
+        assert_eq!(map[&77], "Code Helper");
+        assert_eq!(map[&78], "sleep");
+    }
+
+    #[test]
+    fn parse_name_rows_skips_a_row_with_an_empty_name() {
+        let map = parse_name_rows("   88 \n   89 /bin/zsh\n");
+        assert!(!map.contains_key(&88));
+        assert_eq!(map[&89], "zsh");
+    }
+
+    #[test]
+    fn ps_rows_via_runs_ps_exactly_once_for_a_non_empty_list_with_sorted_deduplicated_pids() {
+        let calls: std::cell::RefCell<Vec<Vec<String>>> = std::cell::RefCell::new(Vec::new());
+        let out = ps_rows_via(
+            |argv: &[String]| {
+                calls.borrow_mut().push(argv.to_vec());
+                Some("  100   100\n".to_string())
+            },
+            "pid=,tpgid=",
+            &[300, 100, 200, 100],
+        );
+        assert_eq!(out.as_deref(), Some("  100   100\n"));
+        let expected = vec!["-o", "pid=,tpgid=", "-p", "100,200,300"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            *calls.borrow(),
+            vec![expected],
+            "one execution, sorted + de-duplicated list"
+        );
+    }
+
+    #[test]
+    fn ps_rows_via_does_not_run_ps_for_an_empty_list() {
+        let ran = std::cell::Cell::new(false);
+        let out = ps_rows_via(
+            |_argv: &[String]| {
+                ran.set(true);
+                Some(String::new())
+            },
+            "pid=,tpgid=",
+            &[],
+        );
+        assert_eq!(out.as_deref(), Some(""));
+        assert!(!ran.get(), "an empty list must not spawn");
+    }
+
+    #[test]
+    fn ps_rows_via_returns_none_when_ps_cannot_be_spawned() {
+        assert_eq!(
+            ps_rows_via(|_argv: &[String]| None, "pid=,tpgid=", &[1]),
+            None
+        );
+    }
+
+    /// The all-dead contract, on the REAL `ps`: macOS exits 1 and prints nothing when every listed
+    /// pid is gone (measured) — that is `Some(empty)`, not `None`, because `ps` ran.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn foreground_leaders_of_all_dead_pids_is_some_empty() {
+        let dead: Vec<u32> = (90001..99_000)
+            .filter(|p| ps_column("pid=", *p).is_none())
+            .take(2)
+            .collect();
+        assert_eq!(
+            dead.len(),
+            2,
+            "could not find two unused pids in the valid range"
+        );
+        let map =
+            foreground_leaders(&dead).expect("ps ran (exit 1, no rows) — not a spawn failure");
+        assert!(map.is_empty());
+    }
+
+    /// The batched functions agree with the per-pid ones on the same live processes: this test's
+    /// own pid (a tty or not, depending on how cargo was launched — both paths must agree) and
+    /// launchd.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn foreground_leaders_and_process_names_agree_with_the_per_pid_functions_on_live_pids() {
+        let me = std::process::id();
+        let leaders = foreground_leaders(&[me, 1]).expect("ps ran");
+        assert!(leaders.contains_key(&me));
+        assert!(leaders.contains_key(&1));
+        assert_eq!(leaders[&me], foreground_leader_pid(me));
+        let names = process_names(&[1]).expect("ps ran");
+        assert_eq!(names[&1], "launchd");
     }
 
     // ---- trmx-159 (T1): pure parsers for the macOS foreground-metadata helpers ----

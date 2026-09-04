@@ -22,8 +22,8 @@ pub mod unix;
 
 #[cfg(unix)]
 pub use foreground::{
-    ForegroundProcess, foreground_args, foreground_process, foreground_stdin_is_tty, is_busy,
-    is_interpreter, unwrap_interpreter_shim,
+    ForegroundProcess, foreground_args, foreground_leaders, foreground_process,
+    foreground_stdin_is_tty, is_busy, is_interpreter, process_names, unwrap_interpreter_shim,
 };
 // trmx-239 (M12): the uid/mode primitives the Tauri shell used to reach for via a direct `libc`
 // dependency of its own.
