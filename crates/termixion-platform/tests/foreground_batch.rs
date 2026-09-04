@@ -2,15 +2,17 @@
 // Copyright (c) 2026 Eric Y. Liu
 //
 // trmx-263 (grill A3) — the EQUIVALENCE test: the batched resolvers (`foreground_leaders`,
-// `process_names` — one `ps -p a,b,c` each) agree with the per-pid ones (`is_busy`,
-// `foreground_process` — one `ps` fork each) on the SAME live processes, through real PTYs.
+// `process_names` — one `ps -p a,b,c` each) agree with the per-pid ones (`is_busy` — one `ps`
+// fork; `foreground_process` — two) on the SAME live processes, through real PTYs.
 // Six rc-free interactive shells: all idle (each is its own foreground leader), then two of them
 // run `/bin/sleep` (the child's group takes the terminal), then one shell is killed and reaped
 // while still listed (its row must simply be absent). Same conventions as `activity.rs`: `zsh -f`,
 // a pump thread per reader, deadline polls as bounded liveness waits (never timing assertions),
 // SIGINT to end the jobs before teardown, and `ps -o stat=` no-zombie hygiene on every pid.
-// macOS-only (the whole file compiles away elsewhere).
-#![cfg(unix)]
+// macOS-only — the `ps -p` row contract these functions parse was measured on macOS `ps`, and CI
+// runs the platform crate's real-PTY tests in the macOS gate only — so the file compiles away
+// everywhere else.
+#![cfg(target_os = "macos")]
 
 use std::process::Command;
 use std::sync::mpsc;

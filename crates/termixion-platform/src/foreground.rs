@@ -21,8 +21,9 @@
 //! `foreground leader pid != shell pid`: [`is_busy`] is exactly that — a pure map over
 //! [`foreground_process`] comparing [`ForegroundProcess::pid`] against the shell pid.
 //!
-//! **trmx-263 (grill A3).** The per-pid functions above cost one `ps` fork EACH, and the poller
-//! called them once per session per 250 ms iteration (plus two per session on every 4th) — 6N forks
+//! **trmx-263 (grill A3).** The per-pid functions above fork `ps` per call — [`is_busy`] once,
+//! [`foreground_process`] twice (tpgid, then comm) — and the poller called `is_busy` for every session
+//! on every 250 ms iteration plus `foreground_process` for every session on every 4th: 6N forks
 //! per four-tick cycle, sequentially, so the poller's cycle stretched linearly with the pane count
 //! (measured: ~7.5 ms per fork on the reference Mac; 3.6 s of resolution work per cycle at 50
 //! sessions). [`foreground_leaders`] and [`process_names`] resolve MANY pids with one `ps -p a,b,c`

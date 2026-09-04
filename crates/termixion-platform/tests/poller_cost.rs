@@ -13,8 +13,9 @@
 //
 // The wall cycle is the work plus the loop's four 250 ms post-work sleeps (`poller.rs`), so it is
 // reported as `work + 1000 ms` — exact for a steady state with no rises. Rise enrichment (two forks
-// per busy→idle→busy flip) is event-driven and not part of this table. macOS-only.
-#![cfg(unix)]
+// per busy→idle→busy flip) is event-driven and not part of this table. macOS-only, like the
+// `ps -p` contract it measures.
+#![cfg(target_os = "macos")]
 
 use std::collections::BTreeSet;
 use std::process::Command;
@@ -90,8 +91,9 @@ fn poll_is_busy_until(shell_pid: u32, want: bool, deadline: Instant) -> Option<b
 }
 
 /// 100 PTY sessions need ~300 descriptors; a GitHub macOS runner's default soft limit is 256.
-/// Raise the soft limit to `min(hard, 4096)` and report what we got — the measurement then says
-/// which N it could reach rather than failing mid-way.
+/// Raise the soft limit to `min(hard, 4096)` and report what we got; [`fits_fd_limit`] then skips
+/// any N the limit cannot hold, printing the decision, so the run measures the largest reachable
+/// N instead of failing mid-spawn.
 fn raise_fd_limit() -> u64 {
     // SAFETY: `getrlimit`/`setrlimit` take a pointer to a plain `rlimit` struct that lives for the
     // duration of the call; `RLIMIT_NOFILE` is a valid resource id on every unix.
@@ -146,6 +148,12 @@ fn spawn_shells(n: usize) -> Vec<Shell> {
         .collect()
 }
 
+/// Each session costs roughly three descriptors (the PTY master, the reader's dup, the pump
+/// channel's wakeup) plus the harness's own baseline; a margin of 64 covers cargo/test-runner fds.
+fn fits_fd_limit(n: usize, limit: u64) -> bool {
+    limit == 0 || (3 * n as u64 + 64) <= limit
+}
+
 fn median(mut xs: Vec<Duration>) -> Duration {
     xs.sort();
     xs[xs.len() / 2]
@@ -164,11 +172,18 @@ fn foreground_resolution_work_per_cycle_per_pid_vs_batched() {
     );
     println!("|---|---|---|---|---|---|");
     for &n in &[1usize, 10, 50, 100] {
+        if !fits_fd_limit(n, fd_limit) {
+            println!(
+                "| {n} | skipped: RLIMIT_NOFILE soft {fd_limit} cannot hold ~{} descriptors | | | | |",
+                3 * n + 64
+            );
+            continue;
+        }
         let mut shells = spawn_shells(n);
         let pids: Vec<u32> = shells.iter().map(|s| s.pid).collect();
         for &pid in &pids {
             assert_eq!(
-                poll_is_busy_until(pid, false, Instant::now() + Duration::from_secs(30)),
+                poll_is_busy_until(pid, false, Instant::now() + Duration::from_secs(10)),
                 Some(false),
                 "shell {pid} must reach its prompt before measuring"
             );
