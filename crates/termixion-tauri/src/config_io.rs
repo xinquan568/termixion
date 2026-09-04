@@ -25,9 +25,10 @@ use crate::ipc_error::IpcError;
 use serde_json::{Map, Value as JsonValue};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
+use termixion_core::config::{SettingKind, setting_def};
 use termixion_core::{
     Config, ConfigWarning, DEFAULT_TEMPLATE, FileApplication, RegistryValue, apply_file_text,
-    parse_config, parse_registry_pairs, text_hash, toml_path_for,
+    parse_config, parse_registry_pairs, text_hash,
 };
 
 /// The config file's basename, shared by the path resolver and the watcher's event filter.
@@ -80,54 +81,14 @@ struct ConfigInner {
     last_unreadable: Option<String>,
 }
 
-/// The TOML value class a registry key expects — the shell-side type gate for writes.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum ValueKind {
-    Bool,
-    Int,
-    Str,
-}
-
-impl ValueKind {
-    fn expected(self) -> &'static str {
-        match self {
-            Self::Bool => "a boolean",
-            Self::Int => "an integer",
-            Self::Str => "a string",
-        }
-    }
-}
-
-/// The value class for a registry key; `None` for unknown keys. Must stay in lockstep with
-/// core's `toml_path_for` (pinned by test).
-fn value_kind_for(registry_key: &str) -> Option<ValueKind> {
-    match registry_key {
-        "update.autoCheck"
-        | "update.autoDownload"
-        | "terminal.cursorBlink"
-        | "terminal.activityIndicator"
-        | "terminal.copyOnSelect"
-        | "terminal.focusFollowsMouse" // trmx-225
-        | "tabs.showShortcutHints" // trmx-151
-        | "titleBar.aiCounter" // trmx-190
-        | "shell.enhancements" // trmx-206
-        | "shell.autosuggestions"
-        | "shell.syntaxHighlighting"
-        | "remote_control.enabled" => Some(ValueKind::Bool),
-        "terminal.scrollbackLines" | "terminal.fontSize" => Some(ValueKind::Int),
-        "update.checkFrequency"
-        | "terminal.cursorStyle"
-        | "terminal.fontFamily"
-        | "terminal.shell" // trmx-205
-        | "shell.prompt" // trmx-207
-        | "terminal.confirmClose"
-        | "terminal.clipboardWrite" // trmx-252
-        | "appearance.theme"
-        | "tabs.barPosition"
-        | "tabs.sideLabelOrientation"
-        | "scripts.startup"
-        | "remote_control.socketPath" => Some(ValueKind::Str),
-        _ => None,
+/// The JSON value class a SCHEMA kind expects on the write path, in the trmx-249 wording of the
+/// rejection (`expected a boolean|an integer|a string`). trmx-246: the shell used to keep its own
+/// 26-key copy of this mapping "in lockstep with core"; the kind now comes from core's SCHEMA.
+fn expected_json(kind: SettingKind) -> &'static str {
+    match kind {
+        SettingKind::Bool => "a boolean",
+        SettingKind::Int { .. } => "an integer",
+        SettingKind::Str | SettingKind::Enum(_) => "a string",
     }
 }
 
@@ -147,24 +108,26 @@ fn describe_json(value: &JsonValue) -> String {
 /// rejection otherwise (fractional/overflowing JSON numbers are NOT integers).
 fn toml_item_for(
     key: &str,
-    kind: ValueKind,
+    kind: SettingKind,
     value: &JsonValue,
 ) -> Result<toml_edit::Item, IpcError> {
     // trmx-249: a caller-supplied value we reject on inspection — `invalid`, not `io`.
     let mismatch = || {
         IpcError::invalid(format!(
             "wrong value type for `{key}`: expected {}, got {}",
-            kind.expected(),
+            expected_json(kind),
             describe_json(value)
         ))
     };
     match (kind, value) {
-        (ValueKind::Bool, JsonValue::Bool(flag)) => Ok(toml_edit::value(*flag)),
-        (ValueKind::Int, JsonValue::Number(number)) => {
+        (SettingKind::Bool, JsonValue::Bool(flag)) => Ok(toml_edit::value(*flag)),
+        (SettingKind::Int { .. }, JsonValue::Number(number)) => {
             let int = number.as_i64().ok_or_else(mismatch)?;
             Ok(toml_edit::value(int))
         }
-        (ValueKind::Str, JsonValue::String(text)) => Ok(toml_edit::value(text.as_str())),
+        (SettingKind::Str | SettingKind::Enum(_), JsonValue::String(text)) => {
+            Ok(toml_edit::value(text.as_str()))
+        }
         _ => Err(mismatch()),
     }
 }
@@ -173,11 +136,10 @@ fn toml_item_for(
 /// `(table, key)` to `value` (creating a missing table), and render the document back.
 /// Unknown registry key or a JSON value of the wrong type for the key → `Err`, nothing written.
 fn edit_document(text: &str, key: &str, value: &JsonValue) -> Result<String, IpcError> {
-    let (table_name, toml_key) = toml_path_for(key)
+    let def = setting_def(key)
         .ok_or_else(|| IpcError::invalid(format!("unknown settings key `{key}`")))?;
-    let kind = value_kind_for(key)
-        .ok_or_else(|| IpcError::invalid(format!("unknown settings key `{key}`")))?;
-    let item = toml_item_for(key, kind, value)?;
+    let (table_name, toml_key) = (def.table, def.key);
+    let item = toml_item_for(key, def.kind, value)?;
 
     // Refuse to clobber a file we cannot parse losslessly: a broken file is the user's to fix
     // (config_read surfaces the SyntaxError warning), not ours to silently rewrite.
@@ -1004,8 +966,8 @@ mod tests {
 
     #[test]
     fn edit_document_persists_terminal_shell() {
-        // trmx-205 write-path lockstep: the registry key routes through value_kind_for
-        // (ValueKind::Str) into a comment-preserving [terminal] shell = "…" edit.
+        // trmx-205 write path: the registry key routes through core's SCHEMA (a Str kind)
+        // into a comment-preserving [terminal] shell = "…" edit.
         let out = edit_document(
             "# my config\n[terminal]\nfont_size = 14\n",
             "terminal.shell",
@@ -1175,67 +1137,35 @@ mod tests {
         assert!(!err.message.is_empty());
     }
 
+    /// trmx-246: every SCHEMA key is writable through edit_document with a value of its kind —
+    /// the write path has no key list of its own any more, so this is the only place a key could
+    /// still be missing, and it cannot be: the loop IS the schema.
     #[test]
-    fn value_kind_covers_exactly_the_registry_keys() {
-        // The shell-side type gate must stay in lockstep with core's key map.
-        let keys = [
-            ("update.autoCheck", ValueKind::Bool),
-            ("update.checkFrequency", ValueKind::Str),
-            ("update.autoDownload", ValueKind::Bool),
-            ("terminal.cursorStyle", ValueKind::Str),
-            ("terminal.cursorBlink", ValueKind::Bool),
-            ("terminal.activityIndicator", ValueKind::Bool),
-            ("terminal.copyOnSelect", ValueKind::Bool),
-            ("terminal.focusFollowsMouse", ValueKind::Bool),
-            ("terminal.confirmClose", ValueKind::Str),
-            ("terminal.clipboardWrite", ValueKind::Str), // trmx-252
-            ("terminal.scrollbackLines", ValueKind::Int),
-            ("terminal.fontFamily", ValueKind::Str),
-            ("terminal.shell", ValueKind::Str),      // trmx-205
-            ("shell.enhancements", ValueKind::Bool), // trmx-206
-            ("shell.autosuggestions", ValueKind::Bool),
-            ("shell.syntaxHighlighting", ValueKind::Bool),
-            ("shell.prompt", ValueKind::Str), // trmx-207
-            ("terminal.fontSize", ValueKind::Int),
-            ("appearance.theme", ValueKind::Str),
-            ("tabs.barPosition", ValueKind::Str),
-            ("tabs.sideLabelOrientation", ValueKind::Str),
-            ("tabs.showShortcutHints", ValueKind::Bool), // trmx-151
-            ("titleBar.aiCounter", ValueKind::Bool),     // trmx-190
-            ("scripts.startup", ValueKind::Str),
-            ("remote_control.enabled", ValueKind::Bool),
-            ("remote_control.socketPath", ValueKind::Str),
-        ];
-        for (key, kind) in keys {
-            assert_eq!(value_kind_for(key), Some(kind), "for {key}");
-            assert!(
-                toml_path_for(key).is_some(),
-                "core must know {key} too (lockstep)"
-            );
-        }
-        assert_eq!(value_kind_for("junk"), None);
-        assert_eq!(value_kind_for("terminal.font_size"), None);
-    }
-
-    /// trmx-246 (temporary — deleted when value_kind_for goes): the shell's type gate agrees
-    /// with core's SCHEMA kinds for every key, in both directions.
-    #[test]
-    fn schema_kinds_agree_with_value_kind_for() {
-        use termixion_core::config::{SCHEMA, SettingKind};
+    fn every_schema_key_is_writable_with_a_value_of_its_kind() {
+        use termixion_core::config::SCHEMA;
         for def in SCHEMA {
-            let expected = match def.kind {
-                SettingKind::Bool => ValueKind::Bool,
-                SettingKind::Int { .. } => ValueKind::Int,
-                SettingKind::Str | SettingKind::Enum(_) => ValueKind::Str,
+            let (value, expected) = match def.kind {
+                SettingKind::Bool => (json!(true), RegistryValue::Bool(true)),
+                SettingKind::Int { min, .. } => (json!(min), RegistryValue::Int(min)),
+                SettingKind::Str => (
+                    json!("written-by-the-test"),
+                    RegistryValue::Str("written-by-the-test".to_string()),
+                ),
+                SettingKind::Enum(values) => {
+                    (json!(values[0]), RegistryValue::Str(values[0].to_string()))
+                }
             };
-            assert_eq!(
-                value_kind_for(def.registry_key),
-                Some(expected),
-                "for {}",
-                def.registry_key
-            );
+            let out = edit_document(DEFAULT_TEMPLATE, def.registry_key, &value)
+                .unwrap_or_else(|e| panic!("{}: {e:?}", def.registry_key));
+            let (config, warnings) = parse_config(&out);
+            assert_eq!(warnings, Vec::new(), "for {}", def.registry_key);
+            assert_eq!(def.get(&config), expected, "for {}", def.registry_key);
         }
-        assert_eq!(value_kind_for("junk"), None);
+        let err = edit_document("", "junk", &json!(true)).expect_err("unknown key");
+        assert_eq!(err.kind, IpcErrorKind::Invalid);
+        let err = edit_document("", "terminal.font_size", &json!(1))
+            .expect_err("snake_case is not a registry key");
+        assert_eq!(err.kind, IpcErrorKind::Invalid);
     }
 
     // --- read_response_from ------------------------------------------------------------------
