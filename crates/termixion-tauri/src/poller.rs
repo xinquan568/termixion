@@ -7,9 +7,15 @@
 //! ~1 Hz — change-only `session:title-hint` events. [`PollerGate`] is the zero-session park: an
 //! empty world costs zero wakeups until `open_pty` wakes it.
 //!
-//! The subprocess edge stays in [`run_title_poller`]; every diff it computes is a pure function
-//! ([`poll_tick`], [`activity_tick`], [`rises_of`], [`enrich_rises`], [`resolves_titles`],
-//! [`effective_title_name`]) unit-tested below on canned snapshots.
+//! The subprocess edge stays behind [`ForegroundResolver`] (production: [`RealForeground`]);
+//! [`poll_iteration`] is one iteration's whole body over an injected resolver, and every diff it
+//! computes is a pure function ([`poll_tick`], [`activity_tick`], [`rises_of`], [`enrich_rises`],
+//! [`resolves_titles`], [`effective_title_name`]) unit-tested below on canned snapshots.
+//!
+//! trmx-263 (grill A3): the periodic passes are BULK — one `ps` per activity iteration (the
+//! foreground leaders of every shell), two per title iteration (plus the names of the distinct
+//! leaders) — five per four-tick cycle whatever the pane count, plus two forks per busy rise
+//! (event-driven, unchanged). It was 6N per cycle when every session cost its own `ps` calls.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex};
@@ -18,8 +24,8 @@ use std::time::Duration;
 use tauri::Emitter;
 use termixion_core::SessionRegistry;
 use termixion_platform::{
-    ForegroundProcess, foreground_args, foreground_process, foreground_stdin_is_tty, is_busy,
-    is_interpreter, unwrap_interpreter_shim,
+    ForegroundProcess, foreground_args, foreground_leaders, foreground_process,
+    foreground_stdin_is_tty, is_interpreter, process_names, unwrap_interpreter_shim,
 };
 
 /// trmx-75: the zero-session park for the foreground-title poller — a REAL condvar block, not a
@@ -155,6 +161,11 @@ impl SessionActivity {
 /// trmx-159: the foreground-metadata resolver the poller injects, so the rise-enrichment logic
 /// ([`enrich_rises`]) is unit-testable with a fake that records which pids it was asked about — the
 /// load-bearing check being that argv/stdin are resolved on the foreground LEADER pid, never the shell.
+///
+/// trmx-263: plus the two BULK paths the periodic passes run on — [`Self::leaders`] (one `ps` for
+/// every shell) and [`Self::names`] (one `ps` for the distinct leaders) — so [`poll_iteration`] is
+/// unit-testable with a fake that COUNTS bulk calls. Both are required (no default): a resolver that
+/// forgets them must fail to compile, never silently fall back to a per-pid loop.
 trait ForegroundResolver {
     /// The foreground process-group leader on the shell's terminal (leader pid + name), or `None`.
     fn foreground(&self, shell_pid: u32) -> Option<ForegroundProcess>;
@@ -162,6 +173,13 @@ trait ForegroundResolver {
     fn args(&self, pid: u32) -> Option<Vec<String>>;
     /// Whether `pid`'s (the LEADER's) stdin is a tty, or `None`.
     fn stdin_tty(&self, pid: u32) -> Option<bool>;
+    /// trmx-263: the foreground group leader of MANY shells in one call — `Some(tpgid)` per shell a
+    /// row came back for (`None` in the value = no controlling terminal / no foreground group), a
+    /// gone shell absent; outer `None` only when the call itself failed. The busy pass's one call.
+    fn leaders(&self, shell_pids: &[u32]) -> Option<HashMap<u32, Option<u32>>>;
+    /// trmx-263: the display names of MANY pids in one call (same absence / outer-`None` rules).
+    /// The title pass's one call, over the distinct leaders.
+    fn names(&self, pids: &[u32]) -> Option<HashMap<u32, String>>;
 }
 
 /// The production resolver: the real `termixion-platform` foreground helpers.
@@ -176,6 +194,12 @@ impl ForegroundResolver for RealForeground {
     }
     fn stdin_tty(&self, pid: u32) -> Option<bool> {
         foreground_stdin_is_tty(pid)
+    }
+    fn leaders(&self, shell_pids: &[u32]) -> Option<HashMap<u32, Option<u32>>> {
+        foreground_leaders(shell_pids)
+    }
+    fn names(&self, pids: &[u32]) -> Option<HashMap<u32, String>> {
+        process_names(pids)
     }
 }
 
@@ -278,15 +302,133 @@ fn activity_tick(
     (events, next)
 }
 
-/// trmx-75 + trmx-91: the foreground poller loop, spawned once in `setup`. The base tick is now
+/// trmx-263: the pids of an iterator, sorted and de-duplicated — the request list of a bulk call
+/// (one `ps -p a,b,c`), so two sessions on one leader ask for it once.
+fn sorted_distinct(pids: impl Iterator<Item = u32>) -> Vec<u32> {
+    let mut out: Vec<u32> = pids.collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// trmx-263: what one poller iteration produced — the change-only activity events (every tick) and
+/// the change-only title hints (title ticks only, else empty). [`run_title_poller`] emits them in
+/// that order.
+struct PollOutput {
+    activity: Vec<SessionActivity>,
+    hints: Vec<TitleHint>,
+}
+
+/// trmx-263: ONE poller iteration over `snapshot` (`(session_id, shell_pid)`), given the tick and
+/// both carry maps — the whole body of [`run_title_poller`] minus the lock, the park and the emits,
+/// so it is unit-testable with a counting fake.
+///
+/// The busy pass makes ONE bulk [`ForegroundResolver::leaders`] call over the sorted, de-duplicated
+/// shell pids and evaluates `is_busy`'s truth table on the map: a row whose leader ≠ shell is busy,
+/// a row whose leader == shell is idle; a row with no group, a shell with no row (gone), and a
+/// failed call all resolve to `None` so [`activity_tick`] carries the previous state. Rises
+/// (false→true) are enriched exactly as before — per rise, `foreground`/`args`/`stdin_tty` on the
+/// LEADER pid ([`enrich_rises`]).
+///
+/// On a title tick ([`resolves_titles`]) the title pass reuses THIS iteration's leaders map: ONE bulk
+/// [`ForegroundResolver::names`] call over the distinct leaders, then per session the shell's leader
+/// → its name → (interpreters only, trmx-197) `args` on the LEADER → [`effective_title_name`] →
+/// [`poll_tick`]. A leader is at most one iteration's few milliseconds staler than a separate
+/// `ps -o tpgid=` fork was, and the two per-session forks were never atomic either.
+fn poll_iteration<R: ForegroundResolver>(
+    snapshot: &[(u64, Option<u32>)],
+    tick: u64,
+    prev_titles: &mut HashMap<u64, String>,
+    prev_busy: &mut HashMap<u64, bool>,
+    resolver: &R,
+) -> PollOutput {
+    // trmx-91 + trmx-263: activity every tick (250 ms) — busy = the foreground group leader is not
+    // the shell — from ONE bulk call over every shell pid.
+    let pids = sorted_distinct(snapshot.iter().filter_map(|(_, pid)| *pid));
+    let leaders = resolver.leaders(&pids);
+    let busy_now: Vec<(u64, Option<bool>)> = snapshot
+        .iter()
+        .map(|(id, pid)| {
+            (
+                *id,
+                match (pid, &leaders) {
+                    (Some(p), Some(map)) => match map.get(p) {
+                        Some(Some(tpgid)) => Some(*tpgid != *p), // a row: busy iff leader ≠ shell
+                        Some(None) => None,                      // a row, but no foreground group
+                        None => None,                            // no row: gone → carry
+                    },
+                    _ => None, // no pid, or the call itself failed → carry
+                },
+            )
+        })
+        .collect();
+    // trmx-159: the rises (false→true) need classification metadata; capture them + the shell pids
+    // BEFORE activity_tick consumes busy_now, then enrich the rise events off the LEADER pid.
+    let rises = rises_of(&busy_now, prev_busy);
+    let (activity, next_busy) = activity_tick(busy_now, prev_busy);
+    *prev_busy = next_busy;
+    let activity = if rises.is_empty() {
+        activity
+    } else {
+        let shell_pids: HashMap<u64, u32> = snapshot
+            .iter()
+            .filter_map(|(id, pid)| pid.map(|p| (*id, p)))
+            .collect();
+        enrich_rises(activity, &rises, &shell_pids, prev_titles, resolver)
+    };
+    // trmx-75: titles every 4th tick (1 Hz, unchanged) — trmx-263: ONE bulk names call over the
+    // distinct leaders of the map above.
+    let hints = if resolves_titles(tick) {
+        let distinct = sorted_distinct(
+            leaders
+                .iter()
+                .flat_map(|map| map.values().copied().flatten()),
+        );
+        let names = resolver.names(&distinct);
+        let resolved: Vec<(u64, Option<String>)> = snapshot
+            .iter()
+            .map(|(id, shell)| {
+                let name = shell
+                    .and_then(|p| leaders.as_ref()?.get(&p).copied().flatten()) // this shell's LEADER
+                    .and_then(|tpgid| {
+                        let name = names.as_ref()?.get(&tpgid)?; // looked up by LEADER pid
+                        // trmx-197: fetch argv only for an interpreter leader — keeps the
+                        // KERN_PROCARGS2 sysctl off the 1 Hz path in the common case.
+                        let args = if is_interpreter(name) {
+                            resolver.args(tpgid)
+                        } else {
+                            None
+                        };
+                        Some(effective_title_name(
+                            ForegroundProcess {
+                                pid: tpgid,
+                                name: name.clone(),
+                            },
+                            args,
+                        ))
+                    });
+                (*id, name)
+            })
+            .collect();
+        let (hints, next_titles) = poll_tick(resolved, prev_titles);
+        *prev_titles = next_titles;
+        hints
+    } else {
+        Vec::new()
+    };
+    PollOutput { activity, hints }
+}
+
+/// trmx-75 + trmx-91: the foreground poller loop, spawned once in `setup`. The base tick is
 /// **250 ms** so the FR-7a activity indicator flips near-instantly; **titles are resolved every 4th
 /// tick** (unchanged 1 Hz). Each tick snapshots `(id, shell_pid)` under the registry lock and **drops
 /// the lock before any `ps` call** (lock discipline — subprocess latency must never stall
 /// `pty_write`); an empty snapshot clears BOTH carry maps (a reopened world starts fresh) and parks on
-/// the [`PollerGate`] condvar until `open_pty` wakes it. Otherwise it computes `busy` per session via
-/// [`is_busy`], diffs through the pure [`activity_tick`], and emits change-only `session:activity`
-/// best-effort; on title ticks it also resolves names via [`foreground_process`] → [`poll_tick`] →
-/// `session:title-hint`. It NEVER writes core titles — the frontend is the single writer.
+/// the [`PollerGate`] condvar until `open_pty` wakes it. Otherwise [`poll_iteration`] runs over the
+/// real resolver ([`RealForeground`]) — trmx-263: one bulk `ps` for every session's busy state, one
+/// more for the titles on a title tick — and the loop emits its change-only `session:activity`
+/// events, then its `session:title-hint`s, best-effort. It NEVER writes core titles — the frontend
+/// is the single writer.
 pub(crate) fn run_title_poller(
     app: tauri::AppHandle,
     registry: Arc<Mutex<SessionRegistry>>,
@@ -314,61 +456,18 @@ pub(crate) fn run_title_poller(
             gate.wait_while_empty();
             continue;
         }
-        // trmx-91: activity every tick (250 ms) — busy = the foreground group leader is not the shell.
-        let busy_now: Vec<(u64, Option<bool>)> = snapshot
-            .iter()
-            .map(|(id, pid)| (*id, pid.and_then(is_busy)))
-            .collect();
-        // trmx-159: the rises (false→true) need classification metadata; capture them + the shell pids
-        // BEFORE activity_tick consumes busy_now, then enrich the rise events off the LEADER pid.
-        let rises = rises_of(&busy_now, &prev_busy);
-        let (activity, next_busy) = activity_tick(busy_now, &prev_busy);
-        prev_busy = next_busy;
-        let activity = if rises.is_empty() {
-            activity
-        } else {
-            let shell_pids: HashMap<u64, u32> = snapshot
-                .iter()
-                .filter_map(|(id, pid)| pid.map(|p| (*id, p)))
-                .collect();
-            enrich_rises(
-                activity,
-                &rises,
-                &shell_pids,
-                &mut prev_titles,
-                &RealForeground,
-            )
-        };
+        let PollOutput { activity, hints } = poll_iteration(
+            &snapshot,
+            tick,
+            &mut prev_titles,
+            &mut prev_busy,
+            &RealForeground,
+        );
         for event in activity {
             let _ = app.emit("session:activity", event);
         }
-        // trmx-75: titles every 4th tick (1 Hz, unchanged).
-        if resolves_titles(tick) {
-            let resolved: Vec<(u64, Option<String>)> = snapshot
-                .into_iter()
-                .map(|(id, pid)| {
-                    (
-                        id,
-                        pid.and_then(|pid| {
-                            foreground_process(pid).map(|fg| {
-                                // trmx-197: fetch argv only for an interpreter leader — keeps the
-                                // KERN_PROCARGS2 sysctl off the 1 Hz path in the common case.
-                                let args = if is_interpreter(&fg.name) {
-                                    foreground_args(fg.pid)
-                                } else {
-                                    None
-                                };
-                                effective_title_name(fg, args)
-                            })
-                        }),
-                    )
-                })
-                .collect();
-            let (hints, next_titles) = poll_tick(resolved, &prev_titles);
-            prev_titles = next_titles;
-            for hint in hints {
-                let _ = app.emit("session:title-hint", hint);
-            }
+        for hint in hints {
+            let _ = app.emit("session:title-hint", hint);
         }
         tick = tick.wrapping_add(1);
         std::thread::sleep(Duration::from_millis(250));
@@ -543,6 +642,14 @@ mod tests {
         fn stdin_tty(&self, pid: u32) -> Option<bool> {
             self.stdin_calls.borrow_mut().push(pid);
             Some(true)
+        }
+        /// trmx-263: every requested shell's leader is `self.leader` — the bulk shape of `foreground`.
+        fn leaders(&self, shell_pids: &[u32]) -> Option<HashMap<u32, Option<u32>>> {
+            Some(shell_pids.iter().map(|p| (*p, Some(self.leader))).collect())
+        }
+        /// trmx-263: every requested pid is named `self.name`.
+        fn names(&self, pids: &[u32]) -> Option<HashMap<u32, String>> {
+            Some(pids.iter().map(|p| (*p, self.name.clone())).collect())
         }
     }
 
@@ -826,5 +933,272 @@ mod tests {
             !*gate.has_sessions.lock().expect("gate lock"),
             "wait_while_empty must consume the wake latch"
         );
+    }
+
+    // --- trmx-263 (grill A3): the bulk paths through the seam — one `ps` per pass ----------------
+
+    /// A scripted resolver whose BULK calls are counted: `leaders` / `names` answer from the scripted
+    /// maps restricted to the requested pids (`None` when the matching `fail_*` flag is set) and log
+    /// each request list; the per-pid `foreground` / `args` / `stdin_tty` answer from the SAME maps
+    /// (`foreground` only when both the leader row and its name exist) and log each pid. A test can
+    /// therefore prove the periodic passes make exactly one bulk call each and never resolve per pid,
+    /// while a rise still resolves per pid on the LEADER.
+    struct CountingForeground {
+        leaders: HashMap<u32, Option<u32>>,
+        names: HashMap<u32, String>,
+        args: HashMap<u32, Vec<String>>,
+        fail_leaders: bool,
+        fail_names: bool,
+        leaders_calls: RefCell<Vec<Vec<u32>>>,
+        names_calls: RefCell<Vec<Vec<u32>>>,
+        foreground_calls: RefCell<Vec<u32>>,
+        args_calls: RefCell<Vec<u32>>,
+        stdin_calls: RefCell<Vec<u32>>,
+    }
+
+    impl CountingForeground {
+        fn new(leader_rows: &[(u32, Option<u32>)], name_rows: &[(u32, &str)]) -> Self {
+            Self {
+                leaders: leader_rows.iter().copied().collect(),
+                names: name_rows
+                    .iter()
+                    .map(|(pid, name)| (*pid, (*name).to_string()))
+                    .collect(),
+                args: HashMap::new(),
+                fail_leaders: false,
+                fail_names: false,
+                leaders_calls: RefCell::new(Vec::new()),
+                names_calls: RefCell::new(Vec::new()),
+                foreground_calls: RefCell::new(Vec::new()),
+                args_calls: RefCell::new(Vec::new()),
+                stdin_calls: RefCell::new(Vec::new()),
+            }
+        }
+
+        fn with_args(mut self, pid: u32, args: &[&str]) -> Self {
+            self.args
+                .insert(pid, args.iter().map(|s| (*s).to_string()).collect());
+            self
+        }
+
+        fn failing_leaders(mut self) -> Self {
+            self.fail_leaders = true;
+            self
+        }
+
+        fn failing_names(mut self) -> Self {
+            self.fail_names = true;
+            self
+        }
+    }
+
+    impl ForegroundResolver for CountingForeground {
+        fn foreground(&self, shell_pid: u32) -> Option<ForegroundProcess> {
+            self.foreground_calls.borrow_mut().push(shell_pid);
+            let tpgid = (*self.leaders.get(&shell_pid)?)?;
+            let name = self.names.get(&tpgid)?.clone();
+            Some(ForegroundProcess { pid: tpgid, name })
+        }
+        fn args(&self, pid: u32) -> Option<Vec<String>> {
+            self.args_calls.borrow_mut().push(pid);
+            self.args.get(&pid).cloned()
+        }
+        fn stdin_tty(&self, pid: u32) -> Option<bool> {
+            self.stdin_calls.borrow_mut().push(pid);
+            Some(true)
+        }
+        fn leaders(&self, shell_pids: &[u32]) -> Option<HashMap<u32, Option<u32>>> {
+            self.leaders_calls.borrow_mut().push(shell_pids.to_vec());
+            if self.fail_leaders {
+                return None;
+            }
+            Some(
+                shell_pids
+                    .iter()
+                    .filter_map(|p| self.leaders.get(p).map(|leader| (*p, *leader)))
+                    .collect(),
+            )
+        }
+        fn names(&self, pids: &[u32]) -> Option<HashMap<u32, String>> {
+            self.names_calls.borrow_mut().push(pids.to_vec());
+            if self.fail_names {
+                return None;
+            }
+            Some(
+                pids.iter()
+                    .filter_map(|p| self.names.get(p).map(|name| (*p, name.clone())))
+                    .collect(),
+            )
+        }
+    }
+
+    /// `n` sessions `(i, Some(1000 + i))`, i = 1..=n — the T-1 / T-2 fixture shape.
+    fn sessions(n: u32) -> Vec<(u64, Option<u32>)> {
+        (1..=n).map(|i| (u64::from(i), Some(1000 + i))).collect()
+    }
+
+    #[test]
+    fn poll_iteration_makes_exactly_one_leaders_call_for_n_sessions() {
+        // T-1: the activity pass costs ONE bulk `leaders` call whatever N is — over the sorted,
+        // de-duplicated shell pids — and, off a title tick with no rise, nothing else: no `names`
+        // call and no per-pid `foreground`.
+        for n in [1u32, 10, 100] {
+            let snapshot = sessions(n);
+            let shells: Vec<u32> = (1..=n).map(|i| 1000 + i).collect();
+            let leader_rows: Vec<(u32, Option<u32>)> =
+                shells.iter().map(|p| (*p, Some(*p))).collect();
+            let name_rows: Vec<(u32, &str)> = shells.iter().map(|p| (*p, "zsh")).collect();
+            let fake = CountingForeground::new(&leader_rows, &name_rows);
+            let mut prev_titles = HashMap::new();
+            let mut prev_busy = HashMap::new();
+            poll_iteration(&snapshot, 1, &mut prev_titles, &mut prev_busy, &fake);
+            assert_eq!(
+                *fake.leaders_calls.borrow(),
+                vec![shells.clone()],
+                "N = {n}: exactly one leaders call, over the sorted de-duplicated shell pids"
+            );
+            assert!(
+                fake.names_calls.borrow().is_empty(),
+                "N = {n}: tick 1 is not a title tick"
+            );
+            assert!(
+                fake.foreground_calls.borrow().is_empty(),
+                "N = {n}: no per-pid resolution on a non-rise path"
+            );
+        }
+    }
+
+    #[test]
+    fn title_tick_makes_exactly_one_names_call_over_the_distinct_leaders() {
+        // T-2: ten busy sessions, two sharing leader 900 and the other eight on 901..908 — the
+        // title pass costs ONE bulk `names` call over the nine DISTINCT leaders (sorted), not one
+        // per session and not over the shell pids; still no per-pid `foreground`.
+        let snapshot = sessions(10);
+        let mut leader_rows = vec![(1001, Some(900)), (1002, Some(900))];
+        leader_rows.extend((1003..=1010).map(|shell| (shell, Some(shell - 102)))); // 1003→901 … 1010→908
+        let name_rows: Vec<(u32, &str)> = (900..=908).map(|p| (p, "sleep")).collect();
+        let fake = CountingForeground::new(&leader_rows, &name_rows);
+        let mut prev_titles = HashMap::new();
+        let mut prev_busy: HashMap<u64, bool> = (1..=10).map(|id| (id, true)).collect();
+        poll_iteration(&snapshot, 4, &mut prev_titles, &mut prev_busy, &fake);
+        assert_eq!(
+            *fake.names_calls.borrow(),
+            vec![(900..=908).collect::<Vec<u32>>()],
+            "exactly one names call, over the nine distinct leaders"
+        );
+        assert!(fake.foreground_calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn busy_truth_table_through_the_leaders_map() {
+        // T-3: is_busy's truth table evaluated on the bulk map — a row whose leader ≠ shell is busy
+        // (B), a row whose leader == shell is idle (B), a row with no group carries (C), a shell
+        // with no row (gone) carries (D); and a failed call carries EVERY session (E).
+        let snapshot = vec![(1, Some(11)), (2, Some(12)), (3, Some(13)), (4, Some(14))];
+        let leader_rows = [(11, Some(11)), (12, Some(77)), (13, None)]; // 14 absent
+        let fake = CountingForeground::new(&leader_rows, &[]);
+        let mut prev_titles = HashMap::new();
+        let mut prev_busy = HashMap::new();
+        let out = poll_iteration(&snapshot, 1, &mut prev_titles, &mut prev_busy, &fake);
+        assert_eq!(out.activity, vec![activity(1, false), activity(2, true)]);
+        assert!(
+            !prev_busy.contains_key(&3) && !prev_busy.contains_key(&4),
+            "a no-group row and an absent row carry nothing"
+        );
+        // (E): the call itself failed — nothing is emitted and the carry is untouched.
+        let fake = CountingForeground::new(&leader_rows, &[]).failing_leaders();
+        let mut prev_busy = busy_map(&[(1, true)]);
+        let out = poll_iteration(&snapshot, 1, &mut prev_titles, &mut prev_busy, &fake);
+        assert!(
+            out.activity.is_empty(),
+            "a failed leaders call emits nothing"
+        );
+        assert_eq!(prev_busy, busy_map(&[(1, true)]));
+    }
+
+    #[test]
+    fn a_failed_leaders_call_carries_every_session() {
+        // T-4: sessions whose live state is the OPPOSITE of their carry — a failed bulk call must
+        // flip neither, nor fall back to per-pid resolution: a transient `ps` failure is invisible.
+        let snapshot = vec![(1, Some(11)), (2, Some(12))];
+        let fake = CountingForeground::new(&[(11, Some(11)), (12, Some(77))], &[(77, "sleep")])
+            .failing_leaders();
+        let mut prev_titles = HashMap::new();
+        let mut prev_busy = busy_map(&[(1, true), (2, false)]);
+        let out = poll_iteration(&snapshot, 1, &mut prev_titles, &mut prev_busy, &fake);
+        assert!(out.activity.is_empty());
+        assert_eq!(prev_busy, busy_map(&[(1, true), (2, false)]));
+        assert!(fake.foreground_calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_failed_names_call_carries_every_title() {
+        // T-5: a failed bulk `names` call on a title tick hints nothing and keeps every carried
+        // title (the poll_tick carry, now fed by the bulk path).
+        let snapshot = vec![(1, Some(11))];
+        let fake = CountingForeground::new(&[(11, Some(88))], &[(88, "emacs")]).failing_names();
+        let mut prev_titles = names(&[(1, "vim")]);
+        let mut prev_busy = busy_map(&[(1, true)]);
+        let out = poll_iteration(&snapshot, 4, &mut prev_titles, &mut prev_busy, &fake);
+        assert!(out.hints.is_empty());
+        assert_eq!(prev_titles, names(&[(1, "vim")]));
+    }
+
+    #[test]
+    fn rise_enrichment_resolves_per_rise_on_the_leader_pid_only() {
+        // T-6: a false→true rise still resolves its metadata per pid — `foreground` on the shell
+        // ONCE, `args`/`stdin_tty` on the LEADER — on top of the one bulk `leaders` call; the bulk
+        // pass itself never goes per pid.
+        let snapshot = vec![(1, Some(11))];
+        let fake =
+            CountingForeground::new(&[(11, Some(77))], &[(77, "sleep")]).with_args(77, &["30"]);
+        let mut prev_titles = HashMap::new();
+        let mut prev_busy = busy_map(&[(1, false)]);
+        let out = poll_iteration(&snapshot, 1, &mut prev_titles, &mut prev_busy, &fake);
+        assert_eq!(
+            out.activity,
+            vec![SessionActivity {
+                session_id: 1,
+                busy: true,
+                foreground_name: Some("sleep".to_string()),
+                foreground_args: Some(vec!["30".to_string()]),
+                foreground_stdin_tty: Some(true),
+            }]
+        );
+        assert_eq!(*fake.foreground_calls.borrow(), vec![11]);
+        assert_eq!(*fake.args_calls.borrow(), vec![77]);
+        assert_eq!(*fake.stdin_calls.borrow(), vec![77]);
+        assert_eq!(fake.leaders_calls.borrow().len(), 1);
+    }
+
+    #[test]
+    fn title_tick_unwraps_an_interpreter_leader_via_args_on_the_leader_pid() {
+        // T-7: on a title tick an interpreter leader (`node` fronting an npm-shim CLI) is unwrapped
+        // via `args` fetched on the LEADER pid, once; a non-interpreter leader (`vim`) never costs an
+        // `args` call. No rise (both already busy), so the title path alone calls `args`.
+        let snapshot = vec![(1, Some(101)), (2, Some(102))];
+        let fake = CountingForeground::new(
+            &[(101, Some(501)), (102, Some(502))],
+            &[(501, "node"), (502, "vim")],
+        )
+        .with_args(501, &["/usr/local/lib/node_modules/.bin/codex", "--x"]);
+        let mut prev_titles = HashMap::new();
+        let mut prev_busy = busy_map(&[(1, true), (2, true)]);
+        let out = poll_iteration(&snapshot, 4, &mut prev_titles, &mut prev_busy, &fake);
+        assert_eq!(out.hints, vec![hint(1, "codex"), hint(2, "vim")]);
+        assert_eq!(*fake.args_calls.borrow(), vec![501]);
+    }
+
+    #[test]
+    fn title_names_for_a_leader_new_this_iteration_resolve_this_iteration() {
+        // T-8: the title pass reuses THIS iteration's leaders map, so a leader first seen now is
+        // named now — no extra tick of latency versus the per-session path.
+        let snapshot = vec![(1, Some(11))];
+        let fake = CountingForeground::new(&[(11, Some(88))], &[(88, "emacs")]);
+        let mut prev_titles = names(&[(1, "vim")]);
+        let mut prev_busy = busy_map(&[(1, true)]);
+        let out = poll_iteration(&snapshot, 4, &mut prev_titles, &mut prev_busy, &fake);
+        assert_eq!(out.hints, vec![hint(1, "emacs")]);
+        assert_eq!(prev_titles.get(&1).map(String::as_str), Some("emacs"));
     }
 }
