@@ -1,0 +1,43 @@
+[
+  {
+    "total_count": 3,
+    "jobs": [
+      {
+        "id": 81,
+        "run_id": 8,
+        "run_attempt": 1,
+        "name": "full gate (macos)",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-07-12T10:00:10Z",
+        "completed_at": "2026-07-12T10:11:50Z",
+        "html_url": "https://github.com/x/y/actions/runs/8/job/81",
+        "steps": []
+      },
+      {
+        "id": 82,
+        "run_id": 8,
+        "run_attempt": 1,
+        "name": "dependency audit (cargo deny + pnpm audit)",
+        "status": "completed",
+        "conclusion": "skipped",
+        "started_at": null,
+        "completed_at": null,
+        "html_url": "https://github.com/x/y/actions/runs/8/job/82",
+        "steps": []
+      },
+      {
+        "id": 83,
+        "run_id": 8,
+        "run_attempt": 1,
+        "name": "secret scan (R5)",
+        "status": "in_progress",
+        "conclusion": null,
+        "started_at": "2026-07-12T10:00:10Z",
+        "completed_at": null,
+        "html_url": "https://github.com/x/y/actions/runs/8/job/83",
+        "steps": []
+      }
+    ]
+  }
+]

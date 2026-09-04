@@ -1,0 +1,26 @@
+[
+  {
+    "total_count": 1,
+    "jobs": [
+      {
+        "id": 1031,
+        "run_id": 103,
+        "run_attempt": 1,
+        "name": "build macos (signs + notarizes when configured)",
+        "status": "completed",
+        "conclusion": "failure",
+        "started_at": "2026-07-07T03:40:10Z",
+        "completed_at": "2026-07-07T03:41:00Z",
+        "html_url": "https://github.com/x/y/actions/runs/103/job/1031",
+        "steps": [
+          {
+            "name": "Build",
+            "status": "completed",
+            "conclusion": "failure",
+            "number": 1
+          }
+        ]
+      }
+    ]
+  }
+]

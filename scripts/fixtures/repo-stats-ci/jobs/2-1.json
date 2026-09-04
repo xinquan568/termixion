@@ -1,0 +1,32 @@
+[
+  {
+    "total_count": 1,
+    "jobs": [
+      {
+        "id": 21,
+        "run_id": 2,
+        "run_attempt": 1,
+        "name": "full gate (macos)",
+        "status": "completed",
+        "conclusion": "failure",
+        "started_at": "2026-07-06T10:00:10Z",
+        "completed_at": "2026-07-06T10:08:50Z",
+        "html_url": "https://github.com/x/y/actions/runs/2/job/21",
+        "steps": [
+          {
+            "name": "cargo test (workspace)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 1
+          },
+          {
+            "name": "pnpm test (vitest)",
+            "status": "completed",
+            "conclusion": "failure",
+            "number": 2
+          }
+        ]
+      }
+    ]
+  }
+]

@@ -1,0 +1,49 @@
+[
+  [
+    {
+      "tag_name": "v0.1.0",
+      "name": "v0.1.0",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2026-07-10T00:35:37Z",
+      "published_at": "2026-07-10T01:07:47Z",
+      "html_url": "https://github.com/x/y/releases/tag/v0.1.0"
+    },
+    {
+      "tag_name": "v0.0.9",
+      "name": "v0.0.9",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2026-07-07T03:18:08Z",
+      "published_at": "2026-07-07T03:39:11Z",
+      "html_url": "https://github.com/x/y/releases/tag/v0.0.9"
+    },
+    {
+      "tag_name": "v0.0.8",
+      "name": "v0.0.8",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2026-07-06T08:15:22Z",
+      "published_at": "2026-07-06T08:52:07Z",
+      "html_url": "https://github.com/x/y/releases/tag/v0.0.8"
+    },
+    {
+      "tag_name": "v9.9.9",
+      "name": "v9.9.9",
+      "draft": true,
+      "prerelease": false,
+      "created_at": "2026-07-20T00:00:00Z",
+      "published_at": null,
+      "html_url": "https://github.com/x/y/releases/tag/v9.9.9"
+    },
+    {
+      "tag_name": "nightly",
+      "name": "nightly",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2026-07-21T00:00:00Z",
+      "published_at": "2026-07-21T00:10:00Z",
+      "html_url": "https://github.com/x/y/releases/tag/nightly"
+    }
+  ]
+]
