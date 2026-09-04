@@ -227,6 +227,11 @@ REPO_ROOT = MOD_PATH.parent.parent
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "repo-stats-ci.yml"
 MAC = "full gate (macos)"
 LIN = "core tests (linux)"
+FLAKE_VITEST = 33266632239      # real run: attempt 1 failed at pnpm test (vitest), re-run green
+FLAKE_CARGO = 32962880655       # real run: attempt 1 failed at cargo test, re-run green
+BREAK_VITEST = 33248793732      # real run: ended red at pnpm test (vitest), never re-run
+PLAIN = 33817224013             # real run: plain success
+CARGO_STEP = "cargo test (workspace — incl. macOS PTY + integration)"
 SINCE = datetime(2026, 7, 1, tzinfo=timezone.utc)
 UNTIL = datetime(2026, 8, 1, tzinfo=timezone.utc)
 
@@ -273,6 +278,16 @@ class TestDecodePages(unittest.TestCase):
         self.assertEqual(rs.decode_pages([], "jobs"), [])
         self.assertEqual(rs.decode_pages([], None), [])
 
+    def test_malformed_envelope_fails_closed(self):
+        with self.assertRaises(ValueError):
+            rs.decode_pages([{"message": "shape changed"}], "workflow_runs")   # valid JSON, wrong shape
+        with self.assertRaises(ValueError):
+            rs.decode_pages([{"workflow_runs": "not-a-list"}], "workflow_runs")
+        with self.assertRaises(ValueError):
+            rs.decode_pages([[{"id": 1}]], "jobs")   # an array page where an envelope was expected
+        with self.assertRaises(ValueError):
+            rs.decode_pages({"jobs": []}, "jobs")    # not a page array at all
+
 
 class TestGhArgv(unittest.TestCase):
     def test_argv_paginates_and_slurps_without_jq(self):
@@ -292,6 +307,22 @@ class TestGhArgv(unittest.TestCase):
         self.assertEqual(rs.issues_endpoint("x/y"), "repos/x/y/issues?state=all&per_page=100")
 
 
+class TestResolveSince(unittest.TestCase):
+    NOW = datetime(2026, 9, 4, 2, 3, 44, tzinfo=timezone.utc)
+
+    def test_default_is_90_days_ago_at_midnight_utc(self):
+        self.assertEqual(rs.resolve_since(None, self.NOW), datetime(2026, 6, 6, tzinfo=timezone.utc))
+        self.assertEqual(rs.resolve_since("", self.NOW), datetime(2026, 6, 6, tzinfo=timezone.utc))
+        self.assertEqual(rs.DEFAULT_WINDOW_DAYS, 90)
+
+    def test_explicit_date(self):
+        self.assertEqual(rs.resolve_since("2026-07-01", self.NOW), datetime(2026, 7, 1, tzinfo=timezone.utc))
+
+    def test_invalid_date_raises(self):
+        with self.assertRaises(ValueError):
+            rs.resolve_since("07/01/2026", self.NOW)
+
+
 class TestResolveRepo(unittest.TestCase):
     def test_precedence_and_git_url_forms(self):
         self.assertEqual(rs.resolve_repo("a/b", {"GITHUB_REPOSITORY": "c/d"}, "git@github.com:e/f.git"), "a/b")
@@ -307,12 +338,12 @@ class TestFixtureSource(unittest.TestCase):
     def test_reads_decoded_lists(self):
         src = rs.FixtureSource(FIXTURES)
         runs = src.ci_runs("2026-07-01")
-        self.assertEqual([r["id"] for r in runs], list(range(1, 10)))
-        self.assertEqual(src.run_attempt(2, 1)["conclusion"], "failure")
-        self.assertEqual([j["name"] for j in src.run_jobs(2, 1)], [MAC])
-        self.assertEqual([j["name"] for j in src.run_jobs(2)], [MAC])
-        self.assertEqual(len(src.release_runs()), 5)
-        self.assertEqual([r["tag_name"] for r in src.releases()][:3], ["v0.1.0", "v0.0.9", "v0.0.8"])
+        self.assertEqual([r["id"] for r in runs], [FLAKE_CARGO, BREAK_VITEST, FLAKE_VITEST, PLAIN, 3, 5, 6, 7, 8, 9])
+        self.assertEqual(src.run_attempt(FLAKE_VITEST, 1)["conclusion"], "failure")
+        self.assertIn(MAC, [j["name"] for j in src.run_jobs(FLAKE_VITEST, 1)])
+        self.assertIn(MAC, [j["name"] for j in src.run_jobs(FLAKE_VITEST)])
+        self.assertEqual(len(src.release_runs()), 8)
+        self.assertEqual([r["tag_name"] for r in src.releases()][:4], ["v0.1.2", "v0.1.1", "v0.1.0", "v0.0.9"])
         self.assertEqual(len(src.issues()), 7)   # two pages merged
 
 
@@ -320,9 +351,9 @@ class TestGhSource(unittest.TestCase):
     def test_live_and_fixture_paths_share_the_decoder(self):
         mapping = {
             rs.ci_runs_endpoint("x/y", "2026-07-01"): "ci-runs.json",
-            rs.run_attempt_endpoint("x/y", 2, 1): "attempts/2-1.json",
-            rs.run_jobs_endpoint("x/y", 2, 1): "jobs/2-1.json",
-            rs.run_jobs_endpoint("x/y", 2): "jobs/2-latest.json",
+            rs.run_attempt_endpoint("x/y", FLAKE_VITEST, 1): f"attempts/{FLAKE_VITEST}-1.json",
+            rs.run_jobs_endpoint("x/y", FLAKE_VITEST, 1): f"jobs/{FLAKE_VITEST}-1.json",
+            rs.run_jobs_endpoint("x/y", FLAKE_VITEST): f"jobs/{FLAKE_VITEST}-latest.json",
             rs.release_runs_endpoint("x/y"): "release-runs.json",
             rs.releases_endpoint("x/y"): "releases.json",
             rs.issues_endpoint("x/y"): "issues.json",
@@ -338,9 +369,9 @@ class TestGhSource(unittest.TestCase):
         live = rs.GhSource("x/y", runner=runner)
         fix = rs.FixtureSource(FIXTURES)
         self.assertEqual(live.ci_runs("2026-07-01"), fix.ci_runs("2026-07-01"))
-        self.assertEqual(live.run_attempt(2, 1), fix.run_attempt(2, 1))
-        self.assertEqual(live.run_jobs(2, 1), fix.run_jobs(2, 1))
-        self.assertEqual(live.run_jobs(2), fix.run_jobs(2))
+        self.assertEqual(live.run_attempt(FLAKE_VITEST, 1), fix.run_attempt(FLAKE_VITEST, 1))
+        self.assertEqual(live.run_jobs(FLAKE_VITEST, 1), fix.run_jobs(FLAKE_VITEST, 1))
+        self.assertEqual(live.run_jobs(FLAKE_VITEST), fix.run_jobs(FLAKE_VITEST))
         self.assertEqual(live.release_runs(), fix.release_runs())
         self.assertEqual(live.releases(), fix.releases())
         self.assertEqual(live.issues(), fix.issues())
@@ -353,7 +384,7 @@ class TestCiWindow(unittest.TestCase):
 
     def test_denominator_and_exclusions(self):
         w = rs.ci_window(self.runs, SINCE)
-        self.assertEqual([r["id"] for r in w["denominator"]], [1, 2, 3, 4, 8])
+        self.assertEqual([r["id"] for r in w["denominator"]], [3, 8, FLAKE_CARGO, BREAK_VITEST, FLAKE_VITEST, PLAIN])
         self.assertEqual(w["excluded"], {"cancelled": 1, "in_progress": 1, "skipped": 0})
 
     def test_pull_request_run_dropped(self):
@@ -374,11 +405,13 @@ class TestFlake(unittest.TestCase):
 
     def test_flake_rate_and_attribution(self):
         f = rs.compute_flake(self.den, self.src)
-        self.assertEqual(f["denominator"], 5)
-        self.assertAlmostEqual(f["rate"], 0.2)
-        self.assertEqual([x["run_id"] for x in f["flakes"]], [2])
-        self.assertEqual(f["flakes"][0]["jobs"], [{"name": MAC, "steps": ["pnpm test (vitest)"]}])
-        self.assertEqual(f["flakes"][0]["created_at"], "2026-07-06T10:00:00Z")
+        self.assertEqual(f["denominator"], 6)
+        self.assertAlmostEqual(f["rate"], 2 / 6)
+        self.assertEqual([x["run_id"] for x in f["flakes"]], [FLAKE_CARGO, FLAKE_VITEST])
+        self.assertEqual(f["flakes"][0]["jobs"], [{"name": MAC, "steps": [CARGO_STEP]}])
+        self.assertEqual(f["flakes"][1]["jobs"], [{"name": MAC, "steps": ["pnpm test (vitest)"]}])
+        self.assertEqual(f["flakes"][1]["created_at"], "2026-08-29T17:49:27Z")
+        self.assertEqual(f["flakes"][1]["url"], f"https://github.com/xinquan568/termixion/actions/runs/{FLAKE_VITEST}")
 
     def test_rerun_of_green_is_not_a_flake(self):
         f = rs.compute_flake(self.den, self.src)
@@ -387,13 +420,13 @@ class TestFlake(unittest.TestCase):
 
     def test_denominator_excludes_cancelled_and_in_progress(self):
         f = rs.compute_flake(self.den, self.src)
-        self.assertEqual(f["denominator"], 5)
-        self.assertAlmostEqual(f["rate"], 1 / 5)
+        self.assertEqual(f["denominator"], 6)   # the cancelled (5) and in-progress (6) runs are not in it
+        self.assertAlmostEqual(f["rate"], 2 / 6)
 
     def test_breakage(self):
         f = rs.compute_flake(self.den, self.src)
-        self.assertEqual([x["run_id"] for x in f["breakage"]], [4])
-        self.assertEqual(f["breakage"][0]["jobs"], [{"name": MAC, "steps": ["cargo test (workspace)"]}])
+        self.assertEqual([x["run_id"] for x in f["breakage"]], [BREAK_VITEST])
+        self.assertEqual(f["breakage"][0]["jobs"], [{"name": MAC, "steps": ["pnpm test (vitest)"]}])
 
 
 class TestDuration(unittest.TestCase):
@@ -403,13 +436,15 @@ class TestDuration(unittest.TestCase):
 
     def test_failed_jobs_with_timestamps_count(self):
         d = rs.compute_durations(self.den, self.src)
-        self.assertEqual(d[MAC], {"n": 5, "p50_s": 640, "p90_s": 700})
+        # samples 204 (the red run 33248793732), 437, 640, 693, 700, 703 -> ranks 3 and 6
+        self.assertEqual(d[MAC], {"n": 6, "p50_s": 640, "p90_s": 703})
 
     def test_skipped_and_unfinished_jobs_excluded(self):
         d = rs.compute_durations(self.den, self.src)
-        self.assertEqual(d[LIN], {"n": 1, "p50_s": 30, "p90_s": 30})
-        self.assertNotIn("dependency audit (cargo deny + pnpm audit)", d)
-        self.assertNotIn("secret scan (R5)", d)
+        self.assertEqual(d[LIN], {"n": 4, "p50_s": 28, "p90_s": 29})   # 23, 28, 28, 29 from the four real runs
+        # run 8: the skipped audit job and the unfinished secret-scan job add no sample
+        self.assertEqual(d["dependency audit (cargo deny + pnpm audit)"]["n"], 4)
+        self.assertEqual(d["secret scan (R5)"]["n"], 4)
         self.assertEqual(list(d)[0], MAC)   # the full gate is listed first
 
 
@@ -419,36 +454,38 @@ class TestReleases(unittest.TestCase):
 
     def test_per_tag_intervals(self):
         by = {t["tag"]: t for t in self.r["per_tag"]}
-        self.assertEqual([t["tag"] for t in self.r["per_tag"]], ["v0.0.8", "v0.0.9", "v0.1.0"])
+        self.assertEqual([t["tag"] for t in self.r["per_tag"]], ["v0.0.9", "v0.1.0", "v0.1.1", "v0.1.2"])
         self.assertEqual((by["v0.1.0"]["pipeline_s"], by["v0.1.0"]["signoff_s"], by["v0.1.0"]["lead_s"],
                           by["v0.1.0"]["commit_to_published_s"]), (700, 504, 1204, 1930))
-        self.assertEqual((by["v0.0.8"]["pipeline_s"], by["v0.0.8"]["signoff_s"], by["v0.0.8"]["lead_s"],
-                          by["v0.0.8"]["commit_to_published_s"]), (535, 661, 1196, 2205))
-        self.assertEqual(by["v0.1.0"]["run_id"], 104)
+        self.assertEqual((by["v0.1.2"]["pipeline_s"], by["v0.1.2"]["signoff_s"], by["v0.1.2"]["lead_s"],
+                          by["v0.1.2"]["commit_to_published_s"]), (256, 9281, 9537, 9961))
+        self.assertEqual(by["v0.1.0"]["run_id"], 29060841656)
         self.assertEqual(by["v0.1.0"]["pipeline_done_at"], "2026-07-10T00:59:23Z")
 
     def test_pipeline_ends_at_last_job(self):
         by = {t["tag"]: t for t in self.r["per_tag"]}
-        self.assertEqual(by["v0.1.0"]["pipeline_s"], 700)   # not 760 (run updated_at)
+        self.assertEqual(by["v0.1.0"]["pipeline_s"], 700)   # the run's updated_at is one second later (701)
 
     def test_successful_run_preferred(self):
         by = {t["tag"]: t for t in self.r["per_tag"]}
-        self.assertEqual(by["v0.0.9"]["run_id"], 102)
+        # v0.0.9 has two real failed runs BEFORE and one synthetic failed run AFTER the successful one
+        self.assertEqual(by["v0.0.9"]["run_id"], 28839071399)
         self.assertEqual(by["v0.0.9"]["run_started_at"], "2026-07-07T03:19:54Z")
         self.assertEqual(by["v0.0.9"]["pipeline_s"], 776)
 
     def test_smoke_na_before_step_exists(self):
         by = {t["tag"]: t for t in self.r["per_tag"]}
-        self.assertEqual(by["v0.0.8"]["smoke"], "pass")
+        self.assertEqual(by["v0.1.2"]["smoke"], "pass")
         self.assertEqual(by["v0.0.9"]["smoke"], "n/a")
-        self.assertEqual(by["v0.1.0"]["smoke"], "n/a")
-        self.assertEqual(self.r["smoke"], {"pass": 1, "fail": 0, "na": 2})
+        self.assertEqual(by["v0.1.1"]["smoke"], "n/a")
+        self.assertEqual(self.r["smoke"], {"pass": 1, "fail": 0, "na": 3})
 
     def test_medians_carry_n(self):
-        self.assertEqual(self.r["median_pipeline_s"], {"n": 3, "value": 700})
-        self.assertEqual(self.r["median_signoff_s"], {"n": 3, "value": 504})
-        self.assertEqual(self.r["median_lead_s"], {"n": 3, "value": 1196})
-        self.assertEqual(self.r["median_commit_to_published_s"], {"n": 3, "value": 1930})
+        # nearest-rank p50 of four values is the second-smallest
+        self.assertEqual(self.r["median_pipeline_s"], {"n": 4, "value": 589})     # 256, 589, 700, 776
+        self.assertEqual(self.r["median_signoff_s"], {"n": 4, "value": 504})      # 381, 504, 5971, 9281
+        self.assertEqual(self.r["median_lead_s"], {"n": 4, "value": 1204})        # 1157, 1204, 6560, 9537
+        self.assertEqual(self.r["median_commit_to_published_s"], {"n": 4, "value": 1930})
 
     def test_drafts_and_non_semver_tags_ignored(self):
         self.assertNotIn("v9.9.9", [t["tag"] for t in self.r["per_tag"]])
@@ -462,10 +499,11 @@ class TestEscapedDefects(unittest.TestCase):
 
     def test_literal_overlapping_windows(self):
         per = {t["tag"]: t for t in self.e["per_tag"]}
-        self.assertEqual(per["v0.0.8"]["issues"], [145])
         self.assertEqual(per["v0.0.9"]["issues"], [145, 150])
         self.assertEqual(per["v0.1.0"]["issues"], [150, 180])
-        self.assertEqual(self.e["attributions"], 5)
+        self.assertEqual(per["v0.1.1"]["issues"], [])
+        self.assertEqual(per["v0.1.2"]["issues"], [])   # #291 was opened 31 minutes BEFORE the tag
+        self.assertEqual(self.e["attributions"], 4)
         self.assertEqual(self.e["distinct"], 3)
         self.assertEqual(per["v0.0.9"]["window_end"], "2026-07-14T03:18:08Z")
 
@@ -474,7 +512,7 @@ class TestEscapedDefects(unittest.TestCase):
         self.assertIn(150, per["v0.0.9"]["issues"])   # created exactly at tag + 7 days
 
     def test_outside_and_label_coverage(self):
-        self.assertEqual(self.e["outside_any_window"], [37])
+        self.assertEqual(self.e["outside_any_window"], [37, 291])
         self.assertEqual(self.e["label_coverage"]["fix_titled_unlabelled"], [148])
 
     def test_pull_requests_ignored(self):
@@ -501,28 +539,55 @@ class TestCiEndToEnd(unittest.TestCase):
             self.assertEqual(stats["repo"], "x/y")
             self.assertEqual(stats["window"]["since"], "2026-07-01")
             self.assertEqual(stats["window"]["source"], "fixture")
-            self.assertEqual(stats["flake"]["rate"], 0.2)
-            self.assertEqual(stats["flake"]["denominator"], 5)
+            self.assertAlmostEqual(stats["flake"]["rate"], 2 / 6)
+            self.assertEqual(stats["flake"]["denominator"], 6)
             self.assertEqual(stats["flake"]["excluded"], {"cancelled": 1, "in_progress": 1, "skipped": 0})
-            self.assertEqual([f["run_id"] for f in stats["flake"]["flakes"]], [2])
+            self.assertEqual([f["run_id"] for f in stats["flake"]["flakes"]], [FLAKE_CARGO, FLAKE_VITEST])
             self.assertEqual(stats["flake"]["reruns_of_green"], [3])
-            self.assertEqual([b["run_id"] for b in stats["flake"]["breakage"]], [4])
-            self.assertEqual(stats["duration"][MAC], {"n": 5, "p50_s": 640, "p90_s": 700})
-            self.assertEqual(stats["duration"][LIN], {"n": 1, "p50_s": 30, "p90_s": 30})
+            self.assertEqual([b["run_id"] for b in stats["flake"]["breakage"]], [BREAK_VITEST])
+            self.assertEqual(stats["duration"][MAC], {"n": 6, "p50_s": 640, "p90_s": 703})
+            self.assertEqual(stats["duration"][LIN], {"n": 4, "p50_s": 28, "p90_s": 29})
             rel = {t["tag"]: t for t in stats["releases"]["per_tag"]}
             self.assertEqual((rel["v0.1.0"]["pipeline_s"], rel["v0.1.0"]["signoff_s"], rel["v0.1.0"]["lead_s"],
                               rel["v0.1.0"]["commit_to_published_s"], rel["v0.1.0"]["smoke"]),
                              (700, 504, 1204, 1930, "n/a"))
             self.assertEqual(rel["v0.0.9"]["run_started_at"], "2026-07-07T03:19:54Z")
-            self.assertEqual(stats["releases"]["median_lead_s"], {"n": 3, "value": 1196})
-            self.assertEqual(stats["releases"]["smoke"], {"pass": 1, "fail": 0, "na": 2})
+            self.assertEqual(stats["releases"]["median_lead_s"], {"n": 4, "value": 1204})
+            self.assertEqual(stats["releases"]["smoke"], {"pass": 1, "fail": 0, "na": 3})
             esc = {t["tag"]: t["issues"] for t in stats["escaped_defects"]["per_tag"]}
-            self.assertEqual(esc, {"v0.0.8": [145], "v0.0.9": [145, 150], "v0.1.0": [150, 180]})
-            self.assertEqual(stats["escaped_defects"]["attributions"], 5)
+            self.assertEqual(esc, {"v0.0.9": [145, 150], "v0.1.0": [150, 180], "v0.1.1": [], "v0.1.2": []})
+            self.assertEqual(stats["escaped_defects"]["attributions"], 4)
             self.assertEqual(stats["escaped_defects"]["distinct"], 3)
-            self.assertEqual(stats["escaped_defects"]["outside_any_window"], [37])
+            self.assertEqual(stats["escaped_defects"]["outside_any_window"], [37, 291])
             self.assertEqual(stats["escaped_defects"]["label_coverage"]["fix_titled_unlabelled"], [148])
             self.assertNotIn("repo-stats.md", os.listdir(out))   # --ci replaces the codebase report
+            # The whole object, against the golden file (clock-dependent fields normalised).
+            golden = json.loads((FIXTURES / "expected-ci-stats.json").read_text(encoding="utf-8"))
+            for d in (stats, golden):
+                d["generated_at"] = d["window"]["until"] = "<clock>"
+            self.assertEqual(stats, golden)
+
+    def test_default_window_and_invalid_since(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp) / "reports"
+            rs._now_override = datetime(2026, 9, 4, 2, 3, 44, tzinfo=timezone.utc)
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    rc = rs.main(["--ci", "--ci-fixtures", str(FIXTURES), "--repo", "x/y", "--out", str(out)])
+            finally:
+                rs._now_override = None
+            self.assertEqual(rc, 0)
+            stats = json.loads((out / "ci-stats.json").read_text(encoding="utf-8"))
+            self.assertEqual(stats["window"], {"since": "2026-06-06", "until": "2026-09-04T02:03:44Z", "source": "fixture"})
+            self.assertEqual(stats["generated_at"], "2026-09-04T02:03:44Z")
+            # the schedule path (no --since) reaches back to June: run 9 (2026-06-20) joins the denominator
+            self.assertEqual(stats["flake"]["denominator"], 7)
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                rc = rs.main(["--ci", "--ci-fixtures", str(FIXTURES), "--repo", "x/y", "--out", str(out),
+                              "--since", "07/01/2026"])
+            self.assertEqual(rc, 2)
+            self.assertIn("--since expects YYYY-MM-DD", err.getvalue())
 
 
 class TestWeeklyWorkflow(unittest.TestCase):

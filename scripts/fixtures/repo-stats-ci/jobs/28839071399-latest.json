@@ -1,0 +1,328 @@
+[
+  {
+    "total_count": 3,
+    "jobs": [
+      {
+        "id": 85529041359,
+        "run_id": 28839071399,
+        "run_attempt": 1,
+        "name": "build macos (signs + notarizes when configured)",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-07-07T03:19:56Z",
+        "completed_at": "2026-07-07T03:21:59Z",
+        "html_url": "https://github.com/xinquan568/termixion/actions/runs/28839071399/job/85529041359",
+        "steps": [
+          {
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 1
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 2
+          },
+          {
+            "name": "Signing mode (all six Apple secrets = signed; none = unsigned alpha; partial = fail)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 3
+          },
+          {
+            "name": "Install the pinned toolchain (rust-toolchain.toml)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 4
+          },
+          {
+            "name": "Run Swatinem/rust-cache@v2",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 5
+          },
+          {
+            "name": "Run pnpm/action-setup@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 6
+          },
+          {
+            "name": "Run actions/setup-node@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 7
+          },
+          {
+            "name": "Install frontend deps",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 8
+          },
+          {
+            "name": "Bootstrap cargo-tauri (\u00a72.4)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 9
+          },
+          {
+            "name": "Release metadata + tag gate",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 10
+          },
+          {
+            "name": "Build, sign + notarize (tauri-action \u2014 signed mode)",
+            "status": "completed",
+            "conclusion": "skipped",
+            "number": 11
+          },
+          {
+            "name": "Build (tauri-action \u2014 unsigned personal-alpha mode, trmx-49)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 12
+          },
+          {
+            "name": "Verify artifact (stapler + Gatekeeper when signed; existence when unsigned)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 13
+          },
+          {
+            "name": "Stage + upload macOS artifacts",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 14
+          },
+          {
+            "name": "Run actions/upload-artifact@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 15
+          },
+          {
+            "name": "Post Run actions/setup-node@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 27
+          },
+          {
+            "name": "Post Run pnpm/action-setup@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 28
+          },
+          {
+            "name": "Post Run Swatinem/rust-cache@v2",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 29
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 30
+          },
+          {
+            "name": "Complete job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 31
+          }
+        ]
+      },
+      {
+        "id": 85529041385,
+        "run_id": 28839071399,
+        "run_attempt": 1,
+        "name": "build linux (x86_64 AppImage + .deb)",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-07-07T03:19:57Z",
+        "completed_at": "2026-07-07T03:32:28Z",
+        "html_url": "https://github.com/xinquan568/termixion/actions/runs/28839071399/job/85529041385",
+        "steps": [
+          {
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 1
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 2
+          },
+          {
+            "name": "Install Tauri Linux system deps (webkit2gtk 4.1 + gtk)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 3
+          },
+          {
+            "name": "Install the pinned toolchain (rust-toolchain.toml)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 4
+          },
+          {
+            "name": "Run Swatinem/rust-cache@v2",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 5
+          },
+          {
+            "name": "Run pnpm/action-setup@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 6
+          },
+          {
+            "name": "Run actions/setup-node@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 7
+          },
+          {
+            "name": "Install frontend deps",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 8
+          },
+          {
+            "name": "Bootstrap cargo-tauri (\u00a72.4)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 9
+          },
+          {
+            "name": "Release metadata + tag gate",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 10
+          },
+          {
+            "name": "Build (tauri-action \u2014 appimage + deb, signed updater tarball)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 11
+          },
+          {
+            "name": "Validate the .deb dependency metadata",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 12
+          },
+          {
+            "name": "Stage + upload Linux artifacts",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 13
+          },
+          {
+            "name": "Run actions/upload-artifact@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 14
+          },
+          {
+            "name": "Post Run actions/setup-node@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 25
+          },
+          {
+            "name": "Post Run pnpm/action-setup@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 26
+          },
+          {
+            "name": "Post Run Swatinem/rust-cache@v2",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 27
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 28
+          },
+          {
+            "name": "Complete job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 29
+          }
+        ]
+      },
+      {
+        "id": 85530431376,
+        "run_id": 28839071399,
+        "run_attempt": 1,
+        "name": "publish draft release (both platforms + merged latest.json)",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-07-07T03:32:31Z",
+        "completed_at": "2026-07-07T03:32:50Z",
+        "html_url": "https://github.com/xinquan568/termixion/actions/runs/28839071399/job/85530431376",
+        "steps": [
+          {
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 1
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 2
+          },
+          {
+            "name": "Run actions/download-artifact@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 3
+          },
+          {
+            "name": "Run actions/download-artifact@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 4
+          },
+          {
+            "name": "Assemble merged updater manifest (latest.json \u2014 darwin-aarch64 + linux-x86_64)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 5
+          },
+          {
+            "name": "Publish draft release (both installers + updater artifacts + latest.json)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 6
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 12
+          },
+          {
+            "name": "Complete job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 13
+          }
+        ]
+      }
+    ]
+  }
+]

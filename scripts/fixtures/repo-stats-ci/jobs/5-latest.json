@@ -1,0 +1,26 @@
+[
+  {
+    "total_count": 1,
+    "jobs": [
+      {
+        "id": 51,
+        "run_id": 5,
+        "run_attempt": 1,
+        "name": "full gate (macos)",
+        "status": "completed",
+        "conclusion": "cancelled",
+        "started_at": "2026-07-09T10:00:10Z",
+        "completed_at": "2026-07-09T10:00:50Z",
+        "html_url": "https://github.com/x/y/actions/runs/5/job/51",
+        "steps": [
+          {
+            "name": "cargo test (workspace)",
+            "status": "completed",
+            "conclusion": "cancelled",
+            "number": 1
+          }
+        ]
+      }
+    ]
+  }
+]

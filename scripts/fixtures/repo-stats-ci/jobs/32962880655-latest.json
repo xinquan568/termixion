@@ -1,0 +1,523 @@
+[
+  {
+    "total_count": 6,
+    "jobs": [
+      {
+        "id": 98164505118,
+        "run_id": 32962880655,
+        "run_attempt": 2,
+        "name": "full gate (macos)",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-08-26T11:42:33Z",
+        "completed_at": "2026-08-26T11:54:16Z",
+        "html_url": "https://github.com/xinquan568/termixion/actions/runs/32962880655/job/98164505118",
+        "steps": [
+          {
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 1
+          },
+          {
+            "name": "Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 2
+          },
+          {
+            "name": "Install the pinned toolchain (rust-toolchain.toml)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 3
+          },
+          {
+            "name": "Run Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 4
+          },
+          {
+            "name": "Run pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 5
+          },
+          {
+            "name": "Run actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 6
+          },
+          {
+            "name": "Install frontend deps",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 7
+          },
+          {
+            "name": "Cache cargo-tauri 2.11.3",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 8
+          },
+          {
+            "name": "Bootstrap cargo-tauri (\u00a72.4; no-op when cached)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 9
+          },
+          {
+            "name": "cargo fmt",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 10
+          },
+          {
+            "name": "cargo clippy",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 11
+          },
+          {
+            "name": "pnpm lint",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 12
+          },
+          {
+            "name": "cargo test (workspace \u2014 incl. macOS PTY + integration)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 13
+          },
+          {
+            "name": "pnpm test (vitest)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 14
+          },
+          {
+            "name": "Fetch Starship sidecar (trmx-207)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 15
+          },
+          {
+            "name": "Build the packaged app (debug)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 16
+          },
+          {
+            "name": "Packaged app --smoke (authoritative E2E)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 17
+          },
+          {
+            "name": "Cache Playwright browsers",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 18
+          },
+          {
+            "name": "Install Playwright Chromium (no-op when cached)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 19
+          },
+          {
+            "name": "Playwright webview component test (dev server)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 20
+          },
+          {
+            "name": "Footprint (advisory)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 21
+          },
+          {
+            "name": "Post Cache Playwright browsers",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 37
+          },
+          {
+            "name": "Post Cache cargo-tauri 2.11.3",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 38
+          },
+          {
+            "name": "Post Run actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 39
+          },
+          {
+            "name": "Post Run pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 40
+          },
+          {
+            "name": "Post Run Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 41
+          },
+          {
+            "name": "Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 42
+          },
+          {
+            "name": "Complete job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 43
+          }
+        ]
+      },
+      {
+        "id": 98164506283,
+        "run_id": 32962880655,
+        "run_attempt": 2,
+        "name": "secret scan (R5)",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-08-26T11:21:10Z",
+        "completed_at": "2026-08-26T11:21:14Z",
+        "html_url": "https://github.com/xinquan568/termixion/actions/runs/32962880655/job/98164506283",
+        "steps": [
+          {
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 1
+          },
+          {
+            "name": "Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 2
+          },
+          {
+            "name": "secret-scan over the PR diff",
+            "status": "completed",
+            "conclusion": "skipped",
+            "number": 3
+          },
+          {
+            "name": "secret-scan over the pushed range",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 4
+          },
+          {
+            "name": "Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 8
+          },
+          {
+            "name": "Complete job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 9
+          }
+        ]
+      },
+      {
+        "id": 98164506937,
+        "run_id": 32962880655,
+        "run_attempt": 2,
+        "name": "core tests (linux)",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-08-26T11:21:10Z",
+        "completed_at": "2026-08-26T11:21:39Z",
+        "html_url": "https://github.com/xinquan568/termixion/actions/runs/32962880655/job/98164506937",
+        "steps": [
+          {
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 1
+          },
+          {
+            "name": "Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 2
+          },
+          {
+            "name": "Install the pinned toolchain (rust-toolchain.toml)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 3
+          },
+          {
+            "name": "Run Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 4
+          },
+          {
+            "name": "cargo test (termixion-core)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 5
+          },
+          {
+            "name": "Post Run Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 9
+          },
+          {
+            "name": "Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 10
+          },
+          {
+            "name": "Complete job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 11
+          }
+        ]
+      },
+      {
+        "id": 98164506958,
+        "run_id": 32962880655,
+        "run_attempt": 2,
+        "name": "dependency audit (cargo deny + pnpm audit)",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-08-26T11:21:10Z",
+        "completed_at": "2026-08-26T11:23:39Z",
+        "html_url": "https://github.com/xinquan568/termixion/actions/runs/32962880655/job/98164506958",
+        "steps": [
+          {
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 1
+          },
+          {
+            "name": "Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 2
+          },
+          {
+            "name": "Install the pinned toolchain (rust-toolchain.toml)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 3
+          },
+          {
+            "name": "Run Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 4
+          },
+          {
+            "name": "Install cargo-deny 0.20.2 (skipped when the cached binary already matches)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 5
+          },
+          {
+            "name": "cargo deny check (deny.toml)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 6
+          },
+          {
+            "name": "Run pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 7
+          },
+          {
+            "name": "Run actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 8
+          },
+          {
+            "name": "pnpm audit (prod, high and above)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 9
+          },
+          {
+            "name": "Post Run actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 15
+          },
+          {
+            "name": "Post Run pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 16
+          },
+          {
+            "name": "Post Run Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 17
+          },
+          {
+            "name": "Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 18
+          },
+          {
+            "name": "Complete job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 19
+          }
+        ]
+      },
+      {
+        "id": 98164542368,
+        "run_id": 32962880655,
+        "run_attempt": 2,
+        "name": "core seam guard (required)",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-08-26T11:21:12Z",
+        "completed_at": "2026-08-26T11:21:37Z",
+        "html_url": "https://github.com/xinquan568/termixion/actions/runs/32962880655/job/98164542368",
+        "steps": [
+          {
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 1
+          },
+          {
+            "name": "Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 2
+          },
+          {
+            "name": "Install the pinned toolchain (rust-toolchain.toml)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 3
+          },
+          {
+            "name": "Run Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 4
+          },
+          {
+            "name": "core seam guard (forbidden-dep + no platform cfg / std::os)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 5
+          },
+          {
+            "name": "Post Run Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 9
+          },
+          {
+            "name": "Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 10
+          },
+          {
+            "name": "Complete job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 11
+          }
+        ]
+      },
+      {
+        "id": 98164544865,
+        "run_id": 32962880655,
+        "run_attempt": 2,
+        "name": "shell integration (shellcheck)",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-08-26T11:21:10Z",
+        "completed_at": "2026-08-26T11:21:31Z",
+        "html_url": "https://github.com/xinquan568/termixion/actions/runs/32962880655/job/98164544865",
+        "steps": [
+          {
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 1
+          },
+          {
+            "name": "Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 2
+          },
+          {
+            "name": "Install zsh (for the zsh half of the source-and-assert test)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 3
+          },
+          {
+            "name": "shellcheck the bash snippet, the test, and the secret-scan scripts",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 4
+          },
+          {
+            "name": "source-and-assert (idempotency, hook preservation, $?-capture)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 5
+          },
+          {
+            "name": "secret-scan self-test (range mode detects a planted token; bad range fails loudly)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 6
+          },
+          {
+            "name": "repo-stats unit tests (trmx-213)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 7
+          },
+          {
+            "name": "Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 14
+          },
+          {
+            "name": "Complete job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 15
+          }
+        ]
+      }
+    ]
+  }
+]

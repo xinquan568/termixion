@@ -1,31 +1,40 @@
 [
   [
     {
+      "tag_name": "v0.1.2",
+      "name": "Termixion v0.1.2",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2026-08-29T11:43:37Z",
+      "published_at": "2026-08-29T14:29:38Z",
+      "html_url": "https://github.com/xinquan568/termixion/releases/tag/v0.1.2"
+    },
+    {
+      "tag_name": "v0.1.1",
+      "name": "Termixion v0.1.1",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2026-08-02T03:28:30Z",
+      "published_at": "2026-08-02T05:29:34Z",
+      "html_url": "https://github.com/xinquan568/termixion/releases/tag/v0.1.1"
+    },
+    {
       "tag_name": "v0.1.0",
-      "name": "v0.1.0",
+      "name": "Termixion v0.1.0",
       "draft": false,
       "prerelease": false,
       "created_at": "2026-07-10T00:35:37Z",
       "published_at": "2026-07-10T01:07:47Z",
-      "html_url": "https://github.com/x/y/releases/tag/v0.1.0"
+      "html_url": "https://github.com/xinquan568/termixion/releases/tag/v0.1.0"
     },
     {
       "tag_name": "v0.0.9",
-      "name": "v0.0.9",
+      "name": "Termixion v0.0.9",
       "draft": false,
       "prerelease": false,
       "created_at": "2026-07-07T03:18:08Z",
       "published_at": "2026-07-07T03:39:11Z",
-      "html_url": "https://github.com/x/y/releases/tag/v0.0.9"
-    },
-    {
-      "tag_name": "v0.0.8",
-      "name": "v0.0.8",
-      "draft": false,
-      "prerelease": false,
-      "created_at": "2026-07-06T08:15:22Z",
-      "published_at": "2026-07-06T08:52:07Z",
-      "html_url": "https://github.com/x/y/releases/tag/v0.0.8"
+      "html_url": "https://github.com/xinquan568/termixion/releases/tag/v0.0.9"
     },
     {
       "tag_name": "v9.9.9",

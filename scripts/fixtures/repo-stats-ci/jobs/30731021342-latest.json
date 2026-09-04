@@ -1,0 +1,201 @@
+[
+  {
+    "total_count": 2,
+    "jobs": [
+      {
+        "id": 91451369135,
+        "run_id": 30731021342,
+        "run_attempt": 1,
+        "name": "build macos (signs + notarizes when configured)",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-08-02T03:40:17Z",
+        "completed_at": "2026-08-02T03:49:48Z",
+        "html_url": "https://github.com/xinquan568/termixion/actions/runs/30731021342/job/91451369135",
+        "steps": [
+          {
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 1
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 2
+          },
+          {
+            "name": "Signing mode (all six Apple secrets = signed; none = unsigned alpha; partial = fail)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 3
+          },
+          {
+            "name": "Install the pinned toolchain (rust-toolchain.toml)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 4
+          },
+          {
+            "name": "Run Swatinem/rust-cache@v2",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 5
+          },
+          {
+            "name": "Run pnpm/action-setup@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 6
+          },
+          {
+            "name": "Run actions/setup-node@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 7
+          },
+          {
+            "name": "Install frontend deps",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 8
+          },
+          {
+            "name": "Bootstrap cargo-tauri (\u00a72.4)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 9
+          },
+          {
+            "name": "Release metadata + tag gate",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 10
+          },
+          {
+            "name": "Fetch Starship sidecar (trmx-207)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 11
+          },
+          {
+            "name": "Build, sign + notarize (tauri-action \u2014 signed mode)",
+            "status": "completed",
+            "conclusion": "skipped",
+            "number": 12
+          },
+          {
+            "name": "Build (tauri-action \u2014 unsigned personal-alpha mode, trmx-49)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 13
+          },
+          {
+            "name": "Verify artifact (stapler + Gatekeeper when signed; existence when unsigned)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 14
+          },
+          {
+            "name": "Stage + upload macOS artifacts",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 15
+          },
+          {
+            "name": "Run actions/upload-artifact@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 16
+          },
+          {
+            "name": "Post Run actions/setup-node@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 29
+          },
+          {
+            "name": "Post Run pnpm/action-setup@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 30
+          },
+          {
+            "name": "Post Run Swatinem/rust-cache@v2",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 31
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 32
+          },
+          {
+            "name": "Complete job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 33
+          }
+        ]
+      },
+      {
+        "id": 91452078975,
+        "run_id": 30731021342,
+        "run_attempt": 1,
+        "name": "publish draft release (macOS + latest.json)",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-08-02T03:49:51Z",
+        "completed_at": "2026-08-02T03:50:03Z",
+        "html_url": "https://github.com/xinquan568/termixion/actions/runs/30731021342/job/91452078975",
+        "steps": [
+          {
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 1
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 2
+          },
+          {
+            "name": "Run actions/download-artifact@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 3
+          },
+          {
+            "name": "Assemble updater manifest (latest.json \u2014 darwin-aarch64)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 4
+          },
+          {
+            "name": "Publish draft release (installer + updater artifacts + latest.json)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 5
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 10
+          },
+          {
+            "name": "Complete job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 11
+          }
+        ]
+      }
+    ]
+  }
+]

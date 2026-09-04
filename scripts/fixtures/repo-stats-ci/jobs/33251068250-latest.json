@@ -1,0 +1,268 @@
+[
+  {
+    "total_count": 3,
+    "jobs": [
+      {
+        "id": 99096712045,
+        "run_id": 33251068250,
+        "run_attempt": 1,
+        "name": "require green main CI for this commit (required before building)",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-08-29T11:50:43Z",
+        "completed_at": "2026-08-29T11:50:51Z",
+        "html_url": "https://github.com/xinquan568/termixion/actions/runs/33251068250/job/99096712045",
+        "steps": [
+          {
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 1
+          },
+          {
+            "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 2
+          },
+          {
+            "name": "Require a green push-to-main ci.yml run for this commit",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 3
+          },
+          {
+            "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 6
+          },
+          {
+            "name": "Complete job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 7
+          }
+        ]
+      },
+      {
+        "id": 99096730008,
+        "run_id": 33251068250,
+        "run_attempt": 1,
+        "name": "build macos (signs + notarizes when configured)",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-08-29T11:50:53Z",
+        "completed_at": "2026-08-29T11:54:43Z",
+        "html_url": "https://github.com/xinquan568/termixion/actions/runs/33251068250/job/99096730008",
+        "steps": [
+          {
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 1
+          },
+          {
+            "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 2
+          },
+          {
+            "name": "Signing mode (all six Apple secrets = signed; none = unsigned alpha; partial = fail)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 3
+          },
+          {
+            "name": "Install the pinned toolchain (rust-toolchain.toml)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 4
+          },
+          {
+            "name": "Run Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 5
+          },
+          {
+            "name": "Run pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 6
+          },
+          {
+            "name": "Run actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 7
+          },
+          {
+            "name": "Install frontend deps",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 8
+          },
+          {
+            "name": "Cache cargo-tauri 2.11.3",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 9
+          },
+          {
+            "name": "Bootstrap cargo-tauri (\u00a72.4; no-op when cached)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 10
+          },
+          {
+            "name": "Release metadata + tag gate",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 11
+          },
+          {
+            "name": "Fetch Starship sidecar (trmx-207)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 12
+          },
+          {
+            "name": "Build, sign + notarize (tauri-action \u2014 signed mode)",
+            "status": "completed",
+            "conclusion": "skipped",
+            "number": 13
+          },
+          {
+            "name": "Build (tauri-action \u2014 unsigned personal-alpha mode, trmx-49)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 14
+          },
+          {
+            "name": "Smoke the RELEASE bundle (launches the app + drives a real PTY)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 15
+          },
+          {
+            "name": "Upload the release smoke log",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 16
+          },
+          {
+            "name": "Verify artifact (stapler + Gatekeeper when signed; existence when unsigned)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 17
+          },
+          {
+            "name": "Stage + upload macOS artifacts",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 18
+          },
+          {
+            "name": "Run actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 19
+          },
+          {
+            "name": "Post Cache cargo-tauri 2.11.3",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 34
+          },
+          {
+            "name": "Post Run actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 35
+          },
+          {
+            "name": "Post Run pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 36
+          },
+          {
+            "name": "Post Run Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 37
+          },
+          {
+            "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 38
+          },
+          {
+            "name": "Complete job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 39
+          }
+        ]
+      },
+      {
+        "id": 99097111520,
+        "run_id": 33251068250,
+        "run_attempt": 1,
+        "name": "publish draft release (macOS + latest.json)",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-08-29T11:54:46Z",
+        "completed_at": "2026-08-29T11:54:57Z",
+        "html_url": "https://github.com/xinquan568/termixion/actions/runs/33251068250/job/99097111520",
+        "steps": [
+          {
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 1
+          },
+          {
+            "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 2
+          },
+          {
+            "name": "Run actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 3
+          },
+          {
+            "name": "Assemble updater manifest (latest.json \u2014 darwin-aarch64)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 4
+          },
+          {
+            "name": "Publish draft release (installer + updater artifacts + latest.json)",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 5
+          },
+          {
+            "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 10
+          },
+          {
+            "name": "Complete job",
+            "status": "completed",
+            "conclusion": "success",
+            "number": 11
+          }
+        ]
+      }
+    ]
+  }
+]

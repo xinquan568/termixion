@@ -30,6 +30,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Protocol
 
 LANG_BY_EXT = {
     "rs": "Rust",
@@ -589,11 +590,18 @@ def percentile(values, p: int):
 def decode_pages(pages, key: str | None):
     """What `gh api --paginate --slurp` returns is an array of pages: envelopes (`workflow_runs`,
     `jobs`) are concatenated by `key`; bare-array pages are concatenated; a single-object page
-    (an attempt) is returned as the object. Both sources go through here."""
+    (an attempt) is returned as the object. Both sources go through here, and it FAILS CLOSED: a
+    page that is not the expected envelope raises instead of decoding to "no rows" — a silently
+    empty page would print a plausible zero-flake report."""
+    if not isinstance(pages, list):
+        raise ValueError(f"gh api --slurp should return an array of pages, got {type(pages).__name__}")
     if key is not None:
         out = []
-        for page in pages:
-            out.extend(page.get(key, []))
+        for n, page in enumerate(pages, 1):
+            if not isinstance(page, dict) or not isinstance(page.get(key), list):
+                raise ValueError(f"page {n}: expected an object with a {key!r} list, "
+                                 f"got {sorted(page) if isinstance(page, dict) else type(page).__name__}")
+            out.extend(page[key])
         return out
     if not pages:
         return []
@@ -642,6 +650,19 @@ def _run_gh(argv: list[str]):
     """The one subprocess edge of --ci: gh's stdout is the slurped page array."""
     out = subprocess.run(argv, capture_output=True, check=True).stdout
     return json.loads(out.decode("utf-8"))
+
+
+class CiSource(Protocol):
+    """The one seam of --ci: six reads, each returning decoded JSON (lists, or a run object)."""
+
+    kind: str
+
+    def ci_runs(self, since: str) -> list: ...
+    def run_attempt(self, run_id: int, attempt: int) -> dict: ...
+    def run_jobs(self, run_id: int, attempt: int | None = None) -> list: ...
+    def release_runs(self) -> list: ...
+    def releases(self) -> list: ...
+    def issues(self) -> list: ...
 
 
 class GhSource:
@@ -729,7 +750,7 @@ def _git_remote_url(root: Path) -> str | None:
         return None
 
 
-def ci_window(runs, since: datetime) -> dict:
+def ci_window(runs: list, since: datetime) -> dict:
     """Provenance re-applied (the predicates of scripts/check-main-ci-green.sh) plus the window;
     the denominator is the completed, non-cancelled, non-skipped runs; the rest is counted."""
     denominator = []
@@ -762,10 +783,10 @@ def _run_ref(r) -> dict:
     return {"run_id": r["id"], "created_at": r["created_at"], "url": r.get("html_url")}
 
 
-def compute_flake(denominator, source) -> dict:
+def compute_flake(denominator: list, source: CiSource) -> dict:
     """A flake is a run whose attempt 1 failed and whose re-run succeeded, attributed to the
     attempt-1 failing jobs/steps. A re-run of an already-green run is listed apart. Breakage is a
-    run that ended red (fixed by a follow-up push rather than a re-run)."""
+    run that ended red and was not re-run — whether a later push fixed it is not inferred."""
     flakes, reruns_of_green, breakage = [], [], []
     for r in denominator:
         final = r.get("conclusion")
@@ -782,7 +803,7 @@ def compute_flake(denominator, source) -> dict:
             "reruns_of_green": reruns_of_green, "breakage": breakage}
 
 
-def compute_durations(denominator, source) -> dict:
+def compute_durations(denominator: list, source: CiSource) -> dict:
     """Per job name over the latest attempt of every denominator run: every completed job with
     both timestamps counts (failed included — it is wall time the gate spent); skipped and
     unfinished jobs do not. Nearest-rank p50/p90 in whole seconds; the full gate listed first."""
@@ -820,7 +841,7 @@ def _seconds(a: datetime | None, b: datetime | None):
     return int((b - a).total_seconds()) if a is not None and b is not None else None
 
 
-def compute_releases(source) -> dict:
+def compute_releases(source: CiSource) -> dict:
     """Per non-draft v-tag: tag push = release.yml run start; pipeline = run start -> last job
     complete; sign-off = last job -> published_at (the human publishing the draft); lead = run
     start -> published_at; commit -> published from the release's created_at (lightweight tags
@@ -870,7 +891,7 @@ def _has_label(issue, name: str) -> bool:
     return any(lbl.get("name") == name for lbl in issue.get("labels", []))
 
 
-def compute_escaped_defects(releases, issues) -> dict:
+def compute_escaped_defects(releases: list, issues: list) -> dict:
     """The issue's literal rule (ESCAPED_RULE); PR items are dropped; the label-coverage caveat
     lists fix/bug-titled issues that carry no `bug` label."""
     plain = [i for i in issues if "pull_request" not in i]
@@ -895,7 +916,7 @@ def compute_escaped_defects(releases, issues) -> dict:
     }
 
 
-def analyze_ci(source, repo: str, since: datetime, until: datetime) -> dict:
+def analyze_ci(source: CiSource, repo: str, since: datetime, until: datetime) -> dict:
     window = ci_window(source.ci_runs(since.strftime("%Y-%m-%d")), since)
     flake = compute_flake(window["denominator"], source)
     flake["excluded"] = window["excluded"]
@@ -962,8 +983,9 @@ def render_ci_markdown(s: dict) -> str:
     L.append("Re-runs of an already-green run (not flakes): "
              + (", ".join(str(i) for i in f["reruns_of_green"]) or "none") + ".")
     L.append("")
-    L.append(f"Breakage — {len(f['breakage'])} run(s) that ended red and were fixed by a follow-up push, not a re-run "
-             "(not flakes; shown so a low flake rate is not read as a green main):")
+    L.append(f"Breakage — {len(f['breakage'])} run(s) that ended red and were not re-run "
+             "(not flakes by definition; whether a later push fixed them is not inferred; shown so a low flake "
+             "rate is not read as a green main):")
     L.append("")
     L.append("| Run | Created | Failing job: steps |")
     L.append("|---|---|---|")
@@ -1035,18 +1057,26 @@ def ci_json(s: dict) -> str:
     return json.dumps(s, indent=2) + "\n"
 
 
-def _main_ci(args, root: Path, out_dir: Path) -> int:
+DEFAULT_WINDOW_DAYS = 90
+
+
+def resolve_since(flag: str | None, now: datetime) -> datetime:
+    """--since YYYY-MM-DD (midnight UTC), else midnight UTC `DEFAULT_WINDOW_DAYS` days before `now`.
+    Raises ValueError for a malformed date."""
+    if flag:
+        return datetime.strptime(flag, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    return (now - timedelta(days=DEFAULT_WINDOW_DAYS)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _main_ci(args, root: Path, out_dir: Path, now: datetime | None = None) -> int:
     if args.format != "both":
         print("repo-stats: --format is ignored under --ci (Markdown + JSON are always written)", file=sys.stderr)
-    now = datetime.now(timezone.utc).replace(microsecond=0)
-    if args.since:
-        try:
-            since = datetime.strptime(args.since, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        except ValueError:
-            print(f"repo-stats: --since expects YYYY-MM-DD, got {args.since!r}", file=sys.stderr)
-            return 2
-    else:
-        since = (now - timedelta(days=90)).replace(hour=0, minute=0, second=0)
+    now = now or datetime.now(timezone.utc).replace(microsecond=0)
+    try:
+        since = resolve_since(args.since, now)
+    except ValueError:
+        print(f"repo-stats: --since expects YYYY-MM-DD, got {args.since!r}", file=sys.stderr)
+        return 2
     repo = resolve_repo(args.repo, os.environ, _git_remote_url(root))
     if not repo:
         print("repo-stats: cannot determine the repository — pass --repo owner/name", file=sys.stderr)
@@ -1059,6 +1089,9 @@ def _main_ci(args, root: Path, out_dir: Path) -> int:
     print(md, end="" if md.endswith("\n") else "\n")
     print(f"repo-stats --ci: wrote {out_dir / 'ci-stats.md'} and {out_dir / 'ci-stats.json'}", file=sys.stderr)
     return 0
+
+
+_now_override: datetime | None = None   # tests pin the clock through this seam
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1084,7 +1117,7 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = Path(args.out) if args.out else root / "reports" / "repo-stats"
     out_dir.mkdir(parents=True, exist_ok=True)
     if args.ci:
-        return _main_ci(args, root, out_dir)
+        return _main_ci(args, root, out_dir, now=_now_override)
 
     stats = analyze(root)
     written = []

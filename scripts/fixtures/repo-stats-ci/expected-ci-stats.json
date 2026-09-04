@@ -1,0 +1,224 @@
+{
+  "schema": "termixion-ci-stats/1",
+  "generated_at": "2026-09-04T02:34:17Z",
+  "repo": "x/y",
+  "window": {
+    "since": "2026-07-01",
+    "until": "2026-09-04T02:34:17Z",
+    "source": "fixture"
+  },
+  "flake": {
+    "rate": 0.3333333333333333,
+    "denominator": 6,
+    "flakes": [
+      {
+        "run_id": 32962880655,
+        "created_at": "2026-08-26T11:21:07Z",
+        "url": "https://github.com/xinquan568/termixion/actions/runs/32962880655",
+        "jobs": [
+          {
+            "name": "full gate (macos)",
+            "steps": [
+              "cargo test (workspace \u2014 incl. macOS PTY + integration)"
+            ]
+          }
+        ]
+      },
+      {
+        "run_id": 33266632239,
+        "created_at": "2026-08-29T17:49:27Z",
+        "url": "https://github.com/xinquan568/termixion/actions/runs/33266632239",
+        "jobs": [
+          {
+            "name": "full gate (macos)",
+            "steps": [
+              "pnpm test (vitest)"
+            ]
+          }
+        ]
+      }
+    ],
+    "reruns_of_green": [
+      3
+    ],
+    "breakage": [
+      {
+        "run_id": 33248793732,
+        "created_at": "2026-08-29T10:51:58Z",
+        "url": "https://github.com/xinquan568/termixion/actions/runs/33248793732",
+        "jobs": [
+          {
+            "name": "full gate (macos)",
+            "steps": [
+              "pnpm test (vitest)"
+            ]
+          }
+        ]
+      }
+    ],
+    "excluded": {
+      "cancelled": 1,
+      "in_progress": 1,
+      "skipped": 0
+    }
+  },
+  "duration": {
+    "full gate (macos)": {
+      "n": 6,
+      "p50_s": 640,
+      "p90_s": 703
+    },
+    "core seam guard (required)": {
+      "n": 4,
+      "p50_s": 20,
+      "p90_s": 344
+    },
+    "core tests (linux)": {
+      "n": 4,
+      "p50_s": 28,
+      "p90_s": 29
+    },
+    "dependency audit (cargo deny + pnpm audit)": {
+      "n": 4,
+      "p50_s": 29,
+      "p90_s": 149
+    },
+    "secret scan (R5)": {
+      "n": 4,
+      "p50_s": 4,
+      "p90_s": 6
+    },
+    "shell integration (shellcheck)": {
+      "n": 4,
+      "p50_s": 29,
+      "p90_s": 36
+    }
+  },
+  "releases": {
+    "per_tag": [
+      {
+        "tag": "v0.0.9",
+        "commit_at": "2026-07-07T03:18:08Z",
+        "run_id": 28839071399,
+        "run_started_at": "2026-07-07T03:19:54Z",
+        "pipeline_done_at": "2026-07-07T03:32:50Z",
+        "published_at": "2026-07-07T03:39:11Z",
+        "pipeline_s": 776,
+        "signoff_s": 381,
+        "lead_s": 1157,
+        "commit_to_published_s": 1263,
+        "smoke": "n/a"
+      },
+      {
+        "tag": "v0.1.0",
+        "commit_at": "2026-07-10T00:35:37Z",
+        "run_id": 29060841656,
+        "run_started_at": "2026-07-10T00:47:43Z",
+        "pipeline_done_at": "2026-07-10T00:59:23Z",
+        "published_at": "2026-07-10T01:07:47Z",
+        "pipeline_s": 700,
+        "signoff_s": 504,
+        "lead_s": 1204,
+        "commit_to_published_s": 1930,
+        "smoke": "n/a"
+      },
+      {
+        "tag": "v0.1.1",
+        "commit_at": "2026-08-02T03:28:30Z",
+        "run_id": 30731021342,
+        "run_started_at": "2026-08-02T03:40:14Z",
+        "pipeline_done_at": "2026-08-02T03:50:03Z",
+        "published_at": "2026-08-02T05:29:34Z",
+        "pipeline_s": 589,
+        "signoff_s": 5971,
+        "lead_s": 6560,
+        "commit_to_published_s": 7264,
+        "smoke": "n/a"
+      },
+      {
+        "tag": "v0.1.2",
+        "commit_at": "2026-08-29T11:43:37Z",
+        "run_id": 33251068250,
+        "run_started_at": "2026-08-29T11:50:41Z",
+        "pipeline_done_at": "2026-08-29T11:54:57Z",
+        "published_at": "2026-08-29T14:29:38Z",
+        "pipeline_s": 256,
+        "signoff_s": 9281,
+        "lead_s": 9537,
+        "commit_to_published_s": 9961,
+        "smoke": "pass"
+      }
+    ],
+    "median_pipeline_s": {
+      "n": 4,
+      "value": 589
+    },
+    "median_signoff_s": {
+      "n": 4,
+      "value": 504
+    },
+    "median_lead_s": {
+      "n": 4,
+      "value": 1204
+    },
+    "median_commit_to_published_s": {
+      "n": 4,
+      "value": 1930
+    },
+    "smoke": {
+      "pass": 1,
+      "fail": 0,
+      "na": 3
+    }
+  },
+  "escaped_defects": {
+    "rule": "bug-labelled issues created within 7 days after the tag's commit date (both ends inclusive); windows may overlap, so one issue can count against several tags",
+    "per_tag": [
+      {
+        "tag": "v0.0.9",
+        "window_start": "2026-07-07T03:18:08Z",
+        "window_end": "2026-07-14T03:18:08Z",
+        "issues": [
+          145,
+          150
+        ],
+        "count": 2
+      },
+      {
+        "tag": "v0.1.0",
+        "window_start": "2026-07-10T00:35:37Z",
+        "window_end": "2026-07-17T00:35:37Z",
+        "issues": [
+          150,
+          180
+        ],
+        "count": 2
+      },
+      {
+        "tag": "v0.1.1",
+        "window_start": "2026-08-02T03:28:30Z",
+        "window_end": "2026-08-09T03:28:30Z",
+        "issues": [],
+        "count": 0
+      },
+      {
+        "tag": "v0.1.2",
+        "window_start": "2026-08-29T11:43:37Z",
+        "window_end": "2026-09-05T11:43:37Z",
+        "issues": [],
+        "count": 0
+      }
+    ],
+    "attributions": 4,
+    "distinct": 3,
+    "outside_any_window": [
+      37,
+      291
+    ],
+    "label_coverage": {
+      "fix_titled_unlabelled": [
+        148
+      ]
+    }
+  }
+}

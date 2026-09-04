@@ -1,0 +1,19 @@
+[
+  {
+    "id": 33266632239,
+    "name": "ci",
+    "run_number": 431,
+    "run_attempt": 1,
+    "event": "push",
+    "status": "completed",
+    "conclusion": "failure",
+    "workflow_id": 303209836,
+    "path": ".github/workflows/ci.yml",
+    "head_branch": "main",
+    "head_sha": "215aaa4018997ab73326e626958c46676dd157a5",
+    "created_at": "2026-08-29T17:49:27Z",
+    "run_started_at": "2026-08-29T17:49:27Z",
+    "updated_at": "2026-08-29T17:53:36Z",
+    "html_url": "https://github.com/xinquan568/termixion/actions/runs/33266632239"
+  }
+]
