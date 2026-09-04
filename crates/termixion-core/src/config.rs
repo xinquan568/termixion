@@ -606,145 +606,15 @@ pub fn toml_path_for(registry_key: &str) -> Option<(&'static str, &'static str)>
 }
 
 /// The registry pairs that changed between `old` and `new` (new values), registry-keyed,
-/// in schema order.
+/// in SCHEMA order.
 pub fn diff_configs(old: &Config, new: &Config) -> Vec<(String, RegistryValue)> {
-    let mut changed = Vec::new();
-    let mut push = |differs: bool, key: &str, value: RegistryValue| {
-        if differs {
-            changed.push((key.to_string(), value));
-        }
-    };
-    push(
-        old.update.auto_check != new.update.auto_check,
-        "update.autoCheck",
-        RegistryValue::Bool(new.update.auto_check),
-    );
-    push(
-        old.update.check_frequency != new.update.check_frequency,
-        "update.checkFrequency",
-        RegistryValue::Str(new.update.check_frequency.as_str().to_string()),
-    );
-    push(
-        old.update.auto_download != new.update.auto_download,
-        "update.autoDownload",
-        RegistryValue::Bool(new.update.auto_download),
-    );
-    push(
-        old.terminal.cursor_style != new.terminal.cursor_style,
-        "terminal.cursorStyle",
-        RegistryValue::Str(new.terminal.cursor_style.as_str().to_string()),
-    );
-    push(
-        old.terminal.cursor_blink != new.terminal.cursor_blink,
-        "terminal.cursorBlink",
-        RegistryValue::Bool(new.terminal.cursor_blink),
-    );
-    push(
-        old.terminal.scrollback_lines != new.terminal.scrollback_lines,
-        "terminal.scrollbackLines",
-        RegistryValue::Int(new.terminal.scrollback_lines),
-    );
-    push(
-        old.terminal.font_family != new.terminal.font_family,
-        "terminal.fontFamily",
-        RegistryValue::Str(new.terminal.font_family.clone()),
-    );
-    push(
-        old.terminal.font_size != new.terminal.font_size,
-        "terminal.fontSize",
-        RegistryValue::Int(new.terminal.font_size),
-    );
-    push(
-        old.terminal.activity_indicator != new.terminal.activity_indicator,
-        "terminal.activityIndicator",
-        RegistryValue::Bool(new.terminal.activity_indicator),
-    );
-    push(
-        old.terminal.copy_on_select != new.terminal.copy_on_select,
-        "terminal.copyOnSelect",
-        RegistryValue::Bool(new.terminal.copy_on_select),
-    );
-    push(
-        old.terminal.focus_follows_mouse != new.terminal.focus_follows_mouse,
-        "terminal.focusFollowsMouse",
-        RegistryValue::Bool(new.terminal.focus_follows_mouse),
-    );
-    push(
-        old.terminal.shell != new.terminal.shell,
-        "terminal.shell",
-        RegistryValue::Str(new.terminal.shell.clone()),
-    );
-    push(
-        old.shell.enhancements != new.shell.enhancements,
-        "shell.enhancements",
-        RegistryValue::Bool(new.shell.enhancements),
-    );
-    push(
-        old.shell.autosuggestions != new.shell.autosuggestions,
-        "shell.autosuggestions",
-        RegistryValue::Bool(new.shell.autosuggestions),
-    );
-    push(
-        old.shell.syntax_highlighting != new.shell.syntax_highlighting,
-        "shell.syntaxHighlighting",
-        RegistryValue::Bool(new.shell.syntax_highlighting),
-    );
-    push(
-        old.shell.prompt != new.shell.prompt,
-        "shell.prompt",
-        RegistryValue::Str(new.shell.prompt.as_str().to_string()),
-    );
-    push(
-        old.terminal.confirm_close != new.terminal.confirm_close,
-        "terminal.confirmClose",
-        RegistryValue::Str(new.terminal.confirm_close.as_str().to_string()),
-    );
-    push(
-        old.terminal.clipboard_write != new.terminal.clipboard_write,
-        "terminal.clipboardWrite",
-        RegistryValue::Str(new.terminal.clipboard_write.as_str().to_string()),
-    );
-    push(
-        old.appearance.theme != new.appearance.theme,
-        "appearance.theme",
-        RegistryValue::Str(new.appearance.theme.clone()),
-    );
-    push(
-        old.tabs.bar_position != new.tabs.bar_position,
-        "tabs.barPosition",
-        RegistryValue::Str(new.tabs.bar_position.as_str().to_string()),
-    );
-    push(
-        old.tabs.side_label_orientation != new.tabs.side_label_orientation,
-        "tabs.sideLabelOrientation",
-        RegistryValue::Str(new.tabs.side_label_orientation.as_str().to_string()),
-    );
-    push(
-        old.tabs.show_shortcut_hints != new.tabs.show_shortcut_hints,
-        "tabs.showShortcutHints",
-        RegistryValue::Bool(new.tabs.show_shortcut_hints),
-    );
-    push(
-        old.title_bar.ai_counter != new.title_bar.ai_counter,
-        "titleBar.aiCounter",
-        RegistryValue::Bool(new.title_bar.ai_counter),
-    );
-    push(
-        old.scripts.startup != new.scripts.startup,
-        "scripts.startup",
-        RegistryValue::Str(new.scripts.startup.clone()),
-    );
-    push(
-        old.remote_control.enabled != new.remote_control.enabled,
-        "remote_control.enabled",
-        RegistryValue::Bool(new.remote_control.enabled),
-    );
-    push(
-        old.remote_control.socket_path != new.remote_control.socket_path,
-        "remote_control.socketPath",
-        RegistryValue::Str(new.remote_control.socket_path.clone()),
-    );
-    changed
+    SCHEMA
+        .iter()
+        .filter_map(|def| {
+            let after = def.get(new);
+            (def.get(old) != after).then(|| (def.registry_key.to_string(), after))
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -3366,6 +3236,25 @@ show_shortcut_hints = false
                 def.registry_key
             );
         }
+    }
+
+    /// trmx-246: the canonical order is SCHEMA (struct) order — the golden, the diff and the
+    /// frontend's `settings:changed` batches all follow it.
+    #[test]
+    fn diff_order_is_schema_order() {
+        let base = Config::default();
+        let mut all = Config::default();
+        for def in SCHEMA {
+            let flipped = flipped_value(def, &base);
+            def.set(&mut all, &flipped);
+        }
+        let diff = diff_configs(&base, &all);
+        let keys: Vec<&str> = diff.iter().map(|(k, _)| k.as_str()).collect();
+        let expected: Vec<&str> = SCHEMA.iter().map(|d| d.registry_key).collect();
+        assert_eq!(
+            keys, expected,
+            "diff_configs must report changes in SCHEMA order"
+        );
     }
 
     #[test]
