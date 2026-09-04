@@ -7,19 +7,30 @@ production-vs-test breakdown (including Rust inline #[cfg(test)] blocks),
 per-language lines, test-case counts, and file size / line-count extremes.
 
 Usage: python3 scripts/repo-stats.py [repo-root] [--out DIR] [--format both|md|html]
+       python3 scripts/repo-stats.py --ci [--since YYYY-MM-DD] [--repo owner/name] [--ci-fixtures DIR]
 Defaults: repo-root = parent of scripts/, out = <root>/reports/repo-stats (git-ignored).
-Stdlib only; requires `git` on PATH.
+Stdlib only (Python 3.10+; CI runs the runner's python3); requires `git` on PATH.
+
+--ci (trmx-265, grill Add-on 5 metrics 2-5) is a measurement, never a gate: it reads GitHub's own data
+through `gh api` and writes ci-stats.md + ci-stats.json — CI flake rate on main (re-run-to-green),
+per-job gate duration p50/p90, release lead time (tag push -> published, split into pipeline and
+human sign-off) and escaped defects per release (bug-labelled issues opened within 7 days of a tag).
+`--ci-fixtures DIR` replays recorded API pages offline (the unit tests never call gh).
 """
 
 from __future__ import annotations
 
 import argparse
 import html as html_mod
+import json
+import math
+import os
 import re
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Protocol
 
 LANG_BY_EXT = {
     "rs": "Rust",
@@ -542,6 +553,547 @@ scope: git-tracked files only; binary files count for files/bytes, not lines.</d
 """
 
 
+# ---------------------------------------------------------------------------------------------------
+# --ci mode (trmx-265). One source seam (GhSource live / FixtureSource offline) sharing one decoder;
+# everything below the sources is pure over the decoded JSON, so the unit tests never reach gh.
+
+CI_WORKFLOW_PATH = ".github/workflows/ci.yml"
+FULL_GATE_JOB = "full gate (macos)"
+SMOKE_STEP_PREFIX = "Smoke the RELEASE bundle"
+SEMVER_TAG_RE = re.compile(r"^v\d+\.\d+\.\d+$")
+FIX_TITLE_RE = re.compile(r"^(fix|bug)\b", re.IGNORECASE)
+GIT_URL_RE = re.compile(r"github\.com[:/]([^/\s]+)/([^/\s]+?)(?:\.git)?/?\s*$")
+ESCAPED_WINDOW = timedelta(days=7)
+ESCAPED_RULE = ("bug-labelled issues created within 7 days after the tag's commit date (both ends "
+                "inclusive); windows may overlap, so one issue can count against several tags")
+CI_SCHEMA = "termixion-ci-stats/1"
+
+
+def parse_ts(s: str) -> datetime:
+    """GitHub timestamps are UTC with a trailing Z; normalise for 3.10's fromisoformat."""
+    return datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
+def fmt_ts(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def percentile(values, p: int):
+    """Nearest-rank percentile: sorted values, rank ceil(p/100 * n). None for no samples."""
+    if not values:
+        return None
+    s = sorted(values)
+    rank = max(1, math.ceil(p / 100.0 * len(s)))
+    return s[rank - 1]
+
+
+def decode_pages(pages, key: str | None):
+    """What `gh api --paginate --slurp` returns is an array of pages: envelopes (`workflow_runs`,
+    `jobs`) are concatenated by `key`; bare-array pages are concatenated; a single-object page
+    (an attempt) is returned as the object. Both sources go through here, and it FAILS CLOSED: a
+    page that is not the expected envelope raises instead of decoding to "no rows" — a silently
+    empty page would print a plausible zero-flake report."""
+    if not isinstance(pages, list):
+        raise ValueError(f"gh api --slurp should return an array of pages, got {type(pages).__name__}")
+    if key is not None:
+        out = []
+        for n, page in enumerate(pages, 1):
+            if not isinstance(page, dict) or not isinstance(page.get(key), list):
+                raise ValueError(f"page {n}: expected an object with a {key!r} list, "
+                                 f"got {sorted(page) if isinstance(page, dict) else type(page).__name__}")
+            out.extend(page[key])
+        return out
+    if not pages:
+        return []
+    if all(isinstance(page, list) for page in pages):
+        out = []
+        for page in pages:
+            out.extend(page)
+        return out
+    if len(pages) == 1 and isinstance(pages[0], dict):
+        return pages[0]
+    raise ValueError("unexpected page shape from gh api --slurp")
+
+
+def gh_argv(endpoint: str) -> list[str]:
+    return ["gh", "api", "--paginate", "--slurp", endpoint]
+
+
+def ci_runs_endpoint(repo: str, since: str) -> str:
+    return (f"repos/{repo}/actions/workflows/ci.yml/runs"
+            f"?branch=main&event=push&per_page=100&created=>={since}")
+
+
+def run_attempt_endpoint(repo: str, run_id: int, attempt: int) -> str:
+    return f"repos/{repo}/actions/runs/{run_id}/attempts/{attempt}"
+
+
+def run_jobs_endpoint(repo: str, run_id: int, attempt: int | None = None) -> str:
+    if attempt is None:
+        return f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100"
+    return f"repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100"
+
+
+def release_runs_endpoint(repo: str) -> str:
+    return f"repos/{repo}/actions/workflows/release.yml/runs?per_page=100"
+
+
+def releases_endpoint(repo: str) -> str:
+    return f"repos/{repo}/releases?per_page=100"
+
+
+def issues_endpoint(repo: str) -> str:
+    return f"repos/{repo}/issues?state=all&per_page=100"
+
+
+def _run_gh(argv: list[str]):
+    """The one subprocess edge of --ci: gh's stdout is the slurped page array."""
+    out = subprocess.run(argv, capture_output=True, check=True).stdout
+    return json.loads(out.decode("utf-8"))
+
+
+class CiSource(Protocol):
+    """The one seam of --ci: six reads, each returning decoded JSON (lists, or a run object)."""
+
+    kind: str
+
+    def ci_runs(self, since: str) -> list: ...
+    def run_attempt(self, run_id: int, attempt: int) -> dict: ...
+    def run_jobs(self, run_id: int, attempt: int | None = None) -> list: ...
+    def release_runs(self) -> list: ...
+    def releases(self) -> list: ...
+    def issues(self) -> list: ...
+
+
+class GhSource:
+    """Live source: every method is one `gh api --paginate --slurp` call (memoised per endpoint)."""
+    kind = "live"
+
+    def __init__(self, repo: str, runner=None):
+        self.repo = repo
+        self.runner = runner or _run_gh
+        self._cache = {}
+
+    def _get(self, endpoint: str, key: str | None):
+        if endpoint not in self._cache:
+            self._cache[endpoint] = decode_pages(self.runner(gh_argv(endpoint)), key)
+        return self._cache[endpoint]
+
+    def ci_runs(self, since: str):
+        return self._get(ci_runs_endpoint(self.repo, since), "workflow_runs")
+
+    def run_attempt(self, run_id: int, attempt: int):
+        return self._get(run_attempt_endpoint(self.repo, run_id, attempt), None)
+
+    def run_jobs(self, run_id: int, attempt: int | None = None):
+        return self._get(run_jobs_endpoint(self.repo, run_id, attempt), "jobs")
+
+    def release_runs(self):
+        return self._get(release_runs_endpoint(self.repo), "workflow_runs")
+
+    def releases(self):
+        return self._get(releases_endpoint(self.repo), None)
+
+    def issues(self):
+        return self._get(issues_endpoint(self.repo), None)
+
+
+class FixtureSource:
+    """Offline source: files hold exactly the slurped page arrays gh would have returned."""
+    kind = "fixture"
+
+    def __init__(self, directory):
+        self.dir = Path(directory)
+
+    def _read(self, rel: str, key: str | None):
+        pages = json.loads((self.dir / rel).read_text(encoding="utf-8"))
+        return decode_pages(pages, key)
+
+    def ci_runs(self, since: str):
+        return self._read("ci-runs.json", "workflow_runs")
+
+    def run_attempt(self, run_id: int, attempt: int):
+        return self._read(f"attempts/{run_id}-{attempt}.json", None)
+
+    def run_jobs(self, run_id: int, attempt: int | None = None):
+        return self._read(f"jobs/{run_id}-{attempt if attempt is not None else 'latest'}.json", "jobs")
+
+    def release_runs(self):
+        return self._read("release-runs.json", "workflow_runs")
+
+    def releases(self):
+        return self._read("releases.json", None)
+
+    def issues(self):
+        return self._read("issues.json", None)
+
+
+def resolve_repo(flag: str | None, env, git_url: str | None) -> str | None:
+    """--repo flag, else $GITHUB_REPOSITORY, else the origin remote URL (ssh or https)."""
+    if flag:
+        return flag
+    if env.get("GITHUB_REPOSITORY"):
+        return env["GITHUB_REPOSITORY"]
+    if git_url:
+        m = GIT_URL_RE.search(git_url)
+        if m:
+            return f"{m.group(1)}/{m.group(2)}"
+    return None
+
+
+def _git_remote_url(root: Path) -> str | None:
+    try:
+        out = subprocess.run(["git", "-C", str(root), "remote", "get-url", "origin"],
+                             capture_output=True, check=True).stdout
+        return out.decode("utf-8", errors="replace")
+    except (subprocess.CalledProcessError, OSError):
+        return None
+
+
+def ci_window(runs: list, since: datetime) -> dict:
+    """Provenance re-applied (the predicates of scripts/check-main-ci-green.sh) plus the window;
+    the denominator is the completed, non-cancelled, non-skipped runs; the rest is counted."""
+    denominator = []
+    excluded = {"cancelled": 0, "in_progress": 0, "skipped": 0}
+    for r in runs:
+        if (r.get("path") != CI_WORKFLOW_PATH or r.get("event") != "push"
+                or r.get("head_branch") != "main"):
+            continue
+        if parse_ts(r["created_at"]) < since:
+            continue
+        if r.get("status") != "completed":
+            excluded["in_progress"] += 1
+            continue
+        conclusion = r.get("conclusion")
+        if conclusion in ("cancelled", "skipped"):
+            excluded[conclusion] += 1
+            continue
+        denominator.append(r)
+    denominator.sort(key=lambda r: (r["created_at"], r["id"]))
+    return {"denominator": denominator, "excluded": excluded}
+
+
+def _failing_jobs(jobs) -> list:
+    return [{"name": j["name"],
+             "steps": [s["name"] for s in j.get("steps", []) if s.get("conclusion") == "failure"]}
+            for j in jobs if j.get("conclusion") == "failure"]
+
+
+def _run_ref(r) -> dict:
+    return {"run_id": r["id"], "created_at": r["created_at"], "url": r.get("html_url")}
+
+
+def compute_flake(denominator: list, source: CiSource) -> dict:
+    """A flake is a run whose attempt 1 failed and whose re-run succeeded, attributed to the
+    attempt-1 failing jobs/steps. A re-run of an already-green run is listed apart. Breakage is a
+    run that ended red and was not re-run — whether a later push fixed it is not inferred."""
+    flakes, reruns_of_green, breakage = [], [], []
+    for r in denominator:
+        final = r.get("conclusion")
+        if final == "success" and r.get("run_attempt", 1) > 1:
+            first = source.run_attempt(r["id"], 1)
+            if first.get("conclusion") != "success":
+                flakes.append({**_run_ref(r), "jobs": _failing_jobs(source.run_jobs(r["id"], 1))})
+            else:
+                reruns_of_green.append(r["id"])
+        elif final != "success":
+            breakage.append({**_run_ref(r), "jobs": _failing_jobs(source.run_jobs(r["id"]))})
+    n = len(denominator)
+    return {"rate": (len(flakes) / n) if n else None, "denominator": n, "flakes": flakes,
+            "reruns_of_green": reruns_of_green, "breakage": breakage}
+
+
+def compute_durations(denominator: list, source: CiSource) -> dict:
+    """Per job name over the latest attempt of every denominator run: every completed job with
+    both timestamps counts (failed included — it is wall time the gate spent); skipped and
+    unfinished jobs do not. Nearest-rank p50/p90 in whole seconds; the full gate listed first."""
+    samples: dict[str, list[int]] = {}
+    for r in denominator:
+        for j in source.run_jobs(r["id"]):
+            if j.get("status") != "completed" or j.get("conclusion") == "skipped":
+                continue
+            if not j.get("started_at") or not j.get("completed_at"):
+                continue
+            secs = int((parse_ts(j["completed_at"]) - parse_ts(j["started_at"])).total_seconds())
+            samples.setdefault(j["name"], []).append(secs)
+    names = sorted(samples, key=lambda n: (n != FULL_GATE_JOB, n))
+    return {n: {"n": len(samples[n]), "p50_s": percentile(samples[n], 50),
+                "p90_s": percentile(samples[n], 90)} for n in names}
+
+
+def _release_tags(releases) -> list:
+    return sorted((r for r in releases
+                   if not r.get("draft") and SEMVER_TAG_RE.match(r.get("tag_name", ""))),
+                  key=lambda r: r["created_at"])
+
+
+def _select_release_run(runs, tag: str):
+    """The tag-push run: prefer a successful run, then the latest start."""
+    candidates = [r for r in runs if r.get("event") == "push" and r.get("head_branch") == tag]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda r: (r.get("conclusion") == "success", r.get("run_started_at") or ""),
+                    reverse=True)
+    return candidates[0]
+
+
+def _seconds(a: datetime | None, b: datetime | None):
+    return int((b - a).total_seconds()) if a is not None and b is not None else None
+
+
+def compute_releases(source: CiSource) -> dict:
+    """Per non-draft v-tag: tag push = release.yml run start; pipeline = run start -> last job
+    complete; sign-off = last job -> published_at (the human publishing the draft); lead = run
+    start -> published_at; commit -> published from the release's created_at (lightweight tags
+    carry no creation time). Smoke = the release-bundle smoke step, n/a where it did not exist."""
+    runs = source.release_runs()
+    per_tag = []
+    for rel in _release_tags(source.releases()):
+        commit_at = parse_ts(rel["created_at"])
+        published = parse_ts(rel["published_at"]) if rel.get("published_at") else None
+        entry = {"tag": rel["tag_name"], "commit_at": fmt_ts(commit_at), "run_id": None,
+                 "run_started_at": None, "pipeline_done_at": None,
+                 "published_at": fmt_ts(published) if published else None,
+                 "pipeline_s": None, "signoff_s": None, "lead_s": None,
+                 "commit_to_published_s": _seconds(commit_at, published), "smoke": "n/a"}
+        run = _select_release_run(runs, rel["tag_name"])
+        if run is not None:
+            started = parse_ts(run["run_started_at"])
+            jobs = source.run_jobs(run["id"])
+            ends = [parse_ts(j["completed_at"]) for j in jobs if j.get("completed_at")]
+            done = max(ends) if ends else None
+            entry.update({"run_id": run["id"], "run_started_at": fmt_ts(started),
+                          "pipeline_done_at": fmt_ts(done) if done else None,
+                          "pipeline_s": _seconds(started, done), "signoff_s": _seconds(done, published),
+                          "lead_s": _seconds(started, published)})
+            for j in jobs:
+                for s in j.get("steps", []):
+                    if s.get("name", "").startswith(SMOKE_STEP_PREFIX):
+                        entry["smoke"] = "pass" if s.get("conclusion") == "success" else "fail"
+                        break
+                if entry["smoke"] != "n/a":
+                    break
+        per_tag.append(entry)
+
+    def median(key):
+        values = [e[key] for e in per_tag if e[key] is not None]
+        return {"n": len(values), "value": percentile(values, 50)}
+
+    smoke = {"pass": sum(e["smoke"] == "pass" for e in per_tag),
+             "fail": sum(e["smoke"] == "fail" for e in per_tag),
+             "na": sum(e["smoke"] == "n/a" for e in per_tag)}
+    return {"per_tag": per_tag, "median_pipeline_s": median("pipeline_s"),
+            "median_signoff_s": median("signoff_s"), "median_lead_s": median("lead_s"),
+            "median_commit_to_published_s": median("commit_to_published_s"), "smoke": smoke}
+
+
+def _has_label(issue, name: str) -> bool:
+    return any(lbl.get("name") == name for lbl in issue.get("labels", []))
+
+
+def compute_escaped_defects(releases: list, issues: list) -> dict:
+    """The issue's literal rule (ESCAPED_RULE); PR items are dropped; the label-coverage caveat
+    lists fix/bug-titled issues that carry no `bug` label."""
+    plain = [i for i in issues if "pull_request" not in i]
+    bugs = [i for i in plain if _has_label(i, "bug")]
+    per_tag, attributed = [], set()
+    for rel in _release_tags(releases):
+        start = parse_ts(rel["created_at"])
+        end = start + ESCAPED_WINDOW
+        hits = sorted(i["number"] for i in bugs if start <= parse_ts(i["created_at"]) <= end)
+        per_tag.append({"tag": rel["tag_name"], "window_start": fmt_ts(start), "window_end": fmt_ts(end),
+                        "issues": hits, "count": len(hits)})
+        attributed.update(hits)
+    return {
+        "rule": ESCAPED_RULE,
+        "per_tag": per_tag,
+        "attributions": sum(t["count"] for t in per_tag),
+        "distinct": len(attributed),
+        "outside_any_window": sorted(i["number"] for i in bugs if i["number"] not in attributed),
+        "label_coverage": {"fix_titled_unlabelled": sorted(
+            i["number"] for i in plain
+            if FIX_TITLE_RE.match(i.get("title", "")) and not _has_label(i, "bug"))},
+    }
+
+
+def analyze_ci(source: CiSource, repo: str, since: datetime, until: datetime) -> dict:
+    window = ci_window(source.ci_runs(since.strftime("%Y-%m-%d")), since)
+    flake = compute_flake(window["denominator"], source)
+    flake["excluded"] = window["excluded"]
+    return {
+        "schema": CI_SCHEMA,
+        "generated_at": fmt_ts(until),
+        "repo": repo,
+        "window": {"since": since.strftime("%Y-%m-%d"), "until": fmt_ts(until), "source": source.kind},
+        "flake": flake,
+        "duration": compute_durations(window["denominator"], source),
+        "releases": compute_releases(source),
+        "escaped_defects": compute_escaped_defects(source.releases(), source.issues()),
+    }
+
+
+def _dur(seconds) -> str:
+    if seconds is None:
+        return "—"
+    s = int(seconds)
+    if s >= 3600:
+        return f"{s // 3600} h {(s % 3600) // 60:02d} m"
+    if s >= 60:
+        return f"{s // 60} m {s % 60:02d} s"
+    return f"{s} s"
+
+
+def _pct_or_na(rate) -> str:
+    return "n/a" if rate is None else f"{100.0 * rate:.1f} %"
+
+
+def _jobs_cell(jobs) -> str:
+    return "; ".join(f"{j['name']}: {', '.join(j['steps']) or '(no failing step)'}" for j in jobs) or "—"
+
+
+def render_ci_markdown(s: dict) -> str:
+    L = []
+    f, d, r, e = s["flake"], s["duration"], s["releases"], s["escaped_defects"]
+    w = s["window"]
+    L.append("# CI statistics (repo-stats --ci)")
+    L.append("")
+    L.append(f"Generated {s['generated_at']} for `{s['repo']}` — window since {w['since']} "
+             f"(source: {w['source']}). A measurement, not a gate (trmx-265).")
+    L.append("")
+    L.append("## Window")
+    L.append("")
+    L.append("| Metric | Value |")
+    L.append("|---|---:|")
+    L.append(f"| Push-to-main `ci.yml` runs in the window (denominator) | {f['denominator']} |")
+    ex = f["excluded"]
+    L.append(f"| Excluded — cancelled / in progress / skipped | {ex['cancelled']} / {ex['in_progress']} / {ex['skipped']} |")
+    L.append("")
+    L.append("## Flake rate")
+    L.append("")
+    L.append(f"**{_pct_or_na(f['rate'])}** — {len(f['flakes'])} re-run-to-green of {f['denominator']} completed runs "
+             "(a run whose attempt 1 failed and whose re-run succeeded).")
+    L.append("")
+    L.append("| Run | Created | Failing job: steps (attempt 1) |")
+    L.append("|---|---|---|")
+    for x in f["flakes"]:
+        L.append(f"| [{x['run_id']}]({x['url']}) | {x['created_at']} | {_jobs_cell(x['jobs'])} |")
+    if not f["flakes"]:
+        L.append("| — | — | no flakes in the window |")
+    L.append("")
+    L.append("Re-runs of an already-green run (not flakes): "
+             + (", ".join(str(i) for i in f["reruns_of_green"]) or "none") + ".")
+    L.append("")
+    L.append(f"Breakage — {len(f['breakage'])} run(s) that ended red and were not re-run "
+             "(not flakes by definition; whether a later push fixed them is not inferred; shown so a low flake "
+             "rate is not read as a green main):")
+    L.append("")
+    L.append("| Run | Created | Failing job: steps |")
+    L.append("|---|---|---|")
+    for x in f["breakage"]:
+        L.append(f"| [{x['run_id']}]({x['url']}) | {x['created_at']} | {_jobs_cell(x['jobs'])} |")
+    if not f["breakage"]:
+        L.append("| — | — | none |")
+    L.append("")
+    L.append("## Duration")
+    L.append("")
+    L.append("Per job over the latest attempt of every denominator run; every completed job counts "
+             "(failed included), skipped and unfinished jobs do not. Nearest-rank percentiles.")
+    L.append("")
+    L.append("| Job | n | p50 | p90 |")
+    L.append("|---|---:|---:|---:|")
+    for name, v in d.items():
+        L.append(f"| {name} | {v['n']} | {_dur(v['p50_s'])} | {_dur(v['p90_s'])} |")
+    if not d:
+        L.append("| — | 0 | — | — |")
+    L.append("")
+    L.append("## Releases")
+    L.append("")
+    L.append("Tag push = `release.yml` run start; pipeline = run start → last job complete; sign-off = last job → "
+             "published (the human publishing the draft); lead = run start → published. Commit → published uses "
+             "the release's commit date (tags are lightweight and carry no creation time).")
+    L.append("")
+    L.append("| Tag | Commit | Run start | Pipeline | Sign-off | Lead | Commit → published | Smoke |")
+    L.append("|---|---|---|---:|---:|---:|---:|---|")
+    for t in r["per_tag"]:
+        L.append(f"| {t['tag']} | {t['commit_at']} | {t['run_started_at'] or '—'} | {_dur(t['pipeline_s'])} "
+                 f"| {_dur(t['signoff_s'])} | {_dur(t['lead_s'])} | {_dur(t['commit_to_published_s'])} | {t['smoke']} |")
+    if not r["per_tag"]:
+        L.append("| — | | | | | | | |")
+    L.append("")
+
+    def med(key, label):
+        m = r[key]
+        return f"{label} {_dur(m['value'])} (n = {m['n']})"
+
+    L.append("Medians (nearest-rank): " + med("median_pipeline_s", "pipeline") + " · "
+             + med("median_signoff_s", "sign-off") + " · " + med("median_lead_s", "lead") + " · "
+             + med("median_commit_to_published_s", "commit → published") + ".")
+    sm = r["smoke"]
+    L.append(f"Release-bundle smoke: {sm['pass']} pass / {sm['fail']} fail / {sm['na']} n/a "
+             "(n/a = the smoke step did not exist for that release).")
+    L.append("")
+    L.append("## Escaped defects")
+    L.append("")
+    L.append(f"Rule: {e['rule']}.")
+    L.append("")
+    L.append("| Tag | Window end | Issues | Count |")
+    L.append("|---|---|---|---:|")
+    for t in e["per_tag"]:
+        L.append(f"| {t['tag']} | {t['window_end']} | {', '.join('#' + str(n) for n in t['issues']) or '—'} | {t['count']} |")
+    if not e["per_tag"]:
+        L.append("| — | | | 0 |")
+    L.append("")
+    L.append(f"{e['attributions']} attribution(s) of {e['distinct']} distinct issue(s). "
+             f"Bug-labelled issues outside every window: "
+             + (", ".join("#" + str(n) for n in e["outside_any_window"]) or "none") + ".")
+    unl = e["label_coverage"]["fix_titled_unlabelled"]
+    L.append("Label coverage caveat — fix/bug-titled issues without the `bug` label (invisible to this metric): "
+             + (", ".join("#" + str(n) for n in unl) or "none") + ".")
+    L.append("")
+    return "\n".join(L)
+
+
+def ci_json(s: dict) -> str:
+    return json.dumps(s, indent=2) + "\n"
+
+
+DEFAULT_WINDOW_DAYS = 90
+
+
+def resolve_since(flag: str | None, now: datetime) -> datetime:
+    """--since YYYY-MM-DD (midnight UTC), else midnight UTC `DEFAULT_WINDOW_DAYS` days before `now`.
+    Raises ValueError for a malformed date."""
+    if flag:
+        return datetime.strptime(flag, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    return (now - timedelta(days=DEFAULT_WINDOW_DAYS)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _main_ci(args, root: Path, out_dir: Path, now: datetime | None = None) -> int:
+    if args.format != "both":
+        print("repo-stats: --format is ignored under --ci (Markdown + JSON are always written)", file=sys.stderr)
+    now = now or datetime.now(timezone.utc).replace(microsecond=0)
+    try:
+        since = resolve_since(args.since, now)
+    except ValueError:
+        print(f"repo-stats: --since expects YYYY-MM-DD, got {args.since!r}", file=sys.stderr)
+        return 2
+    repo = resolve_repo(args.repo, os.environ, _git_remote_url(root))
+    if not repo:
+        print("repo-stats: cannot determine the repository — pass --repo owner/name", file=sys.stderr)
+        return 2
+    source = FixtureSource(args.ci_fixtures) if args.ci_fixtures else GhSource(repo)
+    stats = analyze_ci(source, repo, since, now)
+    md = render_ci_markdown(stats)
+    (out_dir / "ci-stats.md").write_text(md, encoding="utf-8")
+    (out_dir / "ci-stats.json").write_text(ci_json(stats), encoding="utf-8")
+    print(md, end="" if md.endswith("\n") else "\n")
+    print(f"repo-stats --ci: wrote {out_dir / 'ci-stats.md'} and {out_dir / 'ci-stats.json'}", file=sys.stderr)
+    return 0
+
+
+_now_override: datetime | None = None   # tests pin the clock through this seam
+
+
 def main(argv: list[str] | None = None) -> int:
     default_root = Path(__file__).resolve().parent.parent
     ap = argparse.ArgumentParser(prog="repo-stats", description=__doc__.splitlines()[0])
@@ -550,11 +1102,22 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", default=None,
                     help="output directory (default: <root>/reports/repo-stats)")
     ap.add_argument("--format", choices=("both", "md", "html"), default="both")
+    ap.add_argument("--ci", action="store_true",
+                    help="CI statistics mode (trmx-265): flake rate, gate duration, release lead time, "
+                         "escaped defects — writes ci-stats.md + ci-stats.json instead of the codebase report")
+    ap.add_argument("--since", default=None, metavar="YYYY-MM-DD",
+                    help="--ci: window start (default: 90 days ago, UTC)")
+    ap.add_argument("--repo", default=None, metavar="OWNER/NAME",
+                    help="--ci: repository (default: $GITHUB_REPOSITORY, else the origin remote)")
+    ap.add_argument("--ci-fixtures", default=None, metavar="DIR",
+                    help="--ci: replay recorded API pages from DIR instead of calling gh (offline)")
     args = ap.parse_args(argv)
 
     root = Path(args.root).resolve()
     out_dir = Path(args.out) if args.out else root / "reports" / "repo-stats"
     out_dir.mkdir(parents=True, exist_ok=True)
+    if args.ci:
+        return _main_ci(args, root, out_dir, now=_now_override)
 
     stats = analyze(root)
     written = []

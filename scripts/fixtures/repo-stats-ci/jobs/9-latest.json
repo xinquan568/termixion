@@ -1,0 +1,19 @@
+[
+  {
+    "total_count": 1,
+    "jobs": [
+      {
+        "id": 91,
+        "run_id": 9,
+        "run_attempt": 1,
+        "name": "full gate (macos)",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-06-20T10:00:10Z",
+        "completed_at": "2026-06-20T10:10:10Z",
+        "html_url": "https://github.com/x/y/actions/runs/9/job/91",
+        "steps": []
+      }
+    ]
+  }
+]

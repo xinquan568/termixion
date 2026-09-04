@@ -1,0 +1,96 @@
+[
+  [
+    {
+      "number": 291,
+      "title": "fix(commands): \u2193 then Enter in one batch runs the wrong item \u2014 PaletteOverlay reads a stale selection",
+      "state": "closed",
+      "created_at": "2026-08-29T11:12:54Z",
+      "closed_at": "2026-08-29T11:25:19Z",
+      "html_url": "https://github.com/xinquan568/termixion/issues/291",
+      "labels": [
+        {
+          "name": "bug"
+        }
+      ]
+    },
+    {
+      "number": 180,
+      "title": "Auto-copy-on-select still unreliable: review the implementation, audit test coverage, and pin real-runtime behavior (FR-8 follow-up)",
+      "state": "closed",
+      "created_at": "2026-07-15T14:02:51Z",
+      "closed_at": "2026-07-15T16:25:37Z",
+      "html_url": "https://github.com/xinquan568/termixion/issues/180",
+      "labels": [
+        {
+          "name": "bug"
+        }
+      ]
+    },
+    {
+      "number": 150,
+      "title": "bug: boundary witness \u2014 created exactly at v0.0.9 + 7 days",
+      "state": "open",
+      "created_at": "2026-07-14T03:18:08Z",
+      "closed_at": null,
+      "html_url": "https://github.com/x/y/issues/150",
+      "labels": [
+        {
+          "name": "bug"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "number": 148,
+      "title": "fix: About \u2192 \"Open config file\" does nothing \u2014 open_path denied by capabilities, rejection silently discarded",
+      "state": "closed",
+      "created_at": "2026-07-07T12:36:48Z",
+      "closed_at": "2026-07-07T17:35:25Z",
+      "html_url": "https://github.com/xinquan568/termixion/issues/148",
+      "labels": []
+    },
+    {
+      "number": 160,
+      "title": "fix(x): a pull request labelled bug must be ignored",
+      "state": "closed",
+      "created_at": "2026-07-08T00:00:00Z",
+      "closed_at": "2026-07-09T00:00:00Z",
+      "html_url": "https://github.com/x/y/pull/160",
+      "labels": [
+        {
+          "name": "bug"
+        }
+      ],
+      "pull_request": {
+        "url": "https://api.github.com/repos/x/y/pulls/160"
+      }
+    },
+    {
+      "number": 145,
+      "title": "bug: non-ASCII copy pastes as MacRoman mojibake in other apps (\u2014 \u2192 \"\u201a\u00c4\u00ee\", \u00d7 \u2192 \"\u221a\u00f3\")",
+      "state": "closed",
+      "created_at": "2026-07-07T10:26:58Z",
+      "closed_at": "2026-07-08T05:53:50Z",
+      "html_url": "https://github.com/xinquan568/termixion/issues/145",
+      "labels": [
+        {
+          "name": "bug"
+        }
+      ]
+    },
+    {
+      "number": 37,
+      "title": "clear fails with \"TERM environment variable not set\"; backspace/delete break (intermittent, GUI launch)",
+      "state": "closed",
+      "created_at": "2026-06-29T14:26:47Z",
+      "closed_at": "2026-06-29T14:34:17Z",
+      "html_url": "https://github.com/xinquan568/termixion/issues/37",
+      "labels": [
+        {
+          "name": "bug"
+        }
+      ]
+    }
+  ]
+]

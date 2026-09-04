@@ -1,0 +1,19 @@
+[
+  {
+    "id": 3,
+    "name": "ci",
+    "run_number": 3,
+    "run_attempt": 1,
+    "event": "push",
+    "status": "completed",
+    "conclusion": "success",
+    "workflow_id": 0,
+    "path": ".github/workflows/ci.yml",
+    "head_branch": "main",
+    "head_sha": "0000000000000000000000000000000000000003",
+    "created_at": "2026-07-07T10:00:00Z",
+    "run_started_at": "2026-07-07T10:00:00Z",
+    "updated_at": "2026-07-07T10:11:00Z",
+    "html_url": "https://github.com/x/y/actions/runs/3"
+  }
+]
