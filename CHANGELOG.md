@@ -5,6 +5,21 @@ The user-facing changes to Termixion are documented here. The format follows
 [Semantic Versioning](https://semver.org). Auto-generated from Conventional Commits by git-cliff;
 internal changes (build / CI / tests / refactors / docs) live in the git history and the linked issues.
 
+## [0.1.3] - 2026-09-04
+
+### Added
+- Typed IpcError at the command boundary (trmx-249) (#299)
+
+### Changed
+- One ps per poll pass instead of one per session — flat cost at 100 panes (trmx-263) (#316)
+
+### Fixed
+- Harden the trmx-249 contract gates (trmx-300) (#301)
+- A configured remote_control.socketPath is kept — and one declarative config SCHEMA in core with derived paths/diff/walk and Rust-side hydration (trmx-246) (#318)
+
+### Security
+- Real CSP with a gate that can fail, per-window command scoping, OSC 52 write policy (trmx-252) (#310)
+
 ## [0.1.2] - 2026-08-29
 
 ### Added
