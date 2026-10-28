@@ -37,7 +37,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install the pinned toolchain (rust-toolchain.toml)
         run: rustup toolchain install "$(sed -nE 's/^channel = "([^"]+)".*/\1/p' rust-toolchain.toml)"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: core seam guard (forbidden-dep + no platform cfg / std::os)
         run: bash scripts/check-core-seam.sh
       # trmx-240: hosted in the REQUIRED job on purpose. In the advisory shell-integration job it
@@ -51,10 +51,10 @@ jobs:
       # ADVISORY shell-integration job, which would have made the PR claim enforcement that did not
       # exist. The self-test runs beside it: a gate nobody has watched FAIL is a gate that may be
       # checking nothing.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6.0.0
         with:
           node-version-file: .nvmrc
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v4.2.0
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v4.2.0
       - name: Install deps (typescript is a devDependency the gate parses with)
         run: pnpm install --frozen-lockfile
       - name: app/ orchestration contract gate (trmx-254)
@@ -161,17 +161,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install the pinned toolchain (rust-toolchain.toml)
         run: rustup toolchain install "$(sed -nE 's/^channel = "([^"]+)".*/\1/p' rust-toolchain.toml)"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Install cargo-deny 0.20.2 (skipped when the cached binary already matches)
         run: cargo deny --version 2>/dev/null | grep -q ' 0\.20\.2$' || cargo install cargo-deny --version 0.20.2 --locked
       - name: cargo deny check (deny.toml)
         run: cargo deny check
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 11.6.0
       # No `cache: pnpm` here: audit reads the lockfile only (no install), so there is no store to cache and
       # setup-node's post-job cache step would fail the job on the missing path.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
       - name: pnpm audit (prod, high and above)
@@ -186,7 +186,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install the pinned toolchain (rust-toolchain.toml)
         run: rustup toolchain install "$(sed -nE 's/^channel = "([^"]+)".*/\1/p' rust-toolchain.toml)"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: cargo test (termixion-core)
         run: cargo test -p termixion-core --locked
 
@@ -201,11 +201,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install the pinned toolchain (rust-toolchain.toml)
         run: rustup toolchain install "$(sed -nE 's/^channel = "([^"]+)".*/\1/p' rust-toolchain.toml)"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 11.6.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: pnpm
@@ -241,7 +241,7 @@ jobs:
       # traces. The report is written under app/coverage (the vitest root is app/), not repo-root.
       - name: Upload coverage report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-frontend
           path: app/coverage
@@ -295,7 +295,7 @@ jobs:
           cp "$HOME/Library/Logs/dev.termixion.terminal/termixion.log" smoke-logs/ || true
       - name: Upload packaged-smoke log
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: smoke-log
           path: smoke-logs
@@ -325,7 +325,7 @@ jobs:
       # Output is app/test-results (see .gitignore:11), not test-results.
       - name: Upload Playwright traces
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playwright-traces
           path: app/test-results
